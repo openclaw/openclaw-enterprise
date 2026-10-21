@@ -37,6 +37,7 @@ const CONSOLE_ASSETS = new Map([
       "namespaces.mjs",
       "runtime-images.mjs",
       "agents/list.mjs",
+      "agents/collection.mjs",
       "agents/logs.mjs",
       "agents/sandbox-policy.mjs",
       "agents/logs-view.mjs",

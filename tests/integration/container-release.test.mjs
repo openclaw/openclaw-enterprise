@@ -158,12 +158,14 @@ test("a chart retry accepts matching files across Helm package timestamps and re
   const second = join(directory, "second");
   const changed = join(directory, "changed");
   await Promise.all([mkdir(first), mkdir(second), mkdir(changed)]);
-  for (const destination of [first, second]) {
-    execFileSync(helm, ["package", staged, "--destination", destination]);
-    if (destination === first) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
+  execFileSync(helm, ["package", staged, "--destination", first]);
+  // Helm 3.19 stamps each tar entry with the time it writes it, rounded to the nearest second
+  // (Go's archive/tar). Every first entry rounds to at most the second nearest to now, so
+  // packaging again once now is past the next half second gives every entry a later timestamp,
+  // without waiting a fixed 2 s.
+  const laterSecond = (Math.round(Date.now() / 1_000) + 0.5) * 1_000 + 50;
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, laterSecond - Date.now())));
+  execFileSync(helm, ["package", staged, "--destination", second]);
   const archiveName = "openclaw-enterprise-0.1.0.tgz";
   const firstArchive = join(first, archiveName);
   const secondArchive = join(second, archiveName);

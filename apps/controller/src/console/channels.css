@@ -1,24 +1,24 @@
 .channels-section {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .channel-heading {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
 .channel-card {
   display: grid;
-  gap: 0.75rem;
+  gap: var(--space-3);
 }
 
 .channel-card-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -27,13 +27,13 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .channel-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: var(--space-2);
   justify-content: flex-end;
 }
 
@@ -44,13 +44,13 @@
 
 .channel-drawer-form {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
 }
 
 .channel-drawer-head {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
+  gap: var(--space-4);
   align-items: start;
 }
 
@@ -84,9 +84,9 @@
 
 .channel-check {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--space-2);
   align-items: center;
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 
 .channel-check input {

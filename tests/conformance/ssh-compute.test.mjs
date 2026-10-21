@@ -300,7 +300,11 @@ async function fixture(t, selection = {}) {
         child.kill("SIGKILL");
       }
     }
-    await rm(base, { recursive: true, force: true });
+    // A cancelled helper's flock(1) waiter outlives it and keeps logging attempts into
+    // the fixture state until the lock frees. Retry when one lands mid-removal: a failing
+    // hook skips later after hooks, such as the one that ends a test's lock holder, whose
+    // pipes then keep this file running until its runner timeout.
+    await rm(base, { recursive: true, force: true, maxRetries: 10 });
   });
   const nsDir = join(root, "namespaces", digest(tenant.id).slice(0, 12));
   return {
@@ -1291,10 +1295,14 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
   await mkdir(bin);
   // Transport-only stand-in records argv and runs the unchanged stdin program with Node.
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+  // It installs its SIGTERM forwarder before spawning the helper. Installed after spawn(),
+  // a SIGTERM that lands while spawn() runs (the 100 ms timeout below, on a busy runner)
+  // killed the stand-in by default and orphaned the helper, which kept the executor's
+  // stdio pipes open, so the execution never settled and the file hit its runner timeout.
   const ssh = join(bin, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nlet child;\nprocess.on('SIGTERM', () => (child ? child.kill('SIGTERM') : process.exit(143)));\nchild = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
   );
   await chmod(ssh, 0o755);
   const previousPath = process.env.PATH;

@@ -65,7 +65,7 @@ logs one `native_admin.compute_owner_mismatch` warning per version and selected
 Driver, naming both Driver IDs and implementations. To restore access, select the
 version's Compute Driver again, with the same ID and implementation.
 
-When someone opens a copied `/chat/main` Agent link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
+When someone opens the Agent root `/` or a copied `/chat/main` link without a valid session, OCC sends a temporary `302` redirect to the configured console. This also works for links ending in a 32-character lowercase hexadecimal session segment. The redirect carries only the opaque key from the Agent host, in a URL fragment. It drops the chat session segment and query, sets `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, and does not check whether the Agent exists.
 
 After sign-in, `GET /native-admin/return/<key>` requires exact Agent `use` and a runtime assignment. It returns Namespace and Agent IDs even while stopped; unknown and unauthorized keys both return `404`. Recovery opens Agent detail; launching chat remains separate. Previews, API/WebSocket requests and actual authorization denials retain their refusal behavior.
 

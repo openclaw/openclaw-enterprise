@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import {
@@ -15,12 +17,14 @@ import {
   createPostgresControllerAuth,
 } from "../../apps/controller/src/auth/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { authMaintain } from "../../scripts/auth-maintain.mjs";
 import {
   AUTH_MAINTAIN_USAGE,
   parseAuthMaintainArguments,
 } from "../../scripts/lib/auth-maintain-arguments.mjs";
 import {
   ensureDevelopmentBootstrap,
+  outputSink,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
 
@@ -78,44 +82,102 @@ test("auth:maintain requires an explicit writers-stopped claim for every change"
   );
 });
 
-function maintain(args, url = migrationUrl, environment = {}) {
-  return new Promise((resolve) => {
-    execFile(
-      process.execPath,
-      ["scripts/auth-maintain.mjs", ...args],
-      {
-        cwd: repository,
-        env: {
-          ...process.env,
-          NODE_ENV: "development",
-          OCC_MIGRATION_DATABASE_URL: url,
-          ...environment,
-        },
-        timeout: 30_000,
-      },
-      (error, stdout, stderr) => {
-        const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
-        resolve({
-          code: error ? error.code : 0,
-          output: line ? JSON.parse(line) : undefined,
-          stderr,
-        });
-      },
+function commandEnvironment(url, environment) {
+  return {
+    ...process.env,
+    NODE_ENV: "development",
+    OCC_MIGRATION_DATABASE_URL: url,
+    ...environment,
+  };
+}
+
+function commandResult(code, stdout, stderr) {
+  const line = stdout.split("\n").find((entry) => entry.startsWith("{"));
+  return { code, output: line ? JSON.parse(line) : undefined, stderr };
+}
+
+// The database's client backends other than the caller's own.
+async function backendPids() {
+  const client = new pg.Client({ connectionString: migrationUrl });
+  await client.connect();
+  try {
+    const { rows } = await client.query(
+      `SELECT pid FROM pg_stat_activity
+       WHERE datname = current_database() AND pid <> pg_backend_pid() AND usename IS NOT NULL`,
     );
+    return rows.map((row) => row.pid);
+  } finally {
+    // Client.end() resolves once the server closed the connection, so this backend is gone.
+    await client.end();
+  }
+}
+
+// pg's Pool.end() resolves before its connections close, and every mutating command refuses
+// while another backend is listed. Wait (at most 5 s) for the backends a step opened to leave,
+// so the next step sees only the clients a case connects on purpose.
+async function settled(work) {
+  if (!migrationUrl) {
+    return work();
+  }
+  const before = new Set(await backendPids());
+  const result = await work();
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const left = (await backendPids()).filter((pid) => !before.has(pid));
+    if (left.length === 0) {
+      return result;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Backends ${left.join(", ")} were still connected 5 s after the step.`);
+    }
+    await delay(10);
+  }
+}
+
+// Most runs call authMaintain (what scripts/auth-maintain.mjs runs) in this process, with the
+// command's environment and arguments, which saves a Node start per run. maintainScript runs the
+// real script for its exit status and output: 0, 1, 2, 3 and 64 each have one such run below.
+function maintain(args, url = migrationUrl, environment = {}) {
+  return settled(async () => {
+    const stdout = outputSink();
+    const stderr = outputSink();
+    const code = await authMaintain({
+      environment: commandEnvironment(url, environment),
+      args,
+      stdout,
+      stderr,
+      logDestination: stderr,
+    });
+    return commandResult(code, stdout.text(), stderr.text());
   });
+}
+
+function maintainScript(args, url = migrationUrl, environment = {}) {
+  return settled(
+    () =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          ["scripts/auth-maintain.mjs", ...args],
+          { cwd: repository, env: commandEnvironment(url, environment), timeout: 30_000 },
+          (error, stdout, stderr) => resolve(commandResult(error ? error.code : 0, stdout, stderr)),
+        );
+      }),
+  );
 }
 
 test("auth:maintain rejects undeclared commands before configuration", async () => {
   // A relative startup path fails the configuration load, so a declared command stops there.
   const unreadableConfiguration = { OCC_CONFIG_PATH: "relative-startup.yaml" };
-  const declared = await maintain(["status"], "", unreadableConfiguration);
+  const declared = await maintainScript(["status"], "", unreadableConfiguration);
   assert.equal(declared.code, 1, declared.stderr);
   assert.match(declared.stderr, /^OCC_CONFIG_PATH must identify an absolute/);
   for (const command of ["drop-everything", "constructor", "toString", "__proto__"]) {
     for (const args of [[command], ["--", command, "--writers-stopped"]]) {
       // Neither the startup file nor missing database configuration may obscure an invalid command.
-      // Launch the actual maintenance entrypoint, without a migrator credential.
-      const result = await maintain(args, "", unreadableConfiguration);
+      // Without a migrator credential; the first one launches the actual maintenance entrypoint.
+      const run = command === "drop-everything" && args.length === 1 ? maintainScript : maintain;
+      const result = await run(args, "", unreadableConfiguration);
       assert.equal(result.code, 64, `${args.join(" ")}: ${result.stderr}`);
       assert.equal(result.stderr, `Unknown command: ${command}.\n${AUTH_MAINTAIN_USAGE}\n`);
       assert.equal(result.output, undefined);
@@ -124,12 +186,16 @@ test("auth:maintain rejects undeclared commands before configuration", async () 
 });
 
 // Short-lived pools: every mutating command refuses while any other client is connected.
+// Pool.end() does not wait for its connections to close, so wait for each client's own end.
 async function withPool(url, work) {
   const pool = new pg.Pool({ connectionString: url, max: 4 });
+  const closed = [];
+  pool.on("connect", (client) => closed.push(once(client, "end")));
   try {
     return await work(pool);
   } finally {
     await pool.end();
+    await Promise.all(closed);
   }
 }
 
@@ -147,14 +213,17 @@ test(
     const secret = "auth-maintenance-integration-secret-32-characters";
     const baseURL = "http://127.0.0.1";
     const directory = await privateBootstrapDirectory(context, "openclaw-auth-maintain-");
-    await ensureDevelopmentBootstrap(context, {
-      databaseUrl,
-      email: recoveryEmail,
-      password,
-      authSecret: secret,
-      installationName: "Authentication maintenance",
-      authBaseURL: baseURL,
-    });
+    await settled(() =>
+      ensureDevelopmentBootstrap(context, {
+        databaseUrl,
+        email: recoveryEmail,
+        password,
+        authSecret: secret,
+        installationName: "Authentication maintenance",
+        authBaseURL: baseURL,
+        inProcess: true,
+      }),
+    );
 
     // A pre-#305 style controller (no State) provisions accounts and Principals.
     const legacy = (pool) =>
@@ -193,7 +262,7 @@ test(
     await context.test(
       "status reports the legacy profile and refuses the application role",
       async () => {
-        const status = await maintain(["status"]);
+        const status = await maintainScript(["status"]);
         assert.equal(status.code, 0, status.stderr);
         assert.equal(status.output.installationId, installationId);
         assert.equal(status.output.profile, "legacy");
@@ -209,7 +278,7 @@ test(
       const replica = new pg.Client({ connectionString: databaseUrl });
       await replica.connect();
       try {
-        const refused = await maintain([
+        const refused = await maintainScript([
           "activate",
           "--recovery-user",
           recoveryUserId,
@@ -225,7 +294,7 @@ test(
       assert.equal(status.output.profile, "legacy");
 
       // A failed activation precondition is a refusal (exit 3), not a failure.
-      const unknown = await maintain([
+      const unknown = await maintainScript([
         "activate",
         "--recovery-user",
         "missing-user",

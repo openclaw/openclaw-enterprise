@@ -1033,6 +1033,7 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 		name     string
 		location string
 		want     string
+		hostCase bool
 	}{
 		{
 			name:     "other origin",
@@ -1040,18 +1041,27 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
 		},
 		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+		{name: "same origin host case", hostCase: true, want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			var sawKey string
 			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				sawKey = r.Header.Get("x-api-key")
-				w.Header().Set("location", testCase.location)
+				location := testCase.location
+				if testCase.hostCase {
+					location = "http://" + strings.ToLower(r.Host) + "/elsewhere/installation"
+				}
+				w.Header().Set("location", location)
 				w.WriteHeader(http.StatusPermanentRedirect)
 			}))
 			defer origin.Close()
 			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 			command := New(io.Discard, io.Discard)
-			command.SetArgs([]string{"installation", "get", "--url", origin.URL, "--service-key-file", keyFile})
+			originURL := origin.URL
+			if testCase.hostCase {
+				originURL = strings.Replace(originURL, "127.0.0.1", "LOCALHOST", 1)
+			}
+			command.SetArgs([]string{"installation", "get", "--url", originURL, "--service-key-file", keyFile})
 			err := command.Execute()
 			if err == nil {
 				t.Fatal("expected the redirect to fail the command")

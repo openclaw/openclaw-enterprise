@@ -6,6 +6,12 @@ export const pages = Object.freeze({
 });
 
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
+  // The initial entry is position zero. Keep the position on replaceState, including sign-in,
+  // so a refused Back or Forward can return to its starting entry without rewriting history.
+  let position = entryPosition() ?? 0;
+  let restoring = null;
+  replaceUrl(location.href);
+
   function route() {
     const url = new URL(location.href);
     const path = url.pathname;
@@ -109,19 +115,66 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     return `/console/${intent.feature}${query.size ? `?${query}` : ""}`;
   }
 
+  function entryPosition() {
+    const index = history.state?.consolePosition;
+    return Number.isSafeInteger(index) ? index : null;
+  }
+
+  function replaceUrl(url) {
+    history.replaceState({ consolePosition: position }, "", url);
+  }
+
+  function pushUrl(url) {
+    position = (position ?? 0) + 1;
+    history.pushState({ consolePosition: position }, "", url);
+  }
+
   function navigate(feature, selection = getNamespaceId(), replace = false) {
     if (isLoggingOut()) {
       return;
     }
     const current = route();
-    history[replace ? "replaceState" : "pushState"](null, "", pageUrl(feature, selection));
+    const url = pageUrl(feature, selection);
+    if (replace) {
+      replaceUrl(url);
+    } else {
+      pushUrl(url);
+    }
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
       !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
     void loadPage({ fromNavigation: true, openingAgent });
   }
 
+  function traverse({ fromNavigation, mountedUrl }) {
+    // popstate arrives after the browser has moved. If the page must stay open, go back by the
+    // same distance, then consume that popstate without reloading the page we kept mounted.
+    const previous = position;
+    position = entryPosition();
+    const returned = restoring !== null && position === restoring;
+    restoring = null;
+    // Never skip the admission recheck of an inert or no longer mounted page.
+    if (returned && fromNavigation && mountedUrl === location.pathname + location.search) {
+      return;
+    }
+    void loadPage({
+      fromNavigation,
+      restoreHistory(url) {
+        if (position === null || previous === null || position === previous) {
+          // An older or untracked entry has no reliable direction. Keep it available to Back
+          // without risking history.go(0), which would reload the page during its write.
+          pushUrl(url);
+        } else {
+          restoring = previous;
+          history.go(previous - position);
+        }
+      },
+    });
+  }
+
   return {
+    traverse,
+    replaceUrl,
     route,
     pageUrl,
     captureIntent,

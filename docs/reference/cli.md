@@ -21,7 +21,8 @@ its environment variable; `--namespace=` does so for Installation-scoped
 | `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
 
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
-The client sends it as `x-api-key` and does not follow redirects. Use a trusted
+The client sends it as `x-api-key` and does not follow redirects.
+Host letter case does not change same-origin redirect advice. Use a trusted
 HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.

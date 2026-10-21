@@ -4,17 +4,20 @@ import test from "node:test";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/detail.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  apiRequests,
   detailUrl,
   holdRequests,
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
   persistedDeploymentError,
   recordLayoutShifts,
   takeLayoutShifts,
   trackSettledFetches,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
 
 // A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
 // opens them for the record's evidence.
@@ -1457,4 +1460,337 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await new Promise((resolve) => setTimeout(resolve, 300));
   const { shift, shifts } = await takeLayoutShifts(page);
   assert.ok(shift < 0.01, `layout shift ${shift}: ${JSON.stringify(shifts)}`);
+});
+
+const listUrl = (namespaceId) => `/console/agents?namespace=${namespaceId}`;
+
+test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Row actions", { ready: true });
+  const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, running.id);
+  const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"));
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+
+  await login(page, fixture, listUrl(namespace.id));
+  const runningRow = page.getByRole("row").filter({ hasText: "Running Agent" });
+  const draftRow = page.getByRole("row").filter({ hasText: "Draft Agent" });
+  const stop = runningRow.getByRole("button", { name: "Stop Running Agent" });
+  const remove = runningRow.getByRole("button", { name: "Delete Running Agent" });
+  await stop.waitFor();
+  // A new Agent is created with a stopped requested state and no version, so like Agent detail
+  // its row offers no Stop until a first deploy; Delete stays available.
+  await draftRow.getByRole("button", { name: "Delete Draft Agent" }).waitFor();
+  assert.equal(await draftRow.getByRole("button", { name: "Stop Draft Agent" }).count(), 0);
+  assert.equal(await stop.isDisabled(), false);
+  // Only a stop with a selected version is labelled; a never-deployed draft reads "No current version".
+  assert.equal(await draftRow.getByText("Stop requested", { exact: true }).count(), 0);
+  assert.equal(await runningRow.getByText("Stop requested", { exact: true }).count(), 0);
+  requests.length = 0;
+
+  // Cancelling the confirmation sends nothing and returns focus to the row's icon.
+  await stop.click();
+  let dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
+  await dialog
+    .getByText(/Configuration, versions, Credentials, and workspace data are retained/)
+    .waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  assert.equal(await stop.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // In a narrow window above the phone layout (where rows stack), the table scrolls sideways to
+  // reach Actions. Accepting a row action redraws the table, which must keep that position
+  // instead of jumping back to the names.
+  await page.setViewportSize({ width: 800, height: 844 });
+  const scrolledLeft = await page.evaluate(() => {
+    const scroller = globalThis.document.querySelector(".table-scroll");
+    scroller.scrollLeft = scroller.scrollWidth;
+    return scroller.scrollLeft;
+  });
+  assert.ok(scrolledLeft > 0, "the narrow table should scroll horizontally");
+  await stop.click();
+  dialog = page.getByRole("dialog", { name: "Stop Running Agent?" });
+  const stopResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}/stop`,
+  );
+  await dialog.getByRole("button", { name: "Stop Agent" }).click();
+  assert.equal((await stopResponse).status(), 202);
+  await page.getByRole("status").getByText("Stop requested for Running Agent.").waitFor();
+  await runningRow.getByText("Stop requested", { exact: true }).waitFor();
+  assert.equal(await stop.isDisabled(), true);
+  // With Stop now disabled, focus falls back to the Agent's name, which sits off-screen to the
+  // left; moving focus there must not scroll the table either.
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.textContent === "Running Agent",
+  );
+  assert.equal(
+    await page.evaluate(() => globalThis.document.querySelector(".table-scroll").scrollLeft),
+    scrolledLeft,
+  );
+  // The list stays in place: stopping from a row does not open the Agent.
+  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  assert.equal(agentStopRequests(requests, namespace.id, running.id).length, 1);
+  // Stop records only the requested state; the selected version is kept for the worker.
+  const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${running.id}`);
+  assert.equal(stopped.data.desiredRuntimeState, "stopped");
+  assert.equal(stopped.data.activeRevisionId, active.revision.id);
+
+  // Deletion names the kept Configuration and model Secret, then queues cleanup.
+  await remove.click();
+  dialog = page.getByRole("dialog", { name: "Delete Running Agent?" });
+  await dialog
+    .getByText(
+      `occ configuration delete ${running.configurationId} and occ secret delete ${running.harnessAuth.source.id}`,
+      { exact: false },
+    )
+    .waitFor();
+  const deleteResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${running.id}` &&
+      response.request().method() === "DELETE",
+  );
+  await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
+  assert.equal((await deleteResponse).status(), 202);
+  await page.getByRole("status").getByText("Deletion requested for Running Agent.").waitFor();
+  await runningRow.getByText("Deleting", { exact: true }).waitFor();
+  assert.equal(await remove.isDisabled(), true);
+  assert.equal(await stop.isDisabled(), true);
+  assert.equal(agentDeleteRequests(requests, namespace.id, running.id).length, 1);
+  const deleting = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${running.id}`);
+  assert.equal(deleting.data.status, "deleting");
+
+  // Each row acts on its own Agent: the other one stays active and deletable.
+  const untouched = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${draft.id}`);
+  assert.equal(untouched.data.status, "active");
+  assert.equal(
+    await draftRow.getByRole("button", { name: "Delete Draft Agent" }).isDisabled(),
+    false,
+  );
+});
+
+test("Agents list row actions explain missing access and still report a refused or uncertain write", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["row-reader"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Row denial", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Guarded Agent", nativeValues("guard"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const person = fixture.provisionedAccounts[0];
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const bind = async (permissions, resourceKind, resourceId) => {
+    const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
+    assert.equal(role.status, 201);
+    const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: person.principal.id,
+        roleId: role.data.id,
+        resourceKind,
+        resourceId,
+      },
+    });
+    assert.equal(binding.status, 201);
+    return binding.data;
+  };
+  // A reader who can list and open the Agent but holds neither operate nor delete on it.
+  await bind([{ action: "read", resourceKind: "namespace" }], "namespace", namespace.id);
+  await bind([{ action: "read", resourceKind: "agent" }], "agent", agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+  const stopEnabled = () =>
+    page.waitForFunction(
+      () =>
+        globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]')?.disabled === false,
+    );
+
+  // Hold the first permission read so the reader can open Stop before the real answer arrives.
+  let releaseAdvice;
+  const adviceHeld = new Promise((resolve) => {
+    releaseAdvice = resolve;
+  });
+  await page.route(
+    `${fixture.origin}${agentPath}/permissions`,
+    async (route) => {
+      await adviceHeld;
+      await route.continue().catch(() => {});
+    },
+    { times: 1 },
+  );
+
+  await login(page, fixture, listUrl(namespace.id), person.credentials);
+  const row = page.getByRole("row").filter({ hasText: "Guarded Agent" });
+  const stop = row.getByRole("button", { name: "Stop Guarded Agent" });
+  const remove = row.getByRole("button", { name: "Delete Guarded Agent" });
+
+  // A refusal that arrives while the dialog is open disables confirmation and moves focus to
+  // Cancel. The redraw replaced the icon that opened the dialog, so closing it must land focus
+  // on the row (its name, since Stop is now disabled) rather than dropping it to the page.
+  await stop.click();
+  const dialog = page.getByRole("dialog", { name: "Stop Guarded Agent?" });
+  await dialog.waitFor();
+  releaseAdvice();
+  await dialog.getByText("Your access does not include stopping this Agent.").waitFor();
+  const confirm = dialog.getByRole("button", { name: "Stop Agent" });
+  assert.equal(await confirm.isDisabled(), true);
+  const cancel = dialog.getByRole("button", { name: "Cancel" });
+  assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
+  await cancel.click();
+  await dialog.waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.textContent === "Guarded Agent",
+  );
+
+  // The Agent's real permission read reports neither action, so both icons are disabled with a
+  // visible reason before any confirmation, and nothing is sent.
+  await row.getByText("No access to stop or delete", { exact: true }).waitFor();
+  assert.equal(await stop.isDisabled(), true);
+  assert.equal(await remove.isDisabled(), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // An operate grant shows after Refresh: Stop becomes available while Delete stays explained.
+  const operate = await bind([{ action: "operate", resourceKind: "agent" }], "agent", agent.id);
+  await refresh.click();
+  await row.getByText("No access to delete", { exact: true }).waitFor();
+  await stopEnabled();
+  assert.equal(await remove.isDisabled(), true);
+
+  // The read is advice, not authorization: once the grant is removed, the controller refuses the
+  // confirmed write and the row reports that refusal without changing the Agent.
+  const removed = await fixture.request("DELETE", `${policyPath}/access-bindings/${operate.id}`);
+  assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop Guarded Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await page
+    .getByRole("alert")
+    .getByText(
+      "You do not have permission to stop Guarded Agent. Ask an administrator for Agent operate access.",
+    )
+    .waitFor();
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+
+  // A dropped connection leaves the outcome unknown, so the row refuses another write until
+  // Refresh rereads the Agent; the console never resends the stop by itself.
+  await bind([{ action: "operate", resourceKind: "agent" }], "agent", agent.id);
+  await refresh.click();
+  await stopEnabled();
+  await page.route(`${fixture.origin}${agentPath}/stop`, (route) => route.abort("failed"), {
+    times: 1,
+  });
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop Guarded Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await page
+    .getByRole("alert")
+    .getByText(
+      "Outcome unknown. Stop may have been accepted for Guarded Agent. Select Refresh before trying again.",
+    )
+    .waitFor();
+  assert.equal(await stop.isDisabled(), true);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 2);
+  await refresh.click();
+  await page.getByRole("alert").waitFor({ state: "detached" });
+  await stopEnabled();
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "running");
+
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop Guarded Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await row.getByText("Stop requested", { exact: true }).waitFor();
+  assert.equal((await fixture.request("GET", agentPath)).data.desiredRuntimeState, "stopped");
+});
+
+test("Agents list permission advice updates its own row without moving focus elsewhere", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["row-browser"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Row focus", { ready: true });
+  const guarded = await fixture.createAgent(namespace.id, "Guarded Agent", nativeValues("guard"));
+  await fixture.seedActiveAgentRevision(namespace.id, guarded.id);
+  const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+  await fixture.seedActiveAgentRevision(namespace.id, other.id);
+  const person = fixture.provisionedAccounts[0];
+  const policyPath = `/namespaces/${namespace.id}/iam`;
+  const bind = async (permissions, resourceKind, resourceId) => {
+    const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
+    assert.equal(role.status, 201);
+    const binding = await fixture.request("POST", `${policyPath}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: person.principal.id,
+        roleId: role.data.id,
+        resourceKind,
+        resourceId,
+      },
+    });
+    assert.equal(binding.status, 201);
+  };
+  // A reader of both Agents with neither operate nor delete, so each permission read refuses.
+  await bind([{ action: "read", resourceKind: "namespace" }], "namespace", namespace.id);
+  await bind([{ action: "read", resourceKind: "agent" }], "agent", guarded.id);
+  await bind([{ action: "read", resourceKind: "agent" }], "agent", other.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // Hold only Guarded Agent's permission read; its real answer is released on cue.
+  const holdGuardedAdvice = async () => {
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    await page.route(
+      `${fixture.origin}/namespaces/${namespace.id}/agents/${guarded.id}/permissions`,
+      async (route) => {
+        await held;
+        await route.continue().catch(() => {});
+      },
+      { times: 1 },
+    );
+    return release;
+  };
+  const focusedText = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
+  const guardedRow = page.getByRole("row").filter({ hasText: "Guarded Agent" });
+  const otherRow = page.getByRole("row").filter({ hasText: "Other Agent" });
+
+  // Someone browsing by keyboard sits on Other Agent's link when Guarded Agent's refusal
+  // arrives. Guarded Agent's icons must update, and focus must stay where it was.
+  let release = await holdGuardedAdvice();
+  await login(page, fixture, listUrl(namespace.id), person.credentials);
+  await otherRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  const otherLink = otherRow.getByRole("link", { name: "Other Agent" });
+  await otherLink.focus();
+  release();
+  await guardedRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  assert.equal(
+    await guardedRow.getByRole("button", { name: "Stop Guarded Agent" }).isDisabled(),
+    true,
+  );
+  assert.equal(await otherLink.evaluate((node) => node.ownerDocument.activeElement === node), true);
+
+  // When the focused icon is the one the refusal disables, focus stays in that row.
+  release = await holdGuardedAdvice();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const guardedStop = guardedRow.getByRole("button", { name: "Stop Guarded Agent" });
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector('[aria-label="Stop Guarded Agent"]')?.disabled === false,
+  );
+  await guardedStop.focus();
+  release();
+  await guardedRow.getByText("No access to stop or delete", { exact: true }).waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.textContent === "Guarded Agent",
+  );
+  assert.equal(await focusedText(), "Guarded Agent");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });

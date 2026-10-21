@@ -1,6 +1,6 @@
 # Deploy native admin UI access
 
-Enable OpenClaw access through OCC with an explicit runtime assignment for each person. The selected native role determines their permissions. Configured roles require a runtime built from the [patched image recipe](../../../deploy/runtime/README.md). The built-in `platform-administrator` role can retain the existing administrator transport without named roles. For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
+Enable OpenClaw access through OCC with an explicit runtime assignment for each person. The selected native role determines their permissions. Configured roles require a runtime built from the [patched image recipe](../../../deploy/runtime/README.md). For a local installation, use [local development](#local-development) below. For an existing cluster, start with [production installation](production-installation.md) and [private Agent workspace routing](workspace-routing.md).
 
 ## Existing Agents
 
@@ -304,7 +304,7 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Symptom                                             | Check                                                                                                                                                                                  |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Helm render fails                                   | `agentNativeAdmin.enabled` requires `gatewayRouting.enabled`, a DNS-only `agentNativeAdmin.domain`, and a valid `agentNativeAdmin.sharedCookieDomain` parent.                          |
-| A copied Agent chat link opens the console          | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.      |
+| An Agent root or chat link opens the console        | Sign in if prompted, then open chat from the Agent detail page. The link does not reopen the original chat session. A link that cannot be resolved lands on Agents with a notice.      |
 | Helm render fails on `auth.baseUrl`                 | With native admin, `auth.baseUrl` must be HTTPS and its host inside `agentNativeAdmin.sharedCookieDomain`.                                                                             |
 | API startup fails with `AUTH_BASE_URL_INVALID`      | `auth.baseUrl` is an HTTPS origin whose host is inside `agentNativeAdmin.sharedCookieDomain`, which must not be a public suffix. Better Auth checks these first.                       |
 | API startup fails with `AUTH_SECRET_INVALID`        | The `auth.secretKey` value in the `auth.secretName` Secret has at least 32 characters.                                                                                                 |
@@ -316,6 +316,20 @@ Full runtime proof still requires a real browser test that loads native assets t
 | Native tab cannot load                              | Browser wildcard DNS/TLS to API, shared session cookie scope, host-to-Agent resolution, native `controlUi.allowedOrigins`, and private gateway routing.                                |
 | Browser reports service-worker registration failure | Expected for the pilot. OCC blocks native service-worker script requests and adds `worker-src 'none'` to proxied responses.                                                            |
 | Gateway stays unready after a container restart     | Run diagnostics reports a failed `peer-bridge-record` check; logs name `openclaw.json.oce-peer-bridge.json`. Delete the Pod to restore the managed snapshot; native edits are lost.    |
+
+### Repeated sign-in
+
+Check the [session lifetime](../../reference/authentication.md#session-lifecycle)
+before changing configuration: password-only sessions last seven days; sessions
+with external sign-in enabled last eight hours. Native Agent activity does not
+refresh them. An Agent revision change closes native WebSockets without expiring
+the OCE login. After expiry, reload the Agent root or open its console page to
+sign in again; native recovery ends at Agent detail.
+
+If expiry coincides with controller restarts, check persistent session storage
+and whether the configured auth secret changed. In-memory sessions disappear
+on restart; production uses PostgreSQL. Distinguish a console `401` from an
+actual permission denial (`403`), which signing in cannot repair.
 
 ## Related
 

@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import { chromium } from "playwright";
+import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
+import {
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+} from "../../packages/occ/src/state/controller-work.ts";
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
@@ -39,13 +42,16 @@ export function apiRequests(page, origin) {
   return requests;
 }
 
+// Screenshots stay only in OCC_TEST_CONSOLE_ARTIFACT_DIR. Without it each test gets a
+// directory that is removed when the test ends, because local runs share one TMPDIR.
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
-  const directory =
-    configured === undefined || configured.length === 0
-      ? await mkdtemp(join(tmpdir(), "openclaw-console-agents-browser-"))
-      : configured;
-  t.diagnostic(`console Agent browser artifacts: ${directory}`);
+  if (configured !== undefined && configured.length > 0) {
+    t.diagnostic(`console Agent browser artifacts: ${configured}`);
+    return configured;
+  }
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-console-agents-browser-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
 
@@ -63,48 +69,73 @@ async function launchBrowser(options = {}) {
   return browser;
 }
 
-// One Chromium for every test in a file, launched on first use and closed after the file's
-// last test. Call it once at module top level (`after` attaches to the test that is running)
-// and pass the result as newPage's `browser` option. Each test still gets its own context
-// (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test. A
-// failed launch or a crashed browser is launched again for the next test.
-export function fileBrowser() {
-  let launched;
-  after(async () => {
-    await (await launched?.catch(() => null))?.close();
-  });
-  return () => {
-    if (launched === undefined) {
-      const launching = launchBrowser().then(
-        (browser) => {
-          browser.on("disconnected", () => {
-            if (launched === launching) {
-              launched = undefined;
-            }
-          });
-          return browser;
-        },
-        (error) => {
-          if (launched === launching) {
-            launched = undefined;
-          }
-          throw error;
-        },
-      );
-      launched = launching;
+// One Chromium for every test in a file (CI runs each file in its own process), launched on
+// first use and closed after the file's last test: `after` here runs when the module loads, so it
+// attaches to the root test. newPage uses it unless a test passes launch arguments, which need a
+// browser of their own. Each test still gets its own context (cookies, storage, viewport,
+// routes); this only saves the launch and close, about 0.2 CPU-s a test. A failed launch, or a
+// browser that has crashed or disconnected, is launched again for the next caller.
+let sharedLaunch;
+after(async () => {
+  await (await sharedLaunch?.catch(() => null))?.close();
+});
+
+async function sharedBrowser() {
+  const pending = sharedLaunch;
+  if (pending !== undefined) {
+    const browser = await pending.catch(() => null);
+    if (browser?.isConnected()) {
+      return browser;
     }
-    return launched;
-  };
+    if (sharedLaunch === pending) {
+      sharedLaunch = undefined;
+    }
+  }
+  if (sharedLaunch === undefined) {
+    const launching = launchBrowser().then(
+      (browser) => {
+        browser.on("disconnected", () => {
+          if (sharedLaunch === launching) {
+            sharedLaunch = undefined;
+          }
+        });
+        return browser;
+      },
+      (error) => {
+        if (sharedLaunch === launching) {
+          sharedLaunch = undefined;
+        }
+        throw error;
+      },
+    );
+    sharedLaunch = launching;
+  }
+  return sharedLaunch;
+}
+
+// The file's shared browser, for callers that pass it as newPage's `browser` option. newPage
+// uses the same one by default.
+export function fileBrowser() {
+  return sharedBrowser;
 }
 
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const shared = options.browser !== undefined;
-  assert.ok(!shared || options.args === undefined, "a shared browser takes no launch arguments");
-  const browser = shared ? await options.browser() : await launchBrowser(options);
+  assert.ok(
+    options.browser === undefined || options.args === undefined,
+    "pass a shared browser or launch arguments, not both",
+  );
+  const shared = options.args === undefined;
+  const browser = shared
+    ? await (options.browser ?? sharedBrowser)()
+    : await launchBrowser(options);
   let context;
   let diagnostics;
-  fixture.registerCleanupBeforeAppClose(async () => {
+  // A file app (fileConsoleApp) outlives the test, so its pages close when the test ends.
+  const registerCleanup = fixture.sharedByFile
+    ? (cleanup) => t.after(cleanup)
+    : fixture.registerCleanupBeforeAppClose;
+  registerCleanup(async () => {
     let cleanupError;
     try {
       await diagnostics?.capture();
@@ -132,7 +163,91 @@ export async function newPage(t, fixture, options = {}) {
   return { page, artifacts };
 }
 
+const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
+
+// Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
+// Better Auth password request the form sends, made in the page's own browser context so the
+// browser stores the session cookie the API set, and then loads `path` already signed in: one
+// page load instead of a sign-in page plus the destination, and no form to fill. A fresh tab on
+// a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
+// instead, so the file makes one password sign-in rather than one a test. A tab that has
+// already loaded a page signs in through the form, so a test that signs in again on the same tab
+// keeps that tab's session storage and history across the sign-in. So does a fixture served
+// over TLS or under another host name, whose cookies are what such a test checks. Tests about
+// the sign-in page itself use the form directly or loginThroughForm.
 export async function login(
+  page,
+  fixture,
+  path = "/console/agents",
+  credentials = fixture.credentials,
+) {
+  const origin = new URL(fixture.origin);
+  if (
+    page.url() !== "about:blank" ||
+    origin.protocol !== "http:" ||
+    origin.hostname !== "127.0.0.1"
+  ) {
+    await loginThroughForm(page, fixture, path, credentials);
+    return;
+  }
+  if (fixture.sharedByFile && credentials === fixture.credentials) {
+    await page.context().addCookies(await fileSessionCookies(fixture));
+    // An earlier test that ended this session would otherwise leave this test on the sign-in
+    // page, which waitForURL below cannot tell apart from the console. This test fails and says
+    // so; the next one signs in again, so one such test fails at most one other.
+    const session = await page.request.get(new URL("/api/auth/session", origin).href);
+    if ((await session.json().catch(() => null))?.data?.authenticated !== true) {
+      fileSessions.delete(fixture);
+      assert.fail(
+        "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
+      );
+    }
+  } else {
+    const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
+      data: { email: credentials.email, password: credentials.password },
+      headers: { origin: origin.origin },
+    });
+    assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+  }
+  await page.goto(new URL(path, fixture.origin).href);
+  await page.waitForURL(signedInPath);
+}
+
+// The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
+// the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
+// that share it must not end the session (see fileConsoleApp); login() checks it is still live.
+const fileSessions = new WeakMap();
+
+function fileSessionCookies(fixture) {
+  let cookies = fileSessions.get(fixture);
+  if (cookies === undefined) {
+    cookies = (async () => {
+      const origin = new URL(fixture.origin).origin;
+      const context = await playwrightRequest.newContext();
+      try {
+        const response = await context.post(new URL("/api/auth/sign-in/email", origin).href, {
+          data: { email: fixture.credentials.email, password: fixture.credentials.password },
+          headers: { origin },
+        });
+        assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+        return (await context.storageState()).cookies;
+      } finally {
+        await context.dispose();
+      }
+    })();
+    cookies.catch(() => {
+      if (fileSessions.get(fixture) === cookies) {
+        fileSessions.delete(fixture);
+      }
+    });
+    fileSessions.set(fixture, cookies);
+  }
+  return cookies;
+}
+
+// Signs in through the console's sign-in form, the way a person does: open `path`, which shows
+// the sign-in page, and submit the email and password.
+export async function loginThroughForm(
   page,
   fixture,
   path = "/console/agents",
@@ -142,7 +257,7 @@ export async function login(
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
+  await page.waitForURL(signedInPath);
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
@@ -491,6 +606,35 @@ export const consoleViewports = Object.freeze([
   Object.freeze({ width: 390, height: 844 }),
 ]);
 
+// The getAgentDeployment response for an admitted revision when the fixture has no worker.
+export function deploymentStatusResponse(
+  { id: deploymentId, namespaceId, agentId, createdAt },
+  { status, error = null, attempt },
+) {
+  const progress =
+    status === "queued" || status === "running"
+      ? deploymentProgressForWork(
+          { state: status === "queued" ? "queued" : "claimed", availableAt: new Date(createdAt) },
+          attempt,
+        )
+      : null;
+  return {
+    json: {
+      data: {
+        deploymentId,
+        namespaceId,
+        agentId,
+        status,
+        cleanup: null,
+        error,
+        warnings: [],
+        progress,
+      },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    },
+  };
+}
+
 // Answers the browser's read of one deployment with a failed record that carries the API's own
 // error for `code`, so the Agent page shows that version's recovery card.
 export async function routeFailedDeployment(
@@ -498,26 +642,16 @@ export async function routeFailedDeployment(
   fixture,
   { namespaceId, agentId, deploymentId, code = "DEPENDENCY_UNAVAILABLE" },
 ) {
+  const error = persistedDeploymentError(code);
+  const response = deploymentStatusResponse(
+    { id: deploymentId, namespaceId, agentId },
+    { status: "failed", error },
+  );
   await page.route(
     `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId,
-            namespaceId,
-            agentId,
-            status: "failed",
-            error: persistedDeploymentError(code),
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_failed_deployment" },
-        }),
-      }),
+    (route) => route.fulfill(response),
   );
+  return error;
 }
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.

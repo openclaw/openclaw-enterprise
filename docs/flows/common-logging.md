@@ -71,7 +71,7 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 
 ### 2. Processes log fixed sanitized events
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
 (`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)

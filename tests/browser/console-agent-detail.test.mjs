@@ -27,6 +27,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledView,
   takeLayoutShifts,
   trackSettledFetches,
   waitForInputValue,
@@ -1481,6 +1482,9 @@ test("Plugin picker clears tab memory when its catalog or credential scope is re
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture);
   await login(page, fixture, "/console/agents");
+  // Sign-in reloads the page after its session check, and that reload closes every open
+  // dialog in the document: mount the picker once the Agents page has settled.
+  await page.locator(settledView).waitFor();
   // Exercise the same component API used by discovery.reset(), without real
   // credentials or a second implementation of catalog/request handling.
   await page.evaluate(async () => {
