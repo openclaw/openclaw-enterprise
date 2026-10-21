@@ -69,18 +69,28 @@ async function launchBrowser(options = {}) {
   return browser;
 }
 
-// One Chromium for every test in a file, launched on first use and closed after the file's
-// last test (`after` here runs at module load, so it attaches to the file's root test). newPage
-// uses it unless a test passes launch arguments, which need their own browser. Each test still
-// gets its own context (cookies, storage, viewport, routes); this only saves the launch and
-// close, about 0.3 CPU-s a test. A failed launch or a crashed browser is launched again for the
-// next test.
+// One Chromium for every test in a file (CI runs each file in its own process), launched on
+// first use and closed after the file's last test: `after` here runs when the module loads, so it
+// attaches to the root test. newPage uses it unless a test passes launch arguments, which need a
+// browser of their own. Each test still gets its own context (cookies, storage, viewport,
+// routes); this only saves the launch and close, about 0.2 CPU-s a test. A failed launch, or a
+// browser that has crashed or disconnected, is launched again for the next caller.
 let sharedLaunch;
 after(async () => {
   await (await sharedLaunch?.catch(() => null))?.close();
 });
 
-function sharedBrowser() {
+async function sharedBrowser() {
+  const pending = sharedLaunch;
+  if (pending !== undefined) {
+    const browser = await pending.catch(() => null);
+    if (browser?.isConnected()) {
+      return browser;
+    }
+    if (sharedLaunch === pending) {
+      sharedLaunch = undefined;
+    }
+  }
   if (sharedLaunch === undefined) {
     const launching = launchBrowser().then(
       (browser) => {
@@ -113,7 +123,7 @@ export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
     options.browser === undefined || options.args === undefined,
-    "a shared browser takes no launch arguments",
+    "pass a shared browser or launch arguments, not both",
   );
   const shared = options.args === undefined;
   const browser = shared
