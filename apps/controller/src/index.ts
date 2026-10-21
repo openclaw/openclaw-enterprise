@@ -131,6 +131,14 @@ import {
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
+  CONNECTION_CALLBACK_PATH,
+  connectionCallbackOperation,
+  connectionCallbackSchema,
+  connectionHandlers,
+  createConnectionCallback,
+  performInstallationConnectionOperation,
+} from "./http/connections.ts";
+import {
   isRuntimeLogDownload,
   RUNTIME_LOG_DOWNLOAD_ACTION,
   runtimeLogDownloadBody,
@@ -514,6 +522,16 @@ function operationTarget(
   const revisionId = typeof params.revisionId === "string" ? params.revisionId : undefined;
   if (operation.operationId === "createNamespace") {
     return { kind: "namespace", id: installationId };
+  }
+  // Connection templates are Installation resources; a collection route names the Installation.
+  if (typeof params.connectionTemplateId === "string") {
+    return { kind: "connection_template", id: params.connectionTemplateId };
+  }
+  if (
+    operation.operationId === "listConnectionTemplates" ||
+    operation.operationId === "createConnectionTemplate"
+  ) {
+    return { kind: "connection_template", id: installationId };
   }
   if (operation.resourceKind === "preset" && namespaceId) {
     return { kind: "preset", id: presetId ?? namespaceId, namespaceId };
@@ -1027,6 +1045,7 @@ function permissionDescription(
     agent_revision: "Agent revision",
     credential_source: "CredentialSource",
     sandbox_policy: "SandboxPolicy",
+    connection_template: "ConnectionTemplate",
   };
 
   const description = permissions
@@ -1747,9 +1766,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     auditSink: options.auditSink,
   });
 
+  // Providers redirect people back here; administrators register this exact URI.
+  const connectionOrigin = publicOrigin ?? browserOrigin?.origin;
+  const connectionRedirectUri =
+    connectionOrigin === undefined ? undefined : `${connectionOrigin}${CONNECTION_CALLBACK_PATH}`;
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
     ...sandboxPolicyHandlers,
+    ...connectionHandlers(() => connectionRedirectUri),
     ...createAgentHandlers({
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
@@ -1829,7 +1853,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       operation.operationId !== "listAgentRepositoryOptions" &&
       operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
       operation.operationId !== "deleteServiceAccount" &&
-      operation.operationId !== "listAgentRevisions"
+      operation.operationId !== "listAgentRevisions" &&
+      // The provider's redirect carries state and code; the callback's schema bounds them.
+      operation !== connectionCallbackOperation
     ) {
       throw failure(
         400,
@@ -2210,6 +2236,36 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         meta: { requestId: request.id },
       });
       return;
+    }
+
+    if (
+      await performInstallationConnectionOperation({
+        controller,
+        operation,
+        request,
+        reply,
+        context,
+        params,
+        body,
+        redirectUri: connectionRedirectUri,
+        mutationEvent: (target) => event(operation, request, target, "mutation", context),
+      })
+    ) {
+      return;
+    }
+
+    // A connection is consent by one person: only their signed-in session may start it.
+    if (operation.operationId === "startAgentConnection") {
+      if (admissions.get(request)?.method !== "session") {
+        throw failure(
+          403,
+          "FORBIDDEN",
+          "Connecting an account requires a signed-in console session; service API keys cannot.",
+        );
+      }
+      if (connectionRedirectUri === undefined) {
+        throw dependencyUnavailable();
+      }
     }
 
     const namespaceId = params.namespaceId;
@@ -4090,6 +4146,27 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
       },
       nativeAdmin.resolveReturn,
+    );
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      CONNECTION_CALLBACK_PATH,
+      {
+        schema: connectionCallbackSchema,
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, connectionCallbackOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, connectionCallbackOperation),
+      },
+      createConnectionCallback({
+        getController: () => controller,
+        getContext: (request) => contexts.get(request),
+        isSession: (request) => admissions.get(request)?.method === "session",
+        auditEvent: (request, context, target) =>
+          event(connectionCallbackOperation, request, target, "mutation", context),
+        auditFailure: (request, context, reasonCode) =>
+          rejectedMutation(connectionCallbackOperation, request, context, reasonCode),
+      }),
     );
     routes.route({
       method: "GET",

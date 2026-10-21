@@ -26,7 +26,7 @@ without it cannot issue or revoke service keys.
 | Method                  | Contract                                                                                                                                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lookupIdentity(input)` | Takes an authenticated `issuer`, `subject`, and optional Namespace scope. Returns one provisioned Identity, or `undefined` when no identity can be established. It does not create an account or grant a Role. |
-| `authorize(request)`    | Takes a `principalId`, exact action, and server-owned resource reference. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                                                  |
+| `authorize(request)`    | Takes a `principalId`, exact action, server-owned resource reference, and optional `namespaceContext`. Returns an allow or deny decision with a reason, selected `driverId`, and evidence.                     |
 
 Evidence identifies the contributing identity, Groups, AccessBindings, Roles,
 and Restrictions. OCC uses it to attribute audit records. The worker rejects
@@ -42,6 +42,25 @@ policy repository. Writes require the Driver to declare
 original transaction; policy and audit must commit or roll back together.
 OCC rejects a write before invoking a Driver without that declaration. Reads
 remain available when their methods are implemented.
+
+### Installation access bindings
+
+Optional `listInstallationRoles`, `listInstallationAccessBindings`,
+`getInstallationAccessBinding`, `createInstallationAccessBinding`, and
+`deleteInstallationAccessBinding` manage bindings on Installation resources. The
+only Installation resource kind is `connection_template`. A binding grants an
+Installation Role, such as the built-in `role_connection_template_user`, to a
+person (`subjectKind: identity`) or to a Namespace (`subjectKind: namespace`).
+Writes use the same transaction declaration as Namespace policy writes.
+
+A `namespace` binding matches only a request whose `namespaceContext` equals its
+subject, made by a human Principal without a Namespace. OCC sets
+`namespaceContext` to the Agent's Namespace when it checks `use` on a connection
+template. A request without a context never matches a `namespace` binding, and
+Namespace-bound identities, such as ServicePrincipals, cannot use Installation
+resources. Without these methods, OCC cannot create Installation access bindings,
+so only grants the Driver already holds, such as the built-in administrator Role,
+allow `use`. See [connection templates](../connection-templates.md).
 
 ## IAM
 

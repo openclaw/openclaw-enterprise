@@ -505,7 +505,14 @@ test("fresh bootstrap seed creates human and service administrators on one share
     kind: "service_principal",
     id: seed.servicePrincipal.id,
   });
-  assert.equal(seed.roles.length, 1);
+  // The administrator Role, then the built-in Connection template user Role that
+  // Installation access bindings grant later; bootstrap binds nobody to the second.
+  assert.equal(seed.roles.length, 2);
+  assert.deepEqual(seed.roles[1], {
+    id: "role_connection_template_user",
+    name: "Connection template user",
+    permissions: [{ action: "use", resourceKind: "connection_template" }],
+  });
   assert.equal(seed.bindings.length, 2);
   assert.ok(
     seed.bindings.every(
@@ -1592,7 +1599,8 @@ test("identity access coverage counts Agent administer for a delegated read_logs
 });
 
 // The Driver's decisions before it indexed policies: linear scans over a validated state,
-// as on main at 9f620fe48. The seeded differential below holds the indexed Driver to it.
+// as on main at 9f620fe48, plus RFC-0023 Namespace subjects on Installation resources. The
+// seeded differential below holds the indexed Driver to it.
 const reference = (() => {
   const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
   const optionalNonempty = (value) => value === undefined || nonempty(value);
@@ -1637,6 +1645,9 @@ const reference = (() => {
       "sandbox_policy",
     ].includes(request.resource.kind) ||
       nonempty(request.resource.namespaceId)) &&
+    (request.resource.kind !== "connection_template" ||
+      request.resource.namespaceId === undefined) &&
+    optionalNonempty(request.namespaceContext) &&
     PERMISSION_ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind);
 
@@ -1685,7 +1696,13 @@ const reference = (() => {
       if (
         !(
           (binding.subjectKind === "identity" && binding.subjectId === identity.id) ||
-          (binding.subjectKind === "group" && groupIds.has(binding.subjectId))
+          (binding.subjectKind === "group" && groupIds.has(binding.subjectId)) ||
+          // A Namespace subject matches only a person acting for exactly that Namespace.
+          (binding.subjectKind === "namespace" &&
+            identity.kind === "principal" &&
+            identity.namespaceId === undefined &&
+            request.namespaceContext !== undefined &&
+            binding.subjectId === request.namespaceContext)
         ) ||
         (binding.namespaceId !== undefined && binding.namespaceId !== resource.namespaceId) ||
         (binding.resourceKind !== undefined &&
@@ -1875,7 +1892,16 @@ function randomPolicies(seed) {
   const pick = (values) => values[Math.floor(random() * values.length)];
   const namespaces = ["ns-a", "ns-b", "ns-c"];
   const issuers = ["https://one.example.com", "https://two.example.com"];
-  const resourceIds = ["agt-0", "agt-1", "sec-0", "cfg-0", "preset-0", "ins-0", ...namespaces];
+  const resourceIds = [
+    "agt-0",
+    "agt-1",
+    "sec-0",
+    "cfg-0",
+    "preset-0",
+    "ins-0",
+    "ctp-0",
+    ...namespaces,
+  ];
   const scope = (p = 0.5) => (chance(p) ? {} : { namespaceId: pick(namespaces) });
 
   function policy(size) {
@@ -1938,6 +1964,7 @@ function randomPolicies(seed) {
     const subjects = [
       ...identities.map((identity) => ["identity", identity]),
       ...groups.map((group) => ["group", group]),
+      ...namespaces.map((namespace) => ["namespace", { id: namespace }]),
     ];
     const bindings = [];
     for (let k = 0, n = int(1, 4 * size); k < n; k += 1) {
@@ -1967,6 +1994,19 @@ function randomPolicies(seed) {
       let resourceId = resourceKind === undefined ? undefined : pick(resourceIds);
       if (resourceKind === "namespace" && namespaceId !== undefined) {
         resourceId = namespaceId;
+      }
+      if (subjectKind === "namespace" && !bad(0.3)) {
+        // A valid Namespace subject binds an Installation Role on one connection template.
+        const installationRoles = roles.filter((candidate) => candidate.namespaceId === undefined);
+        bindings.push({
+          id: `binding-${k}`,
+          subjectKind,
+          subjectId: subject.id,
+          roleId: pick(installationRoles.length > 0 ? installationRoles : roles).id,
+          resourceKind: "connection_template",
+          resourceId: "ctp-0",
+        });
+        continue;
       }
       bindings.push({
         id: `binding-${k}`,
@@ -2024,10 +2064,18 @@ function randomPolicies(seed) {
       const members = state.memberships.filter(
         (membership) => membership.groupId === binding.subjectId,
       );
+      const people = state.identities.filter(
+        (identity) => identity.kind === "principal" && identity.namespaceId === undefined,
+      );
       request.principalId =
         binding.subjectKind === "identity"
           ? binding.subjectId
-          : (pick(members)?.principalId ?? request.principalId);
+          : binding.subjectKind === "namespace"
+            ? (pick(people)?.id ?? request.principalId)
+            : (pick(members)?.principalId ?? request.principalId);
+      if (binding.subjectKind === "namespace" && chance(0.8)) {
+        request.namespaceContext = chance(0.85) ? binding.subjectId : pick(namespaces);
+      }
       const permission = role === undefined ? undefined : pick(role.permissions);
       if (permission !== undefined) {
         request.action = permission.action;
@@ -2037,6 +2085,9 @@ function randomPolicies(seed) {
       if (binding.namespaceId !== undefined) {
         request.resource.namespaceId = binding.namespaceId;
       }
+    }
+    if (request.namespaceContext === undefined && chance(0.1)) {
+      request.namespaceContext = chance(0.9) ? pick(namespaces) : "";
     }
     if (chance(0.01)) {
       request.installationId = "ins-0";
@@ -2051,6 +2102,7 @@ test("the indexed native IAM Driver decides exactly as a linear scan of the poli
   const random = randomPolicies(1322);
   let decisions = 0;
   let allowed = 0;
+  let namespaceSubjectAllows = 0;
   for (let round = 0; round < 400; round += 1) {
     const state = random.policy(random.pick([1, 2, 3, 5, 12]));
     // Mutable states are validated and indexed on every call; an immutable snapshot (one per
@@ -2073,9 +2125,19 @@ test("the indexed native IAM Driver decides exactly as a linear scan of the poli
       if (method === "authorize") {
         decisions += 1;
         allowed += expected.allowed ? 1 : 0;
+        namespaceSubjectAllows +=
+          expected.allowed &&
+          expected.evidence.bindingIds.some(
+            (id) =>
+              state.bindings.find((binding) => binding.id === id)?.subjectKind === "namespace",
+          )
+            ? 1
+            : 0;
       }
     }
   }
   // The corpus must exercise both outcomes, not only denials.
   assert.ok(decisions > 10_000 && allowed > decisions / 20, `${allowed} of ${decisions} allowed`);
+  // Namespace-subject grants must be exercised too, not only identity and Group grants.
+  assert.ok(namespaceSubjectAllows > 10, `${namespaceSubjectAllows} Namespace-subject allows`);
 });

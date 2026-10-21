@@ -64,10 +64,11 @@ may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent) to
 their endpoints, such as `/usr/bin/curl`. Without it the catalog omits
 `bearer-token` and the OAuth2 types.
 
-`drivers.credential_refresh` is optional and takes an empty configuration. It
-selects the bundled [Credential Refresh](credential-refresh.md) implementation,
-which must be the same Backend's `credential_refresh` member. With it and
-`toolBinaries`, the catalog adds the OAuth2 types.
+`drivers.credential_refresh` is optional and selects the bundled
+[Credential Refresh](credential-refresh.md) implementation; with `toolBinaries`, the
+catalog adds the OAuth2 types. Its optional `clientWorkspace` names an
+operator-provisioned Workspace that holds client secrets for
+[connections](../connection-templates.md).
 
 Changing binary lists rewrites profiles on the next update, deployment, or
 repair; until that succeeds, removed binaries retain access and deployment stays

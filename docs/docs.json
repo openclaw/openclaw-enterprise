@@ -53,9 +53,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "guides/README"
-            ]
+            "hidden": ["guides/README"]
           },
           {
             "tab": "Topics",
@@ -197,6 +195,10 @@
                   {
                     "page": "reference/credential-sources/withdrawal",
                     "label": "Credential Withdrawal"
+                  },
+                  {
+                    "page": "reference/connection-templates",
+                    "label": "Connection Templates"
                   },
                   {
                     "page": "guides/topics/audit-log",
@@ -723,9 +725,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "reference/postgres-auth-binding"
-            ]
+            "hidden": ["reference/postgres-auth-binding"]
           },
           {
             "tab": "Contribute",
@@ -951,6 +951,7 @@
               "guides/deploy/local-compose-kubernetes",
               "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/google-gmail-connection",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -989,6 +990,7 @@
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
               "flows/credential-source-refresh",
+              "flows/agent-oauth-connections",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",

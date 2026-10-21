@@ -1,14 +1,18 @@
 import type {
   Backend,
+  CredentialBrowserAuthorizationCallback,
+  CredentialBrowserAuthorizationRequest,
+  CredentialClientRegistrationContext,
   CredentialRefreshDriver,
   CredentialRefreshInput,
   CredentialRefreshStatus,
   CredentialSourceContext,
   CredentialSourceDeviceAuthorization,
+  CredentialSourceBrowserAuthorization,
   CredentialSourceDeviceAuthorizationResult,
 } from "@openclaw-enterprise/contracts";
-import { ScopeViolationError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { BrowserAuthorizationError, ScopeViolationError } from "@openclaw-enterprise/occ";
+import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 
 import {
   openShellProviderName,
@@ -16,10 +20,18 @@ import {
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
 import { openShellRefreshSourceType } from "../credential-gateway/openshell.ts";
-import type {
-  OpenShellProviderResponse,
-  OpenShellRefreshStatus,
+import {
+  OpenShellProviderAlreadyExistsError,
+  type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
+  type OpenShellRefreshStatus,
 } from "../sandbox/openshell-gateway-client.ts";
+
+import {
+  browserAuthorizationState,
+  exchangeAuthorizationCode,
+  startBrowserAuthorization,
+} from "./browser-authorization.ts";
 
 import {
   CODEX_OAUTH_TYPE,
@@ -39,6 +51,42 @@ export interface OpenShellCredentialRefreshSelection {
 }
 
 class OpenShellCredentialRefreshFailure extends Error {}
+
+/** OpenShell Workspace names follow Kubernetes namespace names and fit 19 characters. */
+const WORKSPACE_NAME = /^[a-z0-9]([a-z0-9-]{0,17}[a-z0-9])?$/;
+const CLIENT_SECRET_KEY = "OCE_CLIENT_SECRET";
+const CLIENT_REGISTRATION_LABEL = "openclaw.dev/client-registration-id";
+const MANAGED_BY_LABEL = "app.kubernetes.io/managed-by";
+
+/** One Driver-owned provider per client registration in the configured client Workspace. */
+function clientProviderName(registrationId: string): string {
+  return `oce-cr-${sha256Hex(registrationId).slice(0, 24)}`;
+}
+
+/**
+ * The profile only stores the secret. No Sandbox attaches the client Workspace's providers,
+ * and an unrunnable binary with no endpoints keeps it inert even if one did.
+ */
+function clientProviderProfile(name: string): OpenShellProviderProfile {
+  return {
+    id: name,
+    displayName: "OAuth client secret (OpenClaw Enterprise)",
+    category: "PROVIDER_PROFILE_CATEGORY_OTHER",
+    credentials: [
+      {
+        name: "client_secret",
+        envVars: [CLIENT_SECRET_KEY],
+        required: true,
+        authStyle: "bearer",
+        headerName: "authorization",
+      },
+    ],
+    endpoints: [],
+    binaries: ["/nonexistent/openclaw-enterprise-client-secret"],
+    inferenceCapable: false,
+    annotations: {},
+  };
+}
 
 const RECOVERY_ACTIONS: Readonly<Record<string, CredentialRefreshStatus["recoveryAction"]>> = {
   PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_RETRY: "retry",
@@ -85,14 +133,26 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   static readonly configurationSchema = Object.freeze({
     type: "object",
     additionalProperties: false,
-    properties: {},
+    properties: {
+      clientWorkspace: {
+        type: "string",
+        description:
+          "Operator-provisioned OpenShell Workspace that holds OAuth client secrets for browser connections.",
+      },
+    },
   });
 
   static validateConfiguration(configuration: unknown): void {
     const record = asRecord(configuration);
-    if (record === undefined || Object.keys(record).length > 0) {
+    if (
+      record === undefined ||
+      Object.keys(record).some((key) => key !== "clientWorkspace") ||
+      (record.clientWorkspace !== undefined &&
+        (typeof record.clientWorkspace !== "string" ||
+          !WORKSPACE_NAME.test(record.clientWorkspace)))
+    ) {
       throw new OpenShellCredentialRefreshFailure(
-        "OpenShell Credential Refresh configuration must be an empty object.",
+        "OpenShell Credential Refresh configuration accepts only clientWorkspace, an OpenShell Workspace name.",
       );
     }
   }
@@ -101,9 +161,11 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   readonly capability = "credential_refresh" as const;
   readonly implementation: string;
   private readonly backend: Backend<OpenShellGateway>;
+  private readonly clientWorkspace: string | undefined;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
     OpenShellCredentialRefreshDriver.validateConfiguration(configuration);
+    this.clientWorkspace = asRecord(configuration)?.clientWorkspace as string | undefined;
     this.id = selection.id ?? "credential-refresh-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {
@@ -161,6 +223,139 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     return this.completeCodexConnection(context, configured, state.rotateRequestId);
   }
 
+  async registerClient(
+    context: CredentialClientRegistrationContext,
+    clientSecret: string,
+  ): Promise<void> {
+    const workspace = this.requireClientWorkspace();
+    const client = this.backend.client.clientForNamespace(workspace);
+    const name = clientProviderName(context.registrationId);
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (existing !== undefined) {
+      this.assertClientProvider(existing, context.registrationId);
+      await client.updateProviderCredentials(
+        workspace,
+        name,
+        { [CLIENT_SECRET_KEY]: clientSecret },
+        context.signal,
+      );
+      return;
+    }
+    if ((await client.getProviderProfile(workspace, name, context.signal)) === undefined) {
+      await client.importProviderProfile(workspace, clientProviderProfile(name), context.signal);
+    }
+    try {
+      await client.createProvider(
+        {
+          workspace,
+          name,
+          type: name,
+          labels: {
+            [MANAGED_BY_LABEL]: "openclaw-enterprise",
+            [CLIENT_REGISTRATION_LABEL]: context.registrationId,
+          },
+          credentials: { [CLIENT_SECRET_KEY]: clientSecret },
+        },
+        context.signal,
+      );
+    } catch (error) {
+      // A replay of this registration already created it; store the requested secret.
+      if (!(error instanceof OpenShellProviderAlreadyExistsError)) {
+        throw error;
+      }
+      const created = await client.getProvider(workspace, name, context.signal);
+      if (created === undefined) {
+        throw error;
+      }
+      this.assertClientProvider(created, context.registrationId);
+      await client.updateProviderCredentials(
+        workspace,
+        name,
+        { [CLIENT_SECRET_KEY]: clientSecret },
+        context.signal,
+      );
+    }
+  }
+
+  /** New connections read the replaced secret; configured refresh keeps the old one. */
+  async rotateClientSecret(
+    context: CredentialClientRegistrationContext,
+    clientSecret: string,
+  ): Promise<void> {
+    const workspace = this.requireClientWorkspace();
+    const client = this.backend.client.clientForNamespace(workspace);
+    const name = clientProviderName(context.registrationId);
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (existing === undefined) {
+      throw new ScopeViolationError("The OAuth client registration has no stored secret.");
+    }
+    this.assertClientProvider(existing, context.registrationId);
+    await client.updateProviderCredentials(
+      workspace,
+      name,
+      { [CLIENT_SECRET_KEY]: clientSecret },
+      context.signal,
+    );
+  }
+
+  async removeClient(context: CredentialClientRegistrationContext): Promise<void> {
+    const workspace = this.requireClientWorkspace();
+    const client = this.backend.client.clientForNamespace(workspace);
+    const name = clientProviderName(context.registrationId);
+    const existing = await client.getProvider(workspace, name, context.signal);
+    if (existing !== undefined) {
+      this.assertClientProvider(existing, context.registrationId);
+      await client.deleteProvider(workspace, name, context.signal);
+    }
+    if ((await client.getProviderProfile(workspace, name, context.signal)) !== undefined) {
+      await client.deleteProviderProfile(workspace, name, context.signal);
+    }
+  }
+
+  async startBrowserAuthorization(
+    context: CredentialSourceContext,
+    request: CredentialBrowserAuthorizationRequest,
+  ): Promise<CredentialSourceBrowserAuthorization> {
+    this.requireBrowserSource(context);
+    this.requireClientWorkspace();
+    if ((await this.ownedProvider(context)) === undefined) {
+      throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
+    }
+    return startBrowserAuthorization(context.source.id, request);
+  }
+
+  async completeBrowserAuthorization(
+    context: CredentialSourceContext,
+    privateState: string,
+    callback: CredentialBrowserAuthorizationCallback,
+  ): Promise<void> {
+    this.requireBrowserSource(context);
+    if ((await this.ownedProvider(context)) === undefined) {
+      throw new ScopeViolationError("The OpenShell provider for this credential source is absent.");
+    }
+    const state = browserAuthorizationState(context.source.id, privateState, callback);
+    const clientSecret = await this.readClientSecret(state.clientRegistrationId, context.signal);
+    // Only this role sees the grant: it goes straight into OpenShell's refresh custody.
+    const { refreshToken } = await exchangeAuthorizationCode(
+      state,
+      callback.code,
+      clientSecret,
+      context.signal,
+    );
+    await this.configureRefresh(context, {
+      config: { client_id: state.clientId, scope: state.scope },
+      secrets: { refresh_token: refreshToken, client_secret: clientSecret },
+      requestId: state.configureRequestId,
+    });
+    const minted = await this.rotate(context, state.rotateRequestId);
+    if (minted.state !== "ready") {
+      throw new BrowserAuthorizationError(
+        minted.failureCode === undefined ? "first_mint_failed" : "first_mint_refused",
+        minted.recoveryAction === "fix_configuration" ? "fix_configuration" : "retry",
+      );
+    }
+  }
+
   async configureRefresh(
     context: CredentialSourceContext,
     input: CredentialRefreshInput,
@@ -183,7 +378,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       {
         workspace: openShellWorkspaceName(context.namespace),
         provider: openShellProviderName(context.source.id),
-        credentialKey: type.credentialKey(input.config),
+        credentialKey: type.credentialKey(context.source.config),
         strategy: type.strategy,
         material,
         requestId: input.requestId,
@@ -264,6 +459,46 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
       type.credentialKey(context.source.config),
       context.signal,
     );
+  }
+
+  private requireClientWorkspace(): string {
+    if (this.clientWorkspace === undefined) {
+      throw new OpenShellCredentialRefreshFailure(
+        "Browser connections require the OpenShell Credential Refresh clientWorkspace setting.",
+      );
+    }
+    return this.clientWorkspace;
+  }
+
+  private requireBrowserSource(context: CredentialSourceContext): void {
+    if (context.source.type !== "oauth2-refresh-token") {
+      throw new ScopeViolationError("Browser connections create oauth2-refresh-token sources.");
+    }
+  }
+
+  private assertClientProvider(provider: OpenShellProviderResponse, registrationId: string): void {
+    if (
+      provider.labels[MANAGED_BY_LABEL] !== "openclaw-enterprise" ||
+      provider.labels[CLIENT_REGISTRATION_LABEL] !== registrationId
+    ) {
+      throw new ScopeViolationError(
+        "The OpenShell client provider is not owned by this OAuth client registration.",
+      );
+    }
+  }
+
+  /** Only the operator channel can export a stored credential. */
+  private async readClientSecret(registrationId: string, signal: AbortSignal): Promise<string> {
+    const workspace = this.requireClientWorkspace();
+    const secret = await this.backend.client
+      .credentialClientForNamespace(workspace)
+      .getProviderCredential(
+        workspace,
+        clientProviderName(registrationId),
+        CLIENT_SECRET_KEY,
+        signal,
+      );
+    return secret.value;
   }
 
   private async completeCodexConnection(

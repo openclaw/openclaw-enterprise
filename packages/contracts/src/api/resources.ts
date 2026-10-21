@@ -798,7 +798,11 @@ export const IAMRoleSchema = Type.Object(
 const IAMAccessBindingBaseSchema = {
   id: Type.String({ minLength: 1, maxLength: 200 }),
   namespaceId: NamespaceId,
-  subjectKind: Type.Union([Type.Literal("identity"), Type.Literal("group")]),
+  subjectKind: Type.Union([
+    Type.Literal("identity"),
+    Type.Literal("group"),
+    Type.Literal("namespace"),
+  ]),
   subjectId: Type.String({ minLength: 1, maxLength: 200 }),
   roleId: Type.String({ minLength: 1, maxLength: 200 }),
 };

@@ -33,6 +33,8 @@ Enterprise, start with [Concepts](../concepts.md) or
   are.
 - [Secrets](secrets.md): how to use credentials without putting their values in
   configuration.
+- [Connection templates](../../reference/connection-templates.md): how a person
+  connects their own OAuth account, such as Gmail, to a personal Agent.
 - [Audit Log](audit-log.md): which security and management actions are recorded
   and who can access those records.
 

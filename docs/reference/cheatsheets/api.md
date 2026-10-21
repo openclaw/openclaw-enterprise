@@ -130,13 +130,17 @@
 ### IAM access bindings
 
 - [`listIAMAccessBindings`](../api.md#get-namespacesnamespaceidiamaccessbindings): List exact Namespace IAM AccessBindings.
+- [`listInstallationAccessBindings`](../api.md#get-iamaccessbindings): List IAM AccessBindings on Installation resources.
 - [`getIAMAccessBinding`](../api.md#get-namespacesnamespaceidiamaccessbindingsbindingid): Get an exact Namespace IAM AccessBinding.
 - [`createIAMAccessBinding`](../api.md#post-namespacesnamespaceidiamaccessbindings): Create an immutable exact-resource Namespace IAM AccessBinding.
+- [`createInstallationAccessBinding`](../api.md#post-iamaccessbindings): Grant an Installation Role on one connection template to a person or Namespace.
 - [`deleteIAMAccessBinding`](../api.md#delete-namespacesnamespaceidiamaccessbindingsbindingid): Delete one exact Namespace IAM AccessBinding.
+- [`deleteInstallationAccessBinding`](../api.md#delete-iamaccessbindingsbindingid): Remove an IAM AccessBinding on an Installation resource.
 
 ### IAM roles
 
 - [`listIAMRoles`](../api.md#get-namespacesnamespaceidiamroles): List exact Namespace IAM Roles.
+- [`listInstallationRoles`](../api.md#get-iamroles): List Installation IAM Roles.
 - [`getIAMRole`](../api.md#get-namespacesnamespaceidiamrolesroleid): Get an exact Namespace IAM Role.
 - [`createIAMRole`](../api.md#post-namespacesnamespaceidiamroles): Create an immutable Namespace IAM Role.
 - [`deleteIAMRole`](../api.md#delete-namespacesnamespaceidiamrolesroleid): Delete an unreferenced exact Namespace IAM Role.
@@ -170,6 +174,20 @@
 ### Backends
 
 - [`listBackends`](../api.md#get-backends): List configured Backends (experimental).
+
+### Connections
+
+- [`listAgentConnections`](../api.md#get-namespacesnamespaceidagentsagentidconnections): List an Agent's connected accounts.
+- [`listConnectionTemplates`](../api.md#get-connectiontemplates): List Installation connection templates.
+- [`listUsableConnectionTemplates`](../api.md#get-namespacesnamespaceidconnectiontemplates): List connection templates the caller may connect in this Namespace.
+- [`completeAgentConnection`](../api.md#get-oauthcallback): Complete a browser connection for the signed-in person who started it.
+- [`getConnectionTemplate`](../api.md#get-connectiontemplatesconnectiontemplateid): Get one connection template.
+- [`createConnectionTemplate`](../api.md#post-connectiontemplates): Create an Installation connection template.
+- [`updateConnectionTemplate`](../api.md#patch-connectiontemplatesconnectiontemplateid): Rename a connection template, or create a version with new approved values.
+- [`rotateConnectionClientSecret`](../api.md#post-connectiontemplatesconnectiontemplateidrotateclientsecret): Replace the OAuth client secret used by new connections.
+- [`startAgentConnection`](../api.md#post-namespacesnamespaceidagentsagentidconnections): Start connecting the signed-in person's account to their personal Agent.
+- [`deleteConnectionTemplate`](../api.md#delete-connectiontemplatesconnectiontemplateid): Delete a connection template that no connection uses.
+- [`disconnectAgentConnection`](../api.md#delete-namespacesnamespaceidagentsagentidconnectionscredentialsourceid): Remove a connected account from an Agent and request its withdrawal.
 
 ### Credential sources
 

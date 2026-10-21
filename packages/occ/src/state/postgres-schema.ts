@@ -970,6 +970,10 @@ export const iamAccessBindings = occSchema.table(
       onDelete: "restrict",
       onUpdate: "restrict",
     }),
+    namespaceSubjectId: text("namespace_subject_id").references(() => namespaces.id, {
+      onDelete: "cascade",
+      onUpdate: "restrict",
+    }),
     roleId: text("role_id")
       .notNull()
       .references(() => iamRoles.id, { onDelete: "restrict", onUpdate: "restrict" }),
@@ -979,7 +983,15 @@ export const iamAccessBindings = occSchema.table(
   (table) => [
     check(
       "iam_access_bindings_one_subject",
-      sql`num_nonnulls(${table.identitySubjectId}, ${table.groupSubjectId}) = 1`,
+      sql`num_nonnulls(${table.identitySubjectId}, ${table.groupSubjectId}, ${table.namespaceSubjectId}) = 1`,
+    ),
+    check(
+      "iam_access_bindings_namespace_subject_installation",
+      sql`${table.namespaceSubjectId} IS NULL OR (${table.namespaceId} IS NULL AND ${table.resourceKind} = 'connection_template')`,
+    ),
+    check(
+      "iam_access_bindings_installation_resource_unscoped",
+      sql`${table.resourceKind} IS DISTINCT FROM 'connection_template' OR ${table.namespaceId} IS NULL`,
     ),
     check(
       "iam_access_bindings_resource_pair",
@@ -1615,3 +1627,117 @@ export const sandboxPolicies = occSchema.table(
     ),
   ],
 );
+
+// RFC-0023 connection templates (migrations 0061 and 0062). Value formats, version
+// immutability, and single-use sessions are enforced by the migrations' checks and triggers.
+export const connectionClientRegistrations = occSchema.table(
+  "connection_client_registrations",
+  {
+    id: text("id").primaryKey(),
+    issuer: collatedText("issuer").notNull(),
+    clientId: collatedText("client_id").notNull(),
+    credentialRefreshDriverId: collatedText("credential_refresh_driver_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("connection_client_registrations_pair_unique").on(table.issuer, table.clientId),
+    unique("connection_client_registrations_identity").on(table.id, table.issuer, table.clientId),
+  ],
+);
+
+export const connectionTemplates = occSchema.table(
+  "connection_templates",
+  {
+    id: text("id").primaryKey(),
+    displayName: collatedText("display_name").notNull(),
+    currentVersion: integer("current_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    check("connection_templates_current_version_positive", sql`${table.currentVersion} >= 1`),
+  ],
+);
+
+export const connectionTemplateVersions = occSchema.table(
+  "connection_template_versions",
+  {
+    templateId: text("template_id")
+      .notNull()
+      .references(() => connectionTemplates.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    version: integer("version").notNull(),
+    clientRegistrationId: text("client_registration_id").notNull(),
+    issuer: collatedText("issuer").notNull(),
+    clientId: collatedText("client_id").notNull(),
+    authorizationUrl: collatedText("authorization_url").notNull(),
+    tokenUrl: collatedText("token_url").notNull(),
+    scopes: text("scopes").array().notNull(),
+    authorizationParameters: jsonb("authorization_parameters")
+      .$type<Record<string, string>>()
+      .notNull(),
+    endpointHost: collatedText("endpoint_host").notNull(),
+    endpointPort: integer("endpoint_port").notNull(),
+    endpointPath: collatedText("endpoint_path").notNull(),
+    envVar: collatedText("env_var").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.templateId, table.version] }),
+    foreignKey({
+      name: "connection_template_versions_registration_pair",
+      columns: [table.clientRegistrationId, table.issuer, table.clientId],
+      foreignColumns: [
+        connectionClientRegistrations.id,
+        connectionClientRegistrations.issuer,
+        connectionClientRegistrations.clientId,
+      ],
+    }),
+  ],
+);
+
+export const agentConnections = occSchema.table(
+  "agent_connections",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    ownerPrincipalId: text("owner_principal_id")
+      .notNull()
+      .references(() => iamIdentities.id, { onDelete: "restrict", onUpdate: "restrict" }),
+    connectionTemplateId: text("connection_template_id").notNull(),
+    connectionTemplateVersion: integer("connection_template_version").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.namespaceId, table.credentialSourceId] }),
+    foreignKey({
+      name: "agent_connections_agent_owner",
+      columns: [table.namespaceId, table.agentId],
+      foreignColumns: [agents.namespaceId, agents.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    foreignKey({
+      name: "agent_connections_template_version",
+      columns: [table.connectionTemplateId, table.connectionTemplateVersion],
+      foreignColumns: [connectionTemplateVersions.templateId, connectionTemplateVersions.version],
+    })
+      .onDelete("restrict")
+      .onUpdate("restrict"),
+  ],
+);
+
+export const connectionSessions = occSchema.table("connection_sessions", {
+  stateHash: text("state_hash").primaryKey(),
+  namespaceId: text("namespace_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  credentialSourceId: text("credential_source_id").notNull(),
+  secretId: text("secret_id").notNull(),
+  actorId: text("actor_id")
+    .notNull()
+    .references(() => iamIdentities.id, { onDelete: "cascade", onUpdate: "restrict" }),
+  connectionTemplateId: text("connection_template_id").notNull(),
+  connectionTemplateVersion: integer("connection_template_version").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true }),
+});

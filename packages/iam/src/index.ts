@@ -2,6 +2,8 @@ import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/util
 import { randomUUID } from "node:crypto";
 import {
   PERMISSION_ACTIONS,
+  CONNECTION_TEMPLATE_USER_ROLE_ID,
+  INSTALLATION_RESOURCE_KINDS,
   RESOURCE_KINDS,
   type AccessBinding,
   type AuthorizationDecision,
@@ -10,6 +12,7 @@ import {
   type Group,
   type GroupMembership,
   type IAMDriver,
+  type IAMInstallationAccessBindingInput,
   type IAMManagedAccessBindingInput,
   type IAMManagedRoleInput,
   type IAMManagedServicePrincipalInput,
@@ -93,6 +96,7 @@ export function createBootstrapAdministratorSeed(
   };
   return {
     ...human,
+    roles: [...human.roles, connectionTemplateUserRole()],
     servicePrincipal,
     bindings: [
       ...human.bindings,
@@ -195,6 +199,10 @@ export function createAuthPrincipalSeed(
         resourceKind: "agent" as const,
       })),
       { action: "read", resourceKind: "agent_revision" },
+      ...(["create", "read", "update", "delete", "use"] as const).map((action) => ({
+        action,
+        resourceKind: "connection_template" as const,
+      })),
     ],
   };
   return {
@@ -211,6 +219,14 @@ export function createAuthPrincipalSeed(
           : { resourceKind: "installation", resourceId: installationId }),
       },
     ],
+  };
+}
+
+export function connectionTemplateUserRole(): Role {
+  return {
+    id: CONNECTION_TEMPLATE_USER_ROLE_ID,
+    name: "Connection template user",
+    permissions: [{ action: "use", resourceKind: "connection_template" }],
   };
 }
 
@@ -410,6 +426,41 @@ function managedAccessBinding(input: IAMManagedAccessBindingInput): AccessBindin
   });
 }
 
+function installationAccessBinding(input: IAMInstallationAccessBindingInput): AccessBinding {
+  assertCondition(
+    typeof input === "object" &&
+      input !== null &&
+      exactKeys(input, ["id", "subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"]),
+    "Installation AccessBinding input contains unsupported fields",
+  );
+  assertCondition(isNonEmptyString(input.id), "Installation AccessBinding identity is invalid");
+  assertCondition(
+    input.subjectKind === "identity" || input.subjectKind === "namespace",
+    "Installation AccessBinding supports only identity and Namespace subjects",
+  );
+  assertCondition(
+    isNonEmptyString(input.subjectId),
+    "Installation AccessBinding subject is invalid",
+  );
+  assertCondition(isNonEmptyString(input.roleId), "Installation AccessBinding Role is invalid");
+  assertCondition(
+    isInstallationResourceKind(input.resourceKind),
+    "Installation AccessBinding resource kind is invalid",
+  );
+  assertCondition(
+    isNonEmptyString(input.resourceId),
+    "Installation AccessBinding resource is invalid",
+  );
+  return Object.freeze({
+    id: input.id,
+    subjectKind: input.subjectKind,
+    subjectId: input.subjectId,
+    roleId: input.roleId,
+    resourceKind: input.resourceKind,
+    resourceId: input.resourceId,
+  });
+}
+
 function immutableRole(role: Readonly<Role>): Readonly<Role> {
   return Object.freeze({
     ...role,
@@ -439,6 +490,8 @@ interface NativeIAMPolicy {
   readonly membershipsByPrincipal: ReadonlyMap<string, readonly GroupMembership[]>;
   readonly identityBindings: ReadonlyMap<string, readonly AccessBinding[]>;
   readonly groupBindings: ReadonlyMap<string, readonly AccessBinding[]>;
+  /** Installation bindings whose subject is a Namespace, by that Namespace. */
+  readonly namespaceBindings: ReadonlyMap<string, readonly AccessBinding[]>;
   /** Restrictions by action, then resource kind. */
   readonly restrictions: ReadonlyMap<string, ReadonlyMap<string, readonly Restriction[]>>;
 }
@@ -624,7 +677,9 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
   for (const binding of state.bindings) {
     assertScope(binding, "bindings");
     assertCondition(
-      binding.subjectKind === "identity" || binding.subjectKind === "group",
+      binding.subjectKind === "identity" ||
+        binding.subjectKind === "group" ||
+        binding.subjectKind === "namespace",
       `AccessBinding ${binding.id} has an invalid subject kind`,
     );
     assertCondition(
@@ -656,6 +711,10 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
       binding.resourceKind !== "service_account" || isNonEmptyString(binding.namespaceId),
       `AccessBinding ${binding.id} targets a ServiceAccount without a Namespace`,
     );
+    assertCondition(
+      !isInstallationResourceKind(binding.resourceKind) || binding.namespaceId === undefined,
+      `AccessBinding ${binding.id} scopes an Installation resource to a Namespace`,
+    );
 
     const role = roles.get(binding.roleId);
     assertCondition(role !== undefined, `AccessBinding ${binding.id} references an unknown Role`);
@@ -664,6 +723,15 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
       `AccessBinding ${binding.id} and Role cross a Namespace`,
     );
 
+    if (binding.subjectKind === "namespace") {
+      // The Namespace subject names a Namespace record that this state does not carry; the
+      // store's foreign key proves it exists.
+      assertCondition(
+        isInstallationResourceKind(binding.resourceKind) && role.namespaceId === undefined,
+        `AccessBinding ${binding.id} has a Namespace subject outside an Installation resource`,
+      );
+      continue;
+    }
     const subject =
       binding.subjectKind === "identity"
         ? identities.get(binding.subjectId)
@@ -732,9 +800,14 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
   }
   const identityBindings = new Map<string, AccessBinding[]>();
   const groupBindings = new Map<string, AccessBinding[]>();
+  const namespaceBindings = new Map<string, AccessBinding[]>();
   for (const binding of state.bindings) {
     appendTo(
-      binding.subjectKind === "identity" ? identityBindings : groupBindings,
+      binding.subjectKind === "identity"
+        ? identityBindings
+        : binding.subjectKind === "group"
+          ? groupBindings
+          : namespaceBindings,
       binding.subjectId,
       binding,
     );
@@ -751,6 +824,7 @@ function validateAndIndexNativeIAMState(state: NativeIAMState): NativeIAMPolicy 
     membershipsByPrincipal,
     identityBindings,
     groupBindings,
+    namespaceBindings,
     restrictions,
   };
 }
@@ -815,9 +889,16 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
     (!["credential_source", "sandbox_policy"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
+    (!isInstallationResourceKind(request.resource.kind) ||
+      request.resource.namespaceId === undefined) &&
+    optionalNonempty(request.namespaceContext) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)
   );
+}
+
+function isInstallationResourceKind(kind: string | undefined): boolean {
+  return INSTALLATION_RESOURCE_KINDS.some((candidate) => candidate === kind);
 }
 
 function sameResource(binding: AccessBinding, resource: ResourceRef): boolean {
@@ -889,9 +970,17 @@ function evaluateValidatedAuthorization(
   const grantingGroupIds = new Set<string>();
 
   // Exactly the bindings whose subject is this identity or one of its applicable Groups.
+  // A Namespace subject applies only to a person acting on that Namespace's behalf.
+  const namespaceSubjectBindings =
+    identity.kind === "principal" &&
+    identity.namespaceId === undefined &&
+    request.namespaceContext !== undefined
+      ? (policy.namespaceBindings.get(request.namespaceContext) ?? [])
+      : [];
   const subjectBindings = [
     ...(policy.identityBindings.get(identity.id) ?? []),
     ...[...applicableGroupIds].flatMap((groupId) => policy.groupBindings.get(groupId) ?? []),
+    ...namespaceSubjectBindings,
   ];
   for (const binding of subjectBindings) {
     if (!bindingScopeMatches(binding, request.resource)) {
@@ -1259,6 +1348,47 @@ export class NativeIAMDriver implements IAMDriver {
     this.assertNamespace(namespaceId);
     this.assertIdentifier(bindingId, "AccessBinding");
     return repository.deleteAccessBinding(namespaceId, bindingId);
+  }
+
+  async listInstallationRoles(context: IAMPolicyReadContext): Promise<readonly Readonly<Role>[]> {
+    const repository = this.policyRepository(context, ["listInstallationRoles"]);
+    return Object.freeze((await repository.listInstallationRoles()).map(immutableRole));
+  }
+
+  async listInstallationAccessBindings(
+    context: IAMPolicyReadContext,
+  ): Promise<readonly Readonly<AccessBinding>[]> {
+    const repository = this.policyRepository(context, ["listInstallationAccessBindings"]);
+    return Object.freeze((await repository.listInstallationAccessBindings()).map(immutableBinding));
+  }
+
+  async getInstallationAccessBinding(
+    context: IAMPolicyReadContext,
+    bindingId: string,
+  ): Promise<Readonly<AccessBinding> | undefined> {
+    const repository = this.policyRepository(context, ["getInstallationAccessBinding"]);
+    this.assertIdentifier(bindingId, "AccessBinding");
+    const binding = await repository.getInstallationAccessBinding(bindingId);
+    return binding === undefined ? undefined : immutableBinding(binding);
+  }
+
+  async createInstallationAccessBinding(
+    context: IAMPolicyManagementContext,
+    input: IAMInstallationAccessBindingInput,
+  ): Promise<Readonly<AccessBinding>> {
+    const repository = this.policyRepository(context, ["createInstallationAccessBinding"]);
+    return immutableBinding(
+      await repository.createInstallationAccessBinding(installationAccessBinding(input)),
+    );
+  }
+
+  async deleteInstallationAccessBinding(
+    context: IAMPolicyManagementContext,
+    bindingId: string,
+  ): Promise<boolean> {
+    const repository = this.policyRepository(context, ["deleteInstallationAccessBinding"]);
+    this.assertIdentifier(bindingId, "AccessBinding");
+    return repository.deleteInstallationAccessBinding(bindingId);
   }
 
   async listNamespaceServicePrincipals(

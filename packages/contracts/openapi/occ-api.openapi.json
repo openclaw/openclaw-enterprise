@@ -10829,6 +10829,1386 @@
         ]
       }
     },
+    "/connection-templates": {
+      "get": {
+        "description": "Requires read permission on the requested ConnectionTemplate.",
+        "operationId": "listConnectionTemplates",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "createdAt": { "type": "string" },
+                          "current": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizationParameters": {
+                                "additionalProperties": { "type": "string" },
+                                "type": "object"
+                              },
+                              "authorizationUrl": { "type": "string" },
+                              "clientId": { "type": "string" },
+                              "clientRegistrationId": { "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "endpoint": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "integer" }
+                                },
+                                "required": ["host", "port", "path"],
+                                "type": "object"
+                              },
+                              "envVar": { "type": "string" },
+                              "issuer": { "type": "string" },
+                              "scopes": { "items": { "type": "string" }, "type": "array" },
+                              "tokenUrl": { "type": "string" },
+                              "version": { "minimum": 1, "type": "integer" }
+                            },
+                            "required": [
+                              "version",
+                              "issuer",
+                              "authorizationUrl",
+                              "tokenUrl",
+                              "clientId",
+                              "clientRegistrationId",
+                              "scopes",
+                              "authorizationParameters",
+                              "endpoint",
+                              "envVar",
+                              "createdAt"
+                            ],
+                            "type": "object"
+                          },
+                          "displayName": { "type": "string" },
+                          "id": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "redirectUri": { "type": "string" }
+                        },
+                        "required": ["id", "displayName", "current", "createdAt"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List Installation connection templates",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires create permission on the requested ConnectionTemplate.",
+        "operationId": "createConnectionTemplate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "authorizationParameters": {
+                    "additionalProperties": { "maxLength": 512, "type": "string" },
+                    "maxProperties": 16,
+                    "type": "object"
+                  },
+                  "authorizationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "endpoint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                      "path": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^/",
+                        "type": "string"
+                      },
+                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                    },
+                    "required": ["host"],
+                    "type": "object"
+                  },
+                  "envVar": { "pattern": "^[A-Z_][A-Z0-9_]{0,63}$", "type": "string" },
+                  "issuer": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[!#-\\[\\]-~]+$",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "tokenUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "displayName",
+                  "issuer",
+                  "authorizationUrl",
+                  "tokenUrl",
+                  "clientId",
+                  "scopes",
+                  "endpoint",
+                  "envVar"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Create an Installation connection template",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/connection-templates/{connectionTemplateId}": {
+      "delete": {
+        "description": "Requires delete permission on the requested ConnectionTemplate.",
+        "operationId": "deleteConnectionTemplate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Delete a connection template that no connection uses",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "delete", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "get": {
+        "description": "Requires read permission on the requested ConnectionTemplate.",
+        "operationId": "getConnectionTemplate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Get one connection template",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      },
+      "patch": {
+        "description": "Requires update permission on the requested ConnectionTemplate.",
+        "operationId": "updateConnectionTemplate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "minProperties": 1,
+                "properties": {
+                  "authorizationParameters": {
+                    "additionalProperties": { "maxLength": 512, "type": "string" },
+                    "maxProperties": 16,
+                    "type": "object"
+                  },
+                  "authorizationUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "clientId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" },
+                  "displayName": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "endpoint": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "host": { "maxLength": 253, "minLength": 1, "type": "string" },
+                      "path": {
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "pattern": "^/",
+                        "type": "string"
+                      },
+                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                    },
+                    "required": ["host"],
+                    "type": "object"
+                  },
+                  "envVar": { "pattern": "^[A-Z_][A-Z0-9_]{0,63}$", "type": "string" },
+                  "issuer": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  },
+                  "scopes": {
+                    "items": {
+                      "maxLength": 512,
+                      "minLength": 1,
+                      "pattern": "^[!#-\\[\\]-~]+$",
+                      "type": "string"
+                    },
+                    "maxItems": 32,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "tokenUrl": {
+                    "maxLength": 2048,
+                    "minLength": 9,
+                    "pattern": "^https://",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Rename a connection template, or create a version with new approved values",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/connection-templates/{connectionTemplateId}/rotate-client-secret": {
+      "post": {
+        "description": "Requires update permission on the requested ConnectionTemplate.",
+        "operationId": "rotateConnectionClientSecret",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connectionTemplateId",
+            "required": true,
+            "schema": {
+              "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "clientSecret": { "maxLength": 4096, "minLength": 1, "type": "string" }
+                },
+                "required": ["clientSecret"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "createdAt": { "type": "string" },
+                        "current": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "authorizationParameters": {
+                              "additionalProperties": { "type": "string" },
+                              "type": "object"
+                            },
+                            "authorizationUrl": { "type": "string" },
+                            "clientId": { "type": "string" },
+                            "clientRegistrationId": { "type": "string" },
+                            "createdAt": { "type": "string" },
+                            "endpoint": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "host": { "type": "string" },
+                                "path": { "type": "string" },
+                                "port": { "type": "integer" }
+                              },
+                              "required": ["host", "port", "path"],
+                              "type": "object"
+                            },
+                            "envVar": { "type": "string" },
+                            "issuer": { "type": "string" },
+                            "scopes": { "items": { "type": "string" }, "type": "array" },
+                            "tokenUrl": { "type": "string" },
+                            "version": { "minimum": 1, "type": "integer" }
+                          },
+                          "required": [
+                            "version",
+                            "issuer",
+                            "authorizationUrl",
+                            "tokenUrl",
+                            "clientId",
+                            "clientRegistrationId",
+                            "scopes",
+                            "authorizationParameters",
+                            "endpoint",
+                            "envVar",
+                            "createdAt"
+                          ],
+                          "type": "object"
+                        },
+                        "displayName": { "type": "string" },
+                        "id": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "redirectUri": { "type": "string" }
+                      },
+                      "required": ["id", "displayName", "current", "createdAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Replace the OAuth client secret used by new connections",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "connection_template", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/access-bindings": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listInstallationAccessBindings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "resourceId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "resourceKind": { "const": "connection_template", "type": "string" },
+                          "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "subjectKind": {
+                            "anyOf": [
+                              { "const": "identity", "type": "string" },
+                              { "const": "namespace", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "subjectKind",
+                          "subjectId",
+                          "roleId",
+                          "resourceKind",
+                          "resourceId"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List IAM AccessBindings on Installation resources",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "createInstallationAccessBinding",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "resourceId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  },
+                  "resourceKind": { "const": "connection_template", "type": "string" },
+                  "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                  "subjectKind": {
+                    "anyOf": [
+                      { "const": "identity", "type": "string" },
+                      { "const": "namespace", "type": "string" }
+                    ]
+                  }
+                },
+                "required": ["subjectKind", "subjectId", "roleId", "resourceKind", "resourceId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "resourceId": {
+                          "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "resourceKind": { "const": "connection_template", "type": "string" },
+                        "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "subjectId": { "maxLength": 200, "minLength": 1, "type": "string" },
+                        "subjectKind": {
+                          "anyOf": [
+                            { "const": "identity", "type": "string" },
+                            { "const": "namespace", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "subjectKind",
+                        "subjectId",
+                        "roleId",
+                        "resourceKind",
+                        "resourceId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Grant an Installation Role on one connection template to a person or Namespace",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/access-bindings/{bindingId}": {
+      "delete": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "deleteInstallationAccessBinding",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "bindingId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          }
+        ],
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Remove an IAM AccessBinding on an Installation resource",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/iam/roles": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "listInstallationRoles",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "id": { "maxLength": 200, "minLength": 1, "type": "string" },
+                          "name": {
+                            "maxLength": 200,
+                            "minLength": 1,
+                            "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                            "type": "string"
+                          },
+                          "permissions": {
+                            "items": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "action": {
+                                  "anyOf": [
+                                    { "const": "create", "type": "string" },
+                                    { "const": "read", "type": "string" },
+                                    { "const": "update", "type": "string" },
+                                    { "const": "delete", "type": "string" },
+                                    { "const": "deploy", "type": "string" },
+                                    { "const": "operate", "type": "string" },
+                                    { "const": "administer", "type": "string" },
+                                    { "const": "read_logs", "type": "string" },
+                                    { "const": "manage_policy", "type": "string" },
+                                    { "const": "use", "type": "string" }
+                                  ]
+                                },
+                                "resourceKind": {
+                                  "anyOf": [
+                                    { "const": "installation", "type": "string" },
+                                    { "const": "namespace", "type": "string" },
+                                    { "const": "configuration", "type": "string" },
+                                    { "const": "preset", "type": "string" },
+                                    { "const": "service_account", "type": "string" },
+                                    { "const": "secret", "type": "string" },
+                                    { "const": "agent", "type": "string" },
+                                    { "const": "agent_revision", "type": "string" },
+                                    { "const": "credential_source", "type": "string" },
+                                    { "const": "sandbox_policy", "type": "string" },
+                                    { "const": "connection_template", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": ["action", "resourceKind"],
+                              "type": "object"
+                            },
+                            "minItems": 1,
+                            "type": "array"
+                          }
+                        },
+                        "required": ["id", "permissions"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List Installation IAM Roles",
+        "tags": ["IAM"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
     "/installation": {
       "get": {
         "description": "Requires read permission on the requested Installation.",
@@ -17122,6 +18502,402 @@
             "resourceKind": "credential_source",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/connections": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "listAgentConnections",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "agentId": {
+                            "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateId": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "connectionTemplateVersion": { "minimum": 1, "type": "integer" },
+                          "createdAt": { "type": "string" },
+                          "credentialSourceId": {
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "namespaceId": {
+                            "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "ownerPrincipalId": { "type": "string" }
+                        },
+                        "required": [
+                          "namespaceId",
+                          "credentialSourceId",
+                          "agentId",
+                          "ownerPrincipalId",
+                          "connectionTemplateId",
+                          "connectionTemplateVersion",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List an Agent's connected accounts",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires update permission on the requested Agent.",
+        "operationId": "startAgentConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connectionTemplateId": {
+                    "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  }
+                },
+                "required": ["connectionTemplateId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "authorizationUrl": { "type": "string" },
+                        "credentialSourceId": {
+                          "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "expiresAt": { "type": "string" }
+                      },
+                      "required": ["credentialSourceId", "authorizationUrl", "expiresAt"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Start connecting the signed-in person's account to their personal Agent",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/connections/{credentialSourceId}": {
+      "delete": {
+        "description": "Requires update permission on the requested Agent.",
+        "operationId": "disconnectAgentConnection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "credentialSourceId",
+            "required": true,
+            "schema": {
+              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "deleted": { "type": "boolean" },
+                        "withdrawalRequested": { "type": "boolean" }
+                      },
+                      "required": ["withdrawalRequested", "deleted"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Remove a connected account from an Agent and request its withdrawal",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },
@@ -25350,6 +27126,150 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/connection-templates": {
+      "get": {
+        "description": "Only ConnectionTemplate resources with individual use permission are returned.",
+        "operationId": "listUsableConnectionTemplates",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "createdAt": { "type": "string" },
+                          "current": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "authorizationParameters": {
+                                "additionalProperties": { "type": "string" },
+                                "type": "object"
+                              },
+                              "authorizationUrl": { "type": "string" },
+                              "clientId": { "type": "string" },
+                              "clientRegistrationId": { "type": "string" },
+                              "createdAt": { "type": "string" },
+                              "endpoint": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "host": { "type": "string" },
+                                  "path": { "type": "string" },
+                                  "port": { "type": "integer" }
+                                },
+                                "required": ["host", "port", "path"],
+                                "type": "object"
+                              },
+                              "envVar": { "type": "string" },
+                              "issuer": { "type": "string" },
+                              "scopes": { "items": { "type": "string" }, "type": "array" },
+                              "tokenUrl": { "type": "string" },
+                              "version": { "minimum": 1, "type": "integer" }
+                            },
+                            "required": [
+                              "version",
+                              "issuer",
+                              "authorizationUrl",
+                              "tokenUrl",
+                              "clientId",
+                              "clientRegistrationId",
+                              "scopes",
+                              "authorizationParameters",
+                              "endpoint",
+                              "envVar",
+                              "createdAt"
+                            ],
+                            "type": "object"
+                          },
+                          "displayName": { "type": "string" },
+                          "id": {
+                            "pattern": "^ctp_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "type": "string"
+                          },
+                          "redirectUri": { "type": "string" }
+                        },
+                        "required": ["id", "displayName", "current", "createdAt"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "List connection templates the caller may connect in this Namespace",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "use", "resourceKind": "connection_template", "scope": "each_returned" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/credential-sources": {
       "get": {
         "description": "Requires read permission on the requested Namespace. Only CredentialSource resources with individual read permission are returned.",
@@ -26121,7 +28041,8 @@
                               "subjectKind": {
                                 "anyOf": [
                                   { "const": "identity", "type": "string" },
-                                  { "const": "group", "type": "string" }
+                                  { "const": "group", "type": "string" },
+                                  { "const": "namespace", "type": "string" }
                                 ]
                               }
                             },
@@ -26156,7 +28077,8 @@
                               "subjectKind": {
                                 "anyOf": [
                                   { "const": "identity", "type": "string" },
-                                  { "const": "group", "type": "string" }
+                                  { "const": "group", "type": "string" },
+                                  { "const": "namespace", "type": "string" }
                                 ]
                               }
                             },
@@ -26305,7 +28227,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -26340,7 +28263,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -26602,7 +28526,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -26637,7 +28562,8 @@
                             "subjectKind": {
                               "anyOf": [
                                 { "const": "identity", "type": "string" },
-                                { "const": "group", "type": "string" }
+                                { "const": "group", "type": "string" },
+                                { "const": "namespace", "type": "string" }
                               ]
                             }
                           },
@@ -30394,6 +32320,57 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/oauth/callback": {
+      "get": {
+        "description": "Requires the signed-in human session that started the connection, update permission on its Agent, and use permission on its connection template for the Agent's Namespace. The provider redirects here with `state` and `code`, or with `error`. The response is a 303 redirect to the console without the query string.",
+        "operationId": "completeAgentConnection",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": { "maxLength": 512, "type": "string" }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": { "maxLength": 4096, "type": "string" }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": { "maxLength": 256, "type": "string" }
+          }
+        ],
+        "responses": {
+          "303": {
+            "content": {
+              "application/json": {
+                "schema": { "description": "Redirect to the console with the connection outcome" }
+              }
+            },
+            "description": "Redirect to the console with the connection outcome"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": { "description": "Too many requests; wait for Retry-After" }
+              }
+            },
+            "description": "Too many requests; wait for Retry-After"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Complete a browser connection for the signed-in person who started it",
+        "tags": ["Connections"],
+        "x-openclaw-permissions": [
+          { "action": "update", "resourceKind": "agent", "scope": "requested" },
+          { "action": "use", "resourceKind": "connection_template", "scope": "requested" }
         ]
       }
     },

@@ -62,6 +62,24 @@ only its handle. Existing sources remain usable by their authorized Agents.
 Device-source `PATCH` is refused: create a new login source rather than reseeding
 a rotating refresh grant.
 
+## Client registrations and browser authorization
+
+[Connections](../connection-templates.md) use these optional methods. OCC refuses
+connection template and connect operations unless the selected Driver implements
+all five.
+
+| Method                                                          | Contract                                                                                                                                                                 |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `registerClient(context, clientSecret)`                         | Stores the client secret for one `issuer` and `clientId` pair, named by `context.registrationId`. OCC keeps no copy. Replaying a registration stores the given secret.   |
+| `rotateClientSecret(context, clientSecret)`                     | Replaces the stored secret. New connections use it; refresh already configured for earlier connections keeps its secret.                                                 |
+| `removeClient(context)`                                         | Deletes the stored secret; an absent secret counts as removed. OCC calls it only when no connection template version uses the registration.                              |
+| `startBrowserAuthorization(context, request)`                   | Returns the provider consent URL with an S256 PKCE challenge and random `state`, that `state`, and opaque `privateState` holding the verifier. Never returns a token.    |
+| `completeBrowserAuthorization(context, privateState, callback)` | Verifies `state`, exchanges the code once without following redirects, configures Gateway refresh custody, and mints the first token. Resolves only when a token exists. |
+
+A definite failure throws `BrowserAuthorizationError` with an implementation-owned
+`code` and a `recoveryAction` of `retry` or `fix_configuration`. It carries no
+provider text. Any other error leaves the outcome unknown.
+
 ## IAM
 
 The selected IAM Driver authorizes each OCC operation before the Driver is

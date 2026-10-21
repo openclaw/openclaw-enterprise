@@ -99,6 +99,18 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 }
 
 /**
+ * The source left every gateway, but its record stays until a late create from an aborted
+ * registration can no longer appear. Retrying the deletion later completes it.
+ */
+export class CredentialRegistrationFenceError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "The credential source registration may still be completing; retry the deletion shortly.",
+    );
+  }
+}
+
+/**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
  * Installation no longer selects. Each subclass is raised only after the caller's grant and the
  * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
@@ -227,6 +239,22 @@ export class DeviceAuthorizationStartError extends Error {
     this.name = "DeviceAuthorizationStartError";
     this.reason = reason;
     this.failure = /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(failure) ? failure : "unclassified";
+  }
+}
+
+/**
+ * A definite browser authorization failure. `code` is implementation-owned and carries no
+ * provider text; `recoveryAction` tells OCC who acts next.
+ */
+export class BrowserAuthorizationError extends Error {
+  readonly code: string;
+  readonly recoveryAction: "retry" | "fix_configuration";
+
+  constructor(code: string, recoveryAction: BrowserAuthorizationError["recoveryAction"]) {
+    super("The browser authorization did not complete.");
+    this.name = "BrowserAuthorizationError";
+    this.code = /^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : "unclassified";
+    this.recoveryAction = recoveryAction;
   }
 }
 

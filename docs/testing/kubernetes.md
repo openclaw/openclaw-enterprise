@@ -216,13 +216,13 @@ container, private files, and the line it added. If passwordless `sudo` is
 unavailable, add this line yourself before preparation and remove it afterward:
 
 ```sh
-echo '127.0.0.1 keycloak.oce.localhost' | sudo tee -a /etc/hosts
+echo '127.0.0.1 keycloak.oce.localhost keycloak.oce.test' | sudo tee -a /etc/hosts
 ```
 
-The hostname must resolve to exactly `127.0.0.1`; a resolver that returns `::1`
-can cause failure. For preparation errors, check the named step: image pull,
-port availability, placeholders, hosts resolution, or the printed Keycloak log
-for readiness errors.
+Both names must resolve to exactly `127.0.0.1`, not `::1`. Token requests use
+`keycloak.oce.test` because OpenShell refuses `localhost` token hosts. For
+preparation errors, check the named step: image pull, port availability,
+placeholders, hosts resolution, or the printed Keycloak log for readiness errors.
 
 ### Keycloak local launcher coverage
 

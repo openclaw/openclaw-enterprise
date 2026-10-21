@@ -175,6 +175,15 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 61) {
+        return "preAgentConnections";
+      }
+      if (receipts.length === 60) {
+        return "preConnectionTemplates";
+      }
+      if (receipts.length === 59) {
+        return "preInstallationAccessBindings";
+      }
       if (receipts.length === 58) {
         return "preSandboxPolicyAdministrator";
       }
@@ -203,6 +212,15 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 61) {
+    return "preAgentConnections";
+  }
+  if (receipts.length === 60) {
+    return "preConnectionTemplates";
+  }
+  if (receipts.length === 59) {
+    return "preInstallationAccessBindings";
   }
   if (receipts.length === 58) {
     return "preSandboxPolicyAdministrator";

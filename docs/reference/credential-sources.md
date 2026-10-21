@@ -15,6 +15,10 @@ The `bearer-token` type carries a static token to one API endpoint. Selecting a
 [Credential Refresh Driver](drivers/credential-refresh.md) also enables
 experimental `codex-oauth` device login and the `oauth2-client-credentials` and
 `oauth2-refresh-token` types, whose access tokens the gateway mints and refreshes.
+A [connection](connection-templates.md) creates an `oauth2-refresh-token` source
+from a person's browser consent instead of stored Secrets: OCC registers the
+source before consent with the approved connection template values and no refresh
+material, and the callback configures and mints its first token.
 OpenShell is not a supported production Agent path; see its
 [qualification requirements](drivers/openshell-sandbox.md#qualification-contract).
 

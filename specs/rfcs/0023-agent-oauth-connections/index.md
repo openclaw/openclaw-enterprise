@@ -10,7 +10,7 @@ author: mrunalp
 - **Created:** 2026-10-20
 - **Last updated:** 2026-10-21
 - **RFC PR:** [#3068](https://github.com/openclaw/openclaw-enterprise/pull/3068)
-- **Implementation plan:** Not yet written; the next step is `$spec plan RFC-0023`
+- **Implementation plan:** [RFC-0023 plan](../../plans/0023-agent-oauth-connections.md)
 - **Companion:** [Driver contracts, failure, and verification](contracts.md)
 - **Related:** [RFC-0016](../0016-sandbox-credential-injection/index.md) and its
   [Credential Refresh companion](../0016-sandbox-credential-injection/credential-refresh.md);

@@ -29,6 +29,18 @@ export function createPlatformReadView(
       "listPresets",
       "listPresetSummaries",
     ]),
+    connectionTemplates: bindRepository(repositories.connectionTemplates, lifetime, [
+      "findConnectionTemplate",
+      "listConnectionTemplates",
+      "findConnectionTemplateVersion",
+      "findClientRegistration",
+      "findClientRegistrationById",
+    ]),
+    agentConnections: bindRepository(repositories.agentConnections, lifetime, [
+      "findAgentConnection",
+      "listAgentConnections",
+      "findConnectionSession",
+    ]),
     secrets: bindRepository(repositories.secrets, lifetime, [
       "findSecret",
       "listSecrets",
@@ -69,6 +81,9 @@ export function createPlatformReadView(
       "listRestrictionsTargeting",
       "listServicePrincipals",
       "getServicePrincipal",
+      "listInstallationRoles",
+      "listInstallationAccessBindings",
+      "getInstallationAccessBinding",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
       "findAttempt",

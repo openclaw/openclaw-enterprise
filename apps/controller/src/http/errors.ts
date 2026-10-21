@@ -18,6 +18,7 @@ import {
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
+  BrowserAuthorizationError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -677,6 +678,16 @@ export function requestFailure(error: unknown): RequestFailure {
     if (mapped !== undefined) {
       return mapped;
     }
+  }
+  if (error instanceof BrowserAuthorizationError) {
+    // The code is implementation-owned and carries no provider text.
+    return failure(
+      409,
+      "RESOURCE_CONFLICT",
+      error.recoveryAction === "fix_configuration"
+        ? `The connection template needs an administrator to correct it (${error.code}).`
+        : `The connection did not complete (${error.code}). Connect again.`,
+    );
   }
   if (error instanceof DeviceAuthorizationStartError) {
     // The Refresh Driver starts Codex login at auth.openai.com from the API Pods.

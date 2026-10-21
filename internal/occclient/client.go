@@ -527,3 +527,66 @@ func (client *Client) TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEd
 func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, facet, revisionID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", facet, "recommendations")
 }
+
+// ListConnectionTemplates lists the Installation connection templates the caller may read.
+func (client *Client) ListConnectionTemplates() (any, error) {
+	return client.get("connection-templates")
+}
+
+// GetConnectionTemplate fetches one connection template and its current version.
+func (client *Client) GetConnectionTemplate(templateID string) (any, error) {
+	return client.get("connection-templates", templateID)
+}
+
+// CreateConnectionTemplate creates a connection template; the client secret is write-only.
+func (client *Client) CreateConnectionTemplate(body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"connection-templates"}, body)
+}
+
+// UpdateConnectionTemplate renames a template or creates a version with new approved values.
+func (client *Client) UpdateConnectionTemplate(templateID string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPatch, []string{"connection-templates", templateID}, body)
+}
+
+// DeleteConnectionTemplate deletes a connection template that no connection uses.
+func (client *Client) DeleteConnectionTemplate(templateID string) error {
+	return client.sendEmpty(http.MethodDelete, []string{"connection-templates", templateID})
+}
+
+// RotateConnectionClientSecret replaces the OAuth client secret used by new connections.
+func (client *Client) RotateConnectionClientSecret(templateID string, body jsontext.Value) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"connection-templates", templateID, "rotate-client-secret"},
+		body,
+	)
+}
+
+// ListInstallationAccessBindings lists IAM AccessBindings on Installation resources.
+func (client *Client) ListInstallationAccessBindings() (any, error) {
+	return client.get("iam", "access-bindings")
+}
+
+// CreateInstallationAccessBinding grants an Installation Role on one Installation resource.
+func (client *Client) CreateInstallationAccessBinding(body jsontext.Value) (any, error) {
+	return client.send(http.MethodPost, []string{"iam", "access-bindings"}, body)
+}
+
+// DeleteInstallationAccessBinding removes an IAM AccessBinding on an Installation resource.
+func (client *Client) DeleteInstallationAccessBinding(bindingID string) error {
+	return client.sendEmpty(http.MethodDelete, []string{"iam", "access-bindings", bindingID})
+}
+
+// ListAgentConnections lists an Agent's connected accounts.
+func (client *Client) ListAgentConnections(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "connections")
+}
+
+// DisconnectAgentConnection removes a connected account and requests its withdrawal.
+func (client *Client) DisconnectAgentConnection(namespaceID, agentID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodDelete,
+		[]string{"namespaces", namespaceID, "agents", agentID, "connections", sourceID},
+		nil,
+	)
+}

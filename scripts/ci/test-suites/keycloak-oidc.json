@@ -1,6 +1,7 @@
 {
   "requiredEnv": [
     "OCC_TEST_KEYCLOAK_ISSUER",
+    "OCC_TEST_KEYCLOAK_TOKEN_ORIGIN",
     "OCC_TEST_KEYCLOAK_CONSOLE_PORT",
     "OCC_TEST_KEYCLOAK_SECRETS_FILE",
     "OCC_TEST_KEYCLOAK_CA_CERT",
@@ -24,6 +25,12 @@
         "a higher-priority Keycloak realm key changes the signing kid and the next sign-in succeeds without a controller restart",
         "unattached carol is refused after Keycloak sign-in, audited and given no account",
         "Console sign-out ends alice's OCE session, one click signs her in again while her Keycloak session lives, and disabling her keeps that session but refuses her next sign-in"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-connections.test.mjs",
+      "expectedTests": [
+        "a person connects their Keycloak account to their personal Agent and nobody else can use it"
       ]
     }
   ]

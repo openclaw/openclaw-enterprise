@@ -4199,6 +4199,13 @@ export class ControllerWorker {
         decision,
       };
     }
+    // Queued work rechecks the personal-Agent rule: only the connection owner deploys.
+    const connections = await this.state.read((view) =>
+      view.agentConnections.listAgentConnections(agent.namespaceId, agent.id),
+    );
+    if (connections.some((connection) => connection.ownerPrincipalId !== claim.actorId)) {
+      return { outcome: "permanent", code: "PERSONAL_AGENT_OWNER_REQUIRED" };
+    }
 
     const configurationAuthorization: AuthorizationRequest = {
       principalId: claim.actorId,

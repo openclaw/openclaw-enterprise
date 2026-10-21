@@ -19,14 +19,19 @@ type idArg struct {
 }
 
 var (
-	namespaceIDArg        = idArg{kind: "Namespace", prefix: "ns_", lookup: "occ namespace list"}
-	configurationIDArg    = idArg{kind: "Configuration", prefix: "cfg_", lookup: "occ agent get AGENT_ID"}
-	secretIDArg           = idArg{kind: "Secret", prefix: "sec_", lookup: "occ secret list"}
-	presetIDArg           = idArg{kind: "Preset", prefix: "pre_", lookup: "occ preset list"}
-	credentialSourceIDArg = idArg{kind: "credential source", prefix: "cs_", lookup: "occ credential-source list"}
-	serviceAccountIDArg   = idArg{kind: "ServiceAccount", prefix: "sa_", lookup: "occ service-account list"}
-	agentIDArg            = idArg{kind: "Agent", prefix: "agt_", lookup: "occ agent list"}
-	revisionIDArg         = idArg{kind: "deployment", prefix: "rev_", lookup: "occ agent revisions AGENT_ID"}
+	namespaceIDArg          = idArg{kind: "Namespace", prefix: "ns_", lookup: "occ namespace list"}
+	configurationIDArg      = idArg{kind: "Configuration", prefix: "cfg_", lookup: "occ agent get AGENT_ID"}
+	secretIDArg             = idArg{kind: "Secret", prefix: "sec_", lookup: "occ secret list"}
+	presetIDArg             = idArg{kind: "Preset", prefix: "pre_", lookup: "occ preset list"}
+	credentialSourceIDArg   = idArg{kind: "credential source", prefix: "cs_", lookup: "occ credential-source list"}
+	serviceAccountIDArg     = idArg{kind: "ServiceAccount", prefix: "sa_", lookup: "occ service-account list"}
+	agentIDArg              = idArg{kind: "Agent", prefix: "agt_", lookup: "occ agent list"}
+	revisionIDArg           = idArg{kind: "deployment", prefix: "rev_", lookup: "occ agent revisions AGENT_ID"}
+	connectionTemplateIDArg = idArg{
+		kind:   "connection template",
+		prefix: "ctp_",
+		lookup: "occ connection-template list",
+	}
 )
 
 func optionalID(arg idArg) idArg {

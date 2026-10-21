@@ -8,6 +8,8 @@ import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindRepository } from "../ports/repository-factory.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
 import { createPlatformReadView } from "../ports/platform-read-view.ts";
+import { postgresAgentConnections } from "./postgres-agent-connections.ts";
+import { postgresConnectionTemplates } from "./postgres-connection-templates.ts";
 import { postgresRepositorySessions } from "./postgres-repository-sessions.ts";
 import {
   validRepositoryBindingSelections,
@@ -54,6 +56,7 @@ import {
   normalizeHarnessAuthBinding,
   normalizeSecretBindings,
   PERMISSION_ACTIONS as PLATFORM_PERMISSION_ACTIONS,
+  INSTALLATION_RESOURCE_KINDS,
   RESOURCE_KINDS as PLATFORM_RESOURCE_KINDS,
   validPluginRevisionState,
   validPluginApprovers,
@@ -230,6 +233,23 @@ interface TransactionContext {
 
 const PERMISSION_ACTIONS = new Set<string>(PLATFORM_PERMISSION_ACTIONS);
 const RESOURCE_KINDS = new Set<string>(PLATFORM_RESOURCE_KINDS);
+
+/** Exactly one subject column is set; the database checks this too. */
+function bindingSubject(
+  row: PostgresRow,
+): Pick<AccessBinding, "subjectKind" | "subjectId"> | undefined {
+  const subjects = [
+    ["identity", optionalText(row, "identity_subject_id")],
+    ["group", optionalText(row, "group_subject_id")],
+    ["namespace", optionalText(row, "namespace_subject_id")],
+  ] as const;
+  const present = subjects.filter(([, subjectId]) => subjectId !== undefined);
+  if (present.length !== 1) {
+    return undefined;
+  }
+  const [subjectKind, subjectId] = present[0]!;
+  return { subjectKind, subjectId: subjectId! };
+}
 const AUDIT_METADATA_KEY = "__occAuditMetadata";
 const SECRET_IDENTIFIER =
   /^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1250,8 +1270,9 @@ export class PostgresPlatformState implements PlatformStateStore {
           (SELECT namespace_id, group_id, principal_id FROM occ.iam_group_memberships) v),
           '[]'::jsonb) AS memberships,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
-          (SELECT id, namespace_id, identity_subject_id, group_subject_id, role_id,
-            resource_kind, resource_id FROM occ.iam_access_bindings) v),
+          (SELECT id, namespace_id, identity_subject_id, group_subject_id,
+            namespace_subject_id, role_id, resource_kind, resource_id
+            FROM occ.iam_access_bindings) v),
           '[]'::jsonb) AS bindings,
         COALESCE((SELECT jsonb_agg(v ORDER BY id) FROM
           (SELECT id, namespace_id, action, resource_kind, resource_id, effect
@@ -1339,16 +1360,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       ) {
         throw new DependencyUnavailableError("Persisted IAM binding has an invalid resource.");
       }
-      const identitySubjectId = optionalText(row, "identity_subject_id");
-      const groupSubjectId = optionalText(row, "group_subject_id");
-      if ((identitySubjectId === undefined) === (groupSubjectId === undefined)) {
+      const subject = bindingSubject(row);
+      if (subject === undefined) {
         throw new DependencyUnavailableError("Persisted IAM binding has an ambiguous subject.");
       }
       return {
         id: text(row, "id"),
         ...(namespaceId === undefined ? {} : { namespaceId }),
-        subjectKind: identitySubjectId === undefined ? "group" : "identity",
-        subjectId: identitySubjectId ?? groupSubjectId!,
+        ...subject,
         roleId: text(row, "role_id"),
         ...(resourceKind === undefined
           ? {}
@@ -3779,13 +3798,14 @@ export class PostgresPlatformState implements PlatformStateStore {
       const namespaceId = optionalText(row, "namespace_id");
       const resourceKind = optionalText(row, "resource_kind");
       const resourceId = optionalText(row, "resource_id");
-      const identitySubjectId = optionalText(row, "identity_subject_id");
-      const groupSubjectId = optionalText(row, "group_subject_id");
+      const subject = bindingSubject(row);
+      if (subject === undefined) {
+        throw new DependencyUnavailableError("Persisted IAM binding has an ambiguous subject.");
+      }
       return immutableCopy({
         id: text(row, "id"),
         ...(namespaceId === undefined ? {} : { namespaceId }),
-        subjectKind: identitySubjectId === undefined ? "group" : "identity",
-        subjectId: identitySubjectId ?? groupSubjectId!,
+        ...subject,
         roleId: text(row, "role_id"),
         ...(resourceKind === undefined
           ? {}
@@ -4023,6 +4043,134 @@ export class PostgresPlatformState implements PlatformStateStore {
         );
         return deleted.rowCount === 1;
       },
+      listInstallationRoles: async () =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id IS NULL ORDER BY id",
+              )
+            ).rows,
+          ).map(roleFromRow),
+        ),
+      listInstallationAccessBindings: async () =>
+        Object.freeze(
+          rows(
+            (
+              await client.query(
+                `SELECT id, namespace_id, identity_subject_id, group_subject_id,
+                        namespace_subject_id, role_id, resource_kind, resource_id
+                 FROM occ.iam_access_bindings
+                 WHERE namespace_id IS NULL AND resource_kind = ANY($1::text[]) ORDER BY id`,
+                [INSTALLATION_RESOURCE_KINDS],
+              )
+            ).rows,
+          ).map(accessBindingFromRow),
+        ),
+      getInstallationAccessBinding: async (bindingId) => {
+        const found = rows(
+          (
+            await client.query(
+              `SELECT id, namespace_id, identity_subject_id, group_subject_id,
+                      namespace_subject_id, role_id, resource_kind, resource_id
+               FROM occ.iam_access_bindings
+               WHERE namespace_id IS NULL AND resource_kind = ANY($1::text[]) AND id = $2`,
+              [INSTALLATION_RESOURCE_KINDS, bindingId],
+            )
+          ).rows,
+        )[0];
+        return found === undefined ? undefined : accessBindingFromRow(found);
+      },
+      createInstallationAccessBinding: async (binding) => {
+        await this.requireInitialized(context);
+        if (
+          binding.namespaceId !== undefined ||
+          (binding.subjectKind !== "identity" && binding.subjectKind !== "namespace") ||
+          binding.resourceKind !== "connection_template" ||
+          binding.resourceId === undefined
+        ) {
+          throw new ScopeViolationError(
+            "The IAM AccessBinding must target an Installation resource.",
+          );
+        }
+        if (binding.subjectKind === "namespace") {
+          const namespace = await namespaces.lockNamespace(binding.subjectId);
+          if (
+            namespace === undefined ||
+            (namespace.status !== "provisioning" && namespace.status !== "ready")
+          ) {
+            throw new IAMPolicyValidationError(
+              "/subjectId",
+              "The IAM AccessBinding Namespace subject does not exist or is being deleted.",
+            );
+          }
+        } else {
+          const person = await client.query(
+            `SELECT 1 FROM occ.iam_identities
+             WHERE id = $1 AND kind = 'principal' AND namespace_id IS NULL`,
+            [binding.subjectId],
+          );
+          if (person.rowCount !== 1) {
+            throw new IAMPolicyValidationError(
+              "/subjectId",
+              "The IAM AccessBinding subject must be a human Principal.",
+            );
+          }
+        }
+        const role = rows(
+          (
+            await client.query(
+              "SELECT id, namespace_id, name, permissions FROM occ.iam_roles WHERE namespace_id IS NULL AND id = $1",
+              [binding.roleId],
+            )
+          ).rows,
+        )[0];
+        if (
+          role === undefined ||
+          roleFromRow(role).permissions.some(
+            (permission) => permission.resourceKind !== binding.resourceKind,
+          )
+        ) {
+          throw new IAMPolicyValidationError(
+            "/roleId",
+            "The IAM AccessBinding Role must be an Installation Role for this resource kind.",
+          );
+        }
+        // SHARE fences deletion of the connection template until this policy write settles.
+        const target = await client.query(
+          "SELECT 1 FROM occ.connection_templates WHERE id = $1 FOR SHARE",
+          [binding.resourceId],
+        );
+        if (target.rowCount !== 1) {
+          throw new IAMPolicyValidationError(
+            "/resourceId",
+            "The IAM AccessBinding target does not exist.",
+          );
+        }
+        await client.query(
+          `INSERT INTO occ.iam_access_bindings
+           (id, namespace_id, identity_subject_id, group_subject_id, namespace_subject_id,
+            role_id, resource_kind, resource_id)
+           VALUES ($1, NULL, $2, NULL, $3, $4, $5, $6)`,
+          [
+            binding.id,
+            binding.subjectKind === "identity" ? binding.subjectId : null,
+            binding.subjectKind === "namespace" ? binding.subjectId : null,
+            binding.roleId,
+            binding.resourceKind,
+            binding.resourceId,
+          ],
+        );
+        return immutableCopy(binding);
+      },
+      deleteInstallationAccessBinding: async (bindingId) => {
+        const deleted = await client.query(
+          `DELETE FROM occ.iam_access_bindings
+           WHERE namespace_id IS NULL AND resource_kind = ANY($1::text[]) AND id = $2`,
+          [INSTALLATION_RESOURCE_KINDS, bindingId],
+        );
+        return deleted.rowCount === 1;
+      },
       listServicePrincipals: async (namespaceId) =>
         Object.freeze(
           rows(
@@ -4076,6 +4224,10 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaces,
       configurations,
       presets,
+      connectionTemplates: postgresConnectionTemplates(client, () =>
+        this.requireInitialized(context),
+      ),
+      agentConnections: postgresAgentConnections(client, () => this.requireInitialized(context)),
       secrets,
       credentialSources,
       serviceAccounts,
@@ -5139,7 +5291,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         bindingIds.has(binding.id) ||
         (binding.subjectKind === "identity" && identity === undefined) ||
         (binding.subjectKind === "group" && group === undefined) ||
-        (binding.subjectKind !== "identity" && binding.subjectKind !== "group") ||
+        (binding.subjectKind !== "identity" &&
+          binding.subjectKind !== "group" &&
+          binding.subjectKind !== "namespace") ||
+        // A Namespace subject appears only on an Installation binding to one Installation resource.
+        (binding.subjectKind === "namespace" &&
+          (binding.namespaceId !== undefined ||
+            !INSTALLATION_RESOURCE_KINDS.some((kind) => kind === binding.resourceKind))) ||
         role === undefined ||
         (identity?.namespaceId !== undefined && identity.namespaceId !== binding.namespaceId) ||
         (binding.subjectKind === "group" && group?.namespaceId !== binding.namespaceId) ||
