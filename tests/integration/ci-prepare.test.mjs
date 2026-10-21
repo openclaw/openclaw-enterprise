@@ -354,8 +354,9 @@ describe("CI preparation", { concurrency }, () => {
     for (const token of [[], ["0".repeat(64)], [server.serverToken]]) {
       assert.equal(await request(token), "", "an unauthenticated client gets no reply");
     }
-    await assert.rejects(stat(join(root, "commands.jsonl")), { code: "ENOENT" });
-    await assert.rejects(stat(metadata), { code: "ENOENT" });
+    // Read, not stat: nothing was written, and no check precedes the read below.
+    await assert.rejects(readFile(join(root, "commands.jsonl")), { code: "ENOENT" });
+    await assert.rejects(readFile(metadata), { code: "ENOENT" });
     const served = await request([server.clientToken]);
     assert.match(served, new RegExp(`^${server.serverToken}\n[^]*exit 0\n$`));
     assert.equal(
