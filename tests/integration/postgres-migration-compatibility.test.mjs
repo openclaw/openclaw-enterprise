@@ -1795,24 +1795,42 @@ async function assertUpgradedRevisionReadable(db) {
   );
   // New rows still fail closed: no snapshot may omit its decision, and a decision that
   // claims protection without the protected plan and reader marker is inconsistent.
+  const revisionId = `rev_${randomUUID()}`;
+  const insertRevision = (rewrite, ...parameters) =>
+    db.app.query(
+      `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
+       SELECT $1, namespace_id, agent_id, 2, ${rewrite}, NULL, now() FROM occ.agent_revisions WHERE id=$2`,
+      [revisionId, id, ...parameters],
+    );
+  const invalidAdmission = (error) =>
+    error.code === "23514" && error.constraint === "agent_revisions_execution_admission";
   for (const rewrite of [
     "admitted_spec - 'execution_admission'",
     `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
-    // Protected v2 has neither a Git sender nor an authorization mode.
-    `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"},
-      "harness_auth":{"protectedExecutionVersion":2},
-      "egress_plan":{"repositoryGitAuthorization":"online-request"}}'::jsonb`,
   ]) {
-    await assert.rejects(
-      db.app.query(
-        `INSERT INTO occ.agent_revisions(id,namespace_id,agent_id,revision_number,admitted_spec,backend_id,admitted_at)
-         SELECT $1, namespace_id, agent_id, 2, ${rewrite}, NULL, now() FROM occ.agent_revisions WHERE id=$2`,
-        [`rev_${randomUUID()}`, id],
-      ),
-      (error) =>
-        error.code === "23514" && error.constraint === "agent_revisions_execution_admission",
-    );
+    await assert.rejects(insertRevision(rewrite), invalidAdmission);
   }
+
+  // Prove protected v2 is accepted with the original Harness auth and a plan scoped to this
+  // revision. Roll that insert back, then change only the Git authorization mode v2 forbids.
+  const plan = { execution: { namespaceId, agentId, revisionId }, routes: [] };
+  const insertProtectedV2 = (egressPlan) =>
+    insertRevision(
+      `jsonb_set(admitted_spec, '{harness_auth,protectedExecutionVersion}', '2'::jsonb)
+       || jsonb_build_object('execution_admission', '{"version":2,"mode":"protected"}'::jsonb,
+                             'egress_plan', $3::jsonb)`,
+      egressPlan,
+    );
+  await db.app.query("BEGIN");
+  try {
+    assert.equal((await insertProtectedV2(plan)).rowCount, 1);
+  } finally {
+    await db.app.query("ROLLBACK");
+  }
+  await assert.rejects(
+    insertProtectedV2({ ...plan, repositoryGitAuthorization: "online-request" }),
+    invalidAdmission,
+  );
   assert.equal(
     (await db.app.query("SELECT count(*)::integer AS count FROM occ.agent_revisions")).rows[0]
       .count,
