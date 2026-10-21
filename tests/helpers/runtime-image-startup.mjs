@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { followContainer } from "./docker-follow.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -60,14 +61,41 @@ export async function eachSettled(items, each) {
 
 export async function waitForDockerLog(containerName, pattern) {
   const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
+  const logs = followContainer(undefined, containerName, { docker, exit: false });
   let output = "";
-  while (Date.now() < deadline) {
-    const logs = await runDocker(["logs", containerName]).catch((error) => error);
-    output = commandOutput(logs);
-    if (pattern.test(output)) {
-      return output;
+  try {
+    for (;;) {
+      const seen = logs.changes.version;
+      let state;
+      try {
+        state = logs.read();
+      } catch (error) {
+        throw new Error(
+          `Could not follow ${containerName} logs waiting for ${pattern}.
+${failureTail(`${error.message}\n${output}`)}`,
+          { cause: error },
+        );
+      }
+      output = `${state.stdout}\n${state.stderr}`;
+      if (pattern.test(output)) {
+        return output;
+      }
+      if (!state.following) {
+        throw new Error(`${containerName} stopped before ${pattern} appeared in its logs.
+${failureTail(output)}`);
+      }
+      if (Date.now() >= deadline) {
+        break;
+      }
+      const checkedAt = Date.now();
+      await logs.changes.wait(seen, deadline - checkedAt);
+      // At most one check per 100 ms while the container writes.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, checkedAt + 100 - Date.now())),
+      );
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    await logs.stop();
   }
   throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.
 ${failureTail(output)}`);
@@ -143,9 +171,44 @@ export function createAdmittedRuntimeImageConfiguration(harnessId, options = {})
   );
 }
 
+// Polls /readyz inside the container every 250 ms until `process.argv[1]`
+// milliseconds pass, then names the last failure. One `docker exec` runs the
+// whole wait; it dies with the container if the Gateway exits.
+const gatewayReadinessProbe = `(async () => {
+  const deadline = Date.now() + Number(process.argv[1]);
+  let last = "no attempt";
+  for (;;) {
+    try {
+      const response = await fetch("http://127.0.0.1:8080/readyz", { signal: AbortSignal.timeout(5000) });
+      if (response.ok) process.exit(0);
+      last = "HTTP " + response.status;
+    } catch (error) {
+      last = String(error?.cause?.code ?? error?.cause?.message ?? error?.message ?? error);
+    }
+    if (Date.now() >= deadline) break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  console.error("Last /readyz attempt: " + last);
+  process.exit(1);
+})();`;
+
+// Each readiness attempt used to be a `docker inspect` and a `docker exec`
+// 250 ms apart: about 460 ms on an idle runner, longer under load. 1.5 s per
+// attempt keeps at least that time.
+const readinessAttemptMs = 1_500;
+
 export async function waitForGatewayReady(containerName, readinessAttempts = 60) {
-  let lastReadinessOutput = "";
-  for (let attempt = 0; attempt < readinessAttempts * imageSmokeTimeoutMultiplier; attempt += 1) {
+  const deadline =
+    Date.now() + readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier;
+  for (;;) {
+    const budgetMs = Math.max(0, deadline - Date.now());
+    const ready = await runDocker(
+      ["exec", containerName, "node", "-e", gatewayReadinessProbe, String(budgetMs)],
+      { timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier },
+    ).catch((error) => error);
+    if (!(ready instanceof Error)) {
+      return;
+    }
     const inspect = await runDocker([
       "inspect",
       containerName,
@@ -156,23 +219,14 @@ export async function waitForGatewayReady(containerName, readinessAttempts = 60)
     if (running !== "true") {
       throw new Error(`Gateway container exited before readiness with code ${exitCode}.`);
     }
-
-    const ready = await runDocker([
-      "exec",
-      containerName,
-      "node",
-      "-e",
-      'fetch("http://127.0.0.1:8080/readyz").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));',
-    ]).catch((error) => {
-      lastReadinessOutput = failureTail(commandOutput(error), 2048);
-      return undefined;
-    });
-    if (ready !== undefined) {
-      return;
+    // The probe ran out its budget, or its exec failed while the container still
+    // ran (a dying PID 1 can end the exec before Docker marks the container
+    // stopped): try again until the deadline, as each attempt used to.
+    if (Date.now() >= deadline) {
+      throw new Error(`Gateway readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error(`Gateway readiness timed out.\n${lastReadinessOutput}`);
 }
 
 export async function listGatewayPlugins(containerName) {

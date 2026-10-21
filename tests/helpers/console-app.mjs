@@ -4,10 +4,11 @@ import { randomUUID, createHash, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
 import { request as httpRequest } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { after } from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
@@ -23,6 +24,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -117,18 +119,16 @@ export async function startHttpsIngress({
     try {
       const keyPath = join(directory, "tls.key");
       const certPath = join(directory, "tls.crt");
+      await writeFile(keyPath, sharedRsaPrivateKeyPem("console-ingress"), { mode: 0o600 });
       const generated = spawnSync(
         "openssl",
         [
           "req",
           "-x509",
-          "-newkey",
-          "rsa:2048",
-          "-nodes",
+          "-key",
+          keyPath,
           "-days",
           "1",
-          "-keyout",
-          keyPath,
           "-out",
           certPath,
           "-subj",
@@ -173,6 +173,76 @@ export async function startHttpsIngress({
         ingress.close((error) => (error ? reject(error) : resolve())),
       );
     },
+  };
+}
+
+// One app for every test in a file, for tests that need no fresh database (CI runs each file in
+// its own process). Call it at the top level of a test file: it returns `fileApp(t)`, which
+// creates and bootstraps the app on first use and closes it after the file's last test. Building
+// the app, creating its administrator account (a password hash), signing in (a password check)
+// and the bootstrap cost about 0.3 CPU-s a test.
+//
+// Tests that share the app share its database, so each test must make its own Namespace (under a
+// name no other test in the file uses) and read only what it made. A test keeps
+// createConsoleAppFixture when it checks first-run or empty state, the Namespace list or the
+// default Namespace selection; signs the administrator out or expires or deletes sessions
+// (fixture.memoryDatabase); registers or selects controller Drivers; changes fixture.iamDriver;
+// reads the audit sink; uses the bootstrap result; or needs fixture options of its own. The
+// fixture's IAM policy (fixture.policy: identities, Roles, bindings, restrictions) is restored
+// before and after each test, so what a test adds there does not reach later tests. Browser
+// pages for the file app close when their test ends (newPage), and login() signs them in with one
+// session shared by the file.
+export function fileConsoleApp(options = {}) {
+  const cleanups = [];
+  let startPolicy;
+  let created;
+  after(async () => {
+    await created?.catch(() => {});
+    let cleanupError;
+    for (const cleanup of cleanups) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError) {
+      throw cleanupError;
+    }
+  });
+  return async function fileApp(t) {
+    if (created === undefined) {
+      const creating = (async () => {
+        const fixture = await createConsoleAppFixture(
+          { after: (cleanup) => cleanups.push(cleanup) },
+          options,
+        );
+        await fixture.bootstrap();
+        fixture.sharedByFile = true;
+        startPolicy = structuredClone(fixture.policy);
+        return fixture;
+      })();
+      // A failed start fails only the test that asked for it; the next test starts a new app,
+      // as each test did with an app of its own. The partial app's cleanups still run after.
+      creating.catch(() => {
+        if (created === creating) {
+          created = undefined;
+        }
+      });
+      created = creating;
+    }
+    const fixture = await created;
+    // The policy as the app started, restored before and after each test: a test body still
+    // running after its end (a timeout, an unawaited promise) cannot carry its changes into the
+    // next test.
+    const restorePolicy = () => {
+      for (const [key, value] of Object.entries(structuredClone(startPolicy))) {
+        fixture.policy[key].splice(0, Infinity, ...value);
+      }
+    };
+    restorePolicy();
+    t.after(restorePolicy);
+    return fixture;
   };
 }
 

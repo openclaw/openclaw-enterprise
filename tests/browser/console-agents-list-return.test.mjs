@@ -725,7 +725,14 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     agents.push({ ...agent, name });
   }
   assert.equal(agents[0].name.length, 60);
-  const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
+  const columns = [
+    "Agent",
+    "Execution mode",
+    "Current version",
+    "Latest deployment",
+    "Created",
+    "Actions",
+  ];
   for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
     const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
@@ -854,7 +861,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    // At 761 and 1024 px these rows' five columns still scroll inside their card (finding 1907),
+    // At 761 and 1024 px these rows' six columns still scroll inside their card (finding 1907),
     // but the unbroken name makes the table no wider than its other rows do.
     if (width !== 761 && width !== 1024) {
       assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);

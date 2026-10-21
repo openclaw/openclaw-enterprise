@@ -389,6 +389,8 @@ async function startController(context, { kubernetesDrivers = false } = {}) {
     authSecret,
     authBaseURL: `http://127.0.0.1:${port}`,
     installationName: "PostgreSQL platform state integration",
+    // The Job's code in this process; the API below is the real server.mjs process.
+    inProcess: true,
   });
   const child = spawn(process.execPath, [...reservedPortArgs(reservation), entrypoint], {
     cwd: repository,

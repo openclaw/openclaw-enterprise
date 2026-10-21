@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -82,7 +83,7 @@ test("prepare-bootstrap-volume requires explicit cluster selectors and immutable
   const { directory, kubeconfig } = await fixture(t);
   const base = {
     cwd: repository,
-    env: { PATH: `${directory}:${process.env.PATH}` },
+    env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
   };
 
   await assert.rejects(
@@ -278,7 +279,7 @@ test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it
     ],
     {
       cwd: repository,
-      env: { PATH: `${directory}:${process.env.PATH}` },
+      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
     },
   );
   assert.ok(
@@ -353,7 +354,7 @@ test("prepare-bootstrap-volume omits nodeSelector unless requested", async (t) =
     ],
     {
       cwd: repository,
-      env: { PATH: `${directory}:${process.env.PATH}` },
+      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
     },
   );
 
@@ -384,7 +385,7 @@ test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes repor
       ],
       {
         cwd: repository,
-        env: { PATH: `${directory}:${process.env.PATH}` },
+        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
       },
     ),
     ({ stderr }) =>
@@ -424,7 +425,7 @@ test("prepare-bootstrap-volume refuses unverifiable success reports without prin
       ],
       {
         cwd: repository,
-        env: { PATH: `${directory}:${process.env.PATH}` },
+        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
       },
     ),
     ({ stderr }) =>
@@ -454,7 +455,10 @@ test("prepare-bootstrap-volume preserves YAML-scalar namespace names as strings"
           "--image",
           image,
         ],
-        { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+        {
+          cwd: repository,
+          env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+        },
       );
       const manifest = loadYaml(await readFile(manifestPath, "utf8"));
       assert.equal(manifest.metadata.namespace, namespace);
@@ -484,7 +488,10 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
       "--node-selector",
       "node-role.kubernetes.io/infra=",
     ],
-    { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+    {
+      cwd: repository,
+      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+    },
   );
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
   assert.deepEqual(manifest.spec.nodeSelector, {
@@ -502,7 +509,12 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
   }
   const base = {
     cwd: repository,
-    env: { PATH: `${directory}:${process.env.PATH}`, LANG: locale, LC_ALL: locale },
+    env: {
+      ...compileCacheEnvironment,
+      PATH: `${directory}:${process.env.PATH}`,
+      LANG: locale,
+      LC_ALL: locale,
+    },
   };
   const argumentsFor = (overrides) => {
     const values = {
@@ -571,7 +583,10 @@ test("prepare-bootstrap-volume gives image references Kubernetes' verdict", asyn
         "--image",
         reference,
       ],
-      { cwd: repository, env: { PATH: `${directory}:${process.env.PATH}` } },
+      {
+        cwd: repository,
+        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+      },
     );
     if (immutableImageAccepted(reference, problem)) {
       await run;

@@ -659,6 +659,10 @@ export const scenarios = {
     signedOut: true,
     description:
       "A protected deep link with no session redirects to sign-in and retains the return destination.",
+    steps: [
+      "Sign in with the fixture credentials and confirm the Agent draft page returns.",
+      "Confirm no draft is saved or deployment started by signing in.",
+    ],
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
@@ -689,7 +693,7 @@ export const scenarios = {
     group: "Pages/Agents",
     name: "Populated",
     description:
-      "Searchable Agent table with draft and deployed Agents. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
+      "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
       "Tab through the search and creation controls, then search for an Agent and open its detail page.",
@@ -819,12 +823,13 @@ export const scenarios = {
   navigationExpired: {
     group: "Pages/Navigation",
     name: "Return session expired",
-    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401 }],
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401, once: true }],
     description:
-      "Session expiry clears private content and retained navigation state. The fixture supplies a delayed unauthorized response.",
+      "Session expiry clears private content and retains only the validated destination. The fixture supplies a delayed unauthorized response.",
     steps: [
       "Wait for Agents, then select Refresh or navigate to Namespaces.",
-      "When the session check fails, confirm the sign-in form replaces all private content. Browser Back must not restore the collection.",
+      "When the session check fails, confirm the sign-in form replaces all private content.",
+      "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
   },
   observabilityLink: {
@@ -857,6 +862,99 @@ export const scenarios = {
       "Open Research assistant and select Create new version. Its saved settings show a repair banner without editing or deployment controls.",
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
+  },
+  agentsRowStopConfirm: {
+    group: "Pages/Agents",
+    name: "Stop from the list",
+    deployed: true,
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The row's Stop icon opens the same confirmation as Agent detail. Cancel returns focus to the icon without a write; Stop Agent requests the stopped state.",
+    steps: [
+      "Cancel the dialog and check focus returns to the Stop icon.",
+      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled, and the list stays open.",
+      "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
+    ],
+    gap: "The fixture records the requested state only. Live runtime shutdown is not simulated.",
+  },
+  agentsRowStopped: {
+    group: "Pages/Agents",
+    name: "Stop requested from the list",
+    deployed: true,
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "An accepted row Stop shows a status notice, a Stop requested badge, and a disabled Stop icon. Delete stays available.",
+  },
+  agentsRowDeleteConfirm: {
+    group: "Pages/Agents",
+    name: "Delete from the list",
+    deployed: true,
+    actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
+    description:
+      "The row's Delete icon opens the permanent-deletion confirmation, including the commands that remove the kept Configuration and model Secret.",
+    steps: [
+      "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
+      "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
+    ],
+    gap: "The fixture does not run cleanup. Open the Agent to follow deletion status.",
+  },
+  agentsRowStopDenied: {
+    group: "Pages/Agents",
+    name: "Stop from the list denied",
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running.",
+  },
+  agentsRowDeleteDenied: {
+    group: "Pages/Agents",
+    name: "Delete from the list denied",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list.",
+  },
+  agentsRowRestricted: {
+    group: "Pages/Agents",
+    name: "Row actions unavailable for this caller",
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
+    steps: [
+      "Find No access to stop or delete under each row's icons. The icons do not open a confirmation.",
+      "Open an Agent: its detail page explains the same restrictions.",
+    ],
+    gap: "The summary is advisory. The controller still authorizes each write.",
+  },
+  agentsRowStopUnknown: {
+    group: "Pages/Agents",
+    name: "Stop from the list outcome unknown",
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "An unconfirmed row Stop disables that row's actions until Refresh rereads the list. The console never resends the request.",
   },
   agentsSearch: {
     group: "Pages/Agents",
@@ -1731,6 +1829,7 @@ export const scenarios = {
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
       "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
+      "In a frame 1100 px wide or narrower (Components / Dialogs / Plugins (tablet) is 1024 px), the catalog and detail stack: choose Calendar to see only its detail, then Back to plugins to return to the catalog. Wider, both panes show side by side.",
     ],
     gap: pluginPreviewGap,
   },
@@ -2986,7 +3085,8 @@ export const scenarios = {
       "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
     steps: [
       "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
-      "The request log shows no /iam/ request, and only Cancel and Start over remain beside the saved-resources line.",
+      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
+      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
     ],
   },
   createRestricted: {
@@ -3527,7 +3627,7 @@ export const scenarios = {
   agentSharingHoldsNavigation: {
     group: "Pages/Agent detail",
     name: "Sharing holds navigation",
-    path: `${draft}&tab=access`,
+    path: `${draft}&tab=configuration`,
     deployed: true,
     rules: [
       {
@@ -3537,13 +3637,18 @@ export const scenarios = {
         once: true,
       },
     ],
-    actions: [...shareExistingPerson, { selector: 'a[data-nav="agents"]', click: true }],
+    actions: [
+      { selector: 'button[aria-label^="View version v1"]', click: true },
+      click("Access"),
+      ...shareExistingPerson,
+      { selector: 'a[data-nav="agents"]', click: true },
+    ],
     description:
-      "The story shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+      "The story opens a version from the draft, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
     steps: [
       "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
-      "Switch to Plugins and back to Access while the note shows: tabs still switch, and the share keeps running.",
-      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and the versions and Agents in the sidebar work again.",
+      "Open the preview in its own tab to try browser Back. While sharing, Back opens Configuration. Back again keeps that version open and explains why.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
     ],
   },
   agentSharingRemoved: {
@@ -3631,6 +3736,8 @@ export const scenarios = {
       "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
       "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
       "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
+      "Visit Plugins, then Channels, then Configuration. Edit and save a setting, then use browser Back while the save is in progress. Configuration stays open to show the result.",
+      "After “Configuration saved.”, use Back once to return to Channels. Forward returns to Configuration without saving again.",
     ],
   },
   configurationSaveRefused: {
@@ -3983,6 +4090,10 @@ export const scenarios = {
     ],
     description:
       "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+    steps: [
+      "Visit Channels, return to Repositories, change a selection, then press browser Back. The selection stays, with a note to save or cancel before leaving.",
+      "Cancel the edit. Back returns to Channels; Forward opens Repositories with the saved selection.",
+    ],
   },
   repositoryEditorNotConfigured: {
     group: "Pages/Agent detail",
@@ -4529,6 +4640,8 @@ export const scenarios = {
       "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
     steps: [
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
+      "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+      "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
   },

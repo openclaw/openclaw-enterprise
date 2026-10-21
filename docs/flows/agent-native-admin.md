@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-17"
-last_updated_session: "authoring-run/400ef44f-ab67-4b2e-901a-064afa6e9e12"
+updated: 2026-10-19
+last_updated_session: authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919
 ---
 
 # Agent Native Admin UI Flow
@@ -137,9 +137,7 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 
 `deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/` as the entrypoint.
 
-The first-Agent script imports this Node-only helper without requiring workspace dependencies.
-
-Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
+Native-host admission resolves the hash from Installation, Namespace, and Agent state. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
 `nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
 
@@ -153,27 +151,25 @@ When enabled, native admin passes the configured shared cookie domain to Better 
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
-handling. For hosts beneath the configured native admin domain, that early
-intercept prevents the Agent origin from exposing console or controller API
-routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
-the selected IAM identity, resolves the requested host to the exact Agent,
-revalidates exact Agent `administer`, resolves the selected version, and
-validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+The `onRequest` hook intercepts the native admin domain before routing, so an
+Agent origin cannot expose console or controller routes. OCC authenticates the
+shared session, resolves the IAM identity and exact Agent, requires `administer`,
+then checks the selected version and native configuration. An attributable IAM
+denial records the human and Agent in the denial audit.
 
-An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. The console resolves it after authentication and exact Agent authorization; unknown and unauthorized keys get `404`.
+Without a valid session, a user-activated, top-level HTML GET to `/`,
+`/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
+console. Its fragment carries only the opaque host key, which the console resolves
+after sign-in and exact-Agent authorization. OCC drops queries and session suffixes.
+API requests, writes, WebSockets and permission denials never redirect. Reload an
+open native tab after expiry.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state. The shared resolver also
-rechecks both Compute owner fields. A mismatch retains the existing `403` refusal
-for Agent-host HTTP. WebSocket admission destroys the client socket without an
+Status and proxy checks reuse one Better Auth lookup for identity, expiry and
+attribution. Each WebSocket lease checks the current session again. After handling
+stopped, replacing or unsupported Agents, admission rechecks both Compute owner
+fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
 HTTP response, before gateway-key lookup or connection. A failed lease closes
-existing sockets. Stopped, replacing and unsupported-configuration branches still precede
-the ownership comparison.
+both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
@@ -243,6 +239,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Changelog
 
+- 2026-10-19 22:11: Document return to the requested page after session expiry. (authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919 - 332455338271720ef29c63e5e7fb209fa3da6ec2)
 - 2026-10-17 19:03: Linked the submitted Compute contract proposal and refreshed upstream provisioning support. (authoring-run/400ef44f-ab67-4b2e-901a-064afa6e9e12 - 54614e31d67a9825684d1906feed3a6ab1c671c9)
 - 2026-10-16 12:59: Retained copied-chat recovery and first-deployment preparation while adopting the current Sandbox contract. (authoring-run/5e253249-62fe-4167-90cb-1b82da91396c - 9c309cf67287428bdd762232d542759db7465198)
 - 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
