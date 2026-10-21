@@ -1292,6 +1292,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   ];
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   let deployInFlight = false;
+  // The draft holds below are declared before a deleting Agent's early return: ← Agents and the
+  // reload check read them on that page too (finding 2125).
+  let draftEditorNavigationBlock = null;
+  // Whether a draft editor's write is in flight (its block names the save to wait for).
+  let draftEditorSaving = false;
+  // Set while a saved draft refreshes in place; tab and version changes wait for it.
+  let refreshingDraft = false;
   // A share or binding removal in flight. Its writes belong to this page, so other versions and
   // pages wait for it (finding 2108); tabs do not, since the panel stays with the page.
   let sharingWrite = false;
@@ -1596,9 +1603,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   const tabControls = new Map();
   const revisionControls = new Map();
-  let draftEditorNavigationBlock = null;
-  // Whether a draft editor's write is in flight (its block names the save to wait for).
-  let draftEditorSaving = false;
   // A refused leave says why beside the control whose request holds the page (finding 1962).
   // The configuration, channels and repositories editors write their block into their own
   // feedback; every other hold writes it here.
@@ -1607,12 +1611,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The authentication form, whose save holds the page from the Credentials tab.
   let authenticationLeaveAnchor = null;
   function showLeaveNote(anchor, text, place) {
-    // Delete replaces the page with its deletion row, so a hold still in flight says why above
-    // that row instead (finding 2125).
-    if (deleting && !anchor?.isConnected) {
-      anchor = view;
-      place = "start";
-    }
     if (!anchor?.isConnected || !text) {
       return;
     }
@@ -1660,7 +1658,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   function showLeaveBlock() {
     const reason = leaveReason();
-    if (!draftEditorBlocksNavigation()) {
+    if (deleting) {
+      // Delete replaced the page, editors and tab panel included, with its deletion row: a
+      // write still in flight says why above that row (finding 2125).
+      showLeaveNote(view, reason, "start");
+      if (leaveNote.isConnected) {
+        leaveNote.scrollIntoView({ block: "nearest" });
+      }
+    } else if (!draftEditorBlocksNavigation()) {
       showLeaveNote(content, reason, "start");
       // The note tops the tab panel, which may be scrolled out of view; focus stays put.
       if (leaveNote.isConnected) {
@@ -1680,6 +1685,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
   function draftEditorBlocksNavigation() {
+    if (deleting) {
+      // The editors went with Delete, so their unsaved changes no longer hold the page; a write
+      // in flight still does.
+      return draftWriteInFlight();
+    }
     return (
       selected === "draft" &&
       (deployInFlight ||
@@ -2064,8 +2074,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
-  // Set while a saved draft refreshes in place; tab and version changes wait for it.
-  let refreshingDraft = false;
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;

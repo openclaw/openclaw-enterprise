@@ -80,10 +80,11 @@ page changes, as it does for a draft's writes. The held changes are the Versions
 rail, Create new version, version links, ← Agents, the sidebar, the Namespace
 selector, Back and Forward, the header's Refresh, and the page's own reloads. The
 page shows "This page stays open until sharing finishes." Tabs still switch. After
-Delete replaces the page with its deletion row, the note shows above that row. The
-page's `setWriteInFlight` check, which also covers a draft's writes, makes
-`beforeunload` in `console.mjs` ask before a reload or tab close. The hold ends when the last request settles. At worst that is five requests of up to
-15 s each, about 75 s. Session expiry and sign-out still leave.
+Delete replaces the page with its deletion row, a write still in flight holds the
+page and its note shows above that row. The page's `setWriteInFlight` check, which
+also covers a draft's writes, makes `beforeunload` in `console.mjs` ask before a
+reload or tab close. The hold ends when the last request settles. At worst that is
+five requests of up to 15 s each, about 75 s. Session expiry and sign-out still leave.
 
 ### 4. Remove one explicit binding
 

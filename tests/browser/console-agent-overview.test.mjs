@@ -2232,6 +2232,73 @@ test("Delete during a share in flight keeps saying why the page stays open", asy
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
 
+// The Configuration editor says why it holds the page beside itself. Delete took the editor away
+// as well, so its hold now says why above the deletion row (finding 2125).
+test("Delete during a Configuration save keeps saying why the page stays open", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Save delete hold");
+  const agent = await fixture.createAgent(namespace.id, "Save Delete Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page
+    .getByLabel("Configuration JSON", { exact: true })
+    .fill(JSON.stringify(nativeValues("v2"), null, 2));
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    { method: "PATCH", once: true },
+  );
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await write.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Save Delete Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  const held = page.getByText("Wait for Configuration save to finish before leaving the editor.", {
+    exact: true,
+  });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await held.waitFor();
+  assert.equal(await held.isVisible(), true);
+  assert.equal(page.url(), url.href);
+
+  write.release();
+  await held.waitFor({ state: "detached" });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+});
+
+// A page that opens on a deleting Agent shows only its deletion row and returns before the rest
+// of the page is set up. ← Agents and the reload check read that part, threw, and did nothing
+// (finding 2125).
+test("A page that opens on a deleting Agent can still be left", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Opened deleting");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Opened Deleting Agent",
+    nativeValues("v1"),
+  );
+  const deletion = await fixture.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+  const { page } = await newPage(t, fixture, { browser });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("button", { name: "Request deletion again" }).waitFor();
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
 // The same hold from a version's Access tab: Create new version and Back to another version
 // keep the page (and its history) while the share runs (finding 2108).
 test("A share in flight on a version preserves Back to the draft and Forward to Access", async (t) => {
