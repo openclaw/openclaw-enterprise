@@ -58,10 +58,10 @@ const manifestPath = /^scripts\/ci\/test-suites\/[a-z0-9-]+\.json$/;
 const suiteIndexPath = "scripts/ci/test-suites.json";
 const laneName = /^[a-z0-9-]+$/;
 // Static Checks lints, format-checks and builds documentation in every mode.
-// Checks and Conformance 1's own extra checks (typecheck, Go CLI) read no test
-// file, so a test-only change runs it only when the lane lists a changed test,
-// or as the matrix lane a selection needs when only the runtime image fixture
-// (its own job) would run.
+// Checks and Conformance 1's Go CLI check and part 2's typecheck read no test
+// file, so a test-only change runs a part only when its lane lists a changed
+// test. Part 1 is also the matrix lane a selection needs when only the runtime
+// image fixture (its own job) would run.
 const fallbackLane = "checks-baseline-1";
 const fixtureLane = "runtime-image-fixture";
 
