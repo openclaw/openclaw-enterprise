@@ -2084,7 +2084,10 @@ test("console clears private content after session expiry, access revocation, an
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);
   }
-  await page.reload();
+  // The list may still be reading its Agent rows. A row read refused after expiry shows the
+  // expired sign-in itself and moves to /console/login, where a reload is an ordinary sign-in.
+  // Load the private page again, so either way the console must find the expired session.
+  await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /Revoked agent/);
