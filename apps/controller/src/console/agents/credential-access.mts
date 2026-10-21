@@ -74,6 +74,19 @@ export function matchesRole(
   );
 }
 
+/** A role may have been created even if the response cannot confirm the grant we requested. */
+export function createdPolicyRole(
+  value: unknown,
+  namespaceId: string,
+  permissions: readonly Permission[],
+) {
+  const role = policyRole(value);
+  if (!matchesRole(role, namespaceId, permissions)) {
+    throw new Error("The API did not confirm the requested role permissions in this Namespace.");
+  }
+  return role;
+}
+
 async function credentialOperateRole(
   context: AgentAccessContext,
   resourceKind: CredentialReference["kind"],
@@ -92,7 +105,7 @@ async function credentialOperateRole(
       permissions,
     },
   });
-  return policyRole(created);
+  return createdPolicyRole(created, context.namespaceId, permissions);
 }
 
 export async function ensureCredentialOperateBinding(

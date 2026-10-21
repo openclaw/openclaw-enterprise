@@ -2357,6 +2357,40 @@ test("Agent sharing rejects emails locally and names an unknown Principal ID", a
   assert.deepEqual(bindings.data, []);
 });
 
+// Commit the narrow role, then return a real, broader role from the same Namespace in its place.
+// Both sharing and credential access must stop before sending any binding request.
+async function expectBroaderCreatedRoleRefused(page, requests, rolesPath, broader, submit) {
+  const routePattern = `**${rolesPath}`;
+  await page.route(routePattern, async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const body = await response.json();
+    assert.deepEqual(body.data.permissions, route.request().postDataJSON().permissions);
+    assert.equal(body.data.namespaceId, broader.namespaceId);
+    assert.notEqual(body.data.id, broader.id);
+    assert.ok(broader.permissions.length > body.data.permissions.length);
+    await route.fulfill({ response, json: { ...body, data: broader } });
+  });
+  const returned = page.waitForResponse(
+    (response) => response.url().endsWith(rolesPath) && response.request().method() === "POST",
+  );
+  await submit();
+  assert.equal(await (await returned).finished(), null);
+  await settlePageRequests(page);
+  const bindingsPath = rolesPath.replace(/\/roles$/, "/access-bindings");
+  assert.equal(
+    pathRequests(requests, "POST", bindingsPath).length,
+    0,
+    "never bind the broader role",
+  );
+  assert.equal(pathRequests(requests, "POST", rolesPath).length, 1, "never repeat role creation");
+  await page.unroute(routePattern);
+}
+
 test("Agent sharing creates exact Roles instead of reusing strict superset Roles", async (t) => {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["superset-recipient"] });
   await fixture.bootstrap();
@@ -2379,15 +2413,26 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
   ]) {
     const role = await fixture.request("POST", `${policyPath}/roles`, { body: { permissions } });
     assert.equal(role.status, 201, JSON.stringify(role.body));
-    supersets.push(role.data.id);
+    supersets.push(role.data);
   }
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
-  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  const share = panel.getByRole("button", { name: "Share Agent", exact: true });
+  await expectBroaderCreatedRoleRefused(page, requests, `${policyPath}/roles`, supersets[1], () =>
+    share.click(),
+  );
+  await panel
+    .getByText(/Refresh sharing to inspect current policy before another change/)
+    .waitFor();
+  assert.equal(await share.isDisabled(), true);
+  // An explicit refresh and retry can reuse the narrow role that actually committed.
+  await panel.getByRole("button", { name: "Refresh sharing" }).click();
+  await share.click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
 
   const roles = (await fixture.request("GET", `${policyPath}/roles`)).data;
@@ -2396,7 +2441,11 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
   assert.equal(bindings.length, 2);
   const grantPermissions = (resourceKind) => {
     const binding = bindings.find((candidate) => candidate.resourceKind === resourceKind);
-    assert.equal(supersets.includes(binding.roleId), false, `${resourceKind} reused a superset`);
+    assert.equal(
+      supersets.some((role) => role.id === binding.roleId),
+      false,
+      `${resourceKind} reused a superset`,
+    );
     return roles
       .find((role) => role.id === binding.roleId)
       .permissions.map((permission) => `${permission.action}:${permission.resourceKind}`)
@@ -2549,6 +2598,18 @@ test("Credentials retries denied and interrupted grants without repeating the au
     fixture.policy.restrictions.findIndex((item) => item.id === "deny-update-credential-grant"),
     1,
   );
+  const rolesPath = `/namespaces/${namespace.id}/iam/roles`;
+  const broader = await fixture.request("POST", rolesPath, {
+    body: {
+      permissions: ["operate", "delete"].map((action) => ({ action, resourceKind: "secret" })),
+    },
+  });
+  assert.equal(broader.status, 201);
+  const retry = page.getByRole("button", { name: "Retry credential access" });
+  await expectBroaderCreatedRoleRefused(page, requests, rolesPath, broader.data, () =>
+    retry.click(),
+  );
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   // Commit the binding through the real API, then lose only its response. Read-before-create makes retry safe.
   await page.route(`**${bindingsPath}`, async (route) => {
     if (route.request().method() !== "POST") {

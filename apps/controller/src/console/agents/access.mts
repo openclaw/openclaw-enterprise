@@ -10,6 +10,7 @@ import {
 } from "../dom.mjs";
 import {
   type AgentAccessContext,
+  createdPolicyRole,
   matchesRole,
   policyBinding,
   policyList,
@@ -330,7 +331,7 @@ export function renderAgentAccess(
       if (!context.isCurrent()) {
         throw new DOMException("View closed", "AbortError");
       }
-      role = policyRole(created);
+      role = createdPolicyRole(created, namespaceId, permissions);
       state.roles.push(role);
     }
     const existing = state.bindings.find(
