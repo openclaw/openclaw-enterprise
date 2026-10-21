@@ -29,12 +29,36 @@ function gitStatus(...args) {
   return result.error ? null : result.status;
 }
 
-function git(...args) {
-  const result = spawnSync("git", args, { encoding: null, maxBuffer: 64 * 1024 * 1024 });
+// `input`, when given, is the command's standard input (for --batch modes).
+function gitWith(input, args) {
+  const result = spawnSync("git", args, {
+    encoding: null,
+    maxBuffer: 64 * 1024 * 1024,
+    ...(input === undefined ? {} : { input }),
+  });
   if (result.error || result.status !== 0) {
     throw new InspectionError("Git inspection failed", "git_inspection_failed");
   }
   return result.stdout;
+}
+
+function git(...args) {
+  return gitWith(undefined, args);
+}
+
+// Whether each name resolves to a commit, from one `git cat-file --batch-check`:
+// the answers `git cat-file -e <name>^{commit}` gives one process per name.
+function commitsPresent(names) {
+  const output = gitWith(names.map((name) => `${name}^{commit}\n`).join(""), [
+    "cat-file",
+    "--batch-check=%(objecttype)",
+  ])
+    .toString("binary")
+    .split("\n");
+  if (output.length !== names.length + 1 || output[names.length] !== "") {
+    throw new InspectionError("Git inspection failed", "git_inspection_failed");
+  }
+  return output.slice(0, -1).map((line) => line === "commit");
 }
 
 function documentationPath(path) {
@@ -69,20 +93,102 @@ function isObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function readJsonBlob(commit, path) {
-  const entry = git("ls-tree", "-z", commit, "--", path).toString("binary");
-  const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]+)\0$/.exec(entry);
-  if (!match || match[2] !== path) {
-    throw new InspectionError("suite manifest is unavailable", "manifest_unavailable");
-  }
+function parseJsonBlob(bytes) {
   try {
-    return JSON.parse(decoder.decode(git("cat-file", "blob", match[1])));
-  } catch (error) {
-    if (error instanceof InspectionError) {
-      throw error;
-    }
+    return JSON.parse(decoder.decode(bytes));
+  } catch {
     throw new InspectionError("suite manifest is not valid JSON", "manifest_unavailable");
   }
+}
+
+// Reads JSON files at `commit` with one `git ls-tree` and one `git cat-file --batch`
+// instead of two processes per file. Returns a reader per path that returns its
+// parsed JSON or throws what reading that file alone would: a path that is not a
+// regular non-executable file, or not valid UTF-8 JSON, is unavailable; a failed
+// Git command is an inspection failure. The reader throws only when called, so
+// callers see errors in the order they read.
+function readJsonBlobs(commit, paths) {
+  if (paths.length === 0) {
+    return new Map();
+  }
+  const fail = (error) => () => {
+    throw error;
+  };
+  let entries;
+  try {
+    entries = git("ls-tree", "-z", commit, "--", ...paths)
+      .toString("binary")
+      .split("\0");
+  } catch (error) {
+    return new Map(paths.map((path) => [path, fail(error)]));
+  }
+  // Only an exact regular-file entry counts: a directory lists its children instead.
+  const blobs = new Map();
+  for (const entry of entries) {
+    const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]+)$/.exec(entry);
+    if (match) {
+      blobs.set(match[2], match[1]);
+    }
+  }
+  const unavailable = fail(
+    new InspectionError("suite manifest is unavailable", "manifest_unavailable"),
+  );
+  const wanted = [
+    ...new Set(paths.filter((path) => blobs.has(path)).map((path) => blobs.get(path))),
+  ];
+  const contents = new Map();
+  let batchError;
+  if (wanted.length > 0) {
+    try {
+      const output = gitWith(wanted.map((id) => `${id}\n`).join(""), ["cat-file", "--batch"]);
+      // Each object is "<oid> blob <size>\n<content>\n", or "<oid> missing\n".
+      let offset = 0;
+      for (const id of wanted) {
+        const end = output.indexOf(0x0a, offset);
+        if (end < 0) {
+          throw new InspectionError("Git inspection failed", "git_inspection_failed");
+        }
+        const header = output.subarray(offset, end).toString("binary");
+        const match = /^([0-9a-f]+) blob (\d+)$/.exec(header);
+        if (!match || match[1] !== id) {
+          if (header !== `${id} missing`) {
+            throw new InspectionError("Git inspection failed", "git_inspection_failed");
+          }
+          offset = end + 1;
+          continue;
+        }
+        const size = Number(match[2]);
+        const stop = end + 1 + size;
+        if (stop >= output.length || output[stop] !== 0x0a) {
+          throw new InspectionError("Git inspection failed", "git_inspection_failed");
+        }
+        contents.set(id, output.subarray(end + 1, stop));
+        offset = stop + 1;
+      }
+      if (offset !== output.length) {
+        throw new InspectionError("Git inspection failed", "git_inspection_failed");
+      }
+    } catch (error) {
+      batchError = error;
+    }
+  }
+  const failed = new InspectionError("Git inspection failed", "git_inspection_failed");
+  return new Map(
+    paths.map((path) => {
+      if (!blobs.has(path)) {
+        return [path, unavailable];
+      }
+      if (batchError !== undefined) {
+        return [path, fail(batchError)];
+      }
+      const bytes = contents.get(blobs.get(path));
+      return [path, bytes === undefined ? fail(failed) : () => parseJsonBlob(bytes)];
+    }),
+  );
+}
+
+function readJsonBlob(commit, path) {
+  return readJsonBlobs(commit, [path]).get(path)();
 }
 
 function suiteIndex(commit) {
@@ -135,14 +241,22 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   const lanePaths = new Set(index.lanes.values());
   const changedTests = new Set(tests);
   const changedManifests = new Set(manifests);
+  // Every lane manifest at the base and the changed ones at the tested commit.
+  const baseManifests = readJsonBlobs(mergeBase, [...lanePaths]);
+  const testedManifests = readJsonBlobs(
+    tested,
+    [...changedManifests].filter((path) => lanePaths.has(path)),
+  );
+  const manifestAt = (commit, path) =>
+    (commit === mergeBase ? baseManifests : testedManifests).get(path)();
   for (const path of changedManifests) {
     if (!lanePaths.has(path)) {
       throw new InspectionError("a changed manifest is not an indexed lane", "manifest_change");
     }
     // A manifest may only add, remove or edit entries for the changed tests.
     if (
-      withoutFiles(readJsonBlob(mergeBase, path), changedTests) !==
-      withoutFiles(readJsonBlob(tested, path), changedTests)
+      withoutFiles(manifestAt(mergeBase, path), changedTests) !==
+      withoutFiles(manifestAt(tested, path), changedTests)
     ) {
       throw new InspectionError(
         "a suite manifest changed beyond the changed test files",
@@ -154,7 +268,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   for (const [name, path] of index.lanes) {
     const commits = changedManifests.has(path) ? [mergeBase, tested] : [mergeBase];
     for (const commit of commits) {
-      for (const file of laneFiles(readJsonBlob(commit, path))) {
+      for (const file of laneFiles(manifestAt(commit, path))) {
         owners.get(file.path)?.add(name);
       }
     }
@@ -234,11 +348,14 @@ export function classify() {
     if (![base, head, tested].every((value) => typeof value === "string" && oid.test(value))) {
       throw new InspectionError("missing or invalid commit identifiers", "invalid_identity");
     }
-    const actual = git("rev-parse", "--verify", "HEAD^{commit}").toString("ascii").trim();
+    // The checkout's commit and its parents, from one process.
+    const [actual, ...parents] = git("show", "-s", "--format=%H %P", "HEAD^{commit}")
+      .toString("ascii")
+      .trim()
+      .split(" ");
     if (actual !== tested) {
       throw new InspectionError("checkout does not match tested commit", "checkout_mismatch");
     }
-    const parents = git("show", "-s", "--format=%P", tested).toString("ascii").trim().split(" ");
     if (parents.length !== 2 || !oid.test(parents[0]) || parents[1] !== head) {
       throw new InspectionError(
         "event commits do not match the tested merge parents",
@@ -250,10 +367,13 @@ export function classify() {
     // merge's first parent is the base of the tested tree. A depth-two
     // checkout lacks an older base.sha; when it is present it must be behind.
     const mergeBase = parents[0];
-    git("cat-file", "-e", `${mergeBase}^{commit}`);
-    git("cat-file", "-e", `${head}^{commit}`);
-    // A failed spawn reads as absent here and fails the diff below.
-    if (base !== mergeBase && gitStatus("cat-file", "-e", `${base}^{commit}`) === 0) {
+    const [mergeBasePresent, headPresent, basePresent] = commitsPresent(
+      base === mergeBase ? [mergeBase, head] : [mergeBase, head, base],
+    );
+    if (!mergeBasePresent || !headPresent) {
+      throw new InspectionError("Git inspection failed", "git_inspection_failed");
+    }
+    if (basePresent) {
       const status = gitStatus("merge-base", "--is-ancestor", base, mergeBase);
       if (status === 1) {
         throw new InspectionError(
