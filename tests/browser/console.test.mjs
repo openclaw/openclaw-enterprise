@@ -12,6 +12,7 @@ import {
   apiRequests,
   expectNoText,
   login,
+  loginThroughForm,
   newPage,
   settledFetches,
   settlePageRequests,
@@ -311,7 +312,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
 
-  await login(page, fixture, `/console/?namespace=${beta.id}`);
+  // Through the sign-in form: a cold deep link keeps its Namespace across password sign-in.
+  await loginThroughForm(page, fixture, `/console/?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
   assert.equal(

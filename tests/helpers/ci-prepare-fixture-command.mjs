@@ -1,24 +1,19 @@
 import assert from "node:assert/strict";
-import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
+import {
+  commandShim as fixtureCommandShim,
+  startCommandServer,
+} from "./fixture-command-server.mjs";
 
 // The external commands preparation runs (docker, podman, k3d, kubectl, helm, yq,
-// corepack), faked for ci-prepare*.test.mjs. Each one on the fixture's PATH is a small
-// bash script (see commandShim) that connects to the test's command server, sends its
-// argv, working directory and the environment variables below, and then runs the
-// server's replies: output, exit, reading its stdin, holding its pipes, or hanging until
-// killed. scripts/ci/prepare.mjs and cleanup.mjs still start every command as a real
-// process and own its timeouts, signals and pipes; only the scenario logic below runs in
-// the test process, so a command costs a bash start instead of a node start.
-//
-// Any local user can connect to a loopback port, so the two sides authenticate each
-// other with per-server random tokens that only the fixture's private (0700) shims hold:
-// the server runs nothing for a client that does not open with its client token, and a
-// shim evaluates nothing from a listener that does not answer with the server token.
-// The fixture directory the scenarios write to is the server's, never the client's.
+// corepack), faked for ci-prepare*.test.mjs through fixture-command-server.mjs: each is
+// a bash script answered by the test's command server. scripts/ci/prepare.mjs and
+// cleanup.mjs still start every command as a real process and own its timeouts, signals
+// and pipes; only the scenario logic below runs in the test process. A command sends
+// the environment variables below. The fixture directory the scenarios write to is the
+// server's, never the client's.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
   "CI_FIXTURE_LANE",
@@ -1008,203 +1003,19 @@ async function fakeCommand({ command, args, env, cwd, root, store, hungCommandEx
   throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
 }
 
-// An ANSI-C quoted bash word holding exactly these bytes. Bash strings end at a NUL,
-// so a fake's output may not contain one (none does).
-function bashString(text) {
-  assert.ok(!text.includes("\0"), "a fake command's output must not contain NUL");
-  let word = "$'";
-  for (const byte of Buffer.from(text)) {
-    const plain = byte >= 0x20 && byte < 0x7f && byte !== 0x27 && byte !== 0x5c;
-    word += plain ? String.fromCharCode(byte) : "\\x" + byte.toString(16).padStart(2, "0");
-  }
-  return word + "'";
+// A fake command for this fixture's server; see fixture-command-server.mjs.
+export function commandShim(options) {
+  return fixtureCommandShim({ ...options, forwardedEnv });
 }
 
-// The fake command: bash builtins only, so it is a single process that prepare.mjs's
-// signals reach directly, and its output pipes close when it exits (except where a
-// reply makes it start a descendant on purpose). It sends its client token and then
-// NUL-terminated fields, and evaluates the reply lines that follow the server token.
-// A command whose server is gone, or does not authenticate, fails. It holds both
-// tokens: write it with mode 0700 in a private directory.
-export function commandShim({ bash, sleep, setsid, port, clientToken, serverToken, command }) {
-  for (const token of [clientToken, serverToken]) {
-    assert.match(token, /^[0-9a-f]{64}$/);
-  }
-  assert.match(command, /^[a-z0-9]+$/);
-  const env = forwardedEnv.map((name) => `"\${${name}+=}\${${name}-}"`).join(" ");
-  return `#!${bash}
-LC_ALL=C
-trap '' PIPE
-__sleep=${bashString(sleep)}
-__setsid=${bashString(setsid)}
-exec 3<>/dev/tcp/127.0.0.1/${port} || exit 125
-__stdin() { local data; IFS= read -r -d '' data; printf '%s\\0' "$data" >&3; }
-printf '%s\\0' ${clientToken} ${command} "$PWD" "$#" "$@" ${env} >&3
-if ! IFS= read -r -u 3 __line || [[ "$__line" != ${serverToken} ]]; then
-  echo "fixture command server did not authenticate" >&2
-  exit 125
-fi
-while IFS= read -r -u 3 __line; do eval "$__line"; done
-echo "fixture command server closed the connection" >&2
-exit 125
-`;
-}
-
-function serveCommand(socket, { tokens, root, store, hungCommandExitMs }) {
-  const timers = new Set();
-  const fields = [];
-  let buffered = Buffer.alloc(0);
-  let waiter;
-  let closed = false;
-  let ended = false;
-  let tokenReceived = false;
-  const nextField = () => {
-    if (fields.length > 0) {
-      return Promise.resolve(fields.shift());
-    }
-    if (closed) {
-      return Promise.reject(new Error("the fake command closed its connection"));
-    }
-    return new Promise((resolve, reject) => (waiter = { resolve, reject }));
-  };
-  socket.on("data", (chunk) => {
-    buffered = Buffer.concat([buffered, chunk]);
-    for (let end = buffered.indexOf(0); end !== -1; end = buffered.indexOf(0)) {
-      fields.push(buffered.subarray(0, end).toString());
-      buffered = buffered.subarray(end + 1);
-      tokenReceived = true;
-    }
-    // A client gets no more buffer before its token than the token needs (64 bytes).
-    // The token is checked before the next read.
-    if (!tokenReceived && buffered.length > 64) {
-      socket.destroy();
-      return;
-    }
-    if (waiter && fields.length > 0) {
-      const { resolve } = waiter;
-      waiter = undefined;
-      resolve(fields.shift());
-    }
-  });
-  // A killed command resets its connection; its pending replies are dropped.
-  socket.on("error", () => {});
-  socket.on("close", () => {
-    closed = true;
-    for (const timer of timers) {
-      clearTimeout(timer);
-    }
-    waiter?.reject(new Error("the fake command closed its connection"));
-  });
-  const send = (line) => {
-    if (!closed && !ended) {
-      socket.write(line + "\n");
-    }
-  };
-  const io = {
-    // Like a node process, an output write to a closed pipe neither kills nor fails it.
-    stdout: (text) => text && send(`printf %s ${bashString(text)} 2>/dev/null`),
-    stderr: (text) => text && send(`printf %s ${bashString(text)} >&2`),
-    exit: (code) => {
-      send(`exit ${code}`);
-      ended = true;
-      socket.end();
-    },
-    exitAfter: (code, ms) => {
-      const timer = setTimeout(() => {
-        timers.delete(timer);
-        io.exit(code);
-      }, ms);
-      timers.add(timer);
-    },
-    closeStdout: () => send("exec 1>&-"),
-    // A descendant writes to the command's stderr after the command has exited.
-    lateStderr: (text, ms) =>
-      send(
-        `{ "$__sleep" ${ms / 1000}; printf %s ${bashString(text)} >&2; } </dev/null >/dev/null 3>&- &`,
-      ),
-    readInput: () => {
-      send("__stdin");
-      return nextField();
-    },
-    holdPipes: ({ ms, escaped, pidFile, escapedPidFile }) =>
-      send(
-        escaped
-          ? // The command ignores SIGTERM only after starting the descendant, which would
-            // otherwise inherit the ignored signal (node's handler was not inherited).
-            `"$__setsid" "$__sleep" ${ms / 1000} </dev/null 3>&- & ` +
-              `printf '%s\\n' "$$" >> ${bashString(pidFile)}; ` +
-              `printf '%s\\n' "$!" >> ${bashString(escapedPidFile)}; trap '' TERM`
-          : `"$__sleep" ${ms / 1000} </dev/null 3>&- & ` +
-              `printf '%s\\n' "$$" "$!" >> ${bashString(pidFile)}`,
-      ),
-  };
-  (async () => {
-    // Nothing a client sends is used before its first field matches the client token.
-    const token = Buffer.from(await nextField());
-    if (token.length !== tokens.client.length || !timingSafeEqual(token, tokens.client)) {
-      socket.destroy();
-      return;
-    }
-    send(tokens.server.toString());
-    const command = await nextField();
-    const cwd = await nextField();
-    const argc = Number(await nextField());
-    const args = [];
-    for (let index = 0; index < argc; index += 1) {
-      args.push(await nextField());
-    }
-    const env = {};
-    for (const name of forwardedEnv) {
-      const value = await nextField();
-      if (value.startsWith("=")) {
-        env[name] = value.slice(1);
-      }
-    }
-    try {
-      await fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io });
-    } catch (error) {
-      // As an uncaught error in a command process: its stack on stderr, status 1.
-      io.stderr(`${error?.stack ?? error}\n`);
-      io.exit(1);
-    }
-  })().catch(() => socket.destroy());
-  return {
-    close() {
-      socket.destroy();
-    },
-  };
-}
-
-// One server per fixture, on loopback, writing to the fixture directory root. Closing it
-// ends every command still connected: a command that was hanging exits at once instead
-// of at its own bound. Its clientToken and serverToken go to commandShim.
-export async function startFixtureCommandServer({ root, hungCommandExitMs }) {
+// One server per fixture, writing to the fixture directory root.
+export function startFixtureCommandServer({ root, hungCommandExitMs }) {
   assert.ok(Number.isSafeInteger(hungCommandExitMs));
   assert.ok(typeof root === "string" && root.length > 0);
-  const tokens = {
-    client: Buffer.from(randomBytes(32).toString("hex")),
-    server: Buffer.from(randomBytes(32).toString("hex")),
-  };
   const store = createStateStore();
-  const connections = new Set();
-  const server = createServer((socket) => {
-    const connection = serveCommand(socket, { tokens, root, store, hungCommandExitMs });
-    connections.add(connection);
-    socket.once("close", () => connections.delete(connection));
+  return startCommandServer({
+    forwardedEnv,
+    handle: ({ command, args, env, cwd, io }) =>
+      fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }),
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  return {
-    port: server.address().port,
-    clientToken: tokens.client.toString(),
-    serverToken: tokens.server.toString(),
-    close: () => {
-      for (const connection of connections) {
-        connection.close();
-      }
-      return new Promise((resolve) => server.close(() => resolve()));
-    },
-  };
 }
