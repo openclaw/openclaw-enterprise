@@ -1,27 +1,37 @@
 // Serializes read-modify-write updates of one CI state file across processes.
 //
 // prepareFile and cleanupResourceIds read the lane state, run commands, and write the
-// whole state back. The runner queues them in its own process, but a test may call
-// prepareFile itself (a copy of its file's prepared database per test). Without a lock
-// shared by both processes, one side's write can drop the other side's resource.
+// whole state back. The runner prepares and cleans files in its own process, but a test
+// may call prepareFile itself (a copy of its file's prepared database per test). Without
+// a lock shared by both processes, one side's write can drop the other side's resource.
 //
 // The lock is `<state>.lock`, created atomically with link(2), holding the owner's pid
-// and a random token. Waiters poll it. A lock whose owner process no longer exists is
-// abandoned (a test killed by its timeout): a waiter renames it aside, so only one
-// waiter can take it, and removes it. A reused pid, or a zombie, reads as alive, so such
-// a lock is only given up at the timeout. Callers in one process queue in memory first,
-// and a nested call in the same async context reuses the held lock instead of
-// deadlocking. The holder keeps the lock for its whole operation (a fresh database's
+// and a random token. A lock whose owner process no longer exists is abandoned (a test
+// killed by its timeout): a waiter renames it aside, so only one waiter can take it, and
+// removes it. A reused pid, or a zombie, reads as alive, so such a lock is only given up
+// at the timeout. A nested call in the same async context reuses the held lock instead
+// of deadlocking. The holder keeps the lock for its whole operation (a fresh database's
 // migration included), so a waiter's wait counts against its own test timeout.
+//
+// Waiters are served first come, first served, across processes and within one. Each
+// call writes a ticket next to the lock, named by a system-wide monotonic clock, and
+// only the waiter with the oldest live ticket tries the lock, at a fixed short interval.
+// A ticket whose process has exited is removed like an abandoned lock. Before tickets,
+// waiters raced on the lock: long waiters backed off to 100 ms polls while new arrivals
+// polled at 5-40 ms and the holder's process re-took the lock at once, so a test's copy
+// waited 30-80 s under load and a first test timed out on the lock (finding 2179).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { link, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const defaultTimeoutMs = 10 * 60_000;
+// The first waiter tries the lock every 5 ms. The others only check whether they are
+// first; they become first when it takes the lock, which it then holds for an operation.
+const firstPollMs = 5;
+const queuePollMs = 20;
 const held = new AsyncLocalStorage();
-const queues = new Map();
 
 function processExists(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
@@ -76,11 +86,10 @@ async function removeAbandonedLock(path, content) {
       // link(2) never replaces a file. If a third process took the lock in this gap,
       // two holders now overlap: fail here rather than let them both write the state.
       // It needs a holder that died with the lock (in practice a test killed by its
-      // timeout) and three live contenders. The runner and each test process that calls
-      // prepareFile contend, so a lane has up to fileConcurrency + 1 (PostgreSQL
-      // Application: nine, the runner and eight of the nine revision files that call it, as
-      // eight files run at once). The likely result is this error on a run that is already
-      // failing.
+      // timeout) and three live processes trying the lock at once. Only the waiter with
+      // the oldest ticket tries it, so two of them must also have written their tickets
+      // just after the third read the queue. The likely result is this error on a run
+      // that is already failing.
       await link(aside, path).catch((error) => {
         if (error.code === "EEXIST") {
           throw new Error(`Displaced a live CI state lock ${path} and could not restore it.`);
@@ -93,34 +102,73 @@ async function removeAbandonedLock(path, content) {
   }
 }
 
+function ticketPattern(path) {
+  const name = basename(path).replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\.${name}\\.\\d{20}\\.(\\d+)\\.[0-9a-f-]{36}\\.ticket$`);
+}
+
+// Counts the live tickets older than `ticket` and removes those whose process has
+// exited. The names sort by the clock reading they start with.
+async function ticketsAhead(path, ticket) {
+  const pattern = ticketPattern(path);
+  let ahead = 0;
+  for (const name of await readdir(dirname(path))) {
+    const match = pattern.exec(name);
+    if (!match || name >= ticket) {
+      continue;
+    }
+    if (processExists(Number(match[1]))) {
+      ahead += 1;
+      continue;
+    }
+    await unlink(join(dirname(path), name)).catch((error) => {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    });
+  }
+  return ahead;
+}
+
 async function acquireFileLock(path, timeoutMs) {
-  const token = `${process.pid} ${randomUUID()}\n`;
-  const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  const id = randomUUID();
+  const token = `${process.pid} ${id}\n`;
+  // process.hrtime reads CLOCK_MONOTONIC (Linux) or its equivalent, which every process
+  // on the host shares, so the names order waiters by arrival.
+  const clock = String(process.hrtime.bigint()).padStart(20, "0");
+  const ticket = `.${basename(path)}.${clock}.${process.pid}.${id}.ticket`;
+  const ticketPath = join(dirname(path), ticket);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  // The lock appears complete or not at all, so a waiter never sees an empty owner.
-  await writeFile(temp, token, { mode: 0o600, flag: "wx" });
+  // The ticket becomes the lock by link(2), so the lock appears complete or not at all
+  // and a waiter never sees an empty owner.
+  await writeFile(ticketPath, token, { mode: 0o600, flag: "wx" });
   const deadline = Date.now() + timeoutMs;
   try {
-    for (let wait = 5; ; wait = Math.min(wait * 2, 100)) {
-      try {
-        await link(temp, path);
-        return token;
-      } catch (error) {
-        if (error.code !== "EEXIST") {
-          throw error;
+    for (;;) {
+      const ahead = await ticketsAhead(path, ticket);
+      let content;
+      if (ahead === 0) {
+        try {
+          await link(ticketPath, path);
+          return token;
+        } catch (error) {
+          if (error.code !== "EEXIST") {
+            throw error;
+          }
         }
+        content = await readLock(path);
+        await removeAbandonedLock(path, content);
       }
-      const content = await readLock(path);
-      await removeAbandonedLock(path, content);
       if (Date.now() >= deadline) {
+        content ??= await readLock(path);
         throw new Error(
-          `Timed out after ${timeoutMs} ms waiting for the CI state lock ${path} (held by pid ${lockOwner(content) || "unknown"}).`,
+          `Timed out after ${timeoutMs} ms waiting for the CI state lock ${path} (held by pid ${lockOwner(content) || "unknown"}, ${ahead} waiting ahead).`,
         );
       }
-      await delay(wait);
+      await delay(ahead === 0 ? firstPollMs : queuePollMs);
     }
   } finally {
-    await unlink(temp);
+    await unlink(ticketPath);
   }
 }
 
@@ -140,35 +188,20 @@ export async function withStateLock(statePath, operation, { timeoutMs = defaultT
   if (held.getStore()?.has(statePath)) {
     return operation();
   }
-  const previous = queues.get(statePath) ?? Promise.resolve();
-  let finish;
-  const current = new Promise((resolve) => {
-    finish = resolve;
-  });
-  const tail = previous.then(() => current);
-  queues.set(statePath, tail);
+  const path = `${statePath}.lock`;
+  const token = await acquireFileLock(path, timeoutMs);
+  const paths = new Set(held.getStore() ?? []);
+  paths.add(statePath);
+  let result;
   try {
-    await previous;
-    const path = `${statePath}.lock`;
-    const token = await acquireFileLock(path, timeoutMs);
-    const paths = new Set(held.getStore() ?? []);
-    paths.add(statePath);
-    let result;
-    try {
-      result = await held.run(paths, operation);
-    } catch (error) {
-      // Report the operation's own failure; a lost lock is secondary to it.
-      await releaseFileLock(path, token).catch((releaseError) => {
-        console.error(releaseError.message);
-      });
-      throw error;
-    }
-    await releaseFileLock(path, token);
-    return result;
-  } finally {
-    finish();
-    if (queues.get(statePath) === tail) {
-      queues.delete(statePath);
-    }
+    result = await held.run(paths, operation);
+  } catch (error) {
+    // Report the operation's own failure; a lost lock is secondary to it.
+    await releaseFileLock(path, token).catch((releaseError) => {
+      console.error(releaseError.message);
+    });
+    throw error;
   }
+  await releaseFileLock(path, token);
+  return result;
 }

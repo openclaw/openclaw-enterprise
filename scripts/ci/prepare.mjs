@@ -713,6 +713,7 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   });
   await writeState(statePath, state);
 
+  const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
   await postgresExec(
     server,
     [
@@ -725,28 +726,32 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
       "postgres",
       "-c",
       `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
+      // A copy carries the template's schemas, their ACLs and every migration, but not
+      // the database-level grant, which lives in pg_database, so it is granted from here.
+      // Each -c is its own request (CREATE DATABASE refuses a transaction block) and psql
+      // stops at the first error. Every test's copy runs this under the CI state lock,
+      // where each `docker compose exec` costs about 0.25 s (finding 2180).
+      ...(source === undefined ? [] : ["-c", grant]),
     ],
     "database-create",
   );
-  // A copy carries the template's schemas, their ACLs and every migration, but not the
-  // database-level grant, which lives in pg_database.
-  await postgresExec(
-    server,
-    [
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      name,
-      "-c",
-      `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;${source === undefined ? " CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;" : ""}`,
-    ],
-    "database-schema",
-  );
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   if (source === undefined) {
+    await postgresExec(
+      server,
+      [
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        name,
+        "-c",
+        `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      ],
+      "database-schema",
+    );
     await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
       env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
       stage: "database-migrate",
