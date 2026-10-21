@@ -42,7 +42,7 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Theme workflow", { ready: true });
   await fixture.createAgent(namespace.id, "Theme assistant");
-  const { page, artifacts } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture);
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await page.title(), "Example Agents");
@@ -60,12 +60,10 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByText("Theme assistant", { exact: true }).click();
   await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
-  await page.screenshot({ path: join(artifacts, "theme-agent-detail.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
-  await page.screenshot({ path: join(artifacts, "theme-mobile-navigation.png") });
   await page.keyboard.press("Escape");
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.locator(".sidebar .account-toggle").click();
