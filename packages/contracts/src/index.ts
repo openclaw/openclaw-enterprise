@@ -2174,6 +2174,7 @@ export {
   validatePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
+  requiredPresetVariables,
 } from "./preset-variables.mjs";
 
 export {

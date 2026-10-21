@@ -1,3 +1,14 @@
+import type {
+  Preset,
+  PresetLaunchSettings,
+  PresetSummary,
+  PresetTemplate,
+  PresetVariable,
+  SecretMetadata,
+} from "@openclaw-enterprise/contracts";
+import { requestFailure, responseFields } from "../api-client.mjs";
+import type { createDraftStore } from "../drafts.mjs";
+import type { NamespacePageContext } from "../namespaces.mjs";
 import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
 import {
   renderPresetTemplate,
@@ -6,20 +17,70 @@ import {
 } from "../preset-variables.mjs";
 import { message, namespacePath } from "./list.mjs";
 
+type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
+  namespaceId: string;
+  drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
+};
+
+interface VariableField {
+  name: string;
+  definition: PresetVariable;
+  input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+  readValue(): string;
+}
+
+interface SecretField extends VariableField {
+  mode: HTMLSelectElement;
+  secretSelect: HTMLSelectElement;
+  secretStatus: HTMLElement;
+  inputField: HTMLElement;
+  secretField: HTMLElement;
+  restoredSecret: string | undefined;
+  secrets: SecretMetadata[];
+  secretsState: "loading" | "ready" | "failed";
+}
+
+// Retain the password field's source choice, never the password.
+type SavedField =
+  | { type: "password"; mode?: string; secret?: string }
+  | {
+      type: Exclude<PresetVariable["type"], "password">;
+      value: string;
+      supplied: string | undefined;
+    };
+
+function saveField(field: VariableField | SecretField): SavedField {
+  const { type } = field.definition;
+  if (type !== "password") {
+    return { type, value: field.readValue(), supplied: field.input.dataset.supplied };
+  }
+  return "mode" in field
+    ? { type, mode: field.mode.value, secret: field.secretSelect.value }
+    : { type };
+}
+
+interface PresetDraft {
+  id: string;
+  touched: boolean;
+  fields: Record<string, SavedField> | undefined;
+}
+
+type ModelSecret = { kind: "new" } | { kind: "existing"; secret: SecretMetadata };
+
 const NEW_SECRET = "new";
 const EXISTING_SECRET = "existing";
 const HARNESS_SECRET_TOKEN = /^\{\{\s*vars\.([A-Za-z_][A-Za-z0-9_]*)\s*\}\}$/;
 
-function harnessSecretVariable(template) {
-  const value = template?.agent?.harnessAuth?.secret;
+function harnessSecretVariable(template: PresetTemplate) {
+  const value = responseFields(template.agent?.harnessAuth).secret;
   return typeof value === "string" ? HARNESS_SECRET_TOKEN.exec(value)?.[1] : undefined;
 }
 
 // Only the variable that names the Agent (the whole agent.name is its token) is a one-line
 // input. Any other string may hold several lines (instructions, a workspace file), even when its
 // default is one line, so it keeps a textarea (UX plan C3; #1989).
-function singleLineVariable(template, name, value) {
-  const agentName = template?.agent?.name;
+function singleLineVariable(template: PresetTemplate, name: string, value: string) {
+  const agentName = template.agent?.name;
   return (
     !/[\r\n]/.test(value) &&
     typeof agentName === "string" &&
@@ -27,33 +88,44 @@ function singleLineVariable(template, name, value) {
   );
 }
 
-function variableLabel(name) {
+function variableLabel(name: string) {
   const words = name
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replaceAll("_", " ")
     .trim();
-  return words ? words[0].toUpperCase() + words.slice(1) : name;
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : name;
 }
 
-function sameNamespaceSecret(context, secret) {
+function sameNamespaceSecret(context: PresetContext, value: unknown): value is SecretMetadata {
+  const secret = responseFields(value);
+  const ref = responseFields(secret.ref);
   return (
-    secret?.namespaceId === context.namespaceId &&
-    secret?.ref?.kind === "secret" &&
-    secret.ref.namespaceId === context.namespaceId &&
-    typeof secret.ref.id === "string" &&
-    secret.ref.id === secret.id
+    secret.namespaceId === context.namespaceId &&
+    typeof secret.name === "string" &&
+    ref.kind === "secret" &&
+    ref.namespaceId === context.namespaceId &&
+    typeof ref.id === "string" &&
+    ref.id === secret.id
   );
 }
 
-function renderSecretOptions(secrets) {
+function renderSecretOptions(secrets: readonly SecretMetadata[]) {
   return [
     element("option", { value: "" }, "Choose an existing Secret"),
-    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name ?? "Secret")),
+    ...secrets.map((secret) => element("option", { value: secret.id }, secret.name)),
   ];
 }
 
-export function createPresetFields(context, apply) {
-  let retained = context.drafts.get("preset");
+export function createPresetFields(
+  context: PresetContext,
+  apply: (
+    settings: PresetLaunchSettings,
+    options: { modelSecret: ModelSecret | undefined; presetName: string },
+    draft: Pick<PresetDraft, "touched">,
+  ) => void,
+) {
+  // This scoped draft is written only by the capture below.
+  let retained = context.drafts.get("preset") as PresetDraft | undefined;
   const selector = element(
     "select",
     { id: "agent-preset", disabled: true },
@@ -62,13 +134,13 @@ export function createPresetFields(context, apply) {
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
   const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
-  let defaultId;
+  let defaultId: string | undefined;
   // How the next selection change started: "shortcut" applies the default Preset at once.
-  let origin;
+  let origin: "shortcut" | undefined;
   // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
   // first; a reload or tab close warns either way (finding 1902).
   let touched = false;
-  const markTouched = (event) => {
+  const markTouched = (event: Event) => {
     touched ||= event.isTrusted;
   };
   inputs.addEventListener("input", markTouched);
@@ -80,7 +152,7 @@ export function createPresetFields(context, apply) {
   const startDefault = button(
     "Start with default Preset",
     () => {
-      selector.value = defaultId;
+      selector.value = defaultId ?? "";
       origin = "shortcut";
       selector.dispatchEvent(new Event("change"));
     },
@@ -94,59 +166,37 @@ export function createPresetFields(context, apply) {
   });
   // Once a Preset is chosen, Use Preset is the next step, so it takes the filled style from the
   // default shortcut; clearing the choice gives it back (finding 2066).
-  function emphasize(chosen) {
+  function emphasize(chosen: boolean) {
     for (const [node, primary] of [
       [startDefault, !chosen],
       [applyButton, chosen],
-    ]) {
+    ] as const) {
       node.classList.toggle("button", primary);
       node.classList.toggle("button--primary", primary);
     }
   }
-  let selected;
-  let fields = [];
+  let selected: Pick<Preset, "name" | "template"> | undefined;
+  let fields: (VariableField | SecretField)[] = [];
   let loadVersion = 0;
-  context.drafts.track("preset", () =>
+  context.drafts.track("preset", (): PresetDraft | undefined =>
     selector.value
       ? {
           id: selector.value,
           touched,
           fields: fields.length
-            ? Object.fromEntries(
-                fields.map((field) => [
-                  field.name,
-                  {
-                    type: field.definition.type,
-                    ...(field.definition.type === "password"
-                      ? {}
-                      : {
-                          value:
-                            field.definition.type === "string"
-                              ? field.readValue()
-                              : field.input.value,
-                          supplied: field.input.dataset.supplied,
-                        }),
-                    mode: field.mode?.value,
-                    secret: field.secretSelect?.value,
-                  },
-                ]),
-              )
+            ? Object.fromEntries(fields.map((field) => [field.name, saveField(field)]))
             : retained?.fields,
         }
       : retained,
   );
-  context.drafts.unsavedWhen("preset", (draft) => Boolean(draft?.touched));
+  context.drafts.unsavedWhen("preset", (draft) => responseFields(draft).touched === true);
 
-  function currentSecrets(field) {
-    return field.secrets.filter((secret) => sameNamespaceSecret(context, secret));
-  }
-
-  function updatePasswordField(field) {
-    const existing = field.mode?.value === EXISTING_SECRET;
+  function updatePasswordField(field: SecretField) {
+    const existing = field.mode.value === EXISTING_SECRET;
     field.input.required = !existing;
     field.input.disabled = existing;
     field.secretSelect.required = existing;
-    field.secretSelect.disabled = !existing || field.secretsLoading || field.secretsError !== null;
+    field.secretSelect.disabled = !existing || field.secretsState !== "ready";
     field.inputField.hidden = existing;
     field.secretField.hidden = !existing;
     if (existing) {
@@ -157,13 +207,12 @@ export function createPresetFields(context, apply) {
     }
   }
 
-  async function loadSecrets(version, passwordFields) {
+  async function loadSecrets(version: number, passwordFields: SecretField[]) {
     if (!passwordFields.length) {
       return;
     }
     for (const field of passwordFields) {
-      field.secretsLoading = true;
-      field.secretsError = null;
+      field.secretsState = "loading";
       field.secretStatus.textContent = "Loading existing Secrets…";
       updatePasswordField(field);
     }
@@ -174,12 +223,14 @@ export function createPresetFields(context, apply) {
       }
       for (const field of passwordFields) {
         field.secrets = Array.isArray(secrets)
-          ? secrets.filter((secret) => sameNamespaceSecret(context, secret))
+          ? secrets.filter((value: unknown): value is SecretMetadata =>
+              sameNamespaceSecret(context, value),
+            )
           : [];
-        field.secretsLoading = false;
+        field.secretsState = "ready";
         field.secretSelect.replaceChildren(...renderSecretOptions(field.secrets));
         field.secretSelect.value = field.restoredSecret ?? "";
-        delete field.restoredSecret;
+        field.restoredSecret = undefined;
         field.secretStatus.textContent = field.secrets.length
           ? "Existing Secrets in this Namespace are available. Secret values are never shown."
           : "No existing Secrets are available in this Namespace. Create a new Secret instead.";
@@ -189,14 +240,13 @@ export function createPresetFields(context, apply) {
       if (!context.isCurrent() || !section.isConnected || version !== loadVersion) {
         return;
       }
-      if (error.status === 401) {
+      if (requestFailure(error).status === 401) {
         context.onExpired();
         return;
       }
       for (const field of passwordFields) {
         field.secrets = [];
-        field.secretsLoading = false;
-        field.secretsError = error;
+        field.secretsState = "failed";
         field.secretSelect.replaceChildren(
           element("option", { value: "" }, "Existing Secrets unavailable"),
         );
@@ -213,30 +263,28 @@ export function createPresetFields(context, apply) {
     // The console checks every variable at once, under each field, with no browser bubble, and
     // focuses the first to fix (UX plan C3).
     const controls = fields.map((field) =>
-      field.mode?.value === EXISTING_SECRET ? field.secretSelect : field.input,
+      "mode" in field && field.mode.value === EXISTING_SECRET ? field.secretSelect : field.input,
     );
     if (!validateFields(controls)) {
       return;
     }
     try {
-      const values = Object.create(null);
-      const secretSelections = new Map();
+      const values: Record<string, string | number | boolean> = Object.create(null);
+      let modelSecret: ModelSecret | undefined;
       for (const field of fields) {
         const { name, definition, input } = field;
-        if (definition.type === "password" && field.mode) {
+        if ("mode" in field) {
           if (field.mode.value === EXISTING_SECRET) {
-            const secret = currentSecrets(field).find(
-              (item) => item.id === field.secretSelect.value,
-            );
+            const secret = field.secrets.find((item) => item.id === field.secretSelect.value);
             if (!sameNamespaceSecret(context, secret)) {
               feedback.textContent = "Choose an existing Secret from this Namespace.";
               return;
             }
-            secretSelections.set(name, { kind: "existing", secret });
+            modelSecret = { kind: "existing", secret };
             continue;
           }
           values[name] = input.value;
-          secretSelections.set(name, { kind: "new" });
+          modelSecret = { kind: "new" };
           continue;
         }
         if (input.dataset.supplied !== "true") {
@@ -254,20 +302,24 @@ export function createPresetFields(context, apply) {
                 ? field.readValue()
                 : input.value;
       }
-      const passwordVariable = harnessSecretVariable(selected.template);
-      const secretSelection = passwordVariable ? secretSelections.get(passwordVariable) : undefined;
-      validatePresetTemplate(selected.template);
-      const renderTemplate = structuredClone(selected.template);
-      if (secretSelection?.kind === "existing") {
-        renderTemplate.agent = { ...(renderTemplate.agent ?? {}) };
-        renderTemplate.agent.harnessAuth = {
-          method: renderTemplate.agent.harnessAuth.method,
-          source: secretSelection.secret.ref,
-        };
-      }
-      const applied = renderPresetTemplate(renderTemplate, values);
+      const template = selected.template;
+      const agent = template.agent;
+      const settings =
+        modelSecret?.kind === "existing"
+          ? {
+              ...template,
+              agent: {
+                ...agent,
+                harnessAuth: {
+                  method: responseFields(agent?.harnessAuth).method,
+                  source: modelSecret.secret.ref,
+                },
+              },
+            }
+          : template;
+      const applied = renderPresetTemplate(settings, values);
       // The form names the Preset it started from (UX plan A2, flows.md C8).
-      apply(applied, { modelSecret: secretSelection, presetName: selected.name }, { touched });
+      apply(applied, { modelSecret, presetName: selected.name }, { touched });
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -275,7 +327,7 @@ export function createPresetFields(context, apply) {
         }
       }
     } catch (error) {
-      feedback.textContent = error.message;
+      feedback.textContent = error instanceof Error ? error.message : message(error);
     }
   });
   const section = element(
@@ -310,7 +362,7 @@ export function createPresetFields(context, apply) {
     }
     status.textContent = "Loading Preset…";
     try {
-      const preset = await context.request(
+      const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
       );
       if (
@@ -321,15 +373,21 @@ export function createPresetFields(context, apply) {
       ) {
         return;
       }
-      selected = preset;
-      const required = requiredPresetVariables(preset.template);
-      fields = Object.entries(preset.template.variables ?? {}).map(([name, definition]) => {
+      const preset = responseFields(value);
+      if (typeof preset.name !== "string") {
+        throw new Error("Invalid Preset response.");
+      }
+      const template = validatePresetTemplate(preset.template);
+      selected = { name: preset.name, template };
+      const required = requiredPresetVariables(template);
+      const variables = Object.entries<PresetVariable>(template.variables ?? {});
+      fields = variables.map(([name, definition]) => {
         const label = variableLabel(name);
         // Password inputs stay required in every case; other types only when rendering needs them.
         const needed = definition.type === "password" || required.has(name);
         const saved = retained?.fields?.[name];
-        let initialValue = definition.default === undefined ? "" : String(definition.default);
-        if (saved?.type === definition.type && definition.type !== "password") {
+        let initialValue = "default" in definition ? String(definition.default) : "";
+        if (saved && saved.type !== "password" && saved.type === definition.type) {
           initialValue = saved.value;
         }
         const input =
@@ -341,8 +399,7 @@ export function createPresetFields(context, apply) {
                 element("option", { value: "true" }, "True"),
                 element("option", { value: "false" }, "False"),
               )
-            : definition.type === "string" &&
-                !singleLineVariable(preset.template, name, initialValue)
+            : definition.type === "string" && !singleLineVariable(template, name, initialValue)
               ? element("textarea", {
                   id: `preset-variable-${name}`,
                   rows: 2,
@@ -358,13 +415,13 @@ export function createPresetFields(context, apply) {
                   ...(definition.type === "password" ? { spellcheck: "false" } : {}),
                 });
         input.dataset.supplied = String(Object.hasOwn(definition, "default"));
-        if (saved?.type === definition.type && definition.type !== "password") {
+        if (saved && saved.type !== "password" && saved.type === definition.type) {
           input.dataset.supplied = saved.supplied;
         }
         input.value = initialValue;
         // Textarea displays CRLF as LF. Keep an untouched default or restored value exact;
         // an actual edit takes the browser's current string, including its line breaks.
-        let stringValue = definition.type === "string" ? initialValue : undefined;
+        let stringValue = initialValue;
         const readValue = () => (definition.type === "string" ? stringValue : input.value);
         input.addEventListener("input", () => {
           if (definition.type === "string") {
@@ -379,7 +436,7 @@ export function createPresetFields(context, apply) {
           }
           input.dataset.supplied = "true";
         });
-        if (definition.type !== "password" || name !== harnessSecretVariable(preset.template)) {
+        if (definition.type !== "password" || name !== harnessSecretVariable(template)) {
           inputs.append(formField({ label, control: input, help: definition.description }));
           return { name, definition, input, readValue };
         }
@@ -410,19 +467,19 @@ export function createPresetFields(context, apply) {
         secretField.hidden = true;
         secretField.append(secretStatus);
         secretSelect.setAttribute("aria-describedby", secretStatus.id);
-        const fieldEntry = {
+        const fieldEntry: SecretField = {
           name,
           definition,
           input,
+          readValue,
           mode,
           secretSelect,
           secretStatus,
           inputField,
           secretField,
-          restoredSecret: saved?.secret,
+          restoredSecret: saved?.type === "password" ? saved.secret : undefined,
           secrets: [],
-          secretsLoading: true,
-          secretsError: null,
+          secretsState: "loading",
         };
         mode.addEventListener("change", () => {
           input.dataset.supplied = String(mode.value === NEW_SECRET);
@@ -452,13 +509,13 @@ export function createPresetFields(context, apply) {
       }
       void loadSecrets(
         version,
-        fields.filter((field) => field.definition.type === "password" && field.mode),
+        fields.filter((field): field is SecretField => "mode" in field),
       );
     } catch (error) {
       if (!context.isCurrent() || !section.isConnected || version !== loadVersion) {
         return;
       }
-      if (error.status === 401) {
+      if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
         feedback.textContent = message(error);
@@ -473,13 +530,23 @@ export function createPresetFields(context, apply) {
   });
   context
     .request(`${namespacePath(context.namespaceId)}/presets`)
-    .then((presets) => {
+    .then((value) => {
       if (!context.isCurrent() || !section.isConnected) {
         return;
       }
+      if (!Array.isArray(value)) {
+        throw new Error("Invalid Presets response.");
+      }
+      const presets = value.map((entry: unknown): Pick<PresetSummary, "id" | "name"> => {
+        const { id, name } = responseFields(entry);
+        if (typeof id !== "string" || typeof name !== "string") {
+          throw new Error("Invalid Presets response.");
+        }
+        return { id, name };
+      });
       selector.append(
         ...presets
-          .toSorted((left, right) =>
+          .sort((left, right) =>
             left.name.localeCompare(right.name, undefined, { sensitivity: "base" }),
           )
           .map((preset) => element("option", { value: preset.id }, preset.name)),
@@ -492,7 +559,7 @@ export function createPresetFields(context, apply) {
         defaultHint.hidden = false;
         startDefault.setAttribute("aria-describedby", defaultHint.id);
       }
-      if (retained && presets.some((preset) => preset.id === retained.id)) {
+      if (retained && presets.some((preset) => preset.id === retained?.id)) {
         selector.value = retained.id;
         selector.dispatchEvent(new Event("change"));
       }
@@ -507,7 +574,7 @@ export function createPresetFields(context, apply) {
       if (!context.isCurrent() || !section.isConnected) {
         return;
       }
-      if (error.status === 401) {
+      if (requestFailure(error).status === 401) {
         context.onExpired();
       } else {
         status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;

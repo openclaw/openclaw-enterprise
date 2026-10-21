@@ -11,7 +11,7 @@ default unless the operator explicitly customizes it.
 
 Source checked at `a67f8ea0`:
 
-- [Console repository fields](../../apps/controller/src/console/agents/repositories.mjs)
+- [Console repository fields](../../apps/controller/src/console/agents/repositories.mts)
   render the complete catalog and apply one profile common to all selections.
 - [Repository options](../../packages/contracts/src/repo.ts) expose a stable
   `repositoryRef`, display name, and allowed profiles. They contain no usage,

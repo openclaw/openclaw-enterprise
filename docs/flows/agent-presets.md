@@ -26,7 +26,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
-- [Console selector](../../apps/controller/src/console/agents/presets.mjs):
+- [Console selector](../../apps/controller/src/console/agents/presets.mts):
   `createPresetFields` requires a selected Namespace and an authenticated user.
   Saving also needs the existing Configuration, Agent, and credential grants.
 
@@ -146,9 +146,9 @@ path records mutations and denials without template or variable contents.
 
 ### 3. Read and render the selected copy
 
-`apps/controller/src/console/agents/presets.mjs:createPresetFields`
+`apps/controller/src/console/agents/presets.mts:createPresetFields`
 
-[`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
+[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
 lists readable Preset summaries, requiring Namespace read, then reads the selection
 once. **Start with default Preset** reads the listed `default-codex` resource.
 Variable-free templates apply immediately; customized variables keep the chooser

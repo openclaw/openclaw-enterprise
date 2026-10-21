@@ -191,7 +191,7 @@
     },
     {
       "rule": "unresolved-local-import",
-      "from": "apps/controller/src/console/agents/presets.mjs",
+      "from": "apps/controller/src/console/agents/presets.mts",
       "to": "apps/controller/src/console/preset-variables.mjs",
       "specifier": "../preset-variables.mjs",
       "kind": "import",
