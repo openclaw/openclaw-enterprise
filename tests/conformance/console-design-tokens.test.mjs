@@ -90,8 +90,6 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
   // Kept on purpose: each is geometry tied to a border or a fixed-size mark, not spacing. Only
   // the exact value is allowed, so other spacing on these rules still has to use the scale.
   const allowed = new Map([
-    // Forced colours draw the 3px bar as a border; subtract it so the label stays put.
-    ['.nav a[aria-current="page"] padding-left', "calc(var(--space-3) - 3px)"],
     // Centres the 20px mark on the first text line.
     [".checklist-mark margin-top", "1px"],
     // The check glyph inside the 20px mark.

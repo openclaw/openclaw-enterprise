@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-19
-last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
+updated: 2026-10-20
+last_updated_session: authoring-run/016ma8eD5SYoBTV5kswEV3Dn
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -189,12 +189,14 @@ selects a named provider and HTTPS Responses transport.
 
 Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
 Kubernetes, filesystem, process and binary-scoped network policy use the
-`v0.1.4` wire contract. `environment` preserves opaque
+`v0.1.5` wire contract. `environment` preserves opaque
 `OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
 launch. Readiness `timeoutMs` requires a positive safe integer. Configuration errors
 prevent Kubernetes calls. Duplicate names and
 `workspace-node-enrollment` prevent Driver construction.
+The template includes the Harness Pod labels. The Gateway rejects the request if
+any label key is missing from `allowed_pod_labels`.
 
 `provisionHarness` creates or adopts the provider with final setup. Renewal checks the provider version and updates only `node_setup_json` through `UpdateProvider`. For Codex, a configured post-create delay of at most 120 seconds precedes route exposure. Compute rolls the Gateway before checking enrollment.
 
@@ -334,6 +336,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 ## Changelog
 
+- 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
+
 - 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 
 - 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
@@ -392,12 +396,6 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 - 2026-10-06 11:17: Reconciled endpoint flow with current namespace and provider provisioning; condensed repeated prose. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - b6dc6b87a461ad33374e133d15cc739d8e074fea)
 
 - 2026-10-05 16:17: Documented version-fenced workspace-node setup renewal through the revision provider and supervisor refresh. (authoring-run/4f3e6ccd-a967-48c8-9d5d-f29a6d338d7d - fd9a082e2587432bde6282748a82e3025a64fd1a)
-
-- 2026-10-05 11:36: Trace pre-registration endpoint validation and condense repeated setup and runtime details. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 9958ef0412565864efba7b13995536d7c2a51d22)
-
-- 2026-10-05 00:06: Bind immutable credential-source endpoints to provider profiles and Codex runtime configuration while retaining existing default endpoint limits for other consumers. (authoring-run/4e4824a1-f107-44c2-90bf-00fe13ff650c - d269c6d03)
-
-- 2026-10-05 12:50: Removed repeated setup and wire-contract detail while preserving the current OpenShell provisioning sequence and moved older entries to the history page. (authoring-run/fd7f6cdb-1d1d-40d5-8d4a-d6d80cd946e7 - 4b5afe0cb653f7dd99fccdb2e3432cbf60e6a03e)
 
 - 2026-10-02 16:26: Passed OpenShell's provider-local workspace root to the dedicated Gateway while preserving the canonical Kubernetes Harness root. (authoring-run/3bf937d5-c422-419e-af2d-754abe024ca4 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 

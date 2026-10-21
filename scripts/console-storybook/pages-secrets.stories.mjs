@@ -4,6 +4,7 @@ export default { title: "Pages/Secrets" };
 
 export const Populated = story("secrets");
 export const Mobile = story("secretsMobile");
+export const NoSearchMatches = story("secretsSearch");
 export const Empty = story("secretsEmpty");
 export const Loading = story("secretsLoading");
 export const Unavailable = story("secretsUnavailable");

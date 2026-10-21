@@ -39,48 +39,41 @@ const style = (locator, ...properties) =>
     properties,
   );
 
-// Warm-quiet shell (UX spec 3.1): the sidebar is a surface-2 panel with a hairline, the current
-// page is a white pill with a 3 px accent bar, the wordmark is ink, and the account row names the
-// signed-in person.
+// The navigation uses an inverse surface, but its account menu uses the regular surface.
 test("the desktop shell shows the sidebar surface, the current-page bar and the account row", async (t) => {
   const { fixture, page } = await openAgents(t, desktop);
   const { email, name } = fixture.credentials;
-  const [surface2, surface, accent, border, strong] = await Promise.all(
+  const [surface, text, selected, marker] = await Promise.all(
     [
-      "--color-surface-2",
-      "--color-surface",
-      "--color-accent",
-      "--color-border",
-      "--color-text-strong",
+      "--color-surface-inverse",
+      "--color-on-inverse",
+      "--color-inverse-selected",
+      "--color-inverse-marker",
     ].map((token) => tokenColor(page, token)),
   );
-  assert.equal(surface2, "rgb(244, 241, 236)");
 
   const sidebar = page.locator(".sidebar");
-  assert.deepEqual(
-    await style(sidebar, "backgroundColor", "borderRightColor", "borderRightWidth"),
-    { backgroundColor: surface2, borderRightColor: border, borderRightWidth: "1px" },
-  );
+  assert.equal((await style(sidebar, "backgroundColor")).backgroundColor, surface);
   const brand = sidebar.locator(".brand");
   assert.equal(await brand.textContent(), "OpenClaw Enterprise");
   assert.deepEqual(await style(brand, "color", "textTransform"), {
-    color: strong,
+    color: text,
     textTransform: "none",
   });
 
   const current = page.locator('.nav a[aria-current="page"]');
   assert.equal(await current.textContent(), "◇Agents");
-  assert.deepEqual(await style(current, "backgroundColor", "color", "boxShadow", "height"), {
-    backgroundColor: surface,
-    color: strong,
-    boxShadow: `${accent} 3px 0px 0px 0px inset`,
+  assert.deepEqual(await style(current, "backgroundColor", "color", "height"), {
+    backgroundColor: selected,
+    color: text,
     height: "36px",
   });
+  const pageMarker = (link) =>
+    link.evaluate((node) => globalThis.getComputedStyle(node, "::before").borderInlineStart);
+  assert.equal(await pageMarker(current), `3px solid ${marker}`);
   const other = page.locator(".nav a", { hasText: "Namespaces" });
-  assert.deepEqual(await style(other, "backgroundColor", "boxShadow"), {
-    backgroundColor: "rgba(0, 0, 0, 0)",
-    boxShadow: "none",
-  });
+  assert.equal((await style(other, "backgroundColor")).backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.match(await pageMarker(other), /^0px none/);
 
   // The account row: initials, name and email; its menu offers Settings and Sign out.
   const account = page.getByRole("button", { name: `${name} ${email}`, exact: true });
@@ -88,7 +81,12 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   assert.equal(await account.locator(".account-name").textContent(), name);
   assert.equal(await account.locator(".account-email").textContent(), email);
   assert.equal(await page.locator(".topbar").isVisible(), false, "no top bar on desktop");
-  await account.click();
+  await account.press("ArrowDown");
+  const settings = page.getByRole("menuitem", { name: "Settings", exact: true });
+  assert.deepEqual(await style(settings, "color", "outlineColor"), {
+    color: await tokenColor(page, "--color-text"),
+    outlineColor: await tokenColor(page, "--color-focus"),
+  });
   assert.deepEqual(
     await page.getByRole("menu", { name: "Account" }).getByRole("menuitem").allTextContents(),
     ["Settings", "Sign out"],
@@ -97,11 +95,10 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
 });
 
-// The focus ring is navy, not accent, so it does not read as a validation error (spec 6.1).
+// Input focus uses its own colour so it does not read as a validation error.
 test("the focus ring is a 2 px focus-colour outline", async (t) => {
   const { page } = await openAgents(t, desktop);
   const focus = await tokenColor(page, "--color-focus");
-  assert.equal(focus, await tokenColor(page, "--color-info"));
   assert.notEqual(focus, await tokenColor(page, "--color-accent"));
   const search = page.getByRole("searchbox", { name: "Search Agents", exact: true });
   await search.focus();
@@ -147,7 +144,7 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(await menu.isVisible(), false);
   assert.equal(await avatar.evaluate((node) => node === globalThis.document.activeElement), true);
 
-  // Opening the drawer closes the avatar's menu; the drawer is the surface-2 sidebar.
+  // Opening the drawer closes the avatar's menu and brings the desktop navigation into reach.
   await avatar.click();
   await navigation.click();
   assert.equal(await menu.isVisible(), false);
@@ -156,7 +153,7 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   await sidebar.waitFor({ state: "visible" });
   assert.equal(
     (await style(sidebar, "backgroundColor")).backgroundColor,
-    await tokenColor(page, "--color-surface-2"),
+    await tokenColor(page, "--color-surface-inverse"),
   );
   for (const link of await sidebar.locator(".nav a").all()) {
     assert.ok((await link.boundingBox()).height >= 44, "drawer links keep a 44 px target");

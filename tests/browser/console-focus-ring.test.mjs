@@ -31,9 +31,12 @@ const browser = fileBrowser();
 const tokenRings = (page) =>
   page.evaluate(() => {
     const document = globalThis.document;
-    const ring = (offset) => {
+    const ring = (offset, inverse = false) => {
       const probe = document.createElement("div");
       probe.style.outline = "var(--focus-ring)";
+      if (inverse) {
+        probe.style.outlineColor = "var(--color-focus-inverse)";
+      }
       probe.style.outlineOffset = `var(${offset})`;
       document.body.append(probe);
       const style = globalThis.getComputedStyle(probe);
@@ -46,7 +49,11 @@ const tokenRings = (page) =>
       probe.remove();
       return value.join(" ");
     };
-    return { outer: ring("--focus-offset"), inset: ring("--focus-offset-inset") };
+    return {
+      outer: ring("--focus-offset"),
+      inset: ring("--focus-offset-inset"),
+      inverse: ring("--focus-offset", true),
+    };
   });
 
 // The rows that draw a second ring around their focused control, a small checkbox or radio, and
@@ -166,7 +173,8 @@ const focusedRing = (page, selector = null) =>
           });
         }
       }
-      return { name, tag, ring: ring.join(" "), clipped, frames };
+      const inverse = owner.closest(".sidebar, .topbar, .dialog-header") && !owner.closest(".menu");
+      return { name, tag, ring: ring.join(" "), inverse: Boolean(inverse), clipped, frames };
     },
     [selector, Object.keys(FRAMES)],
   );
@@ -197,7 +205,7 @@ function ringParts(ring) {
 
 // Every stop draws one of the token rings, and no scroller hides any part of it.
 async function assertVisibleRings(page, label, stops) {
-  const { outer, inset } = await tokenRings(page);
+  const { outer, inset, inverse } = await tokenRings(page);
   const outerRing = ringParts(outer);
   const insetRing = ringParts(inset);
   assert.ok(
@@ -208,8 +216,10 @@ async function assertVisibleRings(page, label, stops) {
     insetRing.style === "solid" && insetRing.width >= 2 && insetRing.offset + insetRing.width <= 0,
     `the inset ring sits inside the edge (${inset})`,
   );
-  const off = stops.filter(({ ring }) => ring !== outer && ring !== inset);
-  assert.deepEqual(off, [], `${label}: every stop shows "${outer}" or "${inset}"`);
+  const off = stops.filter((stop) =>
+    stop.inverse ? stop.ring !== inverse : stop.ring !== outer && stop.ring !== inset,
+  );
+  assert.deepEqual(off, [], `${label}: every stop shows the focus ring for its surface`);
   const hidden = stops.filter(({ clipped }) => clipped.length > 0);
   assert.deepEqual(hidden, [], `${label}: no scroller hides part of a focus ring`);
   // One ring per stop: a second ring comes only from a listed row frame, in its token ring.

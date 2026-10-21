@@ -31,10 +31,11 @@ const (
 	openShellSupervisorRole         = "supervisor"
 	openShellNodePort               = 30051
 	openShellK3sImage               = "docker.io/rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657"
-	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
-	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070"
-	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290"
+	openShellGatewayImage           = "ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
+	openShellSandboxImage           = "ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851"
+	openShellSupervisorImage        = "ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161"
 	openShellAdmissionContainerPath = "/etc/openclaw-development/openshell-pod-security-admission.yaml"
+	openShellAllowedPodLabelsValue  = `--set-json=gatewayConfig.openshell\.drivers\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]`
 )
 
 type openShellDevelopmentAssets struct {
@@ -298,6 +299,9 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		"--set-string=sandboxServiceAccount.name=openshell-sandbox",
 		"--set=workspaceResources.enabled=false",
 		"--set=server.drivers.kubernetes.allowDriverConfig=true",
+		// The gateway rejects every Sandbox template label it does not allow.
+		// Harness Pods carry OCE selector labels for NetworkPolicies and Services.
+		openShellAllowedPodLabelsValue,
 		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=" + openShellOperatorNamespaceLabel + "=" + openShellOperatorNamespaceValue,

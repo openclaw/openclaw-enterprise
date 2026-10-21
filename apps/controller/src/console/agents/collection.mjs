@@ -184,7 +184,7 @@ export function renderAgentList(context) {
     );
   let notReadyNote = notReady ? namespaceNote("warning", notReady.note) : null;
   view.replaceChildren(
-    element("div", { className: "agent-toolbar" }, search, create),
+    element("div", { className: "collection-toolbar" }, search, create),
     ...(notReadyNote ? [notReadyNote] : []),
     ...(createDenied
       ? [

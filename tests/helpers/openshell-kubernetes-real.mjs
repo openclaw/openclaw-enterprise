@@ -23,8 +23,8 @@ const transportSecretPrefix = "openclaw-agent-transport";
 
 // The pinned Kubernetes driver, not policy.process, owns workload identity.
 // This k3d fixture leaves sandbox_uid/gid and OpenShift namespace ranges unset:
-// NVIDIA/OpenShell 5a7728c304b5528e954e9ae900cf21f84e1a12b1
-// crates/openshell-driver-kubernetes/src/config.rs:288,524-560.
+// NVIDIA/OpenShell bdb956f2cd65a635f1294fccf1d138d263bf650f
+// crates/openshell-driver-kubernetes/src/config.rs:335,569-602.
 export const OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY = Object.freeze({ uid: 10001, gid: 10001 });
 
 // Compute's dedicated Codex Harness categories: the workspace, generated images, and Codex
@@ -521,7 +521,7 @@ function openShellGatewayServiceName(namespace) {
   return `openshell-${openshellHash(namespace, 10)}`;
 }
 
-// OpenShell v0.1.4 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
+// OpenShell v0.1.5 runs a separate supervisor Pod per Sandbox; it (not the Harness workload) calls
 // the gateway back. Mirrors internal/occdev/kubernetes.go and OpenShell sandbox_runtime.rs labels.
 export const openShellSupervisorLabels = Object.freeze({
   "openshell.ai/managed-by": "openshell",
@@ -645,7 +645,7 @@ export function createOpenShellKubernetesFixture({
   openShellHelmPath,
   openShellHelmChart,
   openShellWorkspaceHelmChart,
-  openShellChartVersion = "0.1.4",
+  openShellChartVersion = "0.1.5",
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -903,6 +903,9 @@ export function createOpenShellKubernetesFixture({
       "--set=server.disableTls=true",
       "--set=server.auth.allowUnauthenticatedUsers=true",
       "--set=server.drivers.kubernetes.allowDriverConfig=true",
+      // The gateway rejects every Sandbox template label it does not allow; Harness
+      // Pods carry the OCE selector labels that NetworkPolicies and Services match.
+      '--set-json=gatewayConfig.openshell\\.drivers\\.kubernetes.allowed_pod_labels=["openclaw.dev/*","app.kubernetes.io/name","app.kubernetes.io/managed-by"]',
       "--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
       "--set-string=server.drivers.kubernetes.workspaceMode=operator",
       "--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -1239,7 +1242,7 @@ export function createOpenShellKubernetesFixture({
     assert.deepEqual(
       [...initCapabilities],
       [],
-      "OpenShell v0.1.4 must not add capabilities to workload Pod init containers.",
+      "OpenShell v0.1.5 must not add capabilities to workload Pod init containers.",
     );
     const networkSidecar = pod.spec.containers.find(({ name }) =>
       ["openshell-network", "openshell-supervisor-network"].includes(name),
@@ -1247,7 +1250,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(
       networkSidecar,
       undefined,
-      "OpenShell v0.1.4 must keep its network supervisor outside the workload Pod.",
+      "OpenShell v0.1.5 must keep its network supervisor outside the workload Pod.",
     );
     const container = compatibilityBridge
       ? pod.spec.containers.find(({ name }) => name === "agent")

@@ -1623,8 +1623,10 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   // Late reads (for example the sharing policy) change the page height; measure after them.
   await waitForIdleFetches(page);
   await page.getByRole("tab", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
+  const agentActions = await page.locator(".agent-toolbar-actions").elementHandles();
+  assert.equal(agentActions.length, 1, "Agent detail mounted its page actions");
   const panels = await page
-    .locator("h1, .agent-toolbar, .native-admin-access, .revision-selector, .agent-tabs")
+    .locator("h1, .native-admin-access, .revision-selector, .agent-tabs")
     .elementHandles();
   const top = await page.evaluate(() => globalThis.scrollY);
   requests.length = 0;
@@ -1633,7 +1635,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
   // The surrounding DOM must stay mounted; a fast full-page rerender still loses focus and scroll.
-  for (const panel of panels) {
+  for (const panel of [...agentActions, ...panels]) {
     assert.equal(await panel.evaluate((node) => node.isConnected), true);
   }
   assert.ok(Math.abs((await page.evaluate(() => globalThis.scrollY)) - top) < 2);

@@ -22,10 +22,12 @@ export function renderSecrets(context) {
   const ready = context.namespace?.status === "ready";
   create.disabled = !ready;
   context.view.replaceChildren(
-    element(
-      "p",
-      { className: "muted" },
-      "Manage credentials shared within this Namespace. Secret values are never returned.",
+    statusBlock(
+      "info",
+      "Secret values stay private",
+      "Manage credentials shared within this Namespace. Stored values cannot be read back.",
+      [],
+      { role: null },
     ),
     ...(!ready
       ? [
@@ -36,12 +38,7 @@ export function renderSecrets(context) {
           ),
         ]
       : []),
-    element(
-      "div",
-      { className: "secrets-toolbar" },
-      element("div", { className: "field" }, search),
-      create,
-    ),
+    element("div", { className: "collection-toolbar" }, search, create),
     list,
   );
   search.addEventListener("input", renderList);
@@ -80,19 +77,28 @@ export function renderSecrets(context) {
     }
     list.replaceChildren(
       element(
-        "ul",
-        { className: "collection secret-rows", "aria-label": "Secrets" },
-        ...shown.map((item) =>
-          element(
-            "li",
-            { className: "resource-linked secret-row" },
+        "section",
+        { className: "resource-list" },
+        element(
+          "h2",
+          { className: "resource-list-header secret-list-heading" },
+          "Secret library ",
+          element("span", { className: "badge" }, String(shown.length)),
+        ),
+        element(
+          "ul",
+          { className: "collection", "aria-label": "Secrets" },
+          ...shown.map((item) =>
             element(
-              "div",
-              {},
-              button(item.name, () => void openDetail(item), { tone: "link" }),
-              element("p", { className: "resource-id" }, item.id),
+              "li",
+              { className: "resource-linked secret-row" },
+              element(
+                "p",
+                { className: "resource-name" },
+                button(item.name, () => void openDetail(item), { tone: "link" }),
+              ),
+              element("span", { className: "resource-id" }, item.id),
             ),
-            element("span", { className: "muted" }, "Value hidden"),
           ),
         ),
       ),
@@ -116,7 +122,7 @@ export function renderSecrets(context) {
   function openModal(title) {
     closeModal();
     const dialog = element("dialog", {
-      className: "dialog secret-dialog",
+      className: "dialog dialog--framed secret-dialog",
       "aria-labelledby": "secret-dialog-title",
     });
     const heading = element("h2", { id: "secret-dialog-title", tabindex: "-1" }, title);
@@ -126,7 +132,13 @@ export function renderSecrets(context) {
     const actions = element("div", { className: "dialog-actions" }, close);
     const current = { dialog, body, heading, feedback: notice, close, actions, pending: false };
     modal = current;
-    dialog.append(heading, body, notice, actions);
+    const header = element(
+      "header",
+      { className: "dialog-header" },
+      element("p", {}, `${context.namespace?.name ?? context.namespaceId} / Secrets`),
+      heading,
+    );
+    dialog.append(header, element("div", { className: "dialog-body" }, body, notice), actions);
     dialog.addEventListener("cancel", (event) => {
       event.preventDefault();
       closeModal();
@@ -160,12 +172,12 @@ export function renderSecrets(context) {
     return modal === current && current.dialog.open && context.isCurrent();
   }
 
-  function showError(current, error, description) {
+  function showError(current, error, description, tone = "danger") {
     if (error.status === 401) {
       context.onExpired();
       return;
     }
-    current.feedback.replaceChildren(statusBlock("danger", null, description));
+    current.feedback.replaceChildren(statusBlock(tone, null, description));
     if (error.requestId) {
       current.feedback.append(
         element("p", { className: "request-id" }, `Request ID: ${error.requestId}`),
@@ -274,9 +286,11 @@ export function renderSecrets(context) {
     if (consumers.truncated) {
       current.body.append(
         statusBlock(
-          "info",
+          "warning",
           null,
           "This consumer list is incomplete. More references exist than this response can show.",
+          [],
+          { role: "status" },
         ),
       );
     }
@@ -303,6 +317,7 @@ export function renderSecrets(context) {
     const name = element("input", {
       id: "secret-name",
       required: true,
+      placeholder: "e.g. model-api-key",
       autocomplete: "off",
       "data-trim": "",
     });
@@ -310,12 +325,14 @@ export function renderSecrets(context) {
     // A textarea preserves multiline credential material. Browsers without masking support use
     // a native password field and explicitly refuse line-break pastes rather than changing them.
     const multiline = CSS.supports("-webkit-text-security", "disc");
+    const valueNoticeId = "secret-value-notice";
     const value = element(multiline ? "textarea" : "input", {
       id: "secret-value",
       required: true,
       autocomplete: "off",
       spellcheck: "false",
       className: "secret-value secret-value--masked",
+      "aria-describedby": valueNoticeId,
       "data-secret-value": "",
       ...(multiline ? { rows: "3" } : { type: "password" }),
     });
@@ -354,7 +371,7 @@ export function renderSecrets(context) {
     const valueField = field({
       label: "Value",
       control: value,
-      help: "Whitespace is preserved. The value cannot be read back.",
+      help: multiline ? "Spaces and line breaks are preserved." : "Enter a single-line value.",
       className: "secret-value-field",
     });
     value.before(reveal);
@@ -369,7 +386,15 @@ export function renderSecrets(context) {
             help: "Unique within this Namespace. Names cannot be changed.",
           }),
       valueField,
-      replacing ? element("p", { className: "muted" }, REPLACEMENT_NOTICE) : null,
+      statusBlock(
+        "info",
+        null,
+        replacing
+          ? REPLACEMENT_NOTICE
+          : "You can replace this value later, but you cannot read it back.",
+        [],
+        { id: valueNoticeId, role: null },
+      ),
     );
     const submit = element(
       "button",
@@ -454,7 +479,7 @@ export function renderSecrets(context) {
           description =
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description);
+        showError(current, error, description, unknown ? "warning" : "danger");
         submit.disabled = unknown || [403, 404].includes(error.status);
         submit.textContent = replacing ? "Replace value" : "Create Secret";
         name.disabled = unknown;
@@ -522,7 +547,7 @@ export function renderSecrets(context) {
         } else if (error.status === 404) {
           description = "The Secret is no longer available. Close and Refresh the list.";
         }
-        showError(current, error, description);
+        showError(current, error, description, unknown ? "warning" : "danger");
         confirm.textContent = "Permanently delete Secret";
         // A new confirmation starts with a fresh consumer read. This dialog never replays DELETE.
         confirm.disabled = true;

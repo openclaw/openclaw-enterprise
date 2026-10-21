@@ -4,7 +4,9 @@ Rebuild Storybook from current source. Open **Pages/Secrets → Populated**.
 These fixtures demonstrate UI behavior; they do not prove backend persistence,
 Kubernetes storage, credential delivery, or runtime consumption.
 
-1. Search for a Secret name and ID. Clear the search. Switch Namespace and back.
+1. Search by name or ID. Press Tab from **Search Secrets** to **Create Secret**.
+   At phone width, Create wraps below search and keeps that tab order. Open
+   **No search matches**, then clear the search to recover the list. Switch Namespace and back.
 2. Create **Walkthrough key** with a synthetic value. Inspect masking, reveal and
    hide it, then submit. Close the success message and open its detail.
 3. Replace the value and inspect the deployment and CredentialSource instructions.
