@@ -5533,7 +5533,15 @@ test(
       { message: /[Rr]epository credentials require/ },
     );
     const { context, revision, requirements } = runtimeSandboxFixture(drivers.sandboxDriver);
-    const inferenceProvider = requirements.credentialAttachments[0].ref;
+    const auth = {
+      method: "credential_source",
+      sourceId: "cs_test",
+      sourceType: "openai",
+      credentialGatewayId: protectedGit.credentialGatewayDriver.id,
+      loginMode: requirements.loginMode,
+    };
+    const inferenceProvider = openShellProviderName(auth.sourceId);
+    requirements.credentialAttachments = [{ sourceId: auth.sourceId, ref: inferenceProvider }];
     gateway.providers.set(inferenceProvider, {
       name: inferenceProvider,
       id: "inference-provider-id",
@@ -5562,6 +5570,108 @@ test(
         }),
       ],
     };
+    // Exercise production composition through the actual v4 Sandbox spec. Only the selected
+    // model source survives Git; the runtime-files provider cannot stand in for that source.
+    await t.test(
+      "protected Sandbox accepts only the separately admitted model alongside Git",
+      async () => {
+        const git = protectedGit.openShellGit;
+        const proxy = protectedGit.proxyDriver;
+        const sandbox = protectedGit.sandboxDriver;
+        const revisionId = "rev_" + randomUUID();
+        const plan = {
+          id: randomUUID(),
+          generation: 1,
+          execution: {
+            revisionId,
+            namespaceId: revision.namespaceId,
+            installationId: "sandbox-installation",
+            agentId: revision.agentId,
+            servicePrincipalId: "sandbox-principal",
+            executionId: randomUUID().replaceAll("-", ""),
+          },
+          routes: [],
+          driver: owner.ref,
+          harnessCredentialSource: auth,
+          repositoryGit: revision.repositoryCredentials,
+          sandboxDriverId: sandbox.id,
+          egressDriverId: proxy.id,
+        };
+        const rev = {
+          ...revision,
+          id: revisionId,
+          harnessAuth: auth,
+          egressPlan: plan,
+          executionAdmission: { version: 4, mode: "protected" },
+        };
+        const ctx = { ...context, plan, revision: rev };
+        protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
+        const proxyWiring = await proxy.configureRevision(ctx);
+        const required = structuredClone({ ...requirements, proxyWiring });
+        const { harnessEgressEnrollment } =
+          await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
+        required.files[0].content = JSON.stringify({
+          kind: "codex",
+          selections: {},
+          providerTools: "none",
+          egressEnrollment: harnessEgressEnrollment(plan),
+        });
+        for (const credentialAttachments of [
+          [],
+          [{ sourceId: "cs_other", ref: inferenceProvider }],
+          [{ sourceId: auth.sourceId, ref: openShellProviderName("other") }],
+          [
+            ...required.credentialAttachments,
+            { sourceId: "extra", ref: openShellProviderName("extra") },
+          ],
+        ]) {
+          await assert.rejects(
+            sandbox.provisionHarness({
+              ...ctx,
+              requirements: { ...required, credentialAttachments },
+            }),
+            /only the admitted Harness credential attachment/,
+          );
+          assert.equal(
+            created,
+            undefined,
+            "a refused credential attachment cannot start a Sandbox",
+          );
+        }
+        try {
+          await git.start(
+            {
+              readOpenShellMaterial: async () => undefined,
+              authorizeOpenShellRequest: async () => false,
+            },
+            undefined,
+            routeStore(),
+          );
+          const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
+          const cold = sandbox.standingGitExecution(ctx);
+          assert.equal(cold.continuity.model, inferenceProvider);
+          assert.equal(
+            sandbox.standingGitExecution({
+              ...ctx,
+              revision: { ...rev, harnessAuth: { method: "runtime" } },
+            }),
+            undefined,
+          );
+          const spec = created.spec;
+          assert.ok(spec.providers.includes(inferenceProvider));
+          assert.equal(spec.providers.filter((p) => p.startsWith("oce-git-")).length, 1);
+          assert.deepEqual(Object.keys(spec.policy.network_policies), [
+            "workspace-node-enrollment",
+          ]);
+          assert.equal(spec.environment.OPENAI_API_KEY, undefined);
+          assert.equal(spec.environment.GITHUB_TOKEN, undefined);
+          assert.deepEqual(result.proxyWiring.plan, plan);
+        } finally {
+          await git.close();
+        }
+      },
+    );
     const networkRevision = routedRevision(drivers.computeDriver, {
       sandboxDriverId: drivers.sandboxDriver.id,
       repositoryCredentials: revision.repositoryCredentials,

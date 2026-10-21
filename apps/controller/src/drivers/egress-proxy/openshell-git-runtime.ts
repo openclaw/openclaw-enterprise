@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { AgentRevision } from "@openclaw-enterprise/contracts";
+import type { AgentRevision, SandboxRepositoryAccess } from "@openclaw-enterprise/contracts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -513,15 +513,7 @@ export class OpenShellGitRuntime {
   async verifyExecution(
     revision: Readonly<AgentRevision>,
     signal: AbortSignal,
-    cold?: () => Promise<
-      | {
-          client: OpenShellGatewayClient;
-          workspace: string;
-          sandbox: string;
-          continuity: OpenShellGitContinuity;
-        }
-      | undefined
-    >,
+    cold?: () => Promise<StandingGitExecution | undefined>,
   ) {
     const entry = await this.entries.get(revision.id);
     if (!entry && cold && revision.repositoryCredentials?.standingApprovalId) {
@@ -2018,6 +2010,46 @@ export class OpenShellGitRuntime {
     this.entries.clear();
     this.states.clear();
   }
+}
+
+interface StandingGitExecution {
+  readonly client: OpenShellGatewayClient;
+  readonly workspace: string;
+  readonly sandbox: string;
+  readonly continuity: OpenShellGitContinuity;
+}
+
+/** The repository lifecycle offered by this Sandbox, including cold execution observation. */
+export function openShellRepositoryAccess(
+  git: OpenShellGitRuntime,
+  standing: (
+    context: Parameters<SandboxRepositoryAccess["verifyExecution"]>[0],
+  ) => StandingGitExecution | undefined,
+): SandboxRepositoryAccess {
+  return {
+    verifyExecution: (context) =>
+      git.verifyExecution(context.revision, context.signal, async () => standing(context)),
+    retireExpired: async (context) => {
+      const owner = await standing(context);
+      return owner
+        ? git.retireExpiredRepositoryAccess(
+            context.revision,
+            owner.client,
+            owner.workspace,
+            owner.sandbox,
+            owner.continuity,
+            context.signal,
+          )
+        : "retire-runtime";
+    },
+    routeReadiness: (id) => openShellGitRouteReadiness(git.route(id)),
+    isRouteBlockedError: (error) => error instanceof OpenShellGitRouteBlockedError,
+    materialSettledAt: (id) => {
+      // The supervisor reload closes the node connection. Allow the Gateway to see the disconnect.
+      const installed = git.materialInstalledAt(id);
+      return installed === undefined ? undefined : installed + 2_000;
+    },
+  };
 }
 
 /** One policy definition, compared again by the Credential Proxy at Compute release. */

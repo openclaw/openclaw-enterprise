@@ -9,7 +9,7 @@ import type { Pool } from "pg";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import { socketDirectory } from "./socket-directory.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   startGitHubFixture,
@@ -54,7 +54,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
       },
     ],
   });
-  const directory = await socketDirectory(t, "standing-peer-");
+  const directory = await temporaryDirectory(t, "standing-peer-");
   const controlSocket = join(directory, "control.sock");
   const privateKeyPath = join(directory, "app.pem");
   const custodyKeyPath = join(directory, "custody");
@@ -149,10 +149,10 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
       ).on("error", reject);
       req.end(upload ? body() : undefined);
     });
-  const input = (bindingId: string, sandboxId: string, upload: boolean) => ({
+  const input = (bindingId: string, sandboxId: string, upload: boolean, workspace: string) => ({
     phase: 1,
     middleware_name: registrationName,
-    context: { request_id: randomUUID(), sandbox_id: sandboxId, workspace: "team-workspace" },
+    context: { request_id: randomUUID(), sandbox_id: sandboxId, workspace },
     config: { fields: { binding_id: { stringValue: bindingId } } },
     target: {
       scheme: "https",

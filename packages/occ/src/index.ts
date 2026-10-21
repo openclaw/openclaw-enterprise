@@ -5413,8 +5413,10 @@ export class OpenClawController {
     configuration: OpenClawConfigurationDocument,
     sandboxDriverId?: string,
     repositoryGit?: RepositoryRevisionState,
+    harnessAuth?: HarnessAuthSnapshot,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
+    let harnessCredentialSource: ProxyPlan["harnessCredentialSource"];
     for (const binding of agent.credentialSources ?? []) {
       const source = await state.credentialSources.findCredentialSource(
         agent.namespaceId,
@@ -5422,6 +5424,17 @@ export class OpenClawController {
       );
       if (source?.egress !== undefined) {
         sources.push(source);
+      } else if (
+        repositoryGit &&
+        source?.state === "ready" &&
+        harnessAuth?.method === "credential_source" &&
+        source.id === harnessAuth.sourceId &&
+        source.driverId === harnessAuth.credentialGatewayId &&
+        source.type === harnessAuth.sourceType
+      ) {
+        // admitHarnessAuth and admitCredentialSources already authorized this ordinary
+        // Harness source. Bind its identity to release, without giving Git any model authority.
+        harnessCredentialSource = harnessAuth;
       }
     }
     if (!this.selections.has("credential_proxy")) {
@@ -5432,9 +5445,10 @@ export class OpenClawController {
       }
       return undefined;
     }
-    if (sources.length > 1 || (agent.credentialSources?.length ?? 0) !== sources.length) {
+    const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
+    if (sourceCount > 1 || (agent.credentialSources?.length ?? 0) !== sourceCount) {
       throw new ScopeViolationError(
-        "Protected egress permits at most one explicitly admitted source binding and no legacy attachments.",
+        "Protected egress permits only its explicitly admitted source or the repository execution's separately authorized Harness source.",
       );
     }
     if (!sandboxDriverId || agent.executionMode !== "dedicated") {
@@ -5496,6 +5510,7 @@ export class OpenClawController {
       egressDriverId: driver.id,
       driver: owner.ref,
       ...(repositoryGit && { repositoryGit }),
+      ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
   }
@@ -9034,6 +9049,7 @@ export class OpenClawController {
         admittedConfiguration,
         sandbox?.id,
         repositoryCredentials,
+        harnessAuth,
       );
       const executionAdmission =
         egressPlan === undefined

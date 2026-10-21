@@ -20,7 +20,9 @@ export async function standingExecutionFixture(
     registry: GitHubRepositoryRegistry;
     controlSocket?: string;
     backendId: string;
-    protectedDriver?: import("../../packages/contracts/src/index.ts").DriverRegistrationRef;
+    protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
+    credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
+    modelConfig?: { base_url: string };
   }>,
 ) {
   await ensurePostgresAgentBootstrap(t, {
@@ -80,7 +82,8 @@ export async function standingExecutionFixture(
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: external?.protectedDriver ? "runtime" : external ? "secret" : "credential_source",
+    auth: external && !external.protectedDriver ? "secret" : "credential_source",
+    modelConfig: external?.modelConfig,
   });
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
@@ -119,6 +122,12 @@ export async function standingExecutionFixture(
     standingApprovalScopeFingerprint: fingerprint,
   };
   const revisionOptions = { actorId: f.actor.id, repositoryCredentials: credentials };
+  if (external?.protectedDriver && external.credentialGateway) {
+    const gateway = external.credentialGateway;
+    f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
+    f.controller.registerDriver(gateway);
+    f.controller.selectDriver("credential_gateway", gateway.id);
+  }
   const revision = (await f.revision(owner, 1, {
     ...revisionOptions,
     ...(external?.protectedDriver && { protectedRepositoryDriver: external.protectedDriver }),

@@ -9,16 +9,20 @@ import type {
   ProxyRevisionContext,
   RepositoryGitRecipient,
   SandboxDriver,
+  SandboxRepositoryAccess,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
-import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import {
+  computeReleasePublicKey,
+  signComputeExecutionRelease,
+} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 
 /** Real registered release, policy comparisons and signed enrollment. The one positive
  * installation observation is controlled, never a claim of a qualifying stock OpenShell. */
-export function protectedRepositoryGitRelease() {
+export function protectedRepositoryGitRelease(repository: () => SandboxRepositoryAccess) {
   const id = "test-installed-git-sender";
   const registration = "oce-prepared-git";
   const instanceId = randomUUID();
@@ -54,7 +58,7 @@ export function protectedRepositoryGitRelease() {
   };
   const sandbox: SandboxDriver = Object.assign(Object.create(OpenShellSandboxDriver.prototype), {
     id,
-    implementation: "openshell",
+    implementation: "registered-online-sender",
     capability: "sandbox",
     facets: ["networking", "filesystem", "process"],
     networkPolicy: { wildcards: true, portRanges: true, live: true },
@@ -66,6 +70,7 @@ export function protectedRepositoryGitRelease() {
     ) {
       const { challenge, installation, expiresAt, signature } = await release(randomUUID());
       assert.equal(challenge.routeCount, 1);
+      assert.equal(challenge.inference, "credential_source");
       assert.equal(installation.sandboxId, sandboxId);
       assert.ok("repositoryGitRecipient" in installation);
       assert.deepEqual(installation.repositoryGitRecipient, recipient);
@@ -80,6 +85,14 @@ export function protectedRepositoryGitRelease() {
       );
     },
   });
+  const access: SandboxRepositoryAccess = {
+    verifyExecution: (ctx) => repository().verifyExecution(ctx),
+    retireExpired: (ctx) => repository().retireExpired(ctx),
+    routeReadiness: (id) => repository().routeReadiness(id),
+    materialSettledAt: (id) => repository().materialSettledAt(id),
+    isRouteBlockedError: (error) => repository().isRouteBlockedError(error),
+  };
+  Object.assign(sandbox, { repositoryAccess: access });
   class ObservedOnlineSender extends OpenShellCredentialProxyDriver {
     protected override repositoryGitEnforcement(
       ctx: ProxyRevisionContext,
@@ -111,19 +124,29 @@ export function protectedRepositoryGitRelease() {
       client: { clientForNamespace: () => client },
     } as never,
   });
+  Object.defineProperty(proxy, "implementation", { value: sandbox.implementation });
   assert.equal(driverHasCapabilityContract(sandbox), true, "sandbox contract");
   assert.equal(driverHasCapabilityContract(proxy), true, "proxy contract");
   const owner = new InstalledDriver(
-    { id, implementation: "openshell", configuration: opts },
+    { id, implementation: sandbox.implementation, configuration: opts },
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
   const release = new ProtectedExecutionDriver(owner);
   return {
     owner,
+    publicKey: computeReleasePublicKey(privateKey),
+    async releaseStartup(startupId: string, custody: ComputeRevisionContext) {
+      return signComputeExecutionRelease(
+        privateKey,
+        startupId,
+        await release.current(context, custody, async () => true),
+      );
+    },
     async enroll(
       revision: AgentRevision,
       custody: ComputeRevisionContext,
       git: object,
+      workspace: string,
       box: string,
       gitRecipient: RepositoryGitRecipient,
     ) {
@@ -132,7 +155,7 @@ export function protectedRepositoryGitRelease() {
       context = {
         revision,
         plan,
-        namespace: { id: revision.namespaceId, name: "team-workspace" } as Namespace,
+        namespace: { id: revision.namespaceId, name: workspace } as Namespace,
         signal: AbortSignal.timeout(10_000),
       };
       const wiring = await release.configure(context);
