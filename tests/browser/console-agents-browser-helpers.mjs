@@ -145,9 +145,9 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
 // browser stores the session cookie the API set, and then loads `path` already signed in: one
 // page load instead of a sign-in page plus the destination, and no form to fill. A tab that has
 // already loaded a page signs in through the form, so a test that signs in again on the same tab
-// keeps the page's in-memory state across that sign-in. So does a fixture served over TLS or
-// under another host name, whose cookies are what such a test checks. Tests about the sign-in
-// page itself use the form directly or loginThroughForm.
+// keeps that tab's session storage and history across the sign-in. So does a fixture served
+// over TLS or under another host name, whose cookies are what such a test checks. Tests about
+// the sign-in page itself use the form directly or loginThroughForm.
 export async function login(
   page,
   fixture,
