@@ -127,7 +127,8 @@ async function cluster(t) {
   const server = selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const client = selfSignedCertificate(directory, "operator", "DNS:operator");
   const requests = [];
-  const seen = {};
+  // Requests answered so far per URL (a Map: URLs come from the client).
+  const seen = new Map();
   let connections = 0;
   const listener = createServer({
     key: server.key,
@@ -146,15 +147,15 @@ async function cluster(t) {
     // Drops every connection, or only the first request on a kept-alive one.
     if (
       request.url === "/api/v1/namespaces/dropped/pods" ||
-      (request.url === "/api/v1/namespaces/flaky/pods" && (seen[request.url] ?? 0) === 0)
+      (request.url === "/api/v1/namespaces/flaky/pods" && !seen.has(request.url))
     ) {
-      seen[request.url] = (seen[request.url] ?? 0) + 1;
+      seen.set(request.url, (seen.get(request.url) ?? 0) + 1);
       request.socket.destroy();
       return;
     }
     // Asks for a retry once, as an overloaded API server does.
-    if (request.url === "/api/v1/namespaces/busy/pods" && (seen[request.url] ?? 0) === 0) {
-      seen[request.url] = 1;
+    if (request.url === "/api/v1/namespaces/busy/pods" && !seen.has(request.url)) {
+      seen.set(request.url, 1);
       response.statusCode = 429;
       response.setHeader("retry-after", "1");
       response.setHeader("content-type", "text/plain");
