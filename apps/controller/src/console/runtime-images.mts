@@ -1,6 +1,15 @@
+import type { Agent, RuntimeImage } from "@openclaw-enterprise/contracts";
 import { element } from "./dom.mjs";
+import type { NamespacePageContext } from "./namespaces.mjs";
 
-export async function renderRuntimeImages(target, { request, namespaceId, isCurrent }) {
+type RuntimeImagesContext = Pick<NamespacePageContext, "request" | "isCurrent"> & {
+  namespaceId: string | null;
+};
+
+export async function renderRuntimeImages(
+  target: HTMLElement,
+  { request, namespaceId, isCurrent }: RuntimeImagesContext,
+) {
   const content = element(
     "div",
     { className: "runtime-debug-images", "aria-live": "polite" },
@@ -14,7 +23,7 @@ export async function renderRuntimeImages(target, { request, namespaceId, isCurr
   }
   try {
     const path = `/namespaces/${encodeURIComponent(namespaceId)}/agents`;
-    const agents = await request(path);
+    const agents = (await request(path)) as readonly Pick<Agent, "id" | "name">[];
     if (!current()) {
       return;
     }
@@ -23,31 +32,30 @@ export async function renderRuntimeImages(target, { request, namespaceId, isCurr
       content.textContent = "No accessible Agents in this Namespace.";
     }
     // Bound concurrent driver reads; a failed Agent must not hide other results.
-    const pending = [...agents];
-    const rows = new Map(
-      agents.map((agent) => {
-        const row = element(
-          "details",
-          {},
-          element("summary", {}, agent.name),
-          element("p", {}, "Loading…"),
-        );
-        content.append(row);
-        return [agent.id, row];
-      }),
-    );
+    const pending = agents.map(({ id, name }) => {
+      const loading = element("p", {}, "Loading…");
+      const row = element("details", {}, element("summary", {}, name), loading);
+      content.append(row);
+      return { id, loading };
+    });
     async function worker() {
-      while (pending.length && current()) {
-        const agent = pending.shift();
-        const row = rows.get(agent.id);
+      while (current()) {
+        const next = pending.shift();
+        if (!next) {
+          return;
+        }
+        const { id, loading } = next;
         try {
-          const result = await request(`${path}/${encodeURIComponent(agent.id)}/runtime-images`);
+          const result = (await request(`${path}/${encodeURIComponent(id)}/runtime-images`)) as {
+            status: "observed" | "undeployed" | "unsupported";
+            images: readonly RuntimeImage[];
+          };
           if (!current()) {
             return;
           }
-          row.querySelector("p").remove();
+          const details = document.createDocumentFragment();
           if (result.status !== "observed" || !result.images.length) {
-            row.append(
+            details.append(
               element(
                 "p",
                 {},
@@ -58,7 +66,7 @@ export async function renderRuntimeImages(target, { request, namespaceId, isCurr
             );
           }
           for (const image of result.images) {
-            const details = element("dl", {});
+            const list = element("dl", {});
             for (const [label, value] of [
               ["Container", image.container],
               ["Workload", image.workload],
@@ -69,20 +77,15 @@ export async function renderRuntimeImages(target, { request, namespaceId, isCurr
                 "OpenClaw commit",
                 image.openclawCommit ?? "Unavailable (image has no OpenClaw provenance)",
               ],
-            ]) {
-              details.append(
-                element("dt", {}, label),
-                element("dd", {}, element("code", {}, value)),
-              );
+            ] as const) {
+              list.append(element("dt", {}, label), element("dd", {}, element("code", {}, value)));
             }
-            row.append(details);
+            details.append(list);
           }
+          loading.replaceWith(details);
         } catch {
           if (current()) {
-            row.replaceChildren(
-              element("summary", {}, agent.name),
-              element("p", {}, "Runtime image metadata unavailable. Refresh to retry."),
-            );
+            loading.textContent = "Runtime image metadata unavailable. Refresh to retry.";
           }
         }
       }

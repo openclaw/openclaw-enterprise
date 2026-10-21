@@ -128,7 +128,7 @@ encodings. The shell, which also answers sign-in, stays identity.
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
 exact Agent read, resolves its selected version, then calls its Compute Driver.

@@ -42,7 +42,7 @@ const CONSOLE_ASSETS = new Map([
       "shell.mjs",
       "namespaces.mts",
       "secrets.mts",
-      "runtime-images.mjs",
+      "runtime-images.mts",
       "agents/list.mts",
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
