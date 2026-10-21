@@ -274,7 +274,8 @@ test("a failed setup stops the watcher at once with one final capture", async ()
   const { seconds, calls } = await withRecordedK3d(() => watchCluster()({ finalCapture: true }));
   // The final snapshot keeps diagnostics for the failure without the idle wait.
   assert.ok(seconds < 5, `stop took ${seconds}s`);
-  assert.equal(calls, "kubeconfig get occ-dev-first-agent-smoke\n");
+  const { cluster } = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+  assert.equal(calls, `kubeconfig get ${cluster}\n`);
 });
 
 test("smoke slots keep CI's names at slot 0 and give other slots distinct host resources", () => {
