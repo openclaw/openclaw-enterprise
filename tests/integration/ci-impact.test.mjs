@@ -153,7 +153,8 @@ async function initBase(repo, initial, initialModes) {
 // The selector's classification of the checkout in `cwd` under `env`, run in
 // this process. classify() reads process.env and runs Git synchronously in the
 // working directory, so both are swapped for the call alone: no other code runs
-// until they are restored.
+// until they are restored. The call blocks the event loop, so concurrent cases'
+// in-process classifications run one at a time.
 function classifyIn(cwd, env) {
   const saved = { ...process.env };
   const previous = process.cwd();
@@ -804,7 +805,11 @@ test("output must be an existing regular file and mode must verify", async (t) =
       ["--github-output", join(f.dir, "link")],
       ["--verify-mode", "invalid"],
     ],
-    async (args) => assert.notEqual((await f.run(args)).status, 0, args.join(" ")),
+    async (args) => {
+      const result = await f.run(args);
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+    },
   );
 });
 

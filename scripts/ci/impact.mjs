@@ -419,7 +419,8 @@ function main() {
 }
 
 // CI runs this file as a script; tests also import it. Node before 24.2 has no
-// import.meta.main, so only an explicit `false` (imported) skips the CLI.
+// import.meta.main, so only an explicit `false` (imported) skips the CLI; importing
+// it there runs the CLI, so the tests need Node 24.2 or later.
 if (import.meta.main !== false) {
   try {
     main();
