@@ -70,8 +70,11 @@ export async function waitForDockerLog(containerName, pattern) {
       try {
         state = logs.read();
       } catch (error) {
-        throw new Error(`Could not follow ${containerName} logs waiting for ${pattern}.
-${failureTail(`${error.message}\n${output}`)}`);
+        throw new Error(
+          `Could not follow ${containerName} logs waiting for ${pattern}.
+${failureTail(`${error.message}\n${output}`)}`,
+          { cause: error },
+        );
       }
       output = `${state.stdout}\n${state.stderr}`;
       if (pattern.test(output)) {
