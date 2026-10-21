@@ -20,7 +20,6 @@ test("OpenShell repository refusal precedes Worker session lookup, preparation a
     {
       sandboxDriver,
       preparedRepositoryIngress: true,
-      proxyDriver: { id: "paired-egress", implementation: "openshell" },
     },
   );
   const refusal = { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" };

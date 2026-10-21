@@ -78,6 +78,7 @@ import {
   type ClaimedWork,
   type ControllerWork,
   type NativeWorkerSupport,
+  type InstalledDriver,
   type ProvisioningEffectReceipt,
   type PlatformReadView,
   type PlatformUnitOfWork,
@@ -1039,6 +1040,7 @@ export class ControllerWorker {
   private readonly sandbox: SandboxDriver | undefined;
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
+  private readonly protectedDriver: InstalledDriver | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1169,9 +1171,14 @@ export class ControllerWorker {
     if (this.configuration !== undefined && !validLifecycleHooks(this.configuration)) {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
-    this.sandbox = drivers?.sandboxDriver ?? options.sandboxDriver;
+    this.protectedDriver = drivers?.protectedDriver;
+    this.sandbox =
+      this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
-    this.proxyDriver = drivers?.proxyDriver ?? options.proxyDriver;
+    this.proxyDriver =
+      this.protectedDriver?.require("credential_proxy") ??
+      drivers?.proxyDriver ??
+      options.proxyDriver;
     if (
       (drivers?.installation.drivers.credential_gateway === undefined) !==
       (drivers?.credentialGatewayDriver === undefined)
@@ -1265,11 +1272,14 @@ export class ControllerWorker {
         ? {}
         : { nativeWorkerSupport: this.nativeWorkerSupport }),
     });
+    const protectedDriver = this.protectedDriver;
+    if (protectedDriver !== undefined) {
+      provisioning.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
+    }
     for (const driver of [
       this.configuration,
-      this.sandbox,
+      ...(protectedDriver ? [] : [this.sandbox, this.proxyDriver]),
       this.credentialGateway,
-      this.proxyDriver,
       this.iam,
       this.secretDriver,
       this.repoDriver,
@@ -1312,6 +1322,7 @@ export class ControllerWorker {
     this.stopping = true;
     this.abort.abort();
     await this.loop;
+    await this.protectedDriver?.close();
     await this.state.close();
     this.emit({ event: "worker.stopped" });
   }
@@ -1494,8 +1505,9 @@ export class ControllerWorker {
     if (this.configuration?.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(this.configuration);
     }
-    if (this.sandbox?.computeLifecycleHooks !== undefined) {
-      lifecycleDrivers.push(this.sandbox);
+    const lifecycle = this.protectedDriver ? this.protectedDriver.lifecycleDriver : this.sandbox;
+    if (lifecycle?.computeLifecycleHooks !== undefined) {
+      lifecycleDrivers.push(lifecycle);
     }
     if (iam.computeLifecycleHooks !== undefined) {
       lifecycleDrivers.push(iam);
@@ -4840,7 +4852,7 @@ export class ControllerWorker {
     if (this.compute.validateExecutionAdmission === undefined) {
       assertExecutionReleaseAllowed(revision);
     } else {
-      this.compute.validateExecutionAdmission(revision);
+      this.compute.validateExecutionAdmission(revision, "stored");
     }
   }
 

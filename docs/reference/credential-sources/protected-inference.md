@@ -13,7 +13,10 @@ shared exchange but does not establish static inference or Git transport support
 
 ## Execution admission cutoff
 
-A fresh revision records its execution admission, including whether it is protected.
+New protected revisions record version 3 admission, including the Driver identity and
+configuration shared by Sandbox and Credential Proxy. Upgrade the API and workers
+before creating one: an older worker refuses this revision. Existing version 2
+revisions retain their original capability IDs and cleanup ownership.
 A protected plan with no bindings means deny all, including direct networking.
 Readers that cannot interpret the decision refuse the revision. Other Compute
 implementations refuse protected admission. A protected revision keeps only its

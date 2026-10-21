@@ -3,6 +3,7 @@ import type {
   ProtectedEgressSource,
   CredentialInputRead,
   VersionedSecretValue,
+  CredentialProxyDriver,
   ProxyPlan,
   ProxyWiring,
   EgressInstallation,
@@ -94,6 +95,7 @@ import type {
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryRevisionState,
+  RepoDriver,
 } from "./repo.ts";
 
 export type {
@@ -1154,6 +1156,40 @@ export interface Driver {
   readonly computeLifecycleHooks?: ComputeLifecycleHooks;
 }
 
+export type DriverByCapability = {
+  iam: IAMDriver;
+  configuration: ConfigurationDriver;
+  service_account: ServiceAccountDriver;
+  secret: SecretDriver;
+  sandbox: SandboxDriver;
+  compute: ComputeDriver;
+  plugin: PluginDriver;
+  channel: ChannelDriver;
+  repo: RepoDriver;
+  credential_gateway: CredentialGatewayDriver;
+  credential_refresh: CredentialRefreshDriver;
+  credential_proxy: CredentialProxyDriver;
+};
+/** A package returns the capabilities of this instance and one lifecycle, never support flags. */
+export interface DriverRegistration {
+  readonly capabilities: Readonly<Partial<DriverByCapability>>;
+  readonly computeLifecycleHooks?: ComputeLifecycleHooks;
+  close?(): void | Promise<void>;
+}
+
+/** Installation-selected identity and a digest of the nonsecret configuration generation. */
+export interface DriverRegistrationRef {
+  readonly id: string;
+  readonly implementation: string;
+  readonly configurationId: string;
+}
+
+/** An installation-owned capability selection. Object identity proves a common owner in this process. */
+export interface SelectedDriverRegistration {
+  readonly ref: DriverRegistrationRef;
+  require<K extends DriverCapability>(key: K): DriverByCapability[K];
+}
+
 export interface WorkloadLaunchContext {
   environment: Record<string, string>;
 }
@@ -2048,6 +2084,8 @@ export interface ComputeDriver extends Driver {
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
     revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    /** Only the release of a revision already in durable custody can use its historical contract. */
+    source?: SelectedDriverRegistration | "stored",
   ): void;
   /**
    * After release is refused, select a withdrawal only for a grant this Compute previously

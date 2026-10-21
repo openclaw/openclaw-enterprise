@@ -16,7 +16,8 @@ import {
   computeReleasePublicKey,
   signComputeExecutionRelease,
 } from "../egress-enrollment.ts";
-import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
+import { ProtectedExecutionDriver } from "../protected-execution-driver.ts";
+import type { InstalledDriver } from "@openclaw-enterprise/occ";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
   normalizeOpenAiBaseUrl,
@@ -95,8 +96,8 @@ import type {
   ComputePreflightResult,
   ComputePrepareRevisionFailureDiagnostic,
   ComputeRevisionContext,
-  EgressInstallation,
   ProxyRevisionContext,
+  SelectedDriverRegistration,
   ConfigurationValidationOptions,
   CredentialAttachmentStatus,
   CredentialGatewayDriver,
@@ -3294,7 +3295,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preparedRepositoryIngress: boolean;
   private readonly openShellGit: OpenShellGitRuntime | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
-  private readonly proxyDriver: CredentialProxyDriver | undefined;
+  private readonly protectedExecution: ProtectedExecutionDriver | undefined;
+
+  private get proxyDriver() {
+    return this.protectedExecution?.proxy;
+  }
   private readonly nodeEnrollment: GatewayNodeEnrollment | undefined;
   // How long, in total across passes, preparation may wait for one setup's node to pair.
   private workspaceNodePairingWaitMs = WORKSPACE_NODE_PAIRING_WAIT_MS;
@@ -3671,7 +3676,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly openShellGit?: OpenShellGitRuntime;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
-      readonly proxyDriver?: CredentialProxyDriver;
+      readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
     } = {},
@@ -3686,7 +3691,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
     }
-    this.sandboxDriver = selection.sandboxDriver;
+    this.protectedExecution =
+      selection.protectedDriver && new ProtectedExecutionDriver(selection.protectedDriver);
+    if (
+      this.protectedExecution &&
+      selection.sandboxDriver &&
+      selection.sandboxDriver !== this.protectedExecution.sandbox
+    ) {
+      throw new ConfigurationFailure(
+        "Protected execution cannot substitute a Sandbox from another Driver.",
+      );
+    }
+    this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
     if (this.preprovisionedNamespace && options.executionCluster) {
       throw new ConfigurationFailure(
@@ -3695,13 +3711,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.preparedRepositoryIngress = selection.preparedRepositoryIngress === true;
     this.openShellGit = selection.openShellGit;
-    if (selection.credentialGatewayDriver !== undefined && selection.sandboxDriver === undefined) {
+    if (selection.credentialGatewayDriver !== undefined && this.sandboxDriver === undefined) {
       throw new ConfigurationFailure(
         "The Credential Gateway Driver requires a paired Sandbox Driver.",
       );
     }
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
-    this.proxyDriver = selection.proxyDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
@@ -5539,25 +5554,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   validateExecutionAdmission(
     revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    source?: SelectedDriverRegistration | "stored",
   ): void {
     assertExecutionAdmission(revision);
     const plan = revision.egressPlan;
     if (plan === undefined && this.proxyDriver === undefined) {
       return;
     }
-    const sandbox = this.sandboxDriver;
-    if (
-      plan === undefined ||
-      this.options.runtime === undefined ||
-      this.proxyDriver?.implementation !== "openshell" ||
-      this.proxyDriver.id !== plan.egressDriverId ||
-      sandbox?.implementation !== "openshell" ||
-      sandbox.id !== plan.sandboxDriverId ||
-      !sandbox.provisionHarness ||
-      !sandbox.enrollHarness ||
-      !sandbox.harnessEndpoint ||
-      !sandbox.harnessStatus
-    ) {
+    if (this.options.runtime === undefined || !this.protectedExecution?.admits(revision, source)) {
       throw new DependencyUnavailableError(
         "Protected execution is unavailable without its exact paired Compute release.",
       );
@@ -5568,7 +5572,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): void {
-    this.validateExecutionAdmission(revision);
+    this.validateExecutionAdmission(revision, "stored");
     const plan = revision.egressPlan;
     if (!plan) {
       return;
@@ -6177,7 +6181,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // A provider-owned Harness gets the transport token's verifier only: Codex
         // authenticates its app-server with it, and both Codex and the dedicated
         // OpenClaw worker serve a held startup failure to the token holder.
-        sandboxDriver?.implementation === "openshell" &&
+        (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
           (revision.harness.id === "codex" || revision.harness.id === "openclaw")
           ? "verifier"
           : "secret",
@@ -6518,7 +6522,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         const proxyWiring =
           egressContext === undefined
             ? undefined
-            : await this.proxyDriver!.configureRevision(egressContext);
+            : await this.protectedExecution!.configure(egressContext);
         const renderedRequirements = this.harnessRequirementsFromDeployment(
           agentDeployment,
           harnessAuth.loginMode,
@@ -6597,45 +6601,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         if (egressContext !== undefined) {
-          if (sandbox.proxyWiring === undefined) {
-            throw new DependencyUnavailableError(
-              "The paired Sandbox returned no exact protected egress configuration.",
-            );
-          }
-          const installed = await this.proxyDriver!.wiringStatus(
-            egressContext,
-            sandbox.proxyWiring,
-          );
-          if (installed === undefined || !(await this.preparedEgressReady(egressContext))) {
-            return incomplete();
-          }
-          await context!.recordEgressInstallation!(installed);
-          if (!(await this.proxyDriver!.verifyInstallation(egressContext, installed))) {
-            return incomplete();
-          }
-          const transportToken = await this.prepareRevisionStage("harness_auth", () =>
-            this.sandboxTransportTokenText(revision),
-          );
-          await this.prepareRevisionStage("sandbox_provision", () =>
-            sandboxDriver.enrollHarness!(
-              {
+          const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
+            this.protectedExecution!.enroll(
+              egressContext,
+              sandbox.proxyWiring,
+              context!,
+              () => this.preparedEgressReady(egressContext),
+              async () => ({
                 ...sandboxContext,
                 revision,
                 requirements,
-                transportToken,
-              },
-              installed,
-              async (startupId) => {
-                const committed = await this.verifiedReleaseInstallation(
-                  egressContext,
-                  context!,
-                  installed,
-                );
+                transportToken: await this.prepareRevisionStage("harness_auth", () =>
+                  this.sandboxTransportTokenText(revision),
+                ),
+              }),
+              (startupId, committed) => {
                 this.operationSignal().throwIfAborted();
                 return signComputeExecutionRelease(releaseKey!, startupId, committed);
               },
             ),
           );
+          if (!enrolled) {
+            return incomplete();
+          }
         }
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
@@ -7225,7 +7213,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
     const activatedHarnessAuth =
-      sandboxDriver?.implementation === "openshell" &&
+      (revision.egressPlan !== undefined || sandboxDriver?.implementation === "openshell") &&
       (revision.harness.id === "codex" || revision.harness.id === "openclaw")
         ? {
             ...harnessAuth,
@@ -7334,14 +7322,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
           namespace,
         );
         if (revision.egressPlan !== undefined) {
-          await this.verifiedReleaseInstallation(
-            {
-              namespace: sandboxContext.namespace,
-              signal: sandboxContext.signal,
-              revision,
-              plan: revision.egressPlan,
-            },
-            context!,
+          const egress = {
+            namespace: sandboxContext.namespace,
+            signal: sandboxContext.signal,
+            revision,
+            plan: revision.egressPlan,
+          };
+          await this.protectedExecution!.current(egress, context!, () =>
+            this.preparedEgressReady(egress),
           );
         }
         providerEndpoint = await sandboxDriver.harnessEndpoint({
@@ -7754,7 +7742,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const sandboxNamespace = this.sandboxNamespaceForRevision(revision, namespace);
     if (revision.egressPlan !== undefined && source.egress !== undefined) {
       const egress = this.proxyDriver;
-      if (egress?.id !== revision.egressPlan.egressDriverId) {
+      if (!egress || !this.protectedExecution!.owner.ownsProxyPlan(revision.egressPlan)) {
         throw new DependencyUnavailableError("The protected egress cleanup owner is unavailable.");
       }
       const binding = revision.egressPlan.routes.find(
@@ -14752,29 +14740,6 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
     }
     return true;
-  }
-
-  private async verifiedReleaseInstallation(
-    egress: ProxyRevisionContext,
-    context: ComputeRevisionContext,
-    observed?: EgressInstallation,
-  ): Promise<EgressInstallation> {
-    const current = await context.currentEgressInstallation!();
-    if (
-      !current ||
-      !isDeepStrictEqual(current.plan, egress.plan) ||
-      (observed &&
-        (observed.sandboxId !== current.sandboxId ||
-          !isDeepStrictEqual(current.sender, observed.sender) ||
-          !isDeepStrictEqual(current.enforcement, observed.enforcement))) ||
-      !(await this.proxyDriver!.verifyInstallation(egress, current)) ||
-      !(await this.preparedEgressReady(egress))
-    ) {
-      throw new DependencyUnavailableError(
-        "Compute release requires the exact current committed installation.",
-      );
-    }
-    return current;
   }
 
   private async sandboxTransportVerifier(

@@ -14,6 +14,7 @@ import type {
   CredentialSource,
   CredentialSourceType,
   Driver,
+  DriverRegistrationRef,
   Namespace,
   Secret,
   SecretReference,
@@ -111,6 +112,8 @@ export interface ProxyPlan {
   readonly execution: EgressExecution;
   readonly sandboxDriverId: string;
   readonly egressDriverId: string;
+  /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
+  readonly driver?: DriverRegistrationRef;
   readonly routes: readonly EgressRoute[];
 }
 
@@ -270,10 +273,9 @@ export interface CredentialProxyDriver extends Driver {
 }
 
 /** Durable admission semantics, independent of credential bindings and route count. */
-export interface ExecutionAdmission {
-  readonly version: 2;
-  readonly mode: "protected" | "unprotected";
-}
+export type ExecutionAdmission =
+  | { readonly version: 2; readonly mode: "protected" | "unprotected" }
+  | { readonly version: 3; readonly mode: "protected" };
 
 /** Recognition only. A valid protected schema is not proof of deployability. */
 export function assertExecutionAdmission(
@@ -282,7 +284,7 @@ export function assertExecutionAdmission(
   const admission = revision.executionAdmission;
   if (
     !admission ||
-    admission.version !== 2 ||
+    (admission.version !== 2 && !(admission.version === 3 && admission.mode === "protected")) ||
     (admission.mode !== "protected" && admission.mode !== "unprotected") ||
     Object.keys(admission).some((key) => key !== "version" && key !== "mode")
   ) {
@@ -293,6 +295,20 @@ export function assertExecutionAdmission(
   }
   if (admission.mode === "protected" && !Array.isArray(revision.egressPlan?.routes)) {
     throw new Error("Invalid protected execution plan.");
+  }
+  const owner = revision.egressPlan?.driver;
+  if (
+    admission.version === 3
+      ? !owner ||
+        typeof owner.id !== "string" ||
+        !owner.id.trim() ||
+        typeof owner.implementation !== "string" ||
+        !owner.implementation.trim() ||
+        !/^[0-9a-f]{64}$/u.test(owner.configurationId) ||
+        Object.keys(owner).length !== 3
+      : owner !== undefined
+  ) {
+    throw new Error("Invalid protected Driver registration in execution admission.");
   }
 }
 

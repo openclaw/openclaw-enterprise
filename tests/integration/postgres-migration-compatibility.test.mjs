@@ -209,6 +209,7 @@ test(
         ["repository_standing_approvals", "standing_approvals_binding_check"],
         ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
+        ["agent_revisions", "agent_revisions_execution_admission"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
         const ddl = sql
@@ -228,6 +229,7 @@ test(
         );
         assert.equal(checks.rowCount, 2, `Both tables must have ${constraint}`);
         assert.equal(checks.rows[0].definition, checks.rows[1].definition);
+        await client.query(`DROP TABLE pg_temp."${table}"`);
       }
     } finally {
       await client.end();
@@ -1861,6 +1863,7 @@ test(
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
+      [63, "preProtectedDriverRegistration"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2270,6 +2273,7 @@ test(
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
+      [63, "preProtectedDriverRegistration"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2361,6 +2365,7 @@ test(
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
+      [63, "preProtectedDriverRegistration"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

@@ -2607,7 +2607,7 @@ test("production Compute refuses protected admission and release, including empt
   const emptyRevision = await f.controller.transact((unit) =>
     unit.revisions.findRevision(f.namespace.id, emptyAgent.id, emptyMetadata.id),
   );
-  assert.deepEqual(emptyRevision.executionAdmission, { version: 2, mode: "protected" });
+  assert.deepEqual(emptyRevision.executionAdmission, { version: 3, mode: "protected" });
   assert.deepEqual(emptyRevision.egressPlan.routes, []);
   await assert.rejects(
     compute.prepareRevision(emptyRevision),
@@ -2624,9 +2624,9 @@ test("production Compute refuses protected admission and release, including empt
         ...options,
         computeDriver: {
           ...options.computeDriver,
-          validateExecutionAdmission(revision) {
+          validateExecutionAdmission(revision, owner) {
             admissionChecks += 1;
-            compute.validateExecutionAdmission(revision);
+            compute.validateExecutionAdmission(revision, owner);
           },
         },
       }),

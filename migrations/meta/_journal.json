@@ -442,6 +442,13 @@
       "when": 1787000000072,
       "tag": "0063_prepared_standing_git_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1787000000073,
+      "tag": "0064_protected_driver_registration",
+      "breakpoints": true
     }
   ]
 }

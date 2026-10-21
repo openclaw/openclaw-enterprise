@@ -282,6 +282,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 62) {
     return "prePreparedStandingGitExpiry";
   }
+  if (count === 63) {
+    return "preProtectedDriverRegistration";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

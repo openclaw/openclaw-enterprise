@@ -1,3 +1,4 @@
+import type { InstalledDriver } from "./installed-driver.ts";
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import type {
@@ -512,6 +513,7 @@ export function assertConfiguredBackend(
 export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
+  proxyOwner?: InstalledDriver,
 ): void {
   const requires = (capability: DriverCapability, id: string, label: string): void => {
     const driver = selected[capability];
@@ -558,10 +560,12 @@ export function validateSelectedBackendDrivers(
   const proxy = selected.credential_proxy;
   if (
     proxy !== undefined &&
-    !backends.some((backend) => backendMembers(backend).includes(`credential_proxy:${proxy.id}`))
+    (!proxyOwner ||
+      proxyOwner.require("credential_proxy") !== proxy ||
+      proxyOwner.require("sandbox") !== selected.sandbox)
   ) {
     throw new DriverSelectionError(
-      "The selected Credential Proxy Driver must belong to the OpenShell Backend.",
+      "The selected Credential Proxy Driver and Sandbox must come from the same registered Driver.",
     );
   }
   const gateway = selected.credential_gateway;

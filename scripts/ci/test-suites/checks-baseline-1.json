@@ -107,6 +107,7 @@
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/protected-driver-registration.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
     "tests/integration/egress-prepared-github-metadata.test.mjs"
@@ -497,6 +498,12 @@
         "a signed stock request cannot carry a credential-free grant across revision replacement",
         "a signed stock request loses a credential-free grant when OCC IAM access is removed",
         "OCC cannot observe a live credential grant as credential-free metadata"
+      ]
+    },
+    {
+      "path": "tests/integration/protected-driver-registration.test.ts",
+      "expectedTests": [
+        "one installed Driver owns both protected capabilities, lifecycle and verified release"
       ]
     },
     {

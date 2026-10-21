@@ -64,17 +64,24 @@ supervisor and no-bypass networking separately.
 
 New protected sources store a closed live/static descriptor after source/Secret
 permission checks and candidate validation. Existing sources require explicit
-source-update opt-in. OCC records an explicit v2 `executionAdmission` decision
-from the selected egress capability, independently of bindings. Protected plans
-freeze execution, source generation, grant and route identities. Empty routes
-retain protected semantics and require deny-all.
+source-update opt-in. For a new protected execution, OCC records version 3 admission
+and the selected Driver ID, implementation and configuration digest in the plan.
+Sandbox and Credential Proxy are separate interfaces of that one registered Driver.
+The API checks the registration object itself. A worker loading the same installation
+compares its durable reference. Neither check establishes that a Sandbox applied the plan.
+The plan also freezes the execution, source generation, grant and routes. Empty routes mean deny all.
+
+Version 2 remains readable with its original capability IDs. Only the bundled Driver
+recognizes those historical protected plans, and only when releasing a stored revision
+or settling its custody. New unprotected revisions retain version 2.
 
 `packages/contracts/src/credential-proxy.ts:assertExecutionReleaseAllowed`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
 OCC calls Compute's validator before admitting the revision. The worker and Compute
-check the admitted decision before launch. PostgreSQL refuses an unknown decision
-and rejects old writers; the protected Harness snapshot also fences the prior reader.
+check the admitted decision before launch. PostgreSQL refuses an unknown decision or a
+mix of version 2 and version 3 fields. Older workers refuse the version 3 admission.
+Upgrade all writers before admitting an execution that requires the new contract.
 Qualification must exercise both release and installed deny-all behavior.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`,

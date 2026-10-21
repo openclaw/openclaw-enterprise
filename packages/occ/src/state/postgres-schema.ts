@@ -689,14 +689,23 @@ export const agentRevisions = occSchema.table(
         jsonb_typeof(${table.admittedSpec}->'execution_admission') = 'object'
         AND (${table.admittedSpec}->'execution_admission') ?& ARRAY['version', 'mode']
         AND ((${table.admittedSpec}->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
-        AND ${table.admittedSpec}->'execution_admission'->'version' = '2'::jsonb
         AND (
           (${table.admittedSpec}->'execution_admission'->>'mode' = 'unprotected'
+            AND ${table.admittedSpec} #> '{execution_admission,version}' = '2'::jsonb
             AND NOT (${table.admittedSpec} ? 'egress_plan')
             AND NOT ((${table.admittedSpec}->'harness_auth') ? 'protectedExecutionVersion'))
           OR (${table.admittedSpec}->'execution_admission'->>'mode' = 'protected'
             AND ${table.admittedSpec} ? 'egress_plan'
-            AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}' = '2'::jsonb)
+            AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
+              = ${table.admittedSpec} #> '{execution_admission,version}'
+            AND CASE ${table.admittedSpec} #>> '{execution_admission,version}'
+              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ? 'driver')
+              WHEN '3' THEN
+                jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
+                AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
+                AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
+                AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
+              ELSE false END)
         ), false)`,
     ),
     check(

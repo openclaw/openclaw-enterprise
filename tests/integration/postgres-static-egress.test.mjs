@@ -121,7 +121,7 @@ test(
 );
 
 test(
-  "PostgreSQL preserves v2 admission and rejects absent, unknown and inconsistent decisions",
+  "PostgreSQL preserves the admitted Driver, accepts historical v2 and refuses missing or mixed-version custody",
   requiresPostgres,
   async (t) => {
     const f = await staticEgressFixture(t, { appFactory: postgresApp });
@@ -129,10 +129,12 @@ test(
     const revision = await state.read((view) =>
       view.revisions.findRevision(f.namespace.id, f.agent.id, f.revision.id),
     );
-    assert.deepEqual(revision.executionAdmission, { version: 2, mode: "protected" });
+    assert.deepEqual(revision.executionAdmission, { version: 3, mode: "protected" });
+    assert.deepEqual(revision.egressPlan.driver, f.installedDriver.ref);
     for (const executionAdmission of [
       undefined,
       { version: 1, mode: "protected" },
+      { version: 2, mode: "protected" },
       { version: 2, mode: "unprotected" },
     ]) {
       await assert.rejects(
@@ -177,11 +179,24 @@ test(
       true,
       "control must pass the same v1 validator",
     );
+    const { driver: _driver, ...v2Plan } = row.admitted_spec.egress_plan;
+    const v2 = {
+      ...row.admitted_spec,
+      egress_plan: v2Plan,
+      execution_admission: { version: 2, mode: "protected" },
+      harness_auth: { ...fencedAuth, protectedExecutionVersion: 2 },
+    };
+    // A historical row is still valid. Mixing its reader fence, admission or plan with v3 never is.
+    await insert(v2);
     for (const spec of [
       { ...row.admitted_spec, harness_auth: unfencedAuth },
       { ...protectedWithoutPlan, execution_admission: { version: 2, mode: "unprotected" } },
       missing,
-      { ...row.admitted_spec, execution_admission: { version: 3, mode: "protected" } },
+      { ...row.admitted_spec, execution_admission: { version: 4, mode: "protected" } },
+      { ...row.admitted_spec, execution_admission: v2.execution_admission },
+      { ...row.admitted_spec, egress_plan: v2Plan },
+      { ...row.admitted_spec, harness_auth: v2.harness_auth },
+      { ...v2, egress_plan: row.admitted_spec.egress_plan },
       { ...row.admitted_spec, execution_admission: { version: 2, mode: "unprotected" } },
       protectedWithoutPlan,
     ]) {

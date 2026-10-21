@@ -87,6 +87,7 @@ export async function composeProduction(config: ProductionConfig) {
     credentialGatewayDriver,
     credentialRefreshDriver,
     proxyDriver,
+    protectedDriver,
     egressAuthority,
     preparedGitHub,
     pluginDriver,
@@ -286,13 +287,11 @@ export async function composeProduction(config: ProductionConfig) {
       controller.registerDriver(channelDriver);
       controller.selectDriver("channel", channelDriver.id);
     }
-    if (sandboxDriver !== undefined) {
+    if (protectedDriver !== undefined) {
+      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
+    } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
-    }
-    if (proxyDriver !== undefined) {
-      controller.registerDriver(proxyDriver);
-      controller.selectDriver("credential_proxy", proxyDriver.id);
     }
     if (credentialGatewayDriver !== undefined) {
       controller.registerDriver(credentialGatewayDriver);
@@ -383,12 +382,14 @@ export async function composeProduction(config: ProductionConfig) {
       return { status: "ready" };
     });
     app.addHook("onClose", async () => {
+      await config.drivers.protectedDriver?.close();
       await preparedGitHub?.close();
       await state.close();
     });
     phaseCompleted("routes");
     return app;
   } catch (error) {
+    await config.drivers.protectedDriver?.close();
     await preparedGitHub?.close();
     await pool.end();
     throw error;

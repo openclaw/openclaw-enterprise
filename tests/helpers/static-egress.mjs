@@ -1,3 +1,4 @@
+import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
@@ -447,10 +448,15 @@ export async function staticEgressFixture(
     },
   });
   await app.bootstrap();
-  for (const driver of [catalog, sandbox]) {
-    app.controller.registerDriver(driver);
-    app.controller.selectDriver(driver.capability, driver.id);
-  }
+  app.controller.registerDriver(catalog);
+  app.controller.selectDriver(catalog.capability, catalog.id);
+  const installedDriver = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
+    { capabilities: { sandbox, credential_proxy: egress } },
+    { sandbox: sandbox.id, credential_proxy: egress.id },
+  );
+  app.controller.registerDriver(installedDriver);
+  app.controller.selectDriver("sandbox", sandbox.id);
   namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
   runtimeNamespace = physicalPlacement
     ? await placement.resolveSandboxNamespace(namespace)
@@ -491,7 +497,6 @@ export async function staticEgressFixture(
       secrets: { api_key: secret.ref },
     });
   }
-  app.controller.registerDriver(egress);
   app.controller.selectDriver("credential_proxy", egress.id);
   let source = await post("credential-sources", {
     name: "inference",
@@ -934,6 +939,7 @@ export async function staticEgressFixture(
     egress,
     installation,
     sandboxDriver: sandbox,
+    installedDriver,
     gatewayClient: backend.client.clientForNamespace(runtimeNamespace.name),
     observed,
     clients,
