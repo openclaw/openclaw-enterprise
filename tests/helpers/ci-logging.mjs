@@ -34,14 +34,21 @@ async function execute(command, args, { timeoutMs, ...options } = {}) {
 }
 const selectedCollectorSmoke = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
 
+// The Collector's file exporter appends one JSON line per export and can be
+// mid-write when a test polls the file, so only newline-terminated lines are
+// records. A partial last line is left for the next poll instead of failing the
+// parse ("Unterminated string in JSON" under load).
+function completeJsonLines(text) {
+  return text
+    .slice(0, text.lastIndexOf("\n") + 1)
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
 async function readJsonlPayloads(path) {
   try {
-    const text = await readFile(path, "utf8");
-    return text
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    return completeJsonLines(await readFile(path, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") {
       return [];
@@ -76,6 +83,7 @@ export {
   ciOtelBackendResourceKind,
   cleanupLogging,
   collectorImage,
+  completeJsonLines,
   execute,
   fixture,
   payloadContains,
