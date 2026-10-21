@@ -458,11 +458,59 @@ const REPLACEMENTS = [
   [1, 1],
   {},
   { unexpected: true },
+  // Strings of the right type in the wrong format, so format checks are exercised too.
+  "2026-02-30T00:00:00Z",
+  "2026-10-14T25:00:00Z",
+  "2026-10-14",
+  "12:34:56",
+  "not a uri",
+  "http://exa mple.com/",
+  "person@",
+  "0000000a-0000-4000-8000-00000000000",
+  "192.0.2.256",
 ];
 
+// Strings just outside each format, for values sampleString took from FORMAT_SAMPLES.
+const FORMAT_NEAR_MISSES = {
+  "date-time": [
+    "2026-02-30T00:00:00Z",
+    "2026-10-14T25:00:00Z",
+    "2026-10-14T12:34:60Z",
+    "2026-10-14 12:34:56",
+    "2026-10-14",
+  ],
+  date: ["2026-02-30", "2026-13-01", "2026-10-14T00:00:00Z"],
+  time: ["25:00:00Z", "12:34", "12:34:56+25:00"],
+  uri: ["not a uri", "http://exa mple.com/", "//example.com/path", "example.com"],
+  email: ["person@", "@example.com", "person example.com"],
+  uuid: ["0000000a-0000-4000-8000-00000000000", "0000000a00004000800000000000000b"],
+  hostname: ["-example.com", "exa_mple.com"],
+  ipv4: ["192.0.2.256", "192.0.2"],
+};
+
+// A string one edit away from `text`, which a pattern, length or format check usually decides.
+function nearMiss(random, text) {
+  const format = Object.keys(FORMAT_SAMPLES).find((name) => FORMAT_SAMPLES[name].includes(text));
+  if (format !== undefined && random() < 0.75) {
+    return pick(random, FORMAT_NEAR_MISSES[format]);
+  }
+  switch (integer(random, 0, 4)) {
+    case 0:
+      return `${text}!`;
+    case 1:
+      return text.slice(0, -1);
+    case 2:
+      return text.toUpperCase();
+    case 3:
+      return ` ${text}`;
+    default:
+      return text.length === 0 ? "-" : `${text.slice(0, -1)}-`;
+  }
+}
+
 /**
- * `value` with one change: a field removed, replaced with another type or edge value, an
- * unknown field added, or an array item repeated. `nonJson` also allows values only a
+ * `value` with one change: a field removed, replaced with another type or edge value (or a
+ * string one edit away), an unknown field added, or an array item repeated. `nonJson` also allows values only a
  * handler can return (Dates, toJSON objects, undefined, NaN, BigInt), for serializers.
  */
 export function perturbValue(random, value, { nonJson = false } = {}) {
@@ -490,8 +538,10 @@ export function perturbValue(random, value, { nonJson = false } = {}) {
     parent = parent[key];
   }
   const key = path.at(-1);
-  const action = integer(random, 0, 3);
-  if (action === 0 && !Array.isArray(parent)) {
+  const action = integer(random, 0, 4);
+  if (action === 4 && typeof parent[key] === "string") {
+    parent[key] = nearMiss(random, parent[key]);
+  } else if (action === 0 && !Array.isArray(parent)) {
     delete parent[key];
   } else if (action === 1 && parent[key] !== null && typeof parent[key] === "object") {
     if (Array.isArray(parent[key])) {

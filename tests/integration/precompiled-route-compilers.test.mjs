@@ -14,8 +14,10 @@ import { isDeepStrictEqual } from "node:util";
 import {
   cachedRequestValidators,
   cachedResponseSerializers,
+  formatsPlugin,
   generatePrecompiledRouteCompilers,
   loadPrecompiledRouteCompilers,
+  validatorOptionsKey,
   writePrecompiledRouteCompilers,
 } from "../../apps/controller/src/http/route-compilers.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -80,13 +82,18 @@ function corpus(entry, seed) {
 // What a request sees after validating `value`: the verdict, the errors exactly as the error
 // handler would read them (verbose errors carry the schema; JSON compares its content), and the
 // payload after coercion, defaults and removed additional properties.
+// The validator is called the way Fastify calls it (lib/validation.js): with the request as
+// parent when it has a schemaEnv, so a root value it rewrites lands on the request.
 function validate(validator, value) {
-  const data = value === undefined ? undefined : structuredClone(value);
-  const valid = validator(data);
+  const request = { part: value === undefined ? undefined : structuredClone(value) };
+  const data = request.part === undefined ? null : request.part;
+  const valid = validator.schemaEnv
+    ? validator(data, { parentData: request, parentDataProperty: "part" })
+    : validator(data);
   return {
     valid,
     errors: validator.errors == null ? null : JSON.stringify(validator.errors),
-    data,
+    data: request.part,
   };
 }
 
@@ -232,17 +239,98 @@ test("inputs the artifact lacks compile at run time", () => {
   assert.equal(artifact.hits, before);
 });
 
+test("an input that differs from a recorded one in any compile setting misses the artifact", () => {
+  const entry = generated.inputs.find(
+    (input) => input.kind === "validator" && input.route.part === "body",
+  );
+  const route = { schema: entry.schema, httpPart: "body" };
+  const customOptions = entry.options.customOptions;
+  const nonEnumerable = structuredClone(entry.schema);
+  Object.defineProperty(nonEnumerable, "maxProperties", { value: 0, enumerable: false });
+  const variants = {
+    coerceTypes: [
+      entry.externalSchemas,
+      { ...entry.options, customOptions: { ...customOptions, coerceTypes: true } },
+    ],
+    useDefaults: [
+      entry.externalSchemas,
+      { ...entry.options, customOptions: { ...customOptions, useDefaults: true } },
+    ],
+    removeAdditional: [
+      entry.externalSchemas,
+      { ...entry.options, customOptions: { ...customOptions, removeAdditional: true } },
+    ],
+    "another ajv option": [
+      entry.externalSchemas,
+      { ...entry.options, customOptions: { ...customOptions, allErrors: true } },
+    ],
+    "another plugin": [
+      entry.externalSchemas,
+      { ...entry.options, plugins: [formatsPlugin, (ajv) => ajv] },
+    ],
+    "another shared schema": [
+      { ...entry.externalSchemas, "extra-shared": { $id: "extra-shared", type: "string" } },
+      entry.options,
+    ],
+  };
+  // A fresh load has its own compile caches, so nothing here is answered from an earlier test.
+  const fresh = loadPrecompiledRouteCompilers(artifactPath);
+  for (const [name, [externalSchemas, options]] of Object.entries(variants)) {
+    cachedRequestValidators(fresh)(externalSchemas, options)(route);
+    assert.equal(fresh.hits, 0, `${name} misses the artifact`);
+  }
+  // A keyword JSON cannot see (not enumerable) still reaches ajv, so neither the artifact nor
+  // the process-wide cache may answer for the schema without it.
+  const strict = cachedRequestValidators(fresh)(entry.externalSchemas, entry.options)({
+    schema: nonEnumerable,
+    httpPart: "body",
+  });
+  assert.equal(fresh.hits, 0, "a non-enumerable keyword misses the artifact");
+  // The recorded input itself hits, and the strict schema rejects a body it accepts.
+  const recorded = cachedRequestValidators(fresh)(entry.externalSchemas, entry.options)(route);
+  assert.equal(fresh.hits, 1, "the recorded input hits");
+  let body;
+  for (let seed = 1; seed < 50 && body === undefined; seed += 1) {
+    const candidate = sampleValue(seededRandom(seed), entry.schema, entry.externalSchemas ?? {});
+    if (Object.keys(candidate ?? {}).length > 0 && recorded(structuredClone(candidate))) {
+      body = candidate;
+    }
+  }
+  assert.ok(body !== undefined, "a non-empty body the recorded validator accepts");
+  assert.equal(strict(structuredClone(body)), false, "the non-enumerable maxProperties applies");
+});
+
+// Fastify only lets a validator with a schemaEnv (a run-time one) replace a root value it
+// coerces or defaults, so validators for options that rewrite data are never precompiled.
+test("validator options that rewrite request data have no precompile key", () => {
+  const entry = generated.inputs.find((input) => input.kind === "validator");
+  assert.equal(typeof validatorOptionsKey(entry.options), "string");
+  for (const [name, value] of Object.entries({
+    coerceTypes: true,
+    useDefaults: true,
+    removeAdditional: "all",
+  })) {
+    const options = {
+      ...entry.options,
+      customOptions: { ...entry.options.customOptions, [name]: value },
+    };
+    assert.equal(validatorOptionsKey(options), undefined, name);
+  }
+});
+
 test("a missing or stale artifact is ignored and a malformed one fails", () => {
   assert.equal(loadPrecompiledRouteCompilers(join(directory, "missing.cjs")), null);
   const fingerprint = /^exports\.fingerprint = "([0-9a-f]{64})";$/mu.exec(generated.source)?.[1];
   assert.ok(fingerprint !== undefined);
   const stalePath = join(directory, "stale.cjs");
-  writeFileSync(stalePath, generated.source.replace(fingerprint, "0".repeat(64)));
+  // A stale artifact is not even run.
+  writeFileSync(
+    stalePath,
+    generated.source.replace(fingerprint, "0".repeat(64)) + '\nthrow new Error("ran");\n',
+  );
   assert.equal(loadPrecompiledRouteCompilers(stalePath), null);
   const malformedPath = join(directory, "malformed.cjs");
-  writeFileSync(
-    malformedPath,
-    `exports.format = 1;\nexports.fingerprint = ${JSON.stringify(fingerprint)};\n`,
-  );
+  const header = generated.source.slice(0, generated.source.indexOf("exports.validators"));
+  writeFileSync(malformedPath, header);
   assert.throws(() => loadPrecompiledRouteCompilers(malformedPath), /malformed/u);
 });
