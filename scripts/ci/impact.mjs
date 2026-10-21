@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 
 // A BOM in a Git path is filename data, not an encoding marker.
@@ -202,7 +211,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
   return [...selected].sort();
 }
 
-function classify() {
+export function classify() {
   if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
     return { mode: "full", reason: "event is not a pull request", category: "non_pr_event" };
   }
@@ -356,8 +365,8 @@ function classify() {
   }
 }
 
-function main() {
-  const args = process.argv.slice(2);
+// Throws unless `args` is a command line the CLI accepts.
+export function checkArguments(args) {
   const [option, value] = args;
   const verifyLanes = option === "--verify-mode" && value === "tests";
   if (
@@ -371,24 +380,46 @@ function main() {
       "usage: impact.mjs --github-output PATH | --verify-mode docs|full | --verify-mode tests --lanes JSON",
     );
   }
-  const result = classify();
+}
+
+// The CLI's answer to an accepted command line for a classification: its log
+// line, and the GitHub output to append or whether the requested mode verified.
+// Exported with classify() so tests can check many command lines against one
+// classification; main() is the only production caller.
+export function respond(args, result) {
+  const [option, value] = args;
   const lanes = result.mode === "tests" ? JSON.stringify(result.lanes) : null;
-  console.log(`CI impact: ${result.mode} (${result.reason})${lanes ? ` ${lanes}` : ""}`);
+  const line = `CI impact: ${result.mode} (${result.reason})${lanes ? ` ${lanes}` : ""}`;
   if (option === "--verify-mode") {
-    if (result.mode !== value || (verifyLanes && lanes !== args[3])) {
+    return {
+      line,
+      verified: result.mode === value && (value !== "tests" || lanes === args[3]),
+    };
+  }
+  return {
+    line,
+    output: `mode=${result.mode}\nreason=${result.category ?? "unavailable"}\n${lanes ? `lanes=${lanes}\n` : ""}`,
+  };
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  checkArguments(args);
+  const { line, verified, output } = respond(args, classify());
+  console.log(line);
+  if (output === undefined) {
+    if (!verified) {
       throw new Error("requested mode does not match current evidence");
     }
     return;
   }
-  const fd = openSync(value, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+  const fd = openSync(args[1], constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
   try {
     if (!fstatSync(fd).isFile()) {
       throw new Error("output is not a regular file");
     }
-    const output = Buffer.from(
-      `mode=${result.mode}\nreason=${result.category ?? "unavailable"}\n${lanes ? `lanes=${lanes}\n` : ""}`,
-    );
-    if (writeSync(fd, output) !== output.length) {
+    const bytes = Buffer.from(output);
+    if (writeSync(fd, bytes) !== bytes.length) {
       throw new Error("output write was incomplete");
     }
   } finally {
@@ -396,9 +427,21 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch {
-  console.error("CI impact: unable to select or verify mode");
-  process.exitCode = 1;
+// CI runs this file as a script; tests also import it. Node before 24.2 has no
+// import.meta.main: there the CLI runs when the script node started is this file,
+// or when that cannot be told (as it always ran before).
+function startedAsScript() {
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return true;
+  }
+}
+if (import.meta.main ?? startedAsScript()) {
+  try {
+    main();
+  } catch {
+    console.error("CI impact: unable to select or verify mode");
+    process.exitCode = 1;
+  }
 }
