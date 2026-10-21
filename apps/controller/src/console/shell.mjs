@@ -778,7 +778,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   // Agents (finding 1897).
   function renderNamespaceRows(view, items) {
     const list = element("ul", {
-      className: "collection namespace-rows",
+      className: "collection",
       "aria-label": pages.namespaces,
     });
     for (const item of sorted(items)) {
@@ -818,10 +818,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     view.replaceChildren(
       element(
         "div",
-        { className: "namespace-table" },
+        { className: "resource-list namespace-table" },
         element(
           "div",
-          { className: "namespace-table-head", "aria-hidden": "true" },
+          { className: "resource-list-header namespace-table-head", "aria-hidden": "true" },
           element("span", {}, "Namespace"),
           element("span", {}, "Status"),
           element("span", {}, "Created"),

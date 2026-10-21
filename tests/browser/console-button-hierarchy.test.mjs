@@ -780,9 +780,8 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   );
 });
 
-// Links are ink with an underline and the accent is for actions (UX plan C8, spec 3.3): an inline
-// link or a disclosure that opens more detail must not paint itself in the accent, and a table's
-// name links underline only on hover.
+// Links and disclosures share a colour distinct from primary actions. Names in a table
+// underline on hover and focus; prose links keep their underline.
 test("Links and disclosures use the link colour with an underline, not the accent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Link tone");
   const agent = await fixture.createAgent(namespace.id, "Link Agent", nativeValues("link"));
@@ -806,7 +805,7 @@ test("Links and disclosures use the link colour with an underline, not the accen
           const style = globalThis.getComputedStyle(node);
           return {
             text: node.textContent.trim(),
-            ink: style.color === link,
+            link: style.color === link,
             accent: style.color === accent,
             line: style.textDecorationLine,
             lineShows: style.textDecorationColor !== "rgba(0, 0, 0, 0)",
@@ -819,12 +818,12 @@ test("Links and disclosures use the link colour with an underline, not the accen
     return paint;
   };
 
-  // The Agents table's name link: ink, medium, its underline hidden until the pointer is on it.
+  // The name link's underline appears when the pointer is on it.
   const name = page.getByRole("link", { name: "Link Agent", exact: true });
   await name.waitFor();
   await page.mouse.move(0, 0);
   assert.deepEqual(await tone(name), {
-    ink: true,
+    link: true,
     accent: false,
     line: "underline",
     lineShows: false,
@@ -833,15 +832,14 @@ test("Links and disclosures use the link colour with an underline, not the accen
   await name.hover();
   assert.equal((await tone(name)).lineShows, true, "name link underlines on hover");
 
-  // On the Agent page, every plain link and disclosure in the content stays out of the accent,
-  // and the native Configuration disclosure reads as an underlined ink link.
+  // The native Configuration disclosure has the same colour and a persistent underline.
   await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
   const native = page.getByText("View native Configuration", { exact: true });
   await native.waitFor();
   await page.locator(settledView).waitFor();
   await page.mouse.move(0, 0);
   assert.deepEqual(await tone(native), {
-    ink: true,
+    link: true,
     accent: false,
     line: "underline",
     lineShows: true,

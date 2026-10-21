@@ -418,8 +418,9 @@ export const scenarios = {
     name: "Populated",
     path: "/console/secrets",
     description:
-      "Namespace Secret metadata. Search by name or ID; values are never returned. Simulated UI proof.",
+      "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
     steps: [
+      "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
       "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
     ],
   },
@@ -478,7 +479,7 @@ export const scenarios = {
     path: "/console/secrets",
     actions: [click("Create Secret")],
     description:
-      "A name and masked value. Whitespace is preserved; Show value reveals only the value just entered.",
+      "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
     steps: [
       "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
       "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
@@ -521,7 +522,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "An unreadable reply leaves the outcome unknown. The value is erased and this dialog cannot resubmit.",
+      "An unreadable reply leaves an amber warning that the outcome is unknown. The value is erased and this dialog cannot resubmit.",
   },
   secretsConsumers: {
     group: "Pages/Secrets",
@@ -537,7 +538,7 @@ export const scenarios = {
     },
     actions: [click("Demo model API key (simulated)")],
     description:
-      "Agent links, other consumer IDs, unreadable counts and incomplete results. Known consumers block deletion. Simulated UI proof only.",
+      "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
   },
   secretsReplace: {
     group: "Pages/Secrets",
@@ -5606,7 +5607,7 @@ export const scenarios = {
     name: "Account menu",
     actions: account,
     description:
-      "The account row (initials, name and email) opens Settings and Sign out. Namespace selection is available directly in the page header.",
+      "The account row in the dark navigation opens a light menu with Settings and Sign out. Use the arrow keys to check focus inside the menu, then Escape to return to the account.",
   },
   menuMobile: {
     group: "Components/Navigation",
