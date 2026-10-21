@@ -576,7 +576,8 @@ function onlyEnumerableKeys(value: object): boolean {
 // Only createFastifyApp's validator options are precompiled: customOptions without `code`
 // and formatsPlugin as the only plugin. Standalone validators have no `schemaEnv`, so Fastify
 // calls them without the request as parent and a root value they coerce or default would never
-// reach the handler: options that rewrite data always compile at run time.
+// reach the handler: options that rewrite data always compile at run time. @fastify/ajv-compiler
+// turns all three on when they are left out, so each must be explicitly false.
 const REWRITING_OPTIONS = ["coerceTypes", "useDefaults", "removeAdditional"];
 export function validatorOptionsKey(options: unknown): string | undefined {
   if (typeof options !== "object" || options === null) {
@@ -591,10 +592,7 @@ export function validatorOptionsKey(options: unknown): string | undefined {
     typeof customOptions !== "object" ||
     customOptions === null ||
     Object.hasOwn(customOptions, "code") ||
-    REWRITING_OPTIONS.some((name) => {
-      const value = (customOptions as Record<string, unknown>)[name];
-      return value !== undefined && value !== false;
-    })
+    REWRITING_OPTIONS.some((name) => (customOptions as Record<string, unknown>)[name] !== false)
   ) {
     return undefined;
   }

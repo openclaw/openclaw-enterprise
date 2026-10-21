@@ -316,6 +316,15 @@ test("validator options that rewrite request data have no precompile key", () =>
     };
     assert.equal(validatorOptionsKey(options), undefined, name);
   }
+  // @fastify/ajv-compiler turns each of them on when it is left out.
+  for (const name of ["coerceTypes", "useDefaults", "removeAdditional"]) {
+    const { [name]: _omitted, ...customOptions } = entry.options.customOptions;
+    assert.equal(
+      validatorOptionsKey({ ...entry.options, customOptions }),
+      undefined,
+      `${name} omitted`,
+    );
+  }
 });
 
 test("a missing or stale artifact is ignored and a malformed one fails", () => {
