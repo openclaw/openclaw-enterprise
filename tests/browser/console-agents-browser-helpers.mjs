@@ -70,44 +70,55 @@ async function launchBrowser(options = {}) {
 }
 
 // One Chromium for every test in a file, launched on first use and closed after the file's
-// last test. Call it once at module top level (`after` attaches to the test that is running)
-// and pass the result as newPage's `browser` option. Each test still gets its own context
-// (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test. A
-// failed launch or a crashed browser is launched again for the next test.
-export function fileBrowser() {
-  let launched;
-  after(async () => {
-    await (await launched?.catch(() => null))?.close();
-  });
-  return () => {
-    if (launched === undefined) {
-      const launching = launchBrowser().then(
-        (browser) => {
-          browser.on("disconnected", () => {
-            if (launched === launching) {
-              launched = undefined;
-            }
-          });
-          return browser;
-        },
-        (error) => {
-          if (launched === launching) {
-            launched = undefined;
+// last test (`after` here runs at module load, so it attaches to the file's root test). newPage
+// uses it unless a test passes launch arguments, which need their own browser. Each test still
+// gets its own context (cookies, storage, viewport, routes); this only saves the launch and
+// close, about 0.3 CPU-s a test. A failed launch or a crashed browser is launched again for the
+// next test.
+let sharedLaunch;
+after(async () => {
+  await (await sharedLaunch?.catch(() => null))?.close();
+});
+
+function sharedBrowser() {
+  if (sharedLaunch === undefined) {
+    const launching = launchBrowser().then(
+      (browser) => {
+        browser.on("disconnected", () => {
+          if (sharedLaunch === launching) {
+            sharedLaunch = undefined;
           }
-          throw error;
-        },
-      );
-      launched = launching;
-    }
-    return launched;
-  };
+        });
+        return browser;
+      },
+      (error) => {
+        if (sharedLaunch === launching) {
+          sharedLaunch = undefined;
+        }
+        throw error;
+      },
+    );
+    sharedLaunch = launching;
+  }
+  return sharedLaunch;
+}
+
+// The file's shared browser, for callers that pass it as newPage's `browser` option. newPage
+// uses the same one by default.
+export function fileBrowser() {
+  return sharedBrowser;
 }
 
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const shared = options.browser !== undefined;
-  assert.ok(!shared || options.args === undefined, "a shared browser takes no launch arguments");
-  const browser = shared ? await options.browser() : await launchBrowser(options);
+  assert.ok(
+    options.browser === undefined || options.args === undefined,
+    "a shared browser takes no launch arguments",
+  );
+  const shared = options.args === undefined;
+  const browser = shared
+    ? await (options.browser ?? sharedBrowser)()
+    : await launchBrowser(options);
   let context;
   let diagnostics;
   fixture.registerCleanupBeforeAppClose(async () => {
