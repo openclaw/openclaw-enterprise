@@ -267,24 +267,28 @@ test(
       }),
     );
 
-    await waitForRecords(
-      readLogs,
-      cases,
-      "seenAtMs",
-      "content in its late volume",
-      (unnudgedBoundSeconds + 60) * 1_000,
-    );
-    for (const entry of cases) {
-      entry.seconds = Math.round((entry.seenAtMs - entry.createdAtMs) / 100) / 10;
-      t.diagnostic(
-        `openclaw-ci-measurement ${JSON.stringify({
-          kind: "kubelet-volume-refresh",
-          volume: entry.kind,
-          nudge: entry.nudge,
-          sample: entry.sample,
-          seconds: entry.seconds,
-        })}`,
+    try {
+      await waitForRecords(
+        readLogs,
+        cases,
+        "seenAtMs",
+        "content in its late volume",
+        (unnudgedBoundSeconds + 60) * 1_000,
       );
+    } finally {
+      // Also on a timeout: the cases that did see their content keep their measurement.
+      for (const entry of cases.filter(({ seenAtMs }) => seenAtMs !== undefined)) {
+        entry.seconds = Math.round((entry.seenAtMs - entry.createdAtMs) / 100) / 10;
+        t.diagnostic(
+          `openclaw-ci-measurement ${JSON.stringify({
+            kind: "kubelet-volume-refresh",
+            volume: entry.kind,
+            nudge: entry.nudge,
+            sample: entry.sample,
+            seconds: entry.seconds,
+          })}`,
+        );
+      }
     }
 
     for (const entry of cases) {
