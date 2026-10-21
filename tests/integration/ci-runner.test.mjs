@@ -2801,7 +2801,7 @@ waitingTest(
       { timeout: 60_000, execArgv: heldClock(started + 1_000, [hung]) },
     );
 
-    assert.equal(result.error, undefined, "the deadline stopped the lane");
+    assert.equal(result.error, undefined, `the deadline stopped the lane: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     const [teardown, later] = summary.files;
@@ -3207,7 +3207,7 @@ waitingTest(
       { timeout: 60_000, execArgv: heldClock(started + 1_000, hung) },
     );
 
-    assert.equal(result.error, undefined, "the runner gave up on the cleanups");
+    assert.equal(result.error, undefined, `the runner gave up on the cleanups: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     assert.deepEqual(
@@ -3224,8 +3224,9 @@ waitingTest(
       (entry) => !/window after the lane deadline closed/.test(entry.message),
     );
     assert(ran.length <= 1, JSON.stringify(timeouts));
+    // It starts after its file stops, past the deadline, so it gets less than a full allowance.
     for (const entry of ran) {
-      assert(entry.timeoutMs <= allowanceMs, JSON.stringify(entry));
+      assert(entry.timeoutMs < allowanceMs, JSON.stringify(entry));
     }
   },
 );

@@ -6,6 +6,12 @@
 // needs, for example a test hung in its teardown. Until then the runner sees no time pass, so
 // its lane deadline cannot arrive first. Only the runner process has this clock: it starts its
 // test processes without the preload.
+//
+// Only Date.now and the global setTimeout and clearTimeout are held. node:timers/promises,
+// setInterval, setImmediate, performance.now and new Date() keep real time, so durations and
+// timestamps the runner records include the held time. While the clock is held, it says on
+// stderr which gates are still missing every 10 s, so a fixture that never reaches its state
+// shows up in the runner's output rather than only as the test's own timeout.
 import { existsSync } from "node:fs";
 
 const query = new URL(import.meta.url).searchParams;
@@ -63,8 +69,16 @@ class HeldTimer {
 
 // Watches the gates while the clock may hold. It keeps the runner alive only while a held
 // timer would have.
+let nextReport = holdAt + 10_000;
 const poll = setInterval(() => {
-  if (!gates.every((gate) => existsSync(gate))) {
+  const missing = gates.filter((gate) => !existsSync(gate));
+  if (missing.length > 0) {
+    if (realNow() >= nextReport) {
+      nextReport += 10_000;
+      process.stderr.write(
+        `ci-runner-held-clock: still held; missing gates: ${missing.join(", ")}\n`,
+      );
+    }
     return;
   }
   heldMs = Math.max(0, realNow() - holdAt);
@@ -91,6 +105,10 @@ function updatePoll() {
 Date.now = now;
 
 globalThis.setTimeout = function setTimeout(callback, delay, ...args) {
+  if (typeof callback !== "function") {
+    // Node's own setTimeout rejects it at once.
+    return realSetTimeout(callback, delay, ...args);
+  }
   // Node runs a timer whose delay is not a number from 1 to 2^31 - 1 after 1 ms.
   const ms = Number(delay);
   const due = now() + (ms >= 1 && ms <= 2 ** 31 - 1 ? ms : 1);
