@@ -8,6 +8,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/conformance/ssh-compute.test.mjs",
     "tests/conformance/module-boundaries.test.mjs",
@@ -302,6 +303,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/startup-environment-boundary.test.mjs"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"

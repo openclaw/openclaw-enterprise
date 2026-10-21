@@ -232,7 +232,7 @@ const PROBE_STATUS_DETAIL_TEXT = {
     "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
 };
 
-// A Codex check retried once, after a timeout or a transient failure, holds its second
+// A Codex check retried once, after a timeout or a reliability failure, holds its second
 // attempt's detail with this suffix; the advice is the same as for the bare token.
 const RETRIED_DETAIL_SUFFIX = "-attempt2";
 
@@ -1318,6 +1318,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (revision === selected && tab === selectedTab) {
         // Already open below: rebuilding it would only discard the reader's edits.
         openVersionDetail({ animate: true, deploy });
+        return;
+      }
+      // A link to another version must not add a history entry if sharing keeps this one open.
+      if (sharingWrite && revision !== selected) {
+        showLeaveBlock();
+        return;
+      }
+      if (draftEditorBlocksNavigation()) {
+        // Show the refusal at the editor without adding a visit the reader never made.
+        showLeaveBlock();
+        openVersionDetail({ animate: true });
         return;
       }
       // The load this navigation starts is the next one.
@@ -5152,18 +5163,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       showLeaveBlock();
       return true;
     }
-    if (draftEditorBlocksNavigation() || (sharingWrite && nextRevision !== selected)) {
-      history.replaceState(
-        history.state,
-        "",
-        context.pageUrl(target(selected, selectedTab), namespaceId),
-      );
+    if (draftEditorBlocksNavigation()) {
       showLeaveBlock();
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });
       }
-      return true;
+      return "blocked";
     }
     if (nextRevision !== selected) {
       return false;

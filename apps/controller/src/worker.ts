@@ -319,6 +319,24 @@ function revisionDependencyFailure(error: unknown): TransientDependencyError | u
     : undefined;
 }
 
+/** Why a claim-owned effect lost its claim; the `CLAIM_LOST` log line names it as `cause`. */
+type ClaimLossCause =
+  | "CLAIM_RENEWAL_REFUSED"
+  | "CLAIM_RENEWAL_LATE"
+  | "CLAIM_RENEWAL_FAILED"
+  | "CLAIM_LEASE_LAPSED"
+  | "WORKER_STOPPING";
+
+/** A claim lost around an external effect. Keeps the base error's name for its callers. */
+class ClaimLeaseLostError extends WorkClaimLostError {
+  readonly lossCause: ClaimLossCause;
+
+  constructor(lossCause: ClaimLossCause) {
+    super();
+    this.lossCause = lossCause;
+  }
+}
+
 /**
  * Stopping a refused candidate failed or yielded to other Work. The pass waits as
  * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
@@ -1362,6 +1380,12 @@ export class ControllerWorker {
           this.emit({
             event: "worker.error",
             code: error instanceof WorkClaimLostError ? "CLAIM_LOST" : "WORKER_UNAVAILABLE",
+            ...(error instanceof ClaimLeaseLostError
+              ? {
+                  ...(claimed === undefined ? {} : workLogFields(claimed)),
+                  cause: error.lossCause,
+                }
+              : {}),
           });
         }
       }
@@ -4643,51 +4667,73 @@ export class ControllerWorker {
     effect: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (this.stopping || this.abort.signal.aborted) {
-      throw new WorkClaimLostError();
+      throw new ClaimLeaseLostError("WORKER_STOPPING");
     }
     // Consecutive short effects can each finish before their timer fires while
     // the whole sequence outlives the lease. Renew before every external effect.
     const firstRenewal = performance.now();
     if (!(await this.renewClaim(claim))) {
-      throw new WorkClaimLostError();
+      throw new ClaimLeaseLostError("CLAIM_RENEWAL_REFUSED");
     }
-    this.progress();
-    let lost = false;
-    let pending = Promise.resolve();
+    let lost: ClaimLossCause | undefined;
     const operation = new AbortController();
-    const abandon = () => {
-      lost = true;
-      operation.abort(new WorkClaimLostError());
+    const abandon = (cause: ClaimLossCause) => {
+      lost ??= cause;
+      operation.abort(new ClaimLeaseLostError(cause));
     };
+    const stopping = () => abandon("WORKER_STOPPING");
     // A renewal that is never answered (a silent connection) waits for the
     // database timeout, long after the lease. Another worker may own the claim
     // by then, so stop when the last confirmed lease runs out. Measured from
     // when the renewal was sent, this is never later than the stored expiry.
+    // The renewal stores clock_timestamp() + lease at an unknown moment between
+    // send and answer, so one answered after the lease proves nothing about now:
+    // lease recovery may already have given the work to another worker. A late
+    // renewal therefore loses the claim at once (finding 2137).
     let lapse: ReturnType<typeof setTimeout> | undefined;
-    const confirmLease = (renewedAt: number) => {
+    const confirmLease = (renewedAt: number): boolean => {
       clearTimeout(lapse);
-      lapse = setTimeout(abandon, renewedAt + this.leaseDurationMs - performance.now());
+      const now = performance.now();
+      const remainingMs = renewedAt + this.leaseDurationMs - now;
+      if (remainingMs <= 0) {
+        this.emit({
+          event: "worker.claim-renewal-warning",
+          ...workLogFields(claim),
+          code: "CLAIM_RENEWAL_LATE",
+          durationMs: now - renewedAt,
+        });
+        return false;
+      }
+      lapse = setTimeout(() => abandon("CLAIM_LEASE_LAPSED"), remainingMs);
       lapse.unref();
+      return true;
     };
-    confirmLease(firstRenewal);
-    this.abort.signal.addEventListener("abort", abandon, { once: true });
+    if (!confirmLease(firstRenewal)) {
+      throw new ClaimLeaseLostError("CLAIM_RENEWAL_LATE");
+    }
+    this.progress();
+    let pending = Promise.resolve();
+    this.abort.signal.addEventListener("abort", stopping, { once: true });
     if (this.abort.signal.aborted) {
-      abandon();
+      stopping();
     }
     const heartbeat = setInterval(
       () => {
         pending = pending.then(async () => {
           const renewedAt = performance.now();
           if (!(await this.renewClaim(claim))) {
-            abandon();
-          } else if (!lost) {
-            confirmLease(renewedAt);
+            abandon("CLAIM_RENEWAL_REFUSED");
+          } else if (lost === undefined) {
+            if (!confirmLease(renewedAt)) {
+              abandon("CLAIM_RENEWAL_LATE");
+              return;
+            }
             this.progress();
             void this.health(false);
           }
         });
         pending.catch(() => {
-          abandon();
+          abandon("CLAIM_RENEWAL_FAILED");
         });
       },
       Math.max(1, Math.floor(this.leaseDurationMs / 3)),
@@ -4712,11 +4758,11 @@ export class ControllerWorker {
       );
     } finally {
       clearInterval(heartbeat);
-      this.abort.signal.removeEventListener("abort", abandon);
+      this.abort.signal.removeEventListener("abort", stopping);
       await pending.catch(() => {});
       clearTimeout(lapse);
-      if (lost) {
-        throw new WorkClaimLostError();
+      if (lost !== undefined) {
+        throw new ClaimLeaseLostError(lost);
       }
     }
   }

@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-10-18
-last_updated_session: authoring-run/b64e89ba-6b5d-4d22-854f-ebea78dfe94f
+updated: 2026-10-20
+last_updated_session: authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77
 ---
 
 # CLI Agent metadata browsing flow
@@ -57,7 +57,11 @@ graph TD
 `occclient.Client`. `internal/occclient/client.go:GetAgent`, `ListAgents`, and
 `ListAgentRevisions` select the appropriate GET route. The transport decodes
 successful envelopes into resource data and returns a command error for HTTP
-failures or invalid envelopes.
+failures or invalid envelopes. `internal/occclient/transport.go:apiError`
+reports a redirect without following it. It compares host letter case
+insensitively when choosing the remedy: a same-origin redirect needs a direct
+API endpoint, while another origin can require changing `OCC_URL`. The target
+is still displayed without userinfo, query, or fragment.
 
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` is the
 persistence boundary for the special successful response. It catches saved
@@ -148,6 +152,8 @@ historical version, and that `--cursor` continues the history. See the PostgreSQ
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 02:20: Keep same-origin CLI redirect guidance when host letter case differs. (authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77 - d331d24fdddc269c12900327733be0ae1ffc441e)
 
 - 2026-10-18 15:11: Preserve the selected Namespace in version-history continuation commands. (authoring-run/b64e89ba-6b5d-4d22-854f-ebea78dfe94f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 

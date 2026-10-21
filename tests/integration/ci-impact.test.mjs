@@ -26,6 +26,7 @@ import {
   settled,
 } from "../helpers/child-processes.mjs";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -71,8 +72,8 @@ const reasons = [
 const limit = concurrencyLimit();
 const run = (program, args, options) => limit(() => captureChild(program, args, options));
 
-async function command(cwd, program, args) {
-  const result = await run(program, args, { cwd });
+async function command(cwd, program, args, input) {
+  const result = await run(program, args, { cwd, input });
   assert.equal(result.status, 0, `${program} ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
 }
@@ -149,10 +150,118 @@ async function initBase(repo, initial, initialModes) {
   return commit("base");
 }
 
+// The selector's classification of the checkout in `cwd` under `env`, run in
+// this process. classify() reads process.env and runs Git synchronously in the
+// working directory, so both are swapped for the call alone: no other code runs
+// until they are restored. The call blocks the event loop, so concurrent cases'
+// in-process classifications run one at a time.
+function classifyIn(cwd, env) {
+  const saved = { ...process.env };
+  const previous = process.cwd();
+  const replace = (values) => {
+    for (const key of Object.keys(process.env)) {
+      if (values[key] === undefined) {
+        delete process.env[key];
+      }
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      }
+    }
+  };
+  replace(env);
+  try {
+    process.chdir(cwd);
+    return classify();
+  } finally {
+    process.chdir(previous);
+    replace(saved);
+  }
+}
+
+// The selector's exit status for a command line and a classification: main()
+// exits 1 when it refuses the command line or the mode does not verify.
+function verifyStatus(args, result) {
+  try {
+    checkArguments(args);
+  } catch {
+    return 1;
+  }
+  return respond(args, result).verified ? 0 : 1;
+}
+
+// The selections a selector process has made, by mode and reason. expect,
+// expectReason and expectTests classify in this process; the first of them to
+// reach a mode and reason also runs the selector CLI and checks that it writes
+// the same GitHub output, and later ones skip that process. Every outcome the
+// file reaches keeps a real selector run (which fixture provides it can vary
+// with scheduling); the CLI's own behaviour (arguments, output file, exit
+// status, the workflow's bootstrap) has its own cases that always run it.
+const cliSelections = new Set();
+function needsCliSelection(output) {
+  const key = output.split("\n", 2).join("\n");
+  if (cliSelections.has(key)) {
+    return false;
+  }
+  cliSelections.add(key);
+  return true;
+}
+
+// The pull request commit (the change on top of `base`) and its --no-ff merge onto
+// `base`, with the merge checked out: what checkout -b, commit, checkout and merge
+// make when the base has not moved, from three Git processes instead of seven.
+// The merge's tree is the change's, so one written tree serves both commits;
+// fast-import writes them and moves the checked-out branch to the merge.
+async function commitAndMerge(repo, git, base, change) {
+  await change();
+  await git("add", "-A");
+  const tree = await git("write-tree");
+  const branch = /^ref: (refs\/heads\/\S+)\n$/.exec(readFileSync(join(repo, ".git/HEAD"), "utf8"));
+  assert.ok(branch, "the fixture checkout is on a branch");
+  const commitStream = (ref, mark, message, parents) =>
+    [
+      `commit ${ref}`,
+      `mark :${mark}`,
+      "committer CI test <ci@example.test> now",
+      `data ${Buffer.byteLength(`${message}\n`)}`,
+      message,
+      ...parents,
+      `M 040000 ${tree} ""`,
+      "",
+    ].join("\n");
+  const marks = join(repo, ".git/fixture-marks");
+  await command(
+    repo,
+    "git",
+    // A small import is written as loose objects (fastimport.unpackLimit), which
+    // a merge-evidence case deletes.
+    ["fast-import", "--quiet", "--date-format=now", `--export-marks=${marks}`],
+    commitStream("refs/heads/feature", 1, "change", [`from ${base}`]) +
+      commitStream(branch[1], 2, "merge", [`from ${base}`, "merge :1"]),
+  );
+  const ids = Object.fromEntries(
+    readFileSync(marks, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => line.split(" ")),
+  );
+  rmSync(marks);
+  return { head: ids[":1"], tested: ids[":2"] };
+}
+
 // `moveMain`, when given, commits to the base branch after the pull request
 // branched, then merges onto that newer base. The event keeps the older
 // base.sha, as GitHub's pull_request payload does when main moves after a push.
-async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } = {}) {
+// `cliVerify` runs every --verify-mode command line of expect, expectReason and
+// expectTests as its own selector process (see f.verify).
+async function fixture(
+  t,
+  change,
+  initial = {},
+  initialModes = {},
+  { moveMain, cliVerify = false } = {},
+) {
   const dir = tempDir(t, "ci-impact-");
   const repo = join(dir, "repo");
   const template = await baseRepository(initial, initialModes);
@@ -161,17 +270,21 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   cpSync(template.repo, repo, { recursive: true, verbatimSymlinks: true });
   const { git, put, commit } = repository(repo);
   const { base } = template;
-  await git("checkout", "-qb", "feature");
-  await change({ repo, put, git });
-  const head = await commit("change", "--allow-empty");
-  await git("checkout", "-q", "--detach", base);
+  let head;
+  let tested;
   let mergeBase = base;
   if (moveMain) {
+    await git("checkout", "-qb", "feature");
+    await change({ repo, put, git });
+    head = await commit("change", "--allow-empty");
+    await git("checkout", "-q", "--detach", base);
     await moveMain({ repo, put, git });
     mergeBase = await commit("main moved");
+    await git("merge", "--no-ff", "-qm", "merge", head);
+    tested = await git("rev-parse", "HEAD");
+  } else {
+    ({ head, tested } = await commitAndMerge(repo, git, base, () => change({ repo, put, git })));
   }
-  await git("merge", "--no-ff", "-qm", "merge", head);
-  const tested = await git("rev-parse", "HEAD");
   const eventPath = join(dir, "event.json");
   const event = pr(base, head);
   const writeEvent = (value = event) =>
@@ -200,41 +313,83 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
     assert.equal(selected.status, 0, selected.stderr);
     return readFileSync(path, "utf8");
   };
+  // Exit statuses of --verify-mode command lines for the current checkout and
+  // event, and the GitHub output the same evidence selects (null with
+  // `cliVerify`). With `cliVerify` each command line is its own selector
+  // process. Otherwise the selector classifies once in this process and answers
+  // each command line with the code its CLI runs (checkArguments, respond), so
+  // a selection's verifications cost one Git inspection instead of one
+  // selector process each; its caller still runs the CLI selection and checks
+  // that the CLI wrote the same output.
+  f.verify = async (commandLines, overrides = {}) => {
+    if (cliVerify) {
+      const results = await settled(commandLines.map((args) => f.run(args, overrides)));
+      return { statuses: results.map((result) => result.status), output: null };
+    }
+    const result = classifyIn(repo, { ...env, ...overrides });
+    return {
+      statuses: commandLines.map((args) => verifyStatus(args, result)),
+      output: respond(["--github-output", "-"], result).output,
+    };
+  };
+  // The selection for the verified evidence: the in-process classification's
+  // output, which a selector process must also write when it is the first of its
+  // mode and reason (see cliSelections) or the case runs every check as a CLI.
+  // The CLI appends to an output file that already holds a line.
+  const selection = async (verified, overrides) => {
+    if (verified.output !== null && !needsCliSelection(verified.output)) {
+      return verified.output;
+    }
+    const path = output("prior=value\n");
+    const selected = await f.run(["--github-output", path], overrides);
+    assert.equal(selected.status, 0, selected.stderr);
+    const written = readFileSync(path, "utf8");
+    assert.ok(written.startsWith("prior=value\n"), written);
+    const cli = written.slice("prior=value\n".length);
+    if (verified.output !== null) {
+      assert.equal(cli, verified.output);
+    }
+    return cli;
+  };
   // `reason`, when given, is the exact reason the selection must report.
   f.expect = async (mode, overrides = {}, reason = reasons) => {
-    const path = output("prior=value\n");
     const lanes = JSON.stringify(["checks-baseline-1"]);
-    const [selected, same, other, tests] = await settled([
-      f.run(["--github-output", path], overrides),
-      f.run(["--verify-mode", mode], overrides),
-      f.run(["--verify-mode", mode === "docs" ? "full" : "docs"], overrides),
-      f.run(["--verify-mode", "tests", "--lanes", lanes], overrides),
-    ]);
-    assert.equal(selected.status, 0, selected.stderr);
-    assert.match(
-      readFileSync(path, "utf8"),
-      new RegExp(`^prior=value\nmode=${mode}\nreason=(?:${reason})\n$`),
-      selected.stdout,
+    const verified = await f.verify(
+      [
+        ["--verify-mode", mode],
+        ["--verify-mode", mode === "docs" ? "full" : "docs"],
+        ["--verify-mode", "tests", "--lanes", lanes],
+      ],
+      overrides,
     );
-    assert.equal(same.status, 0);
-    assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
+    const [same, other, tests] = verified.statuses;
+    assert.match(
+      await selection(verified, overrides),
+      new RegExp(`^mode=${mode}\nreason=(?:${reason})\n$`),
+    );
+    assert.equal(same, 0);
+    assert.notEqual(other, 0);
+    assert.notEqual(tests, 0);
   };
   // Full mode with an exact reason, verified as full and not as docs.
   f.expectReason = async (reason, overrides = {}) => {
-    const [selected, full, docs] = await settled([
-      f.select(overrides),
-      f.run(["--verify-mode", "full"], overrides),
-      f.run(["--verify-mode", "docs"], overrides),
-    ]);
-    assert.equal(selected, `mode=full\nreason=${reason}\n`);
-    assert.equal(full.status, 0);
-    assert.notEqual(docs.status, 0);
+    const verified = await f.verify(
+      [
+        ["--verify-mode", "full"],
+        ["--verify-mode", "docs"],
+      ],
+      overrides,
+    );
+    const [full, docs] = verified.statuses;
+    assert.equal(await selection(verified, overrides), `mode=full\nreason=${reason}\n`);
+    assert.equal(full, 0);
+    assert.notEqual(docs, 0);
   };
   f.expectTests = async (lanes, overrides = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
       ["--verify-mode", "tests"],
+      ["--verify-mode", "tests", "--lanes", ""],
       ["--verify-mode", "docs"],
       ["--verify-mode", "full"],
       ["--verify-mode", "docs", "--lanes", json],
@@ -245,14 +400,17 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const [selected, verified, ...rejected] = await settled([
-      f.select(overrides),
-      f.run(["--verify-mode", "tests", "--lanes", json], overrides),
-      ...bad.map((args) => f.run(args, overrides)),
-    ]);
-    assert.equal(selected, `mode=tests\nreason=tests_only\nlanes=${json}\n`);
-    assert.equal(verified.status, 0);
-    rejected.forEach((result, i) => assert.notEqual(result.status, 0, bad[i].join(" ")));
+    const verifications = await f.verify(
+      [["--verify-mode", "tests", "--lanes", json], ...bad],
+      overrides,
+    );
+    const [verified, ...rejected] = verifications.statuses;
+    assert.equal(
+      await selection(verifications, overrides),
+      `mode=tests\nreason=tests_only\nlanes=${json}\n`,
+    );
+    assert.equal(verified, 0);
+    rejected.forEach((status, i) => assert.notEqual(status, 0, bad[i].join(" ")));
   };
   return f;
 }
@@ -304,10 +462,10 @@ test("pnpm impact reports a changed workspace package and its dependents", async
   // GitHub merges onto the current base, which can be newer than base.sha.
   const stale = join(f.dir, "stale-event.json");
   writeFileSync(stale, JSON.stringify(pr("1".repeat(40), f.head)));
-  for (const packages of await all([{}, { GITHUB_EVENT_PATH: stale }], (overrides) =>
-    affectedPackages(f, overrides),
-  )) {
-    assert.deepEqual(packages, affected);
+  // One at a time: every `pnpm list` briefly creates a _tmp_ file in the project root (its
+  // store-path probe), which a concurrent run's dirty-checkout check would report.
+  for (const overrides of [{}, { GITHUB_EVENT_PATH: stale }]) {
+    assert.deepEqual(await affectedPackages(f, overrides), affected);
   }
 });
 
@@ -519,6 +677,9 @@ test("verified merge selects documentation and handles unusual names and deletio
       rmSync(join(repo, "docs/deleted.md"));
     },
     { "README.md": "old\n", "docs/deleted.md": "old\n" },
+    {},
+    // Verifies docs, and refuses full and tests, in selector processes.
+    { cliVerify: true },
   );
   await f.expect("docs");
 });
@@ -640,20 +801,27 @@ test("symlinks and executable documentation select full", async (t) => {
 });
 
 test("submodule changes remain visible even when Git configuration ignores them", async (t) => {
-  const f = await fixture(t, async ({ put, git, repo }) => {
-    put("docs/change.md");
-    const vendor = join(repo, "vendor");
-    mkdirSync(vendor);
-    const nested = (...args) => command(vendor, "git", args);
-    await nested("init", "-q");
-    await nested("config", "user.name", "CI test");
-    await nested("config", "user.email", "ci@example.test");
-    await nested("config", "maintenance.auto", "false");
-    writeFileSync(join(vendor, "file"), "content");
-    await nested("add", "file");
-    await nested("commit", "-qm", "nested");
-    await git("config", "diff.ignoreSubmodules", "all");
-  });
+  const f = await fixture(
+    t,
+    async ({ put, git, repo }) => {
+      put("docs/change.md");
+      const vendor = join(repo, "vendor");
+      mkdirSync(vendor);
+      const nested = (...args) => command(vendor, "git", args);
+      await nested("init", "-q");
+      await nested("config", "user.name", "CI test");
+      await nested("config", "user.email", "ci@example.test");
+      await nested("config", "maintenance.auto", "false");
+      writeFileSync(join(vendor, "file"), "content");
+      await nested("add", "file");
+      await nested("commit", "-qm", "nested");
+      await git("config", "diff.ignoreSubmodules", "all");
+    },
+    {},
+    {},
+    // Verifies full, and refuses docs and tests, in selector processes.
+    { cliVerify: true },
+  );
   await f.expect("full");
 });
 
@@ -707,7 +875,11 @@ test("output must be an existing regular file and mode must verify", async (t) =
       ["--github-output", join(f.dir, "link")],
       ["--verify-mode", "invalid"],
     ],
-    async (args) => assert.notEqual((await f.run(args)).status, 0, args.join(" ")),
+    async (args) => {
+      const result = await f.run(args);
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+    },
   );
 });
 
@@ -776,14 +948,13 @@ async function shallowBootstrap(f) {
     assert.equal(selected.status, 0, selected.stderr);
     return selected.output;
   };
-  // `reason`, when given, is the exact reason the selection must report.
+  // `reason`, when given, is the exact reason the selection must report. The
+  // step's tests-mode verification has its own runs in expectTests.
   shallow.expect = async (mode, overrides = {}, reason) => {
-    const lanes = { EXPECTED_LANES: JSON.stringify(["checks-baseline-1"]), ...overrides };
-    const [selected, same, other, tests] = await settled([
+    const [selected, same, other] = await settled([
       shallow.run("select", "", overrides),
       shallow.run("verify", mode, overrides),
       shallow.run("verify", mode === "docs" ? "full" : "docs", overrides),
-      shallow.run("verify", "tests", lanes),
     ]);
     assert.equal(selected.status, 0, selected.stderr);
     assert.match(
@@ -797,7 +968,6 @@ async function shallowBootstrap(f) {
     );
     assert.equal(same.status, 0);
     assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
   };
   shallow.expectReason = async (reason, overrides = {}) => {
     const [selected, full, docs] = await settled([
@@ -809,15 +979,14 @@ async function shallowBootstrap(f) {
     assert.equal(full.status, 0);
     assert.notEqual(docs.status, 0);
   };
+  // Each caller also runs f.expectTests on the same evidence, which checks that the
+  // selector refuses every other lane list and mode in process. Here the workflow
+  // step refuses one wrong lane list and one wrong mode, one through each branch
+  // that runs the selector's verification.
   shallow.expectTests = async (lanes, overrides = {}) => {
     const json = JSON.stringify(lanes);
     const bad = [
-      ["tests", ""],
-      ["tests", "[]"],
       ["tests", JSON.stringify(lanes.slice(1))],
-      ["tests", JSON.stringify(lanes, null, 1)],
-      ...(lanes.length > 1 ? [["tests", JSON.stringify([...lanes].reverse())]] : []),
-      ["full", json],
       ["docs", json],
     ];
     const [selected, verified, ...rejected] = await settled([
@@ -1822,6 +1991,8 @@ test("a test-only change selects the lanes that list its files", async (t) => {
           put("tests/integration/fixture-image.test.mjs", "// edited\n"),
         ),
         ["k3d-fixture-state", "runtime-image-fixture"],
+        // Verifies the lanes, and refuses every other form, in selector processes.
+        { cliVerify: true },
       ],
       // Checks and Conformance 1 runs when it lists the test, and as the matrix
       // lane when only the fixture job would run.
@@ -1869,8 +2040,8 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         ["k3d-fixture-state", "postgres"],
       ],
     ],
-    async ([change, lanes]) => {
-      const [f, shallow] = await suiteFixture(t, change);
+    async ([change, lanes, options]) => {
+      const [f, shallow] = await suiteFixture(t, change, {}, options);
       await settled([f.expectTests(lanes), shallow.expectTests(lanes)]);
     },
   );

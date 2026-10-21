@@ -1,14 +1,14 @@
 # Kubernetes storage and credentials
 
-Configure separate Gateway and Harness storage, and runtime
+Configure [separate Gateway and Harness storage](../../../guides/topics/remote-harness.md) and runtime
 Secrets for the [Kubernetes Compute Driver](../kubernetes-compute.md).
 
 ## Shared contracts and the Codex implementation
 
 The public `ComputeDriver` and `HarnessWorkloadRequirements` contracts describe
 platform operations and workload requirements; OpenClaw's `AgentWorkspaceAccess`
-provides workspace capabilities without the Codex app-server protocol. The dedicated storage implementation supports Codex.
-Its launcher and filesystem layout are Codex-specific Kubernetes choices; they
+provides workspace capabilities without the Codex app-server protocol. The layout
+below describes dedicated Codex. Its launcher and filesystem layout
 do not extend the public Compute contract or apply to every Harness.
 
 | Boundary         | Shared behavior                                                                           | Current dedicated Codex implementation                                                                                      |
@@ -20,11 +20,13 @@ do not extend the public Compute contract or apply to every Harness.
 The file node's explicit command allowlist disables OpenClaw worker hosting;
 this launcher is not an OpenClaw remote worker launcher.
 
-[Dedicated OpenClaw worker support (#77)](https://github.com/openclaw/openclaw-enterprise/issues/77)
-remains pending without end-to-end proof. It must align Gateway file access with
-the worker's assigned workspace and validate worker command admission,
-attachments and readiness. Codex validation neither establishes that
-compatibility nor requires the worker to adopt Codex paths or app-server settings.
+[Dedicated native OpenClaw](../../harness-execution.md#native-worker-support)
+has an experimental worker path with Sandbox-owned Harness provisioning.
+Compute manages the Harness PVC and supplies its approved storage mounts.
+[Issue #77](https://github.com/openclaw/openclaw-enterprise/issues/77) tracks outstanding
+end-to-end qualification of model/tool turns, replacement, and retirement.
+Codex validation does not qualify native workers or require them to use Codex
+paths or app-server settings.
 
 ## Gateway storage
 
@@ -285,8 +287,8 @@ is rejected.
 The Agent's required [harnessAuth binding](../../agents.md#harness-authentication)
 selects the model credential. API keys use the selected OCC Secret Driver's
 exact reference; account tokens use an account-owned CP source. Compute selects
-the explicit login mode during workload rendering. Only the combined embedded gateway/Harness or dedicated
-Codex consumer receives the model credential; a dedicated gateway never receives model auth. A
+the explicit login mode during workload rendering. The combined embedded workload
+or dedicated Harness receives the selected model credential; a dedicated Gateway does not. A
 [credential source](../../credential-sources.md) binding is the exception: Compute
 renders no model Secret and hands the Credential Gateway's attachments to the
 OpenShell Sandbox instead.

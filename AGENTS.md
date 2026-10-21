@@ -457,8 +457,9 @@ controls:
   behavior; do not invent additional acceptance criteria.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video as native GitHub attachments in the
-  PR's Verification section. Both are required before merging UI changes.
+  Upload screenshots and a short video to GitHub, as native attachments or as
+  files in a gist, and show them in the PR's Verification section. Before and
+  after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the
   PR's Verification section. Embed media where supported; otherwise provide

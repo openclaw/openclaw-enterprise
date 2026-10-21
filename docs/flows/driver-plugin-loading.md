@@ -129,7 +129,7 @@ Driver, and the worker still fails closed if a required stage becomes unavailabl
 
 ### 3. Construct the API-only Backend branch
 
-[`server.mjs:start`](../../apps/controller/src/server.mjs) handles a selected
+[`api-startup.mjs:startApi`](../../apps/controller/src/api-startup.mjs) handles a selected
 ServiceAccount Driver after loading the common bundle. It requires PostgreSQL,
 Compute credential-storage methods, and an owning Backend definition. It reads
 that Backend's `apiKeyPath`, constructs `ChatGPTClient`, and supplies the

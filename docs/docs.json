@@ -97,6 +97,10 @@
                     "label": "Harness"
                   },
                   {
+                    "page": "guides/topics/remote-harness",
+                    "label": "Remote Harness"
+                  },
+                  {
                     "page": "guides/topics/workspace-files",
                     "label": "Workspace Files"
                   },

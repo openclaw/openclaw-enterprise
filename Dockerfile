@@ -37,6 +37,10 @@ RUN mkdir -p /app/.development/configurations /var/lib/openclaw/bootstrap \
     && chown -R node:node /app/.development \
     && chown 1000:1000 /var/lib/openclaw/bootstrap \
     && chmod 0700 /var/lib/openclaw/bootstrap
+# The route validators and serializers, precompiled with this image's Node and dependencies
+# so the server loads them instead of compiling every schema at start
+# (apps/controller/src/http/route-compilers.ts).
+RUN node apps/controller/src/precompile-route-schemas.mjs
 
 USER node
 ENTRYPOINT ["node"]
@@ -68,10 +72,13 @@ COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
 COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.mjs
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
+COPY --chown=node:node scripts/lib/bootstrap-configuration.mjs scripts/lib/bootstrap-configuration.mjs
 COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
 COPY --chown=node:node deploy/presets deploy/presets
 COPY --chown=node:node scripts/production-healthcheck.mjs scripts/production-healthcheck.mjs
+# As in the development stage: precompiled route validators and serializers for this image.
+RUN node apps/controller/src/precompile-route-schemas.mjs
 
 USER node
 ENTRYPOINT ["node"]

@@ -199,7 +199,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         const target = value(node.arguments[0], seen);
         let anchor;
         try {
-          if (target.value?.startsWith("file:")) {
+          if (/^file:/i.test(target.value)) {
             anchor = fileURLToPath(target.value);
           } else if (target.value && isAbsolute(target.value)) {
             anchor = target.value;
@@ -418,7 +418,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           : known(pathToFileURL(path).href);
       }
       const base = value(node.expression, seen);
-      if (base.value?.startsWith("file:") && ["href", "pathname"].includes(node.name.text)) {
+      if (/^file:/i.test(base.value) && ["href", "pathname"].includes(node.name.text)) {
         try {
           return known(node.name.text === "href" ? base.value : new URL(base.value).pathname);
         } catch {
@@ -459,7 +459,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           ? loader.name
           : undefined;
       try {
-        if (name === "fileURLToPath" && first.value.startsWith("file:")) {
+        if (name === "fileURLToPath" && /^file:/i.test(first.value)) {
           return known(fileURLToPath(first.value));
         }
         if (name === "pathToFileURL" && isAbsolute(first.value)) {

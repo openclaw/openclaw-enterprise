@@ -10,6 +10,7 @@ import {
   parseProductionChart,
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
 // it refuses kept the API down until the operator restored it (D407: 324 s of 503). The
@@ -70,6 +71,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
+      assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);
@@ -116,10 +118,16 @@ async function runCheck(t, configuration, files = {}) {
     await mkdir(join(directory, name, ".."), { recursive: true });
     await writeFile(join(directory, name), contents, "utf8");
   }
-  // The chart's environment only: the image's working directory holds apps/.
+  // The chart's environment only (plus the lane's compile cache): the image's working
+  // directory holds apps/.
   const result = await captureChild(process.execPath, ["--input-type=module", "-e", checkScript], {
     cwd: process.cwd(),
-    env: { PATH: process.env.PATH, NODE_ENV: "production", OCC_CONFIG_PATH: path },
+    env: {
+      ...compileCacheEnvironment,
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+    },
     timeout: 30_000,
   });
   assert.equal(result.signal ?? null, null, result.stderr);
