@@ -29,6 +29,7 @@
     "tests/integration/console-api.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
@@ -186,6 +187,9 @@
     },
     {
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-api-read.test.mjs"
     },
     {
       "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
