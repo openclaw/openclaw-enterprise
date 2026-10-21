@@ -570,15 +570,7 @@ export class RepositoryCredentialLifecycle {
     }
   }
 
-  authorizeStandingMaintenance(claim: ClaimedWork, revision: Revision): Promise<void> {
-    return this.authorize(claim, revision, true);
-  }
-
-  private async authorize(
-    claim: ClaimedWork,
-    revision: Revision,
-    requireRecordedExecution = false,
-  ): Promise<void> {
+  async authorize(claim: ClaimedWork, revision: Revision): Promise<void> {
     this.validate(revision);
     await this.dependencies.authorize(claim, revision);
     await this.validateStanding(revision);
@@ -602,10 +594,6 @@ export class RepositoryCredentialLifecycle {
         }
       } else if (Date.now() >= revision.repositoryCredentials.deadlineWallMs) {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
-      } else if (requireRecordedExecution) {
-        // Activation can publish its pointer before the first execution observation is recorded.
-        // Capture requires a current observation and rechecks authority; it never prepares Compute.
-        await this.captureExecution(claim, revision, true);
       }
     }
     this.validate(revision);

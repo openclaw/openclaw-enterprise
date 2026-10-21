@@ -4249,7 +4249,7 @@ export class ControllerWorker {
       ) {
         // Verify Git before any preparation or binding can repair the running execution.
         supervisedRevision = revision;
-        await this.repositoryCredentials.authorizeStandingMaintenance(claim, revision);
+        await this.repositoryCredentials.authorize(claim, revision);
       }
       if (this.compute.bindAgent !== undefined) {
         try {
