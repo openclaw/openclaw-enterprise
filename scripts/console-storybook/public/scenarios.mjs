@@ -589,6 +589,27 @@ export const scenarios = {
     description:
       "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
   },
+  secretsDeletionUnconfirmed: {
+    group: "Pages/Secrets",
+    name: "Deletion could not be confirmed",
+    path: "/console/secrets",
+    rules: [
+      { suffix: "/secrets/sec_demo_model", method: "DELETE", bodyError: true },
+      {
+        suffix: "/secrets/sec_demo_model",
+        skip: 1,
+        data: { id: "sec_different", name: "Different Secret (simulated)" },
+      },
+    ],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Delete Secret"),
+      click("Permanently delete Secret"),
+      click("Check deletion status"),
+    ],
+    description:
+      "The delete response was lost, then the status check returned a different Secret. The dialog leaves the outcome unknown and offers no second Delete.",
+  },
 
   runtimeImages: {
     group: "Pages/Navigation",

@@ -19,3 +19,4 @@ export const Replace = story("secretsReplace");
 export const ReplaceDenied = story("secretsReplaceDenied");
 export const Delete = story("secretsDelete");
 export const DeleteConflict = story("secretsDeleteConflict");
+export const DeletionUnconfirmed = story("secretsDeletionUnconfirmed");
