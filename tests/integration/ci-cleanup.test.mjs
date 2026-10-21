@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
+import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
@@ -380,6 +381,62 @@ esac
     resources: state.resources.filter(({ id }) => id === "database-1"),
   });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
+});
+
+test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
+  const root = await fixture(t);
+  const dropLog = join(root, "drop.log");
+  await writeExecutable(
+    join(root, "bin/docker"),
+    `#!/usr/bin/env node
+require("node:fs").appendFileSync(${JSON.stringify(dropLog)}, process.argv.at(-1) + "\\n");
+`,
+  );
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
+  await writeState(statePath, state);
+  // Another process holds the lock, as the runner does while it prepares a file.
+  let release;
+  const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
+  while (!release) {
+    await delay(10);
+  }
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
+await cleanupResourceIds(process.argv[1], ["database-1"]);`,
+      statePath,
+    ],
+    {
+      env: { ...process.env, OCC_DOCKER_BIN: join(root, "bin/docker") },
+      stdio: ["ignore", "ignore", "pipe"],
+    },
+  );
+  t.after(() => child.kill());
+  let stderr = "";
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  const exited = new Promise((resolve) => child.on("close", resolve));
+  const deadline = Date.now() + 20_000;
+  while (!(await readFile(dropLog, "utf8").catch(() => ""))) {
+    assert.ok(Date.now() < deadline, "the drop waited for the lock");
+    await delay(10);
+  }
+  assert.equal(
+    await readFile(dropLog, "utf8"),
+    'DROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)\n',
+  );
+  // The entry stays until the drop's process takes the lock.
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  release();
+  await holding;
+  assert.equal(await exited, 0, stderr);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), {
+    ...state,
+    resources: state.resources.filter(({ id }) => id !== "database-1"),
+  });
 });
 
 for (const stream of ["stdout", "stderr"]) {

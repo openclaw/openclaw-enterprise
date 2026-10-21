@@ -472,10 +472,29 @@ async function cleanupResourceIds(statePath, resourceIds, { lockTimeoutMs } = {}
   if (!(await stateExists(path))) {
     return;
   }
+  const dropped = resourceIds === undefined ? undefined : await dropDatabases(path, resourceIds);
   // A test may prepare and clean databases from its own process beside the runner.
-  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds), {
+  await withStateLock(path, () => cleanupLockedResourceIds(path, resourceIds, dropped), {
     timeoutMs: lockTimeoutMs,
   });
+}
+
+// DROP DATABASE requests an immediate checkpoint, which writes out every dirty buffer on
+// the server: about 0.25 s on an idle server, and 3-4 s while a lane's other files write.
+// Each test's copy is dropped this way, and under the CI state lock every other copy and
+// drop waited for it (finding 2180). The lock guards the state file, not the server, so
+// the selected databases are dropped first, from a state snapshot (writes replace the
+// file whole), and only their entries are removed under the lock. An entry stays until
+// its drop succeeds, so a crash in between leaves it for lane cleanup, as before.
+async function dropDatabases(path, resourceIds) {
+  const state = await readState(path);
+  const results = new Map();
+  for (const resource of [...state.resources].reverse()) {
+    if (resource.kind === "postgres-database" && resourceIds.includes(resource.id)) {
+      results.set(resource.id, await cleanupDatabase(resource, state).catch((error) => error));
+    }
+  }
+  return results;
 }
 
 async function stateExists(path) {
@@ -490,7 +509,9 @@ async function stateExists(path) {
   }
 }
 
-async function cleanupLockedResourceIds(path, resourceIds) {
+// `dropped` maps the ids of databases dropped before the lock to undefined, or to the
+// drop's error.
+async function cleanupLockedResourceIds(path, resourceIds, dropped = new Map()) {
   if (!(await stateExists(path))) {
     return;
   }
@@ -503,7 +524,11 @@ async function cleanupLockedResourceIds(path, resourceIds) {
       continue;
     }
     try {
-      await cleanupResource(resource, state);
+      if (!dropped.has(resource.id)) {
+        await cleanupResource(resource, state);
+      } else if (dropped.get(resource.id)) {
+        throw dropped.get(resource.id);
+      }
       state.resources = state.resources.filter((candidate) => candidate.id !== resource.id);
       await writeState(path, state);
     } catch (error) {
