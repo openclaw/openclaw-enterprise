@@ -377,7 +377,7 @@ async function preflight(client, manifest) {
   return shape;
 }
 
-export async function migrateWithHistory(pool, { checkOnly = false } = {}) {
+export async function migrateWithHistory(pool, { checkOnly = false, expectEmpty = false } = {}) {
   const { manifest, migrations } = await readManifest();
   const client = await pool.connect();
   let locked = false;
@@ -385,6 +385,16 @@ export async function migrateWithHistory(pool, { checkOnly = false } = {}) {
     await client.query("SELECT pg_catalog.pg_advisory_lock($1, $2)", lock);
     locked = true;
     const history = await preflight(client, manifest);
+    // Check first-install intent while holding the migration lock. A separate --check
+    // could observe empty history and then lose a race to another installer.
+    if (expectEmpty && history !== "empty") {
+      const error = new Error(
+        "First installation requires empty migration history; this database already has recognized OCE migrations. " +
+          "Preserve the database, inspect the original installation attempt, and use --check to inspect migration history without applying changes.",
+      );
+      error.code = "MIGRATION_HISTORY_NOT_EMPTY";
+      throw error;
+    }
     if (!checkOnly) {
       // Pass the verified SQL to Drizzle's stock migrator without reading mutable
       // source files again. Its receipt read and transaction share this backend.

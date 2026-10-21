@@ -140,7 +140,7 @@ export function resolveImports(snapshot, references, policy = {}) {
         reference.anchor === null &&
         !isBuiltin(specifier) &&
         !isAbsolute(specifier) &&
-        !specifier.startsWith("file:")
+        !/^file:/i.test(specifier)
       ) {
         return unresolved(
           "unresolved-dynamic-import",
@@ -237,7 +237,7 @@ export function resolveImports(snapshot, references, policy = {}) {
               }
             }
           }
-        } else if (specifier.startsWith("file:")) {
+        } else if (/^file:/i.test(specifier)) {
           target = fileURLToPath(specifier);
         } else if (mode === "import" && specifier.startsWith(".")) {
           target = fileURLToPath(new URL(specifier, pathToFileURL(importer)));
@@ -294,7 +294,7 @@ export function resolveImports(snapshot, references, policy = {}) {
       if (target && !pkg && mode === "require" && reference.kind !== "dependency-anchor") {
         try {
           nativeTarget = createRequire(anchor).resolve(
-            specifier.startsWith("file:") ? target : specifier,
+            /^file:/i.test(specifier) ? target : specifier,
           );
         } catch (error) {
           if (error.code !== "MODULE_NOT_FOUND") {

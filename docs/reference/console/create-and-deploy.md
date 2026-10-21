@@ -151,8 +151,8 @@ provider acceptance or runtime readiness. See
 
 Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
-Creation grants the Agent `operate` on its model Secret and each bound Configuration Secret.
-If model or Configuration Secret grants fail after Agent creation,
+Creation grants the Agent `operate` on its model Secret or Credential Source and each bound Configuration Secret.
+If credential grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,

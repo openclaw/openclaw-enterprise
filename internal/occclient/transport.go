@@ -291,7 +291,7 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 			target.Fragment = ""
 			target.RawFragment = ""
 			result.Location = target.String()
-			if target.Scheme != client.baseURL.Scheme || target.Host != client.baseURL.Host {
+			if target.Scheme != client.baseURL.Scheme || !strings.EqualFold(target.Host, client.baseURL.Host) {
 				result.redirectOrigin = target.Scheme + "://" + target.Host
 			}
 		}

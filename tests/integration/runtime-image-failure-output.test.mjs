@@ -29,8 +29,22 @@ const long = (label) => {
 if (command === "inspect" && mode === "inspect-fails") {
   process.stderr.write(long("inspect stderr"));
   process.exit(1);
+} else if (command === "inspect" && mode.startsWith("wait-")) {
+  // Running, exit code, StartedAt and FinishedAt, as the follower's --format asks.
+  const finishedAt = {
+    "wait-hangs": "2026-10-21T08:52:18.75Z",
+    "wait-hangs-no-finish": "0001-01-01T00:00:00Z",
+    // A restarted container's last exit is older than its current start.
+    "wait-fails-restarted": "2026-10-21T08:51:40Z",
+  }[mode];
+  process.stdout.write(\`false|0|2026-10-21T08:51:50.1Z|\${finishedAt}\\n\`);
+} else if (command === "wait" && mode === "wait-fails-restarted") {
+  process.stderr.write("Error response from daemon: context deadline exceeded\\n");
+  process.exit(1);
 } else if (command === "inspect") {
   process.stdout.write(mode === "exited" ? "false 1\\n" : "true 0\\n");
+} else if (command === "wait" && mode.startsWith("wait-hangs")) {
+  setInterval(() => {}, 1_000);
 } else if (command === "exec" && entry === "/app/openclaw.mjs") {
   process.stdout.write(long("plugin list"));
 } else if (command === "exec" && program === "node") {
@@ -52,8 +66,9 @@ await chmod(fakeDocker, 0o700);
 // The helper reads both at import.
 process.env.OCC_DOCKER_BIN = fakeDocker;
 process.env.OCC_TEST_RUNTIME_IMAGE = "localhost/oce/runtime:failure-output-test";
-const { failureTail, listGatewayPlugins, runGatewaySmoke, waitForGatewayReady } =
+const { failureTail, listGatewayPlugins, runGatewaySmoke, waitForDockerLog, waitForGatewayReady } =
   await import("../helpers/runtime-image-startup.mjs");
+const { followContainer } = await import("../helpers/docker-follow.mjs");
 
 test("failureTail keeps short output and the end of long output from a line start", () => {
   assert.equal(failureTail("short output", 64), "short output");
@@ -140,4 +155,66 @@ test("a Gateway smoke failure from a docker command keeps the end of its stderr 
     error.message.length < reporterMessageLimit,
     `message is ${error.message.length} chars`,
   );
+});
+
+test("a log wait fails at once when the container stops first, keeping the end of its logs", async () => {
+  // The stand-in's `docker logs --follow` prints the logs and exits, as for a stopped container.
+  const startedAt = Date.now();
+  const error = await waitForDockerLog("fake-container", /never logged/).then(
+    () => assert.fail("the log wait should fail when the logs end without the pattern"),
+    (failure) => failure,
+  );
+  assert.ok(Date.now() - startedAt < 10_000, "the wait does not run out its 20 s deadline");
+  assert.match(
+    error.message,
+    /^fake-container stopped before \/never logged\/ appeared in its logs\.\n/,
+  );
+  assert.match(error.message, /Migrating agent databases\nwrapper failed: final stderr line/);
+  assert.doesNotMatch(error.message, /first doctor line/);
+  assert.ok(
+    error.message.length < reporterMessageLimit,
+    `message is ${error.message.length} chars`,
+  );
+});
+
+test("a follower whose docker wait never returns takes the exit, and its time, from inspect", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "wait-hangs";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const follower = followContainer(t, "fake-container");
+  assert.equal(follower.read().exitedAt, undefined);
+  assert.deepEqual(await follower.inspect(), {
+    running: false,
+    exitCode: 0,
+    finishedAt: Date.parse("2026-10-21T08:52:18.75Z"),
+  });
+  while (follower.read().running) {
+    await follower.changes.wait(follower.changes.version, 10_000);
+  }
+  const state = follower.read();
+  assert.equal(state.exitedAt, Date.parse("2026-10-21T08:52:18.75Z"));
+  assert.equal(state.exitCode, 0);
+  assert.match(state.stderr, /wrapper failed: final stderr line\n$/);
+});
+
+test("an inspect without a real exit time counts the exit from when it was seen", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "wait-hangs-no-finish";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const follower = followContainer(t, "fake-container");
+  const before = Date.now();
+  assert.equal((await follower.inspect()).finishedAt, undefined);
+  assert.ok(follower.read().exitedAt >= before, "not Docker's zero time");
+});
+
+test("a failed docker wait asks inspect, and an exit older than the start counts from now", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "wait-fails-restarted";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const before = Date.now();
+  const follower = followContainer(t, "fake-container");
+  while (follower.read().exitedAt === undefined) {
+    await follower.changes.wait(follower.changes.version, 10_000);
+  }
+  // No "docker wait ... failed": inspect found the exit.
+  const state = follower.read();
+  assert.equal(state.exitCode, 0);
+  assert.ok(state.exitedAt >= before, "not the restarted container's earlier exit");
 });

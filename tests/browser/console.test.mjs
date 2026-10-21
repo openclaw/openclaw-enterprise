@@ -12,8 +12,10 @@ import {
   apiRequests,
   expectNoText,
   login,
+  loginThroughForm,
   newPage,
   settledFetches,
+  settlePageRequests,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -310,7 +312,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
 
-  await login(page, fixture, `/console/?namespace=${beta.id}`);
+  // Through the sign-in form: a cold deep link keeps its Namespace across password sign-in.
+  await loginThroughForm(page, fixture, `/console/?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
   assert.equal(
@@ -379,13 +382,16 @@ test("console browser flow keeps Namespace URL state across global pages and log
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
   );
   assert.deepEqual(writeRequests, []);
-  // List rows read revision history for Latest deployment. Browsing these draft
-  // Agents must not read their detail or invoke any deployment operation.
+  // List rows read revision history for Latest deployment and advisory permissions for their
+  // Stop and Delete icons. Browsing these draft Agents must not read their detail or invoke any
+  // deployment operation.
   const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
   assert.deepEqual(
     [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
     [
+      `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
+      `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/revisions`,
     ].sort(),
   );
@@ -1186,13 +1192,13 @@ test("a session replaced by another tab signs this tab out instead of being adop
   assert.equal(await page.locator("#agent-name").count(), 0);
   assert.equal(await page.locator(".content [inert]").count(), 0);
 
-  // A fresh sign-in does not inherit the old session's route or draft.
+  // A fresh sign-in restores the validated route, never the old session's draft.
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
-  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), namespace.id);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
@@ -1793,191 +1799,155 @@ test("header Namespace selection leaves Agent detail and creation for the select
   );
 });
 
-for (const trigger of ["Refresh", "Back with a replacement session"]) {
-  test(`inline Namespace recovery waits for current admission during ${trigger}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const alpha = await fixture.createNamespace("Previously readable", { ready: true });
-    const beta = await fixture.createNamespace("Still readable", { ready: true });
-    const missingId = "ns_00000000-0000-4000-8000-000000000099";
-    const { page } = await newPage(t, fixture, mobile);
-    await login(page, fixture, `/console/namespaces?namespace=${missingId}`);
-    const selector = page.getByRole("combobox", { name: "Choose a valid Namespace", exact: true });
-    await page.locator("#namespace-selector:not(:disabled)").waitFor();
-    assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 1);
-
-    if (trigger !== "Refresh") {
-      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
-      await page.getByRole("link", { name: "Agents", exact: true }).click();
-      await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
-      await page.locator(".page-actions button:not(:disabled)").waitFor();
-      // A real login in another tab changes the session while sharing the cookie jar.
-      const response = await page
-        .context()
-        .request.post(`${fixture.origin}/api/auth/sign-in/email`, {
-          headers: { origin: fixture.origin },
-          data: { email: fixture.credentials.email, password: fixture.credentials.password },
-        });
-      assert.equal(response.status(), 200);
-    }
-
-    // Revoke through the actual IAM Driver before capturing the fresh Namespace read.
-    fixture.policy.restrictions.push({
-      id: "deny-previously-readable-namespace",
-      namespaceId: alpha.id,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
-    });
-    const sessionHold = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
-      response ? route.fulfill({ response }) : route.continue(),
-    );
-    const namespaceHold = await holdRoute(t, page, "**/namespaces", (route, response) =>
-      response ? route.fulfill({ response }) : route.continue(),
-    );
-    t.after(() => {
-      sessionHold.release();
-      namespaceHold.release();
-    });
-    if (trigger === "Refresh") {
-      await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    } else {
-      await page.goBack();
-    }
-    await sessionHold.waitForRelease();
-    assert.equal(await selector.isDisabled(), true);
-    assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-    assert.equal(new URL(page.url()).searchParams.get("namespace"), missingId);
-
-    await releaseHeldRoute(page, "**/api/auth/session", sessionHold);
-    if (trigger !== "Refresh") {
-      // Another tab's login expires this tab; only explicit sign-in may adopt a new session.
-      await page.getByText("Your session has expired").waitFor();
-      assert.equal(await page.locator("#namespace-selector").count(), 0);
-      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
-      await page.getByLabel("Password").fill(fixture.credentials.password);
-      await page.getByRole("button", { name: "Sign in" }).click();
-    }
-    await namespaceHold.waitForRelease();
-    // Refresh preserves the requested Namespace. A replacement session starts on Agents
-    // with no Namespace selection until its own admission returns.
-    const refreshed = trigger === "Refresh";
-    const pendingSelector = refreshed ? selector : page.locator("#namespace-selector");
-    await pendingSelector.waitFor();
-    assert.equal(await pendingSelector.isDisabled(), true);
-    assert.equal(await pendingSelector.locator('option:not([value=""])').count(), 0);
-    assert.equal(new URL(page.url()).searchParams.get("namespace"), refreshed ? missingId : null);
-    await releaseHeldRoute(page, "**/namespaces", namespaceHold);
-    await page.locator("#namespace-selector:not(:disabled)").waitFor();
-    assert.equal(await pendingSelector.locator(`option[value="${alpha.id}"]`).count(), 0);
-    if (refreshed) {
-      await selector.selectOption(beta.id);
-      await page.waitForURL(`**/console/namespaces?namespace=${beta.id}`);
-      await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-    } else {
-      await page.waitForURL(`**/console/agents?namespace=${beta.id}`);
-    }
-    assert.equal(await page.locator(".namespace-recovery").count(), 0);
-  });
+// A stale option can dispatch a change even on a disabled select. Check that it starts no
+// admission or navigation, including a reload of the same Namespace already in the URL.
+async function rejectStaleNamespaceOption(page, selector, staleId, requests) {
+  const url = page.url();
+  const count = requests.length;
+  await selector.evaluate((select, id) => {
+    const option = new globalThis.Option("Stale selection", id);
+    select.add(option);
+    select.value = id;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    option.remove();
+  }, staleId);
+  await settlePageRequests(page);
+  assert.equal(page.url(), url);
+  assert.deepEqual(
+    requests.slice(count).map(({ path }) => path.split("?")[0]),
+    ["/console/favicon-16.png"],
+  );
 }
 
 for (const trigger of ["Refresh", "Back with a replacement session"]) {
-  test(`header Namespace selection waits for current admission during ${trigger}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const alpha = await fixture.createNamespace("Previously readable", { ready: true });
-    const beta = await fixture.createNamespace("Still readable", { ready: true });
-    const missingId = "ns_00000000-0000-4000-8000-000000000099";
-    const { page } = await newPage(t, fixture, mobile);
-    await login(page, fixture, `/console/agents?namespace=${missingId}`);
-    const selector = page.locator(".page-header #namespace-selector");
-    await page.locator(".page-header #namespace-selector:not(:disabled)").waitFor();
-    assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 1);
+  for (const [feature, placement] of Object.entries({ namespaces: "inline", agents: "header" })) {
+    test(`${placement} Namespace selection waits for current admission during ${trigger}`, async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const alpha = await fixture.createNamespace("Previously readable", { ready: true });
+      const beta = await fixture.createNamespace("Still readable", { ready: true });
+      const back = trigger !== "Refresh";
+      const requested = back ? alpha.id : "ns_00000000-0000-4000-8000-000000000099";
+      const target = `/console/${feature}?namespace=${requested}`;
+      const { page } = await newPage(t, fixture, mobile);
+      await login(page, fixture, target);
+      await page
+        .getByText("Previously readable", { exact: true })
+        .first()
+        .waitFor({ state: "attached" });
 
-    async function assertPendingHeader() {
-      await selector.waitFor();
-      assert.equal(await selector.isDisabled(), true);
+      if (back) {
+        // Leave the readable Namespace in history. Back will request that same destination.
+        await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+        const away = feature === "agents" ? "Namespaces" : "Agents";
+        await page.getByRole("link", { name: away, exact: true }).click();
+        await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+      }
+      fixture.policy.restrictions.push({
+        id: "deny-previously-readable-namespace",
+        namespaceId: alpha.id,
+        resourceKind: "namespace",
+        action: "read",
+        effect: "deny",
+      });
+      const signIn = "/api/auth/sign-in/email";
+      if (back) {
+        // Sign in from a second tab in the same cookie jar, without navigating this tab.
+        const other = await page.context().newPage();
+        await other.goto(`${fixture.origin}/console/favicon-16.png`);
+        const status = await other.evaluate(
+          async ({ path, email, password }) => {
+            const response = await fetch(path, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ email, password }),
+            });
+            return response.status;
+          },
+          {
+            path: signIn,
+            email: fixture.credentials.email,
+            password: fixture.credentials.password,
+          },
+        );
+        assert.equal(status, 200);
+      }
+
+      const requests = apiRequests(page, fixture.origin);
+      const reply = (route, response) => route.fulfill({ response });
+      const session = "**/api/auth/session";
+      const namespaces = "**/namespaces";
+      const check = await holdRoute(t, page, session, reply);
+      const admission = await holdRoute(t, page, namespaces, reply);
+      t.after(() => {
+        check.release();
+        admission.release();
+      });
+      if (back) {
+        await page.goBack();
+      } else {
+        await page.getByRole("button", { name: "Refresh", exact: true }).click();
+      }
+
+      const selector = page.locator("#namespace-selector");
+      await check.waitForRelease();
+      assert.equal(await page.locator("#namespace-selector:not(:disabled)").count(), 0);
       assert.equal(await selector.locator('option:not([value=""])').count(), 0);
-      // Disabled controls can still receive programmatic events; admission must reject them.
-      const navigation = await selector.evaluate((element, staleNamespaceId) => {
-        const before = globalThis.location.href;
-        const staleOption = element.ownerDocument.createElement("option");
-        staleOption.value = staleNamespaceId;
-        element.append(staleOption);
-        element.value = staleNamespaceId;
-        element.dispatchEvent(new Event("change", { bubbles: true }));
-        staleOption.remove();
-        return { before, after: globalThis.location.href };
-      }, alpha.id);
-      assert.equal(navigation.after, navigation.before);
-    }
+      const sessionResponse = page.waitForResponse(session);
+      await releaseHeldRoute(page, session, check);
+      assert.equal((await sessionResponse).status(), back ? 401 : 200);
+      if (back) {
+        await page.getByText("Your session has expired").waitFor();
+        assert.equal(await selector.count(), 0);
+        await expectNoText(page, /Previously readable/);
+        await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+        await page.getByLabel("Password").fill(fixture.credentials.password);
+        await page.getByRole("button", { name: "Sign in" }).click();
+      }
 
-    if (trigger !== "Refresh") {
-      await page.getByRole("button", { name: "Open navigation", exact: true }).click();
-      await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-      await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-      await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
-      await page.locator(".page-actions button:not(:disabled)").waitFor();
-      // A real login in another tab changes the session while sharing the cookie jar.
-      const response = await page
-        .context()
-        .request.post(`${fixture.origin}/api/auth/sign-in/email`, {
-          headers: { origin: fixture.origin },
-          data: { email: fixture.credentials.email, password: fixture.credentials.password },
-        });
+      // The URL can name the old Namespace. Neither surface may offer it while admission is pending.
+      await admission.waitForRelease();
+      await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
+      assert.equal(page.url(), fixture.origin + target);
+      await expectNoText(page, /Previously readable/);
+      if (placement === "inline" && back) {
+        // Sign-in cleared the previous list. Inline recovery appears only once this read returns.
+        assert.equal(await selector.count(), 0);
+      } else {
+        assert.equal(await selector.isDisabled(), true);
+        assert.equal(await selector.locator('option:not([value=""])').count(), 0);
+        await rejectStaleNamespaceOption(page, selector, alpha.id, requests);
+      }
+
+      const listed = page.waitForResponse(namespaces);
+      await releaseHeldRoute(page, namespaces, admission);
+      const response = await listed;
       assert.equal(response.status(), 200);
-    }
+      const readable = (await response.json()).data.map(({ id }) => id);
+      assert.equal(
+        readable.includes(alpha.id),
+        false,
+        "fresh admission excludes revoked Namespace",
+      );
+      assert.equal(readable.includes(beta.id), true, "fresh admission includes readable Namespace");
+      await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
+      assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
+      await rejectStaleNamespaceOption(page, selector, alpha.id, requests);
+      await selector.selectOption(beta.id);
+      await page.waitForURL(`**/console/${feature}?namespace=${beta.id}`);
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+      assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
 
-    // Revoke through the actual IAM Driver before capturing the fresh Namespace read.
-    fixture.policy.restrictions.push({
-      id: "deny-previously-readable-namespace",
-      namespaceId: alpha.id,
-      resourceKind: "namespace",
-      action: "read",
-      effect: "deny",
+      assert.deepEqual(
+        requests.filter(({ path }) => path.includes(alpha.id)).map(({ path }) => path),
+        [],
+      );
+      assert.deepEqual(
+        requests.filter(({ method }) => method !== "GET").map(({ path }) => path),
+        back ? [signIn] : [],
+      );
     });
-    const sessionHold = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
-      response ? route.fulfill({ response }) : route.continue(),
-    );
-    const namespaceHold = await holdRoute(t, page, "**/namespaces", (route, response) =>
-      response ? route.fulfill({ response }) : route.continue(),
-    );
-    t.after(() => {
-      sessionHold.release();
-      namespaceHold.release();
-    });
-    if (trigger === "Refresh") {
-      await page.getByRole("button", { name: "Refresh", exact: true }).click();
-    } else {
-      await page.goBack();
-    }
-    await sessionHold.waitForRelease();
-    await assertPendingHeader();
-    assert.equal(new URL(page.url()).searchParams.get("namespace"), missingId);
-
-    await releaseHeldRoute(page, "**/api/auth/session", sessionHold);
-    if (trigger !== "Refresh") {
-      // Another tab's login expires this tab; only explicit sign-in may adopt a new session.
-      await page.getByText("Your session has expired").waitFor();
-      assert.equal(await page.locator("#namespace-selector").count(), 0);
-      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
-      await page.getByLabel("Password").fill(fixture.credentials.password);
-      await page.getByRole("button", { name: "Sign in" }).click();
-    }
-    await namespaceHold.waitForRelease();
-    await assertPendingHeader();
-    assert.equal(
-      new URL(page.url()).searchParams.get("namespace"),
-      trigger === "Refresh" ? missingId : null,
-    );
-    await releaseHeldRoute(page, "**/namespaces", namespaceHold);
-    await page.locator(".page-header #namespace-selector:not(:disabled)").waitFor();
-    assert.equal(await selector.locator(`option[value="${alpha.id}"]`).count(), 0);
-    assert.equal(await selector.locator(`option[value="${beta.id}"]`).count(), 1);
-    await selector.selectOption(beta.id);
-    await page.waitForURL(`**/console/agents?namespace=${beta.id}`);
-    await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
-  });
+  }
 }
 
 test("Namespaces recovers stale selection inline and handles losing all readable scopes", async (t) => {
@@ -2479,33 +2449,27 @@ test("Agent recovery survives a transient session check and tab refocus", async 
   await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
 });
 
-test("a naturally expired session does not carry its route into another sign-in", async (t) => {
+test("a naturally expired session returns to the requested page after sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Expired session", { ready: true });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  await page.route(
-    "**/api/auth/session",
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry" } }),
-      }),
-    { times: 1 },
-  );
+  // Expire the actual session: the controller must reject it before returning to login.
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
 });
 
-test("session expiry after a failed check does not restore the previous route", async (t) => {
+test("session expiry after a failed check returns to the requested page", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
@@ -2524,20 +2488,59 @@ test("session expiry after a failed check does not restore the previous route", 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  await page.route(
-    "**/api/auth/session",
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry-retry" } }),
-      }),
-    { times: 1 },
-  );
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+});
+
+test("expiry on an active Agent page returns safely and rechecks denied access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Active expiry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Expired page Agent");
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const target = `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`;
+  await login(page, fixture, target);
+  await page.getByRole("heading", { name: "Expired page Agent", exact: true }).waitFor();
+  await waitForSettledView(page);
+  const requests = apiRequests(page, fixture.origin);
+
+  // A foreground recheck discovers real expiry without navigating away from this Agent.
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByText("Your session has expired").waitFor();
+  await expectNoText(page, /Expired page Agent/);
+  fixture.policy.restrictions.push({
+    id: "deny-expired-agent-read",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read",
+    effect: "deny",
+  });
+
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  const deniedAgent = page.waitForResponse(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  await page.getByRole("button", { name: "Sign in" }).click();
+  assert.equal((await deniedAgent).status(), 403);
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, target);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter(({ method }) => method !== "GET").map(({ method, path }) => ({ method, path })),
+    [{ method: "POST", path: "/api/auth/sign-in/email" }],
+  );
+  assert.equal(await page.getByLabel("Password").count(), 0, "403 must not restart login");
 });
