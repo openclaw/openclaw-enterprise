@@ -44,7 +44,7 @@ export class GitHubRepoDriver implements RepoDriver {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     additionalProperties: false,
-    required: ["controlSocket", "sessionDurationSeconds", "publicCaPath"],
+    required: ["sessionDurationSeconds"],
     properties: {
       controlSocket: { type: "string", minLength: 1, maxLength: 103 },
       sessionDurationSeconds: {
@@ -76,6 +76,11 @@ export class GitHubRepoDriver implements RepoDriver {
     ) {
       throw new Error("Repository credential Driver configuration is invalid.");
     }
+    // The protected selection needs only the finite session duration. Composition below
+    // still requires both native broker inputs together when that sender was selected.
+    if (value.controlSocket === undefined && value.publicCaPath === undefined) {
+      return;
+    }
     for (const field of ["controlSocket", "publicCaPath"] as const) {
       const path = value[field];
       if (
@@ -93,16 +98,17 @@ export class GitHubRepoDriver implements RepoDriver {
   readonly capability = "repo" as const;
   readonly implementation = "github";
   readonly maintenanceIntervalMs = 30_000;
-  readonly durableBrokerReceipts = true as const;
+  readonly durableBrokerReceipts?: true;
+  readonly checkAdmissionReady?: (signal: AbortSignal) => Promise<void>;
   readonly id: string;
   readonly #backendId: string;
   readonly #registry: GitHubRepositoryRegistry;
-  readonly #client: RepositoryCredentialControlClient;
+  readonly #client: RepositoryCredentialControlClient | undefined;
   readonly #duration: number;
   readonly #publicCa: Uint8Array | undefined;
 
   constructor(
-    backend: Backend<RepositoryCredentialControlClient>,
+    backend: Backend<RepositoryCredentialControlClient | undefined>,
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number; readonly publicCa?: Uint8Array },
   ) {
@@ -125,7 +131,12 @@ export class GitHubRepoDriver implements RepoDriver {
     }
     this.id = id;
     this.#backendId = backend.id;
-    this.#client = backend.client;
+    const client = backend.client;
+    this.#client = client;
+    if (client) {
+      this.durableBrokerReceipts = true;
+      this.checkAdmissionReady = (signal) => this.control(() => client.checkAdmissionReady(signal));
+    }
     this.#duration = options.sessionDurationSeconds;
     if (options.publicCa !== undefined) {
       if (options.publicCa.byteLength === 0 || options.publicCa.byteLength > 64 * 1024) {
@@ -159,7 +170,7 @@ export class GitHubRepoDriver implements RepoDriver {
       approved.set(repository.repositoryRef, repository.repositoryId);
     });
     const descriptionRefs = (input.descriptionRefs ?? []).filter((ref) => approved.has(ref));
-    if (descriptionRefs.length === 0) {
+    if (descriptionRefs.length === 0 || !this.#client) {
       return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
     }
     try {
@@ -247,8 +258,11 @@ export class GitHubRepoDriver implements RepoDriver {
     }
   }
 
-  async checkAdmissionReady(signal: AbortSignal): Promise<void> {
-    await this.control(() => this.#client.checkAdmissionReady(signal));
+  private broker(): RepositoryCredentialControlClient {
+    if (!this.#client) {
+      throw new Error("This repository Driver has no native broker authority.");
+    }
+    return this.#client;
   }
 
   async open(
@@ -262,7 +276,7 @@ export class GitHubRepoDriver implements RepoDriver {
     }
     // Replay and cleanup must still reach retained correlation after local policy changes.
     const result = await this.control(() =>
-      this.#client.open(
+      this.broker().open(
         {
           namespaceId: input.namespaceId,
           repositoryRef: input.binding.repositoryRef,
@@ -308,7 +322,7 @@ export class GitHubRepoDriver implements RepoDriver {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialSessionStatus | undefined> {
-    const status = await this.control(() => this.#client.status(sessionId, signal));
+    const status = await this.control(() => this.broker().status(sessionId, signal));
     return status === undefined ? undefined : publicStatus(status);
   }
 
@@ -316,7 +330,7 @@ export class GitHubRepoDriver implements RepoDriver {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialSessionStatus | undefined> {
-    const status = await this.control(() => this.#client.close(sessionId, signal));
+    const status = await this.control(() => this.broker().close(sessionId, signal));
     return status === undefined ? undefined : publicStatus(status);
   }
 

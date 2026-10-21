@@ -15,9 +15,9 @@ process.once("message", async ({ databaseUrl, configFile }) => {
       environment: { OCC_CONFIG_PATH: configFile },
     });
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    if (drivers.repositoryReceipt !== undefined) {
+    if (drivers.repositoryOwner?.controlSocket !== undefined) {
       receiptServer = await startRepositoryReceiptServer({
-        ...drivers.repositoryReceipt,
+        ...drivers.repositoryOwner,
         state: new PostgresPlatformState(pool),
       });
     }

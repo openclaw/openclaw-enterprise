@@ -30,16 +30,16 @@ Check these before the trial; each one stops Git or the Agent:
   an unattended trial, set it to `never`, which removes the approval step.
 - **PATH.** Draft creation needs the helper on PATH; see the login-shell note below.
 
-## Prepare the installation
+## Maintain the earlier Git trial
 
+See [protected Git through Credential Proxy](protected-openshell-git.md).
 Start with the [repository installation inputs](../../guides/repository-credentials/installation.md)
 and [prepared Git policy](prepared-native-git.md). Select Kubernetes Compute,
 the OpenShell Sandbox Driver and dedicated Codex. Keep the ordinary OpenShell
 inference configuration for Codex; this integration adds repository access.
 Select `repositoryCredentials.authority: prepared-git` in Helm and merge
 [`openshell.fragment.yaml`](../../../deploy/examples/repository-credentials/openshell.fragment.yaml)
-into the Installation. Do not select `credential_proxy`, `egressAuthority`, or
-the separate metadata-read `preparedGitHub` Helm settings for this route.
+into the Installation. This earlier trial requires broker session authority.
 
 The existing repository inputs still supply the registry, broker image and
 configuration, public CA, GitHub App key and dedicated 32-byte custody key.

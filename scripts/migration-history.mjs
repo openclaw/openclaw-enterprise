@@ -285,6 +285,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preProtectedDriverRegistration";
   }
+  if (count === 64) {
+    return "preCredentialProxyRepositorySession";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

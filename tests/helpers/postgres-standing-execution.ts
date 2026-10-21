@@ -16,7 +16,12 @@ export async function standingExecutionFixture(
   setupRepository?: (
     pool: Pool,
     namespaceId: string,
-  ) => Promise<{ registry: GitHubRepositoryRegistry; controlSocket: string; backendId: string }>,
+  ) => Promise<{
+    registry: GitHubRepositoryRegistry;
+    controlSocket?: string;
+    backendId: string;
+    protectedDriver?: import("../../packages/contracts/src/index.ts").DriverRegistrationRef;
+  }>,
 ) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
@@ -63,9 +68,11 @@ export async function standingExecutionFixture(
   const driver = new GitHubRepoDriver(
     {
       id: registry.backendId,
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
-      }),
+      client: external?.protectedDriver
+        ? undefined
+        : new UnixRepositoryCredentialControlClient({
+            controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
+          }),
       drivers: { repo: registry.backendId },
     },
     registry,
@@ -73,7 +80,7 @@ export async function standingExecutionFixture(
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: external ? "secret" : "credential_source",
+    auth: external?.protectedDriver ? "runtime" : external ? "secret" : "credential_source",
   });
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
@@ -112,7 +119,10 @@ export async function standingExecutionFixture(
     standingApprovalScopeFingerprint: fingerprint,
   };
   const revisionOptions = { actorId: f.actor.id, repositoryCredentials: credentials };
-  const revision = (await f.revision(owner, 1, revisionOptions)) as AgentRevision;
+  const revision = (await f.revision(owner, 1, {
+    ...revisionOptions,
+    ...(external?.protectedDriver && { protectedRepositoryDriver: external.protectedDriver }),
+  })) as AgentRevision;
   const key = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
   if (!external) {
     await f.state.transact((u) =>

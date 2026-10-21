@@ -1,3 +1,4 @@
+import { openShellGitMiddleware } from "./openshell-git-runtime.ts";
 import type { PreparedGitHubEgressLifecycle } from "@openclaw-enterprise/contracts";
 import { credentialFreeMetadataProvider, githubMetadataProvider } from "./github-metadata.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -27,6 +28,7 @@ import { openAiStaticProvider } from "./openai-provider.ts";
 
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
+  readonly repositoryMiddlewareName?: string;
   readonly authorityScope: "execution";
 }
 
@@ -205,6 +207,22 @@ export function openShellEgressConfiguration(
   if (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!)) {
     throw new Error("Protected egress requires one literal host.");
   }
+  if (plan.repositoryGit) {
+    if (plan.routes.length || !options.repositoryMiddlewareName) {
+      throw new DependencyUnavailableError(
+        "This Credential Proxy cannot install the admitted repository plan.",
+      );
+    }
+    // The prepared provider supplies the exact repository endpoints. No generic exchange
+    // authority, broad Git network rule or second credential-bearing sender accompanies it.
+    return immutableCopy({
+      network_policies: {},
+      network_middlewares: openShellGitMiddleware(
+        options.repositoryMiddlewareName,
+        plan.execution.executionId,
+      ),
+    });
+  }
   return immutableCopy({
     network_policies: Object.fromEntries(
       plan.routes.map((route, index) => {
@@ -255,6 +273,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     required: ["middlewareName", "authorityScope"],
     properties: {
       middlewareName: { type: "string", minLength: 1 },
+      repositoryMiddlewareName: { type: "string", minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
     },
   };
@@ -263,7 +282,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     const value = asRecord(configuration);
     if (
       !value ||
-      Object.keys(value).some((key) => !["middlewareName", "authorityScope"].includes(key)) ||
+      Object.keys(value).some(
+        (key) => !["middlewareName", "authorityScope", "repositoryMiddlewareName"].includes(key),
+      ) ||
       typeof value.middlewareName !== "string" ||
       !value.middlewareName.trim() ||
       value.authorityScope !== "execution"
@@ -297,7 +318,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         ? [openAiStaticProvider, credentialFreeMetadataProvider, githubMetadataProvider]
         : [openAiStaticProvider, credentialFreeMetadataProvider],
       ...(selection.preparedGitHub ? { preparedGitHub: selection.preparedGitHub } : {}),
-      assertAvailable: async (signal: AbortSignal) => {
+      assertAvailable: async (signal: AbortSignal, profile?: "repository_git") => {
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {
           throw new DependencyUnavailableError(
@@ -306,16 +327,20 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         const info = await client.getGatewayInfo(signal);
         const extensions = info.extensions;
+        const git = profile === "repository_git";
+        const registration = git ? options.repositoryMiddlewareName : options.middlewareName;
         if (
+          !registration ||
           !Array.isArray(extensions) ||
           !extensions.some((value) => {
             const item = asRecord(value);
             return (
-              item?.configured_name === options.middlewareName &&
+              item?.configured_name === registration &&
               (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
               item.protocol_major === 1 &&
-              advertisesOpenShellExecutionProfile(item.required_capabilities) &&
-              advertisesOpenShellExecutionProfile(item.supported_capabilities)
+              (git ||
+                (advertisesOpenShellExecutionProfile(item.required_capabilities) &&
+                  advertisesOpenShellExecutionProfile(item.supported_capabilities)))
             );
           })
         ) {
@@ -329,7 +354,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   async configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring> {
     this.assertPlan(context);
-    await this.sourceControl.assertAvailable(context.signal);
+    await this.sourceControl.assertAvailable(
+      context.signal,
+      context.plan.repositoryGit && "repository_git",
+    );
     return immutableCopy({
       plan: context.plan,
       configuration: openShellEgressConfiguration(context.plan, this.options),
@@ -432,7 +460,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   }
 
   private async loadedPolicy(context: ProxyRevisionContext, expectedSandboxId?: string) {
-    await this.sourceControl.assertAvailable(context.signal);
+    await this.sourceControl.assertAvailable(
+      context.signal,
+      context.plan.repositoryGit && "repository_git",
+    );
     const ref = this.sandbox.harnessResource!(context);
     const client = this.backend.client.clientForNamespace(ref.namespaceName);
     const workspace = openShellWorkspaceName(context.namespace);
@@ -455,14 +486,30 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       status,
       sandboxId,
       enforcement: () =>
-        enforcementEvidence(
-          status,
-          sandboxId,
-          context.plan.generation,
-          context.revision.id,
-          this.options,
-        ),
+        context.plan.repositoryGit
+          ? this.repositoryGitEnforcement(context, status, sandboxId)
+          : enforcementEvidence(
+              status,
+              sandboxId,
+              context.plan.generation,
+              context.revision.id,
+              this.options,
+            ),
     };
+  }
+
+  /**
+   * Release gate for the public online profile. Registration, a loaded policy and provider
+   * readiness do not prove that this sender cannot skip the request hook or reuse an execution
+   * identity. No released stock composition is qualified here yet. In particular, never use
+   * the private installation-exchange capability or the reported URL scheme as that proof.
+   */
+  protected repositoryGitEnforcement(
+    _context: ProxyRevisionContext,
+    _status: Readonly<Record<string, unknown>>,
+    _sandboxId: string,
+  ): EgressInstallation["enforcement"] | undefined {
+    return undefined;
   }
 
   async withdrawBinding(context: ProxyRevisionContext, binding: EgressRef): Promise<boolean> {

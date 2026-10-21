@@ -73,40 +73,84 @@ export interface PreparedRepositorySession {
 
 /** The session snapshot also binds Agent, installation and the broker's particular generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
-const sessions = `SELECT jsonb_build_object(
+function sessionQuery(proxy: boolean): string {
+  return `SELECT jsonb_build_object(
   'namespaceId',s.namespace_id, 'agentId',s.agent_id, 'revisionId',s.live_revision_id,
-  'installationId',i.id, 'admissionId',s.admission_id, 'sessionId',b.session_id,
-  'brokerGeneration',b.generation, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
+  'installationId',i.id, 'admissionId',s.admission_id, 'sessionId',s.session_id,
+  ${proxy ? "'credentialProxyExecution', r.binding_id" : "'brokerGeneration',b.generation"}, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
   'grant',s.cleanup_context #> '{binding,grant}') ||
     CASE WHEN rev.admitted_spec->'repository_credentials' ? 'standingApprovalId' THEN jsonb_build_object(
       'standingApprovalId',rev.admitted_spec #> '{repository_credentials,standingApprovalId}',
       'standingApprovalGeneration',rev.admitted_spec #> '{repository_credentials,standingApprovalGeneration}',
       'standingApprovalScopeFingerprint',rev.admitted_spec #> '{repository_credentials,standingApprovalScopeFingerprint}')
       ELSE '{}'::jsonb END AS session,
-  least(b.deadline_wall_ms, s.deadline_wall_ms) AS end_ms
+  ${proxy ? "s.deadline_wall_ms" : "least(b.deadline_wall_ms, s.deadline_wall_ms)"} AS end_ms
   FROM occ.repository_session_attempts s
-  JOIN occ.repository_broker_receipts b USING(admission_id)
+  ${
+    proxy
+      ? `JOIN occ.openshell_git_routes r USING(revision_id, namespace_id, agent_id)
+    JOIN occ.egress_installations p ON (p.revision_id,p.namespace_id,p.agent_id)=(s.revision_id,s.namespace_id,s.agent_id)
+      AND p.sandbox_id=r.observed->>'sandboxId' AND r.blocked IS NULL AND r.detach_request_id IS NULL
+      AND r.binding_id=p.installation#>>'{plan,execution,executionId}'
+      AND r.observed->>'executionId'=r.revision_id AND r.observed->>'providerId'=r.provider_id
+      AND r.observed->>'policyHash'=p.installation#>>'{enforcement,policyHash}'`
+      : "JOIN occ.repository_broker_receipts b USING(admission_id)"
+  }
   JOIN occ.agents g ON g.namespace_id=s.namespace_id AND g.id=s.agent_id AND g.active_revision_id=s.live_revision_id
   JOIN occ.agent_revisions rev ON rev.id=s.live_revision_id AND rev.namespace_id=s.namespace_id AND rev.agent_id=s.agent_id
   CROSS JOIN occ.installation i
-  WHERE s.phase='open' AND s.broker_protocol=1 AND s.live_revision_id=s.revision_id
-  AND b.state='active' AND b.generation IS NOT NULL AND b.session_id=s.session_id
-  AND clock_timestamp() < to_timestamp(least(b.deadline_wall_ms, s.deadline_wall_ms) / 1000.0)
+  WHERE s.phase='open' AND s.live_revision_id=s.revision_id
+  AND ${
+    proxy
+      ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
+    AND rev.admitted_spec #>> '{execution_admission,version}' = '4'
+    AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
+    AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
+    AND clock_timestamp() < to_timestamp(s.deadline_wall_ms / 1000.0)
+    AND NOT EXISTS (SELECT FROM occ.repository_session_attempts old
+        WHERE (old.namespace_id,old.agent_id,old.repository_ref)=(s.namespace_id,s.agent_id,s.repository_ref)
+        AND old.admission_id<>s.admission_id AND old.phase<>'disposed')`
+      : `s.broker_protocol=1 AND b.state='active' AND b.generation IS NOT NULL AND b.session_id=s.session_id
+    AND clock_timestamp() < to_timestamp(least(b.deadline_wall_ms, s.deadline_wall_ms) / 1000.0)`
+  }
+
   AND g.status='active' AND g.desired_runtime_state='running' AND g.execution_mode='dedicated'
   AND s.cleanup_context #>> '{binding,profile}' = 'git-write'
   AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile','git-write'))
   AND occ.repository_standing_approval_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id)
   AND NOT EXISTS (SELECT FROM occ.repository_standing_executions e WHERE e.revision_id=s.revision_id AND e.closed)
   AND (s.predecessor_admission_id IS NULL OR occ.repository_standing_execution_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id,s.revision_id))
-  AND (NOT (rev.admitted_spec->'repository_credentials' ? 'standingApprovalId') OR NOT EXISTS (
+  AND (${proxy ? "false" : "NOT (rev.admitted_spec->'repository_credentials' ? 'standingApprovalId')"} OR NOT EXISTS (
     SELECT FROM occ.prepared_github_families prior JOIN occ.prepared_github_attempts attempt ON attempt.source_id=prior.source_id
     WHERE prior.source->>'adoption'='prepared_repository_git'
-      AND prior.source #>> '{session,revisionId}'=s.revision_id
+      AND ${
+        proxy
+          ? `prior.source#>>'{session,namespaceId}'=s.namespace_id
+        AND prior.source#>>'{session,agentId}'=s.agent_id
+        AND prior.source#>>'{session,binding,repositoryRef}'=s.repository_ref`
+          : "prior.source #>> '{session,revisionId}'=s.revision_id"
+      }
       AND prior.source #>> '{session,admissionId}'<>s.admission_id
       AND attempt.custody NOT IN ('revoked','expired')))
   AND rev.admitted_spec #> '{repository_credentials,driver}'=s.cleanup_context->'driver'
   AND rev.admitted_spec #> '{repository_credentials,bindings}' @> jsonb_build_array(s.cleanup_context->'binding')`;
-const live = `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;
+}
+
+const active = (sessions: string) =>
+  `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;
+
+/** Identifies the actual installed sender observation to the transaction recording possible use. */
+export interface InstalledGitMaterial {
+  readonly preparationAttemptId: string;
+  readonly materialVersion: string;
+  readonly route?: GitInstallationFence;
+}
+export interface GitInstallationFence {
+  readonly revisionId: string;
+  readonly fence: number;
+  /** Nonsecret result of verifying the provider and supervisor, including its installed policy. */
+  readonly observed: unknown;
+}
 
 /**
  * Match standing removal's lock order. The session ID or revision locates the Namespace;
@@ -119,6 +163,7 @@ async function lockLiveSession(
   c: PostgresClient,
   by: "session_id" | "live_revision_id",
   id: string,
+  proxy: boolean,
 ): Promise<LockedSession | null | undefined> {
   const { rows } = await c.query(
     `SELECT s.namespace_id, s.agent_id, s.live_revision_id, s.admission_id
@@ -148,15 +193,20 @@ async function lockLiveSession(
   }
 
   // The Agent lock also serializes closure or replacement of its standing execution.
-  const exact = `${sessions} AND (s.namespace_id,s.agent_id,s.live_revision_id,s.admission_id)=($1,$2,$3,$4)
+  const exact = `${sessionQuery(proxy)} AND (s.namespace_id,s.agent_id,s.live_revision_id,s.admission_id)=($1,$2,$3,$4)
     AND s.${by}=$5`;
   const identity = [...target, admission_id, id];
   if (!(await c.query(exact, identity)).rowCount) {
     return null;
   }
   const locked = await c.query(
-    `SELECT FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b USING (admission_id)
-     WHERE s.admission_id=$1 FOR SHARE OF s,b`,
+    `SELECT FROM occ.repository_session_attempts s
+     ${
+       proxy
+         ? "JOIN occ.openshell_git_routes r USING(namespace_id,agent_id,revision_id)"
+         : "JOIN occ.repository_broker_receipts b USING (admission_id)"
+     }
+     WHERE s.admission_id=$1 FOR SHARE OF s,${proxy ? "r" : "b"}`,
     [admission_id],
   );
   if (!locked.rowCount) {
@@ -213,8 +263,10 @@ export interface OpenShellRepositoryMaterial {
 export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly authority: string;
   private readonly policy: Policy;
-  constructor(pool: PostgresPool, key: Buffer, authority: string, policy: Policy) {
-    super(pool, key, authority, { active: live, adoption });
+  private readonly proxy: boolean;
+  constructor(pool: PostgresPool, key: Buffer, authority: string, policy: Policy, proxy = false) {
+    super(pool, key, authority, { active: active(sessionQuery(proxy)), adoption });
+    this.proxy = proxy;
     this.authority = authority;
     this.policy = policy;
   }
@@ -225,6 +277,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   async discover(
     onForeignRetired?: (retired: PreparedRepositoryGitForeignRetirement) => void,
   ): Promise<PreparedRepositoryGitSource[]> {
+    const sessions = sessionQuery(this.proxy);
+    const live = active(sessions);
     const { sources, foreign } = await this.transaction(async (c) => {
       // Denial doesn't depend on this cleanup. Keep attempts, including unknown issuance, for recovery.
       // Families of every issuer authority retire once their session is no longer live: after
@@ -234,13 +288,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { rows: retired } = await c.query(
         `WITH stopped AS (
         UPDATE ${families} f SET enabled=false
-        WHERE enabled AND source->>'adoption'=$1 AND NOT ${live}
+        WHERE enabled AND source->>'adoption'=$1 AND (source->'session' ? 'credentialProxyExecution')=$3 AND NOT ${live}
         RETURNING source_id, source, admission->>'issuerAuthority' IS DISTINCT FROM $2 AS foreign),
         moved AS (UPDATE ${attempts} a SET custody='retire' FROM stopped s
         WHERE a.source_id=s.source_id AND custody='current' RETURNING a.source_id, a.provider_expires_at)
         SELECT s.source->'session' AS session, m.provider_expires_at
         FROM stopped s JOIN moved m USING (source_id) WHERE s.foreign`,
-        [adoption, this.authority],
+        [adoption, this.authority, this.proxy],
       );
       const { rows } = await c.query(sessions);
       return {
@@ -265,6 +319,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     source: PreparedRepositoryGitSource,
     version: string,
   ): Promise<GitHubPreparationAdmission | undefined> {
+    const sessions = sessionQuery(this.proxy);
+    const live = active(sessions);
     const familyId = source.key.source.id;
     const admission: GitHubPreparationAdmission = {
       familyId,
@@ -310,6 +366,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   async readOpenShellMaterial(
     revisionId: string,
     signal: AbortSignal,
+    install?: GitInstallationFence,
   ): Promise<OpenShellRepositoryMaterial | OpenShellMaterialAbsence | undefined> {
     let bytes: Buffer | undefined;
     const withdrawn: OpenShellMaterialAbsence = Object.freeze({ absent: "withdrawn" });
@@ -317,9 +374,26 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     try {
       signal.throwIfAborted();
       const result = await this.transaction(async (c) => {
-        const current = await lockLiveSession(c, "live_revision_id", revisionId);
+        const current = await lockLiveSession(c, "live_revision_id", revisionId, this.proxy);
         if (!current) {
           return current === null ? withdrawn : undefined;
+        }
+        if (this.proxy) {
+          // The session transaction holds the current route, approval and Agent. Only the
+          // conditional installer may receive a token; a changed fence or observation gets none.
+          if (
+            !install ||
+            install.revisionId !== revisionId ||
+            !(
+              await c.query(
+                `SELECT FROM occ.openshell_git_routes WHERE revision_id=$1 AND fence=$2
+               AND observed=$3::jsonb AND blocked IS NULL AND detach_request_id IS NULL`,
+                [revisionId, install.fence, JSON.stringify(install.observed)],
+              )
+            ).rowCount
+          ) {
+            return unprepared;
+          }
         }
         const source = this.policy(current.session);
         if (!source) {
@@ -371,7 +445,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
    * The durable receipt records possible use, never delivery or a provider outcome. */
   async authorizeOpenShellRequest(
     q: PreparedGitHubUseRequest,
-    installed: { preparationAttemptId: string; materialVersion: string },
+    installed: InstalledGitMaterial,
     signal: AbortSignal,
   ): Promise<boolean | "draft_already_opened" | "access_withdrawn"> {
     if (!installed?.preparationAttemptId || !installed.materialVersion) {
@@ -440,7 +514,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     c: PostgresClient,
     q: PreparedGitHubUseRequest,
     signal: AbortSignal,
-    installed?: { preparationAttemptId: string; materialVersion: string },
+    installed?: InstalledGitMaterial,
   ) {
     const deadline = Date.parse(q.deadlineAt);
     const valid = (until: number) => !signal.aborted && Date.now() < until;
@@ -450,7 +524,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     if (!valid(deadline) || deadline > Date.now() + 30_000) {
       return fail();
     }
-    const current = await lockLiveSession(c, "session_id", q.sessionId);
+    if (this.proxy && !installed?.route) {
+      return fail(); // This admission never serves the native token-returning operation.
+    }
+    const current = await lockLiveSession(c, "session_id", q.sessionId, this.proxy);
     const source = current && this.policy(current.session);
     if (installed && (!current || !source)) {
       // OpenShell route only: the session ended or the registry no longer admits it.
@@ -467,6 +544,29 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       })
     ) {
       return fail();
+    }
+    if (this.proxy) {
+      const { revisionId, fence, observed } = installed!.route!;
+      if (
+        revisionId !== current.session.revisionId ||
+        !(
+          await c.query(
+            `SELECT FROM occ.openshell_git_routes WHERE revision_id=$1 AND fence=$2
+           AND observed=$3::jsonb AND observed->>'credentialState'='active'
+           AND preparation_attempt_id=$4 AND material_version=$5
+           AND blocked IS NULL AND write_pending IS NULL AND detach_request_id IS NULL`,
+            [
+              revisionId,
+              fence,
+              JSON.stringify(observed),
+              installed!.preparationAttemptId,
+              installed!.materialVersion,
+            ],
+          )
+        ).rowCount
+      ) {
+        return fail();
+      }
     }
     // Authority and live-session locks above apply equally to reads of an existing receipt.
     const grant = source.grant;

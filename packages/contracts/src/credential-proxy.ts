@@ -16,6 +16,7 @@ import type {
   Driver,
   DriverRegistrationRef,
   Namespace,
+  RepositoryRevisionState,
   Secret,
   SecretReference,
 } from "./index.ts";
@@ -114,6 +115,8 @@ export interface ProxyPlan {
   readonly egressDriverId: string;
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
+  /** v4 only: authorize this exact repository grant through the installed online sender. */
+  readonly repositoryGit?: RepositoryRevisionState;
   readonly routes: readonly EgressRoute[];
 }
 
@@ -239,7 +242,7 @@ export interface CredentialSourceControl {
   readonly resolver: EgressRef;
   readonly providers: readonly CredentialProviderDefinition[];
   /** Capability evidence is obtained from the actual configured counterpart, never inferred. */
-  assertAvailable(signal: AbortSignal): Promise<void>;
+  assertAvailable(signal: AbortSignal, profile?: "repository_git"): Promise<void>;
 }
 
 export interface ProxyWiring {
@@ -275,7 +278,7 @@ export interface CredentialProxyDriver extends Driver {
 /** Durable admission semantics, independent of credential bindings and route count. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "protected" | "unprotected" }
-  | { readonly version: 3; readonly mode: "protected" };
+  | { readonly version: 3 | 4; readonly mode: "protected" };
 
 /** Recognition only. A valid protected schema is not proof of deployability. */
 export function assertExecutionAdmission(
@@ -284,7 +287,8 @@ export function assertExecutionAdmission(
   const admission = revision.executionAdmission;
   if (
     !admission ||
-    (admission.version !== 2 && !(admission.version === 3 && admission.mode === "protected")) ||
+    (admission.version !== 2 &&
+      !((admission.version === 3 || admission.version === 4) && admission.mode === "protected")) ||
     (admission.mode !== "protected" && admission.mode !== "unprotected") ||
     Object.keys(admission).some((key) => key !== "version" && key !== "mode")
   ) {
@@ -296,9 +300,19 @@ export function assertExecutionAdmission(
   if (admission.mode === "protected" && !Array.isArray(revision.egressPlan?.routes)) {
     throw new Error("Invalid protected execution plan.");
   }
+  const repository = revision.egressPlan?.repositoryGit;
+  if (
+    admission.version === 4
+      ? !repository ||
+        repository.bindings?.length !== 1 ||
+        repository.bindings[0]?.profile !== "git-write"
+      : repository !== undefined
+  ) {
+    throw new Error("Repository Credential Proxy requires its own protected execution admission.");
+  }
   const owner = revision.egressPlan?.driver;
   if (
-    admission.version === 3
+    admission.version === 3 || admission.version === 4
       ? !owner ||
         typeof owner.id !== "string" ||
         !owner.id.trim() ||

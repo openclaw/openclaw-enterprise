@@ -2890,7 +2890,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
               policy.endpoints.map((endpoint) => endpoint.host),
             ),
           );
-    if (git && context.requirements.proxyWiring) {
+    if (git && context.requirements.proxyWiring && !context.revision.egressPlan?.repositoryGit) {
       throw new OpenShellSandboxConfigurationFailure(
         "OpenShell Git cannot share the protected execution proxy profile.",
       );
@@ -2959,7 +2959,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         create.spec.environment,
         Object.fromEntries(git.environment.map(({ name, value }) => [name, value])),
       );
-      Object.assign(create.spec.policy, { network_middlewares: git.middlewares });
+      if (context.revision.egressPlan?.repositoryGit) {
+        const policy = asRecord(create.spec.policy.network_middlewares);
+        if (!isDeepStrictEqual(policy?.["oce-prepared-git"], git.middlewares["oce-prepared-git"])) {
+          throw new OpenShellSandboxConfigurationFailure(
+            "Git middleware differs from its protected admission.",
+          );
+        }
+      } else {
+        Object.assign(create.spec.policy, { network_middlewares: git.middlewares });
+      }
       const readOnly = create.spec.policy.filesystem.read_only;
       readOnly.push(...git.readOnlyPaths.filter((path) => !readOnly.includes(path)));
       create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
@@ -2974,7 +2983,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       await this.openShellGit!.bind(
         context.revision.id,
         (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
-        originalModel ? continuity : undefined,
+        originalModel || context.revision.egressPlan?.repositoryGit ? continuity : undefined,
       );
     }
     const prepared = context.requirements.proxyWiring;
@@ -3120,17 +3129,22 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private gitContinuity(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
     const { revision } = context;
     const auth = revision.harnessAuth;
+    // The retained provider is the protected Harness runtime in v4, not a fabricated model grant.
+    const retained = revision.egressPlan?.repositoryGit
+      ? runtimeProviderName(revision.id)
+      : !revision.egressPlan &&
+        auth?.method === "credential_source" &&
+        openShellProviderName(auth.sourceId);
     if (
-      auth?.method !== "credential_source" ||
+      !retained ||
       revision.namespaceId !== context.namespace.id ||
-      revision.sandboxDriverId !== this.id ||
-      revision.egressPlan !== undefined
+      revision.sandboxDriverId !== this.id
     ) {
       return;
     }
     const namespace = namespaceName(context.namespace);
     return {
-      model: openShellProviderName(auth.sourceId),
+      model: retained,
       workload: async (sandboxId: string, signal: AbortSignal) => {
         if (!sandboxId || !KUBERNETES_LABEL_VALUE.test(sandboxId)) {
           return;

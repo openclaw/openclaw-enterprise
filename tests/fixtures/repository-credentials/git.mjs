@@ -181,6 +181,13 @@ export async function startGitSmartHttpFixture(
     disconnectAfterNextAcceptedPush() {
       disconnectPush = true;
     },
+    async addCommit() {
+      await run("git", ["commit", "--allow-empty", "-m", "New object for successor fetch"], {
+        cwd: seed,
+      });
+      await run("git", ["push", bare, "HEAD:refs/heads/main"], { cwd: seed });
+      return (await run("git", ["rev-parse", "HEAD"], { cwd: seed })).stdout.trim();
+    },
     async ref(name) {
       return (await run("git", ["rev-parse", name], { cwd: bare })).stdout.trim();
     },

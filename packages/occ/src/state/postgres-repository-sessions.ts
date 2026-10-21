@@ -38,7 +38,7 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds <= 0 ||
     !Number.isSafeInteger(deadlineWallMs) ||
     deadlineWallMs <= 0 ||
-    ![0, 1].includes(brokerProtocol) ||
+    ![0, 1, 2].includes(brokerProtocol) ||
     !["opening", "open", "closing", "disposed", "invalidated"].includes(phase)
   ) {
     throw new DependencyUnavailableError("Persisted repository session input or phase is invalid.");
@@ -54,7 +54,7 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds,
     deadlineWallMs,
     phase: phase as RepositorySessionPhase,
-    brokerProtocol: brokerProtocol as 0 | 1,
+    brokerProtocol: brokerProtocol as 0 | 1 | 2,
     ...(row.predecessor_admission_id == null
       ? {}
       : { predecessorAdmissionId: text("predecessor_admission_id") }),

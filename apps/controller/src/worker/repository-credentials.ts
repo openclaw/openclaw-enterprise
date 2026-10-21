@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
@@ -146,6 +147,12 @@ export class RepositoryCredentialLifecycle {
     if (snapshot === undefined) {
       return undefined;
     }
+    if (
+      revision.executionAdmission.version === 4 &&
+      !isDeepStrictEqual(revision.egressPlan?.repositoryGit, snapshot)
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_PROXY_ADMISSION_MISMATCH");
+    }
     const driver = this.driver(revision);
     if (snapshot.standingApprovalId === undefined && Date.now() >= snapshot.deadlineWallMs) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
@@ -246,9 +253,17 @@ export class RepositoryCredentialLifecycle {
           (attempt.phase === "opening" || attempt.phase === "open"),
       );
       if (existing?.phase === "open" && existing.sessionId !== undefined) {
-        const status = await this.dependencies.effect(claim, (signal) =>
-          this.driver(revision).status(existing.sessionId!, signal),
-        );
+        const status =
+          existing.brokerProtocol === 2
+            ? {
+                state: "OPEN" as const,
+                sessionId: existing.sessionId,
+                binding: binding.grant,
+                deadlineWallMs: existing.deadlineWallMs,
+              }
+            : await this.dependencies.effect(claim, (signal) =>
+                this.driver(revision).status(existing.sessionId!, signal),
+              );
         if (status === undefined) {
           await this.advance(claim, existing, "invalidated");
         } else {
@@ -301,6 +316,21 @@ export class RepositoryCredentialLifecycle {
     binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
   ): Promise<void> {
     await this.authorizedTransaction(claim, revision, async ({ repositorySessions }) => {
+      if (revision.executionAdmission.version === 4) {
+        const { sessionId, repositoryRef, deadlineWallMs } = binding;
+        const [attempt] = (await repositorySessions.listRevisionAttempts(owner(revision))).filter(
+          (a) =>
+            a.phase === "open" &&
+            a.brokerProtocol === 2 &&
+            a.sessionId === sessionId &&
+            a.repositoryRef === repositoryRef &&
+            a.deadlineWallMs === deadlineWallMs,
+        );
+        if (!attempt || deadlineWallMs <= Date.now()) {
+          throw new RepositoryCredentialAuthorityError("REPOSITORY_SESSION_NO_LONGER_CURRENT");
+        }
+        return;
+      }
       const receipt = await repositorySessions.findBrokerReceiptBySession(binding.sessionId);
       const attempt = receipt && (await repositorySessions.findAttempt(receipt.admissionId));
       if (
@@ -603,7 +633,8 @@ export class RepositoryCredentialLifecycle {
     binding: AdmittedRepositoryBinding,
   ): Promise<RepositoryCredentialRuntimeBinding> {
     const driver = this.driver(revision);
-    if (driver.checkAdmissionReady !== undefined) {
+    const proxy = revision.executionAdmission.version === 4;
+    if (!proxy && driver.checkAdmissionReady !== undefined) {
       await this.dependencies.effect(claim, (signal) =>
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),
       );
@@ -630,7 +661,7 @@ export class RepositoryCredentialLifecycle {
       if (durationSeconds < 1) {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
       }
-      return unit.repositorySessions.createAttempt({
+      const attempt = await unit.repositorySessions.createAttempt({
         ...owner(revision),
         ...(predecessor
           ? {
@@ -643,11 +674,25 @@ export class RepositoryCredentialLifecycle {
         durationSeconds,
         deadlineWallMs,
         createdAt: new Date(openedAt).toISOString(),
-        ...(this.driver(revision).durableBrokerReceipts === true
-          ? { brokerProtocol: 1 as const }
-          : {}),
+        ...(proxy
+          ? { brokerProtocol: 2 as const }
+          : driver.durableBrokerReceipts === true
+            ? { brokerProtocol: 1 as const }
+            : {}),
       });
+      // OCC creates the opaque session ID and commits both states together. No secret exists
+      // here. Preparation requires the active execution and the verified installation separately.
+      return proxy ? this.advanceIn(unit, attempt, "open", randomUUID()) : attempt;
     });
+    if (proxy) {
+      return {
+        kind: "retained",
+        repositoryRef: binding.repositoryRef,
+        sessionId: attempt.sessionId!,
+        deadlineWallMs: attempt.deadlineWallMs,
+        admissionId: attempt.admissionId,
+      };
+    }
     await this.authorize(claim, revision);
     const opened = await this.dependencies.effect(claim, (signal) =>
       this.driver(revision).open(this.input(attempt, binding), signal),
@@ -773,6 +818,12 @@ export class RepositoryCredentialLifecycle {
       throw new RepositoryCredentialAuthorityError("INVALID_REPOSITORY_ATTEMPT_OWNER");
     }
     const binding = context.binding;
+    if (attempt.brokerProtocol === 2) {
+      // This disposes only the local session. The prepared owner retains every unsettled token,
+      // and a successor cannot prepare until overlapping material has a known terminal disposition.
+      await this.advance(claim, attempt, "disposed");
+      return { settled: true, authorityClosed: true, disposalPending: false };
+    }
     const driver = this.driverFor(context.driver);
     let closing = attempt;
     let status = observedStatus;

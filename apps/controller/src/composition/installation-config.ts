@@ -161,8 +161,8 @@ export interface InstallationRuntimeDrivers {
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
   readonly openShellGit?: OpenShellGitRuntime;
   readonly repositoryRegistry?: Awaited<ReturnType<typeof composeRepoDriver>>["repositoryRegistry"];
-  readonly repositoryReceipt?: Readonly<{
-    controlSocket: string;
+  readonly repositoryOwner?: Readonly<{
+    controlSocket?: string;
     driverId: string;
     implementation: string;
     backendId: string;
@@ -678,6 +678,27 @@ export async function loadInstallationConfiguration(options: {
       // Both selections name one instance. Only the sandbox entry configures the package.
       closed(egress, [], "drivers.credential_proxy.configuration");
       packageProxyId = id;
+    } else if (openShellGitConfiguration) {
+      // The same installed Driver, using the already configured online Git authority.
+      // Do not start a second listener or the stronger private exchange profile.
+      if (!sandboxSelection || selection.id !== sandboxSelection.id) {
+        throw new Error("Repository Credential Proxy must select the installed Sandbox Driver.");
+      }
+      closed(egress, [], "drivers.credential_proxy.configuration");
+      const name = openShellGitConfiguration.registrationName;
+      proxySelection = selected(
+        {
+          ...selection,
+          configuration: {
+            middlewareName: name,
+            authorityScope: "execution",
+            repositoryMiddlewareName: name,
+          },
+        },
+        "credential_proxy",
+        "openshell",
+        OpenShellCredentialProxyDriver,
+      );
     } else {
       closed(
         egress,
@@ -974,6 +995,7 @@ export async function loadInstallationConfiguration(options: {
       : await composeRepoDriver({
           backend: repositoryBackend,
           selection: repoSelection,
+          protectedGit: !!(openShellGitConfiguration && proxySelection),
         });
   if (
     openShellGitConfiguration &&
@@ -983,17 +1005,22 @@ export async function loadInstallationConfiguration(options: {
       !sandbox ||
       sandboxPackage ||
       !kubernetesCompute ||
-      proxySelection ||
       openShellBackend?.configuration.endpoint?.startsWith("https://") !== true ||
       !["bearerTokenFile", "mtls"].includes(openShellBackend.configuration.auth?.mode ?? ""))
   ) {
     throw new Error(
-      "OpenShell Git requires prepared GitHub custody, the bundled Kubernetes/OpenShell pair and an authenticated HTTPS gateway without another egress plan.",
+      "OpenShell Git requires prepared GitHub custody, the bundled Kubernetes/OpenShell pair and an authenticated HTTPS gateway.",
     );
   }
   const openShellGit =
     openShellGitConfiguration && repositoryRuntime
-      ? new OpenShellGitRuntime(openShellGitConfiguration, repositoryRuntime.repositoryRegistry)
+      ? new OpenShellGitRuntime(
+          {
+            ...openShellGitConfiguration,
+            ...(proxySelection && { protectedExecution: true }),
+          },
+          repositoryRuntime.repositoryRegistry,
+        )
       : undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
@@ -1050,7 +1077,7 @@ export async function loadInstallationConfiguration(options: {
       };
       const sandboxView = new bundledSandboxPackage!.OpenShellSandboxDriver(
         { ...sandbox.configuration, egress: proxySelection.configuration },
-        common,
+        { ...common, ...(openShellGit && { openShellGit }) },
       );
       const proxy = new OpenShellCredentialProxyDriver(
         proxySelection.configuration as unknown as OpenShellProxyOptions,
@@ -1068,6 +1095,7 @@ export async function loadInstallationConfiguration(options: {
             sandbox: sandbox.configuration,
             backend: openShellBackend,
             proxy: drivers.credential_proxy,
+            ...(openShellGit && { repository: drivers.repo }),
             namespaceBinding,
           },
         },

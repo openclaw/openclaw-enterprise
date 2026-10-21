@@ -314,6 +314,7 @@ export function memoryRepositorySessions(
       );
       if (
         !ownerAcceptsAdmission(input) ||
+        (revision?.executionAdmission.version === 4) !== (input.brokerProtocol === 2) ||
         admitted === undefined ||
         (input.predecessorAdmissionId === undefined &&
           admitted.deadlineWallMs !== input.deadlineWallMs) ||
@@ -349,9 +350,12 @@ export function memoryRepositorySessions(
           !sameOwner(previous, input) ||
           previous.repositoryRef !== input.repositoryRef ||
           previous.phase !== "disposed" ||
-          receipt?.state !== "disposed" ||
-          previous.sessionId !== receipt.sessionId ||
-          input.brokerProtocol !== 1 ||
+          previous.brokerProtocol !== input.brokerProtocol ||
+          (input.brokerProtocol === 2
+            ? receipt !== undefined
+            : input.brokerProtocol !== 1 ||
+              receipt?.state !== "disposed" ||
+              previous.sessionId !== receipt.sessionId) ||
           !execution ||
           execution.closed ||
           !executionAcceptsAdmission(input) ||

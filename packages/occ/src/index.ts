@@ -63,7 +63,7 @@ import {
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   accessBindingsTargeting,
@@ -5412,6 +5412,7 @@ export class OpenClawController {
     revisionId: string,
     configuration: OpenClawConfigurationDocument,
     sandboxDriverId?: string,
+    repositoryGit?: RepositoryRevisionState,
   ): Promise<ProxyPlan | undefined> {
     const sources: CredentialSource[] = [];
     for (const binding of agent.credentialSources ?? []) {
@@ -5441,7 +5442,15 @@ export class OpenClawController {
     }
     const owner = this.selectedProxyOwner();
     const driver = owner.require("credential_proxy");
-    await driver.sourceControl.assertAvailable(AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS));
+    if (repositoryGit && sources.length) {
+      throw new ScopeViolationError(
+        "Repository Credential Proxy does not admit unrelated credential routes.",
+      );
+    }
+    await driver.sourceControl.assertAvailable(
+      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      repositoryGit && "repository_git",
+    );
     const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
     const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
     if (
@@ -5459,7 +5468,7 @@ export class OpenClawController {
       agentId: agent.id,
       servicePrincipalId: agent.servicePrincipalId,
       revisionId,
-      executionId: crypto.randomUUID(),
+      executionId: repositoryGit ? randomBytes(24).toString("base64url") : crypto.randomUUID(),
     };
     const routes = sources.flatMap((source) => {
       const admitted = source.egress!;
@@ -5486,6 +5495,7 @@ export class OpenClawController {
       sandboxDriverId,
       egressDriverId: driver.id,
       driver: owner.ref,
+      ...(repositoryGit && { repositoryGit }),
       routes,
     });
   }
@@ -9023,11 +9033,12 @@ export class OpenClawController {
         revisionId,
         admittedConfiguration,
         sandbox?.id,
+        repositoryCredentials,
       );
       const executionAdmission =
         egressPlan === undefined
           ? ({ version: 2, mode: "unprotected" } as const)
-          : ({ version: 3, mode: "protected" } as const);
+          : ({ version: egressPlan.repositoryGit ? 4 : 3, mode: "protected" } as const);
       const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
       assertExecutionAdmission(execution);
       try {

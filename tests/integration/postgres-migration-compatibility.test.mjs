@@ -210,6 +210,7 @@ test(
         ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
         ["agent_revisions", "agent_revisions_execution_admission"],
+        ["repository_session_attempts", "repository_session_attempts_broker_protocol_valid"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
         const ddl = sql
@@ -1864,6 +1865,7 @@ test(
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
       [63, "preProtectedDriverRegistration"],
+      [64, "preCredentialProxyRepositorySession"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2274,6 +2276,7 @@ test(
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
       [63, "preProtectedDriverRegistration"],
+      [64, "preCredentialProxyRepositorySession"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2366,6 +2369,7 @@ test(
       [61, "preStandingApproval"],
       [62, "prePreparedStandingGitExpiry"],
       [63, "preProtectedDriverRegistration"],
+      [64, "preCredentialProxyRepositorySession"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

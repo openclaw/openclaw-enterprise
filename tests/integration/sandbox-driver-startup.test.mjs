@@ -5495,6 +5495,28 @@ test(
     const drivers = await loadInstallationFile(t, configuration, {
       createOpenShellBackend: () => backendFor(gateway),
     });
+    // Select the same stock driver through both typed capabilities. No broker configuration,
+    // generic exchange service, issuer call or second Git lifecycle is needed to load it.
+    const selected = structuredClone(configuration);
+    const gitId = selected.drivers.sandbox.id;
+    selected.backend[0].drivers.credential_proxy = gitId;
+    selected.drivers.credential_proxy = { id: gitId, configuration: {} };
+    selected.drivers.repo.configuration = { sessionDurationSeconds: 600 };
+    const protectedGit = await loadInstallationFile(t, selected, {
+      createOpenShellBackend: () => backendFor(gateway),
+    });
+    const owner = protectedGit.protectedDriver;
+    assert.equal(owner.require("sandbox"), protectedGit.sandboxDriver);
+    assert.equal(owner.require("credential_proxy"), protectedGit.proxyDriver);
+    assert.equal(protectedGit.repositoryOwner.controlSocket, undefined);
+    assert.equal(protectedGit.repoDriver.checkAdmissionReady, undefined);
+    assert.equal(protectedGit.egressAuthority, undefined);
+    assert.equal(protectedGit.openShellGit.configuration.protectedExecution, true);
+    await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git");
+    await assert.rejects(
+      protectedGit.repoDriver.status("no-such-session", t.signal),
+      /no native broker authority|unavailable/i,
+    );
     const runtime = drivers.openShellGit;
     t.after(() => runtime.close());
     assert.ok(runtime);

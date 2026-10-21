@@ -16,12 +16,13 @@ import type { SelectedDriverConfiguration } from "../installation-config.ts";
 export async function composeRepoDriver(input: {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
+  readonly protectedGit?: boolean;
 }): Promise<
   Readonly<{
     repoDriver: RepoDriver;
     repositoryRegistry: GitHubRepositoryRegistry;
-    repositoryReceipt: Readonly<{
-      controlSocket: string;
+    repositoryOwner: Readonly<{
+      controlSocket?: string;
       driverId: string;
       implementation: string;
       backendId: string;
@@ -34,38 +35,41 @@ export async function composeRepoDriver(input: {
   }
   GitHubRepoDriver.validateConfiguration(selection.configuration);
   const configuration = selection.configuration as Readonly<{
-    controlSocket: string;
+    controlSocket?: string;
     sessionDurationSeconds: number;
-    publicCaPath: string;
+    publicCaPath?: string;
   }>;
   const registry = await loadGitHubRepositoryRegistry(
     definition.configuration.registryPath,
     definition.id,
   );
-  let publicCa: Uint8Array;
-  try {
+  let client: RepositoryCredentialControlClient | undefined;
+  let publicCa: Uint8Array | undefined;
+  if (!input.protectedGit) {
+    if (!configuration.publicCaPath || !configuration.controlSocket) {
+      throw new Error("Native Git requires its configured repository broker and public CA.");
+    }
     publicCa = await loadPublicCa(configuration.publicCaPath);
-  } catch {
-    throw new Error("The repository credential public CA file is unavailable or invalid.");
+    client = new UnixRepositoryCredentialControlClient({
+      controlSocket: configuration.controlSocket,
+    });
   }
-  const backend: Backend<RepositoryCredentialControlClient> = Object.freeze({
+  const backend: Backend<RepositoryCredentialControlClient | undefined> = Object.freeze({
     id: definition.id,
     drivers: Object.freeze({ repo: selection.id }),
-    client: new UnixRepositoryCredentialControlClient({
-      controlSocket: configuration.controlSocket,
-    }),
+    client,
   });
   return Object.freeze({
     repositoryRegistry: registry,
-    repositoryReceipt: Object.freeze({
-      controlSocket: configuration.controlSocket,
+    repositoryOwner: Object.freeze({
+      ...(!input.protectedGit && { controlSocket: configuration.controlSocket }),
       driverId: selection.id,
       implementation: selection.implementation,
       backendId: definition.id,
     }),
     repoDriver: new GitHubRepoDriver(backend, registry, {
       sessionDurationSeconds: configuration.sessionDurationSeconds,
-      publicCa,
+      ...(publicCa && { publicCa }),
     }),
   });
 }

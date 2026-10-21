@@ -4,8 +4,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
@@ -25,25 +25,18 @@ import { waitFor } from "../helpers/wait-for.mjs";
 // continued supervision. Compute, the stock-protocol supervisor/sender and HTTPS origin are
 // controlled. The test crosses real deadlines and imports actual private-origin Git objects.
 test(
-  "standing OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git",
+  "broker-absent protected OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git",
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+    const protectedGit = protectedRepositoryGitRelease();
     const { f, key, driver, revision, registry, owner, approval, credentials } =
-      await standingExecutionFixture(
-        t,
-        import.meta.url,
-        async (pool, ns) => (peer = await preparedStandingGitPeer(t, pool, ns)),
-      );
-    const { prepared, controlSocket, registrationName, backendId, gh, oid, send, input } = peer;
-    const receipt = await startRepositoryReceiptServer({
-      state: f.state,
-      controlSocket,
-      driverId: driver.id,
-      implementation: driver.implementation,
-      backendId,
-    });
-    t.after(() => receipt.close());
+      await standingExecutionFixture(t, import.meta.url, async (pool, ns) => ({
+        ...(peer = await preparedStandingGitPeer(t, pool, ns)),
+        protectedDriver: protectedGit.owner.ref,
+      }));
+    const { prepared, registrationName, gh, send, input } = peer;
+    let oid = peer.oid;
     const workspace = "team-workspace";
     const sandbox = "standing-sandbox";
     const sandboxId = "original-sandbox-id";
@@ -71,16 +64,20 @@ test(
     });
     const continuity = { model, workload: async () => cwd };
     const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
-    const native = () => {
+    const newRuntime = () => {
       const r = new OpenShellGitRuntime(
-        { registrationName, authority: {} as EgressAuthorityConfiguration },
+        {
+          registrationName,
+          protectedExecution: true,
+          authority: {} as EgressAuthorityConfiguration,
+        },
         registry,
       );
       r["routes"] = routes;
       r["owner"] = prepared;
       return r;
     };
-    let runtime = native();
+    let runtime = newRuntime();
     const context = async () => ({ client, workspace, sandbox, continuity });
     const readiness = async (r: AgentRevision) => {
       const entry = (await runtime["entries"].get(r.id))!;
@@ -90,10 +87,19 @@ test(
     const compute = {
       ...f.compute,
       validateRepositoryCredentials() {},
-      async prepareRevision(r: AgentRevision) {
+      validateExecutionAdmission(r: AgentRevision) {
+        assert.equal(r.executionAdmission.version, 4);
+        assert.deepEqual(r.egressPlan?.driver, protectedGit.owner.ref);
+      },
+      async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
         assert.equal(r.id, revision.id);
         const s = AbortSignal.timeout(15000);
-        const p = await runtime.prepare(r, client, workspace, sandbox, s, [model]);
+        const p = await runtime
+          .prepare(r, client, workspace, sandbox, s, [model])
+          .catch((e: Error) => {
+            t.diagnostic("prepare: " + e.message);
+            throw e;
+          });
         bindingId = p.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
         if (!world.id) {
           creates++;
@@ -109,6 +115,11 @@ test(
           continuity,
         );
         // Drive each background owner at its normal boundary, outside any request.
+        await readiness(r);
+        await protectedGit.enroll(r, custody, p.middlewares, sandboxId).catch((e: Error) => {
+          t.diagnostic("release: " + e.message);
+          throw e;
+        });
         await prepared.maintain();
         await readiness(r);
         return f.compute.prepareRevision(r);
@@ -142,7 +153,11 @@ test(
             events.push(e);
           }
         },
-        transformDrivers: (d: object) => ({ ...d, repoDriver: driver }),
+        transformDrivers: (d: object) => ({
+          ...d,
+          repoDriver: driver,
+          protectedDriver: protectedGit.owner,
+        }),
       });
     const { client: wire, keys } = await openShellOnlineGitWire(t, {
       registrationName,
@@ -202,13 +217,40 @@ test(
       assert.equal(first.deadlineWallMs, deadline);
       assert.equal(world.writes, 1);
       assert.match((await allow(false)).toString(), new RegExp(oid));
+      const firstPack = await allow(true);
+      assert.equal(git(["index-pack", "--strict", "--stdin"], firstPack.subarray(8)).status, 0);
+      assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
+      const firstOid = oid;
+      await peer.noBroker();
+      assert.equal(first.brokerProtocol, 2);
+      assert.equal(driver.checkAdmissionReady, undefined, "no broker health dependency");
+      await assert.rejects(
+        f.observerPool.query(
+          "insert into occ.repository_broker_receipts(admission_id,state,generation) values ($1,'reserved',$2)",
+          [first.admissionId, crypto.randomUUID()],
+        ),
+        /receipt requires a current durable admission/,
+      );
+      const route = (await routes.standing(revision))!.route;
+      assert.deepEqual(
+        await prepared.readOpenShellMaterial(revision.id, t.signal, {
+          revisionId: revision.id,
+          fence: route.fence + 1,
+          observed: route.observed,
+        }),
+        { absent: "unprepared" },
+        "a stale installer receives no committed material",
+      );
+      oid = await peer.nextObject();
+      assert.notEqual(oid, firstOid);
+      absent();
       const issue1 = gh.issuesOfTokens[0]!;
       assert.equal(gh.issuesOfTokens.length, 1);
       assert.ok(world.gitExpiresAt <= Math.min(deadline, issue1.expires));
       const oldFence = (await routes.standing(revision))!;
       const initialBinding = bindingId;
       t.diagnostic(
-        "the original session advertised the missing private commit under prepared authority",
+        "first private commit transferred, second does not exist locally; no broker or receipt",
       );
       // A worker stops after recording custody. The next worker and the warm predecessor
       // both inspect an actually expired installation; neither gets to extend its first deadline.
@@ -231,7 +273,7 @@ test(
         "expired identity cannot authorize Git",
       );
       await runtime.close();
-      runtime = native();
+      runtime = newRuntime();
       const identity = await runtime.verifyExecution(warm, signal, context);
       assert.deepEqual(identity, {
         executionId: execution.executionId,
@@ -288,8 +330,8 @@ test(
         "no retirement send for the expired token",
       );
       assert.ok(world.gitExpiresAt <= Math.min(second!.deadlineWallMs, issue2.expires));
-      // The first request advertised this object, but did not deliver it. Only the second
-      // session sends the matching upload-pack body and imports the returned pack.
+      // This second commit was created after the first transfer. Its absence and the actual
+      // imported pack distinguish successful renewal from a cached checkout or a discovery.
       absent();
       assert.match((await allow(false)).toString(), new RegExp(oid));
       const pack = await allow(true);
@@ -298,7 +340,8 @@ test(
       assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
       assert.equal(git(["checkout", "-q", "--detach", oid]).status, 0);
       const durable = await uses();
-      assert.equal(durable.length, 3);
+      assert.equal(durable.length, 4);
+      await peer.noBroker();
       assert.equal(new Set(durable.map((x) => x.material_version)).size, 2);
       assert.equal(gh.tokenState()[1]!.uses, 2, "both Git requests used the successor token");
       // Cleanup is still paused. The still-installed token and fresh signed request must be denied by
@@ -352,7 +395,9 @@ test(
           revision: revision.id,
           approval: approval.id,
           execution: identity!.executionId,
-          commit: oid,
+          firstCommit: firstOid,
+          successorCommit: oid,
+          brokerReceipts: 0,
           afterAdmissionMs: later - deadline,
           afterProviderExpiryMs: later - issue1.expires,
           originCallsAtDenial: before,

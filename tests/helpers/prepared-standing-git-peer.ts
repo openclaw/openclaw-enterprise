@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { access, writeFile } from "node:fs/promises";
 import https from "node:https";
 import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import type { Pool } from "pg";
-import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
-import { startListeners } from "../../apps/controller/src/drivers/repo/credentials/server.ts";
-import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { createPreparedGitHubRegistryFactory } from "../../apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { socketDirectory } from "./socket-directory.mjs";
-import { serviceConfigurationData } from "../fixtures/repository-credentials/builders.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
   startGitHubFixture,
@@ -86,7 +81,6 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
   const prepared = await startPreparedGitHubGitOwner({
     registry,
     pool,
-    controlSocket,
     driverId: backendId,
     implementation: "github",
     backendId,
@@ -108,43 +102,23 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
       calls++;
     },
   });
-  const apiOrigin = gh.origin;
-  const gatewayOrigin = "https://127.0.0.1";
-  const config = validateServiceConfig(
-    serviceConfigurationData({
-      limits: { exchangeMs: 5000, credentialMarginMs: 1000 },
-      gateway: { listen: "127.0.0.1:8443", controlSocket, publicOrigin: gatewayOrigin },
-    }),
-  );
-  const factory = createPreparedGitHubRegistryFactory({
-    registry,
-    clock,
-    limits: config.limits,
-    gatewayOrigin,
-    gitOrigin: origin.origin,
-    apiOrigin,
-    socketPath: join(directory, "prepared-git-use.sock"),
-  });
-  const service = createCredentialService({ config, factory, clock });
-  const server = await startListeners({
-    service,
-    factory,
-    clock,
-    tls,
-    config: { ...config, gateway: { ...config.gateway, listen: "127.0.0.1:0" } },
-    upstreamCa: tls.ca,
-    trustedUpstreamOrigins: factory.trustedUpstreamOrigins,
-  });
-  t.after(async () => {
-    await server.close();
-    await service.shutdown(5000);
-    await prepared.close();
-  });
-
-  const oid = await origin.ref("main");
+  // The directory is private to this case. No receipt service, broker, session bearer, or
+  // prepared-use socket exists before, during, or after either Git transfer.
+  const noBroker = async () => {
+    for (const name of ["control.sock", "receipt.sock", "prepared-git-use.sock"]) {
+      await assert.rejects(access(join(directory, name)), { code: "ENOENT" });
+    }
+    assert.equal(
+      (await pool.query("select count(*) n from occ.repository_broker_receipts")).rows[0].n,
+      "0",
+    );
+  };
+  await noBroker();
+  t.after(() => prepared.close());
+  let oid = await origin.ref("main");
   const base = "/" + fixtureRepository + ".git/";
   const packet = (s: string) => (s.length + 4).toString(16).padStart(4, "0") + s;
-  const body = Buffer.from(packet("want " + oid + "\n") + "0000" + packet("done\n"));
+  const body = () => Buffer.from(packet("want " + oid + "\n") + "0000" + packet("done\n"));
   // This peer stands in for the supervisor and sends exactly once, only after an ALLOW. No
   // redirect, ambient credential, GitHub connection, replay, or alternate object source.
   const send = (value: string | undefined, upload: boolean) =>
@@ -159,7 +133,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
         ...auth,
         ...(upload && {
           "content-type": "application/x-git-upload-pack-request",
-          "content-length": body.length,
+          "content-length": body().length,
         }),
       };
       const req = request(
@@ -173,7 +147,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
             .on("end", () => resolve({ status: res.statusCode!, bytes: Buffer.concat(chunks) }));
         },
       ).on("error", reject);
-      req.end(upload ? body : undefined);
+      req.end(upload ? body() : undefined);
     });
   const input = (bindingId: string, sandboxId: string, upload: boolean) => ({
     phase: 1,
@@ -189,7 +163,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
       ...(upload ? {} : { query: "service=git-upload-pack" }),
     },
     ...(upload && {
-      body,
+      body: body(),
       headers: [{ name: "content-type", value: "application/x-git-upload-pack-request" }],
     }),
   });
@@ -200,6 +174,8 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
     gh,
     controlSocket,
     oid,
+    noBroker,
+    nextObject: async () => (oid = await origin.addCommit()),
     send,
     input,
     registrationName,

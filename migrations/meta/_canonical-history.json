@@ -513,6 +513,14 @@
       "tag": "0064_protected_driver_registration",
       "breakpoints": true,
       "sha256": "145cd795c62a44f70ef8d481df8c9f84cfeea0bd177b003a661e7ba73570ad81"
+    },
+    {
+      "idx": 65,
+      "version": "7",
+      "when": 1787000000074,
+      "tag": "0065_credential_proxy_repository_sessions",
+      "breakpoints": true,
+      "sha256": "48ae2bde81542d6ab522f9cba8a7a0c71f05e58e1e2239be20f0dc2f5539b357"
     }
   ],
   "initialSchemaStates": {
@@ -541,7 +549,7 @@
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
     "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
-    "completed": "c59728a69651f4312f0c4ffbf9abb8aeb7a6e6cbba877f29765cc987dd68b3dd",
+    "completed": "d34b71856f3105853950b8bb145ee45f109e90add7b86a15346ea708ff36c4c8",
     "preProtectedDriverRegistration": "cc231e4e9c7569e1bc3ba45c37b5c62c5515246e1ba51ec35b6b43fce05c98da",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
@@ -576,7 +584,8 @@
     "preSandboxPolicyAdministrator": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preStaticEgress": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
     "preStandingApproval": "82b56b8960b2c20ff16d724e8fd3bf0dcbac42b76d4c7a65b548cfe38cd526fe",
-    "prePreparedStandingGitExpiry": "75bc5f056ccc413ef76b478a136a133d9357859a3ca4fd7922644c5620b796d7"
+    "prePreparedStandingGitExpiry": "75bc5f056ccc413ef76b478a136a133d9357859a3ca4fd7922644c5620b796d7",
+    "preCredentialProxyRepositorySession": "c59728a69651f4312f0c4ffbf9abb8aeb7a6e6cbba877f29765cc987dd68b3dd"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

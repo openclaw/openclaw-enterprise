@@ -14,7 +14,11 @@ import { preparationIssuerAuthority } from "../../drivers/repo/github/credential
 import { createGitHubKeyOwner } from "../../drivers/repo/github/credentials/material.ts";
 import { createGitHubPreparationOwner } from "../../drivers/repo/github/credentials/prepared-owner.ts";
 import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials/prepared-lifecycle.ts";
-import { PreparedRepositoryGitStore } from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
+import {
+  PreparedRepositoryGitStore,
+  type InstalledGitMaterial,
+  type GitInstallationFence,
+} from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -34,7 +38,8 @@ export interface PreparedRepositoryGitConfiguration {
 interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath"> {
   ca?: Uint8Array;
   pool: PostgresPool;
-  controlSocket: string;
+  /** Only the native or previously admitted trial owner has a broker control socket. */
+  controlSocket?: string;
   driverId: string;
   implementation: string;
   backendId: string;
@@ -131,69 +136,81 @@ export async function startPreparedGitHubGitOwner(options: Options) {
     custody.fill(0);
     throw new Error("INVALID_PREPARED_GITHUB_CUSTODY_KEY");
   }
-  const store = new PreparedRepositoryGitStore(options.pool, custody, authority, (session) => {
-    const { driver, binding, namespaceId } = session;
-    const { repositoryRef, profile } = binding;
-    const repo = registry.repositories.find((r) => r.repositoryRef === repositoryRef);
-    const policy = repo?.namespaces.find((p) => p.namespaceId === namespaceId);
-    const pushRef = policy?.pushRefAllowlist?.[0];
-    const base = policy?.transport === "git-and-draft-pr" ? policy.pullRequestBase : undefined;
-    if (
-      !repo ||
-      !pushRef ||
-      profile !== "git-write" ||
-      driver.id !== options.driverId ||
-      driver.implementation !== options.implementation
-    ) {
-      return;
-    }
-    if (session.standingApprovalId !== undefined) {
-      const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+  const store = new PreparedRepositoryGitStore(
+    options.pool,
+    custody,
+    authority,
+    (session) => {
+      const { driver, binding, namespaceId } = session;
+      const { repositoryRef, profile } = binding;
+      const repo = registry.repositories.find((r) => r.repositoryRef === repositoryRef);
+      const policy = repo?.namespaces.find((p) => p.namespaceId === namespaceId);
+      const pushRef = policy?.pushRefAllowlist?.[0];
+      const base = policy?.transport === "git-and-draft-pr" ? policy.pullRequestBase : undefined;
       if (
-        !scope ||
-        session.standingApprovalScopeFingerprint !==
-          repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+        !repo ||
+        !pushRef ||
+        profile !== "git-write" ||
+        driver.id !== options.driverId ||
+        driver.implementation !== options.implementation
       ) {
         return;
       }
-    }
-    const admitted = resolveGitHubRepositoryBinding(registry, {
-      namespaceId,
-      repositoryRef,
-      profile,
-    });
-    if (!isDeepStrictEqual(binding, admitted)) {
-      return;
-    }
-    return {
-      key: { source: { id: "repository-git:" + session.admissionId } },
-      adoption: "prepared_repository_git",
-      session,
-      grant: {
-        id: admitted.grant.grantId,
-        isolationId: session.revisionId,
-        appId: registry.appId,
-        installationId: registry.githubInstallationId,
-        repositoryId: repo.repositoryId,
-        repository: repo.repository,
-        profile: base ? "git-ref-draft-pr" : "git-ref-write",
-        ...(base ? { pullRequestBase: base } : {}),
-        pushRef,
-      },
-      ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
-    };
-  });
+      if (session.standingApprovalId !== undefined) {
+        const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+        if (
+          !scope ||
+          session.standingApprovalScopeFingerprint !==
+            repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+        ) {
+          return;
+        }
+      }
+      const admitted = resolveGitHubRepositoryBinding(registry, {
+        namespaceId,
+        repositoryRef,
+        profile,
+      });
+      if (!isDeepStrictEqual(binding, admitted)) {
+        return;
+      }
+      return {
+        key: { source: { id: "repository-git:" + session.admissionId } },
+        adoption: "prepared_repository_git",
+        session,
+        grant: {
+          id: admitted.grant.grantId,
+          isolationId: session.revisionId,
+          appId: registry.appId,
+          installationId: registry.githubInstallationId,
+          repositoryId: repo.repositoryId,
+          repository: repo.repository,
+          profile: base ? "git-ref-draft-pr" : "git-ref-write",
+          ...(base ? { pullRequestBase: base } : {}),
+          pushRef,
+        },
+        ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
+      };
+    },
+    options.controlSocket === undefined,
+  );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
     store.use(useRequest(input), AbortSignal.any([signal, stop.signal]));
-  const server = await servePrivateRepositoryRequest(
-    options.controlSocket,
-    "prepared-git-use",
-    (input, signal) =>
-      input.operation === "record-draft-pull"
-        ? store.finishPull(input.receiptId as string, input.outcome as PreparedGitHubPullResult)
-        : use(input, signal),
-  );
+  const server =
+    options.controlSocket === undefined
+      ? undefined
+      : await servePrivateRepositoryRequest(
+          options.controlSocket,
+          "prepared-git-use",
+          (input, signal) =>
+            input.operation === "record-draft-pull"
+              ? store.finishPull(
+                  input.receiptId as string,
+                  input.outcome as PreparedGitHubPullResult,
+                )
+              : use(input, signal),
+        );
   async function maintain() {
     stop.signal.throwIfAborted();
     // A replaced version's token from an earlier issuer authority (another App origin or CA) is
@@ -277,13 +294,17 @@ export async function startPreparedGitHubGitOwner(options: Options) {
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
-    readOpenShellMaterial(revisionId: string, signal: AbortSignal) {
-      return store.readOpenShellMaterial(revisionId, AbortSignal.any([signal, stop.signal]));
+    readOpenShellMaterial(revisionId: string, signal: AbortSignal, install?: GitInstallationFence) {
+      return store.readOpenShellMaterial(
+        revisionId,
+        AbortSignal.any([signal, stop.signal]),
+        install,
+      );
     },
     // Internal authority callback only. Never expose it as a workload or token-disclosure RPC.
     authorizeOpenShellRequest(
       request: PreparedGitHubUseRequest,
-      installed: { preparationAttemptId: string; materialVersion: string },
+      installed: InstalledGitMaterial,
       signal: AbortSignal,
     ) {
       return store.authorizeOpenShellRequest(
@@ -297,7 +318,7 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       stop.abort();
       clearTimeout(timer);
       try {
-        await server.close();
+        await server?.close();
       } finally {
         await running;
         custody.fill(0);

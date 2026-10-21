@@ -51,6 +51,8 @@ import { bindOpenShellEgressAuthority } from "./openshell-authority.ts";
 
 export interface OpenShellGitRuntimeConfiguration {
   readonly registrationName: string;
+  /** Selected with the paired Sandbox and Credential Proxy, never inferred on an old revision. */
+  readonly protectedExecution?: true;
   readonly authority: EgressAuthorityConfiguration;
 }
 type Owner = Pick<
@@ -468,11 +470,15 @@ export class OpenShellGitRuntime {
       !binding ||
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
-      revision.egressPlan ||
+      (this.configuration.protectedExecution
+        ? revision.executionAdmission.version !== 4 ||
+          !revision.egressPlan?.driver ||
+          !isDeepStrictEqual(revision.egressPlan.repositoryGit, state)
+        : revision.egressPlan !== undefined) ||
       binding.profile !== "git-write"
     ) {
       throw new Error(
-        "OpenShell prepared Git requires one live git-write binding and a dedicated Codex revision without another egress plan.",
+        "OpenShell prepared Git requires one live git-write binding and its admitted dedicated Codex execution.",
       );
     }
     const resolved = resolveGitHubRepositoryBinding(this.registry, {
@@ -679,7 +685,8 @@ export class OpenShellGitRuntime {
           revision.id,
           scope.repository,
         );
-        const bindingId = randomBytes(24).toString("base64url");
+        const bindingId =
+          revision.egressPlan?.execution.executionId ?? randomBytes(24).toString("base64url");
         const route = {
           revisionId: revision.id,
           namespaceId: revision.namespaceId,
@@ -800,16 +807,7 @@ export class OpenShellGitRuntime {
         { name: "GIT_CONFIG_KEY_4", value: "credential.useHttpPath" },
         { name: "GIT_CONFIG_VALUE_4", value: "true" },
       ],
-      middlewares: {
-        "oce-prepared-git": {
-          name: "oce-prepared-git",
-          middleware: this.configuration.registrationName,
-          config: { fields: { binding_id: { stringValue: entry.bindingId } } },
-          on_error: "fail_closed",
-          order: 2147483647,
-          endpoints: { include: ["github.com", "api.github.com"] },
-        },
-      },
+      middlewares: openShellGitMiddleware(this.configuration.registrationName, entry.bindingId),
     };
   }
 
@@ -1641,8 +1639,11 @@ export class OpenShellGitRuntime {
         return;
       }
       const owner = this.owner;
+      const install = entry.revision.egressPlan?.repositoryGit
+        ? { revisionId: entry.revision.id, fence: entry.fence!, observed: entry.supervisor }
+        : undefined;
       const material = await read(
-        () => owner.readOpenShellMaterial(entry.revision.id, signal),
+        () => owner.readOpenShellMaterial(entry.revision.id, signal, install),
         signal,
       );
       if (!material || "absent" in material) {
@@ -1722,7 +1723,7 @@ export class OpenShellGitRuntime {
                 // A different selection needs a new observation, never a use receipt or a replay.
                 await this.fenced(entry, signal);
                 const current = await read(
-                  () => owner.readOpenShellMaterial(entry.revision.id, signal),
+                  () => owner.readOpenShellMaterial(entry.revision.id, signal, install),
                   signal,
                 );
                 if (
@@ -1894,6 +1895,13 @@ export class OpenShellGitRuntime {
           ...(material.pullRequestBase ? { pullRequestBase: material.pullRequestBase } : {}),
           apiOrigin: material.apiOrigin,
           installed: {
+            ...(entry.revision.egressPlan?.repositoryGit && {
+              route: {
+                revisionId: entry.revision.id,
+                fence: entry.fence!,
+                observed: entry.supervisor,
+              },
+            }),
             preparationAttemptId: material.preparationAttemptId,
             materialVersion: material.materialVersion,
           },
@@ -2010,4 +2018,18 @@ export class OpenShellGitRuntime {
     this.entries.clear();
     this.states.clear();
   }
+}
+
+/** One policy definition, compared again by the Credential Proxy at Compute release. */
+export function openShellGitMiddleware(registrationName: string, bindingId: string) {
+  return {
+    "oce-prepared-git": {
+      name: "oce-prepared-git",
+      middleware: registrationName,
+      config: { fields: { binding_id: { stringValue: bindingId } } },
+      on_error: "fail_closed",
+      order: 2147483647,
+      endpoints: { include: ["github.com", "api.github.com"] },
+    },
+  };
 }

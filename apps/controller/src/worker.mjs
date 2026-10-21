@@ -154,23 +154,24 @@ try {
     }
   }
   pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
-  if (drivers?.repositoryReceipt !== undefined) {
+  const repositoryOwner = drivers?.repositoryOwner;
+  if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
-      ...drivers.repositoryReceipt,
+      ...repositoryOwner,
       state: new PostgresPlatformState(pool),
     });
-    if (drivers.preparedRepositoryGit) {
-      const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
-      preparedRepositoryGit = await startPreparedGitHubGitOwner({
-        ...drivers.repositoryReceipt,
-        ...owner,
-        ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
-        pool,
-        registry: drivers.repositoryRegistry,
-        report: (code, context) =>
-          emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
-      });
-    }
+  }
+  if (repositoryOwner && drivers.preparedRepositoryGit) {
+    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+    preparedRepositoryGit = await startPreparedGitHubGitOwner({
+      ...repositoryOwner,
+      ...owner,
+      ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+      pool,
+      registry: drivers.repositoryRegistry,
+      report: (code, context) =>
+        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+    });
   }
   openShellGit = drivers?.openShellGit;
   if (openShellGit) {

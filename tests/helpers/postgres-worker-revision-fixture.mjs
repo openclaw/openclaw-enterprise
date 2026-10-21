@@ -471,6 +471,7 @@ export function createWorkerRevisionFixtures(
       {
         harness,
         sandboxDriverId,
+        protectedRepositoryDriver,
         repositoryCredentials,
         actorId = actor.id,
         plugins,
@@ -545,6 +546,31 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      if (protectedRepositoryDriver) {
+        const driver = protectedRepositoryDriver;
+        const execution = {
+          installationId: "test-installation",
+          namespaceId: candidate.namespaceId,
+          agentId: owner.id,
+          revisionId: candidate.id,
+          servicePrincipalId: candidate.servicePrincipalId,
+          executionId: randomUUID().replaceAll("-", ""),
+        };
+        Object.assign(candidate, {
+          executionAdmission: { version: 4, mode: "protected" },
+          sandboxDriverId: driver.id,
+          egressPlan: {
+            id: randomUUID(),
+            generation: 1,
+            execution,
+            repositoryGit: repositoryCredentials,
+            driver,
+            sandboxDriverId: driver.id,
+            egressDriverId: driver.id,
+            routes: [],
+          },
+        });
+      }
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
       let admitted;
       await state.transactWithQueue(async (unit, queue) => {

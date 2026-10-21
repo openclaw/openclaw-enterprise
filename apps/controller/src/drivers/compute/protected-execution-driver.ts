@@ -40,7 +40,7 @@ export class ProtectedExecutionDriver {
     return (
       plan !== undefined &&
       (source === "stored" ||
-        (source === this.owner && revision.executionAdmission.version === 3)) &&
+        (source === this.owner && revision.executionAdmission.version >= 3)) &&
       this.owner.ownsProxyPlan(plan)
     );
   }

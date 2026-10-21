@@ -699,13 +699,20 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND CASE ${table.admittedSpec} #>> '{execution_admission,version}'
-              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ? 'driver')
-              WHEN '3' THEN
+              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ?| ARRAY['driver','repositoryGit'])
+              ELSE
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4')
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') = '4')
+                  = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
+                AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
+                  OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
+                    AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
+                AND
                 jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
-              ELSE false END)
+              END)
         ), false)`,
     ),
     check(
@@ -940,7 +947,7 @@ export const repositorySessionAttempts = occSchema.table(
     ),
     check(
       "repository_session_attempts_broker_protocol_valid",
-      sql`${table.brokerProtocol} IN (0, 1)`,
+      sql`${table.brokerProtocol} IN (0, 1, 2)`,
     ),
     check(
       "repository_session_attempts_phase_valid",

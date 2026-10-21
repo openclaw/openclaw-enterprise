@@ -1,3 +1,4 @@
+import type { InstalledGitMaterial } from "../repo/github/credentials/prepared-repository-git.ts";
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
@@ -40,10 +41,7 @@ export interface OpenShellOnlineGitBinding {
   readonly pullRequestBase?: string;
   readonly gitOrigin?: string;
   readonly apiOrigin?: string;
-  readonly installed: {
-    readonly preparationAttemptId: string;
-    readonly materialVersion: string;
-  };
+  readonly installed: InstalledGitMaterial;
 }
 
 export interface OpenShellOnlineGitAuthorityOptions extends Omit<
@@ -451,10 +449,7 @@ export function createOpenShellOnlineGitAuthority(
             requestDigestSha256,
             deadlineAt: request.deadlineAt,
           },
-          {
-            preparationAttemptId: binding.installed.preparationAttemptId,
-            materialVersion: binding.installed.materialVersion,
-          },
+          binding.installed,
           signal,
         );
       } catch {

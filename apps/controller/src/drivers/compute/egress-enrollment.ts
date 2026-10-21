@@ -20,7 +20,7 @@ export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollmen
   const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
     plan.execution;
   return {
-    routeCount: plan.routes.length,
+    routeCount: plan.routes.length + (plan.repositoryGit ? 1 : 0),
     inference: plan.routes.some((route) => route.binding.grant.kind === "inference"),
     plan: { id: plan.id, generation: plan.generation },
     execution: {
