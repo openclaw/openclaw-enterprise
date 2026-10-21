@@ -1,6 +1,6 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
+updated: 2026-10-21
 last_updated_session: Codex/01a12fe8-d0c6-7df1-937d-364a1301566a
 ---
 
@@ -59,8 +59,11 @@ Credential, provider, and Harness changes clear results and invalidate pending r
 
 `create.mjs:updateModelConfiguration` preserves `plugins.allow` and `plugins.deny`,
 changing only Codex’s runtime entry. `harnessPluginPolicyConflict` refuses blocked
-runtime/provider plugins before writes. Kubernetes Compute’s `validateHarnessAuth`
-enforces the same requirement for API callers.
+runtime/provider plugins before writes. An allowlist refusal directs the operator
+to add the named plugin in **Advanced settings → Configuration JSON**, keeping
+existing entries. Kubernetes Compute’s `validateHarnessAuth` enforces
+[OCE's admission policy](../../reference/harness-execution.md#native-runtime-selection)
+for API callers.
 
 `create.mjs:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
@@ -138,6 +141,6 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
-- 2026-10-20 12:09: Preserve authored native plugin permissions across Harness selection and refuse conflicts before writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 61140f671)
+- 2026-10-21 16:25: Preserve authored native plugin permissions across Harness selection and explain explicit repairs for conflicts refused before writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - bac4fdd4f)
 
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

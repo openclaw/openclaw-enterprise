@@ -54,8 +54,10 @@ block direct Secret-backed model and environment projection.
    **Reset template** replaces them.
    Harness switches preserve `plugins.allow` and `plugins.deny`, including
    unrestricted missing/empty allowlists; only Codex’s runtime entry changes.
-   For blocked required plugins, edit **Configuration JSON** or choose a compatible
-   Harness/provider.
+   If the Codex Preset's `["codex"]` allowlist blocks OpenClaw's OpenAI provider,
+   explicitly change it to `["codex", "openai"]` in **Configuration JSON**, or keep
+   the policy and choose a compatible Harness/provider. See
+   [OCE's admission policy](../harness-execution.md#native-runtime-selection).
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories

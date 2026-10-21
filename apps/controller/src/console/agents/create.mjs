@@ -54,7 +54,7 @@ function harnessPluginPolicyConflict(values, harnessId, providerId) {
   }
   const allow = ids(plugins.allow);
   if (allow.length > 0 && !allow.includes(pluginId)) {
-    return `Configuration setting plugins.allow must include ${pluginId} ${requirement}.`;
+    return `Configuration setting plugins.allow must include ${pluginId} ${requirement}. To permit this plugin, open Advanced settings → Configuration JSON and add "${pluginId}" to plugins.allow, keeping its existing entries.`;
   }
   const entries = Object.entries(plugins.entries ?? {}).filter(
     ([id]) => id.trim().toLowerCase() === pluginId,

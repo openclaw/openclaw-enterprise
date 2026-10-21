@@ -15,6 +15,34 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-21: required Harness plugins need explicit permission
+
+**What breaks.** With Kubernetes Compute, Agent creation, Agent PATCH and deploy
+return `400` if native plugin policy blocks `codex` for Codex, or `openai`/`anthropic`
+for the selected OpenClaw provider. Fresh provisioning, replay and retry also
+return `400`. A previously queued conflicting plan fails permanently with
+`PROVISIONING_REJECTED` before resource creation. Running versions are unchanged.
+
+**Who is affected.** Stored Configurations, Presets and provisioning plans with
+`plugins.enabled: false`, a required plugin in `plugins.deny`, a nonempty
+`plugins.allow` missing it, a disabled required entry, or duplicate required
+entries after trimming whitespace and ignoring case. Missing/empty allowlists
+remain unrestricted. This is stricter
+[OCE admission policy](../../reference/harness-execution.md#native-runtime-selection):
+the pinned Gateway can add a selected provider to its in-memory allowlist at startup.
+
+**How to tell.** The refusal names the setting, such as
+`Configuration setting plugins.allow must include openai for the OpenClaw openai model provider.`
+
+**Steps.** If you intend to permit the plugin, edit the draft Configuration or
+Preset explicitly. For example, when switching the default Codex Preset to
+OpenClaw/OpenAI, change `plugins.allow` from `["codex"]` to `["codex", "openai"]`.
+Keep other entries. Remove only the required plugin from `plugins.deny`, set
+`plugins.enabled` and `plugins.entries.<required-id>.enabled` to `true` if disabled,
+and consolidate aliases into one entry. Otherwise choose a compatible Harness/provider.
+Save and deploy again. Stored provisioning plans are immutable: submit corrected
+settings with a new request ID instead of replaying or retrying the old plan.
+
 ## 2026-10-16: stored model provider settings are checked at deploy
 
 **What breaks.** On every Compute, deploying or redeploying an Agent runs the
@@ -300,26 +328,7 @@ any refused Gateway or Agent image, or `OBSERVABILITY_URL_INVALID`.
 **Steps.** Fix the image reference (lowercase its repository path, drop what
 Kubernetes cannot parse), or delete the `@`, then render or restart again.
 
-## 2026-10-13: channel proxy hosts must name one proxy address
+<span id="2026-10-13-channel-proxy-hosts-must-name-one-proxy-address" class="anchor-alias"></span>
 
-**What breaks.** Startup refuses a channel proxy IPv4 host that is not four
-decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
-integer, hex, and leading zeros used to allow egress to a different address.
-Startup also refuses an unspecified host (`0.0.0.0`, `[::]`), which names no
-destination, and an IPv4-mapped IPv6 host (`[::ffff:10.42.0.15]`), whose egress
-never reached the proxy. Profile preflight refuses `0.0.0.0` in
-`channels.runtimeProxyUrl`. Preflight, the chart and API startup also refuse it in the
-Slack directory proxy (`channels.directoryProxyUrl`, `api.channelDirectoryProxyUrl`) with
-`... must not use host 0.0.0.0, which names no proxy address`.
-
-**Who is affected.** Installations whose `channels.proxyUrl` uses one of those
-spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
-still start.
-
-**How to tell.** Startup fails with
-`Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
-or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
-
-**Steps.** Write the proxy's own address, an IPv4 host as four decimal octets
-(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and
-restart.
+For the channel proxy host change, see the
+[earlier notice](breaking-changes-archive.md#2026-10-13-channel-proxy-hosts-must-name-one-proxy-address).

@@ -2872,7 +2872,7 @@ export const scenarios = {
     description:
       "The shipped Codex Preset keeps its codex-only allowlist. OpenClaw reports its blocked OpenAI provider.",
     steps: [
-      "Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout. Try Create Agent with OpenClaw: explicitly add openai to the allowlist before saving.",
+      'Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout. Try Create Agent with OpenClaw: the refusal directs you to Advanced settings → Configuration JSON. To permit OpenAI, explicitly change plugins.allow from ["codex"] to ["codex", "openai"], keeping the existing entry, then submit again.',
     ],
     gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },

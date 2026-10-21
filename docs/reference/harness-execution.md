@@ -60,10 +60,11 @@ Codex plugin is explicitly enabled with `websocket` app-server transport.
 Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
 in the separate Harness workspace.
 
-Kubernetes Compute preserves policy, refusing Agent save, provisioning and deployment
-when required `codex` or OpenClaw `openai`/`anthropic` plugins are disabled, denied,
+OCE Kubernetes admission refuses Agent save, provisioning and deployment
+if required `codex` or OpenClaw `openai`/`anthropic` plugins are disabled, denied,
 excluded from nonempty allowlists, or duplicated after normalization.
-Missing/empty allowlists are unrestricted.
+Missing/empty allowlists are unrestricted. OCE requires explicit permission,
+unlike Gateway runtime-only provider auto-enable.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an

@@ -42,7 +42,9 @@ the runtime-build warning; Embedded OpenClaw does not.
 **Native Plugins Unrestricted**, **Native Plugins Empty Allowlist** and
 **Native Plugins Allowlist** preserve authored policy across Harness switches.
 **Native Plugins Codex Round Trip** retains the Codex-only allowlist and refuses
-OpenClaw until the operator adds its provider. **Native Plugins Deny Conflict**
+OpenClaw with instructions to open **Advanced settings → Configuration JSON**.
+Explicitly change `plugins.allow` from `["codex"]` to `["codex", "openai"]` and
+submit again. **Native Plugins Deny Conflict**
 refuses Codex creation until the operator removes its denial. Edit Configuration
 JSON explicitly; selecting a Harness does not grant permission.
 

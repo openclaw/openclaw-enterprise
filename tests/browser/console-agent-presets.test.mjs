@@ -1369,7 +1369,10 @@ test("Harness switches preserve unrestricted and explicit native plugin allowlis
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
       await page
         .getByRole("alert")
-        .filter({ hasText: /plugins.allow must include openai/ })
+        .filter({
+          hasText:
+            'To permit this plugin, open Advanced settings → Configuration JSON and add "openai" to plugins.allow, keeping its existing entries.',
+        })
         .waitFor();
       assert.deepEqual(nonAuthWriteRequests(requests), []);
       assert.deepEqual(JSON.parse(await configuration.inputValue()).plugins, values.plugins);

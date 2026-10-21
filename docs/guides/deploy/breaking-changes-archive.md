@@ -8,6 +8,30 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-13: channel proxy hosts must name one proxy address
+
+**What breaks.** Startup refuses a channel proxy IPv4 host that is not four
+decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
+integer, hex, and leading zeros used to allow egress to a different address.
+Startup also refuses an unspecified host (`0.0.0.0`, `[::]`), which names no
+destination, and an IPv4-mapped IPv6 host (`[::ffff:10.42.0.15]`), whose egress
+never reached the proxy. Profile preflight refuses `0.0.0.0` in
+`channels.runtimeProxyUrl`. Preflight, the chart and API startup also refuse it in the
+Slack directory proxy (`channels.directoryProxyUrl`, `api.channelDirectoryProxyUrl`) with
+`... must not use host 0.0.0.0, which names no proxy address`.
+
+**Who is affected.** Installations whose `channels.proxyUrl` uses one of those
+spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
+still start.
+
+**How to tell.** Startup fails with
+`Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
+or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
+
+**Steps.** Write the proxy's own address, an IPv4 host as four decimal octets
+(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and
+restart.
+
 ## 2026-10-13: shorthand observability IPv4 hosts are refused
 
 **What breaks.** An observability URL whose IPv4 host is not four decimal
