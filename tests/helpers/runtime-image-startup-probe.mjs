@@ -393,7 +393,11 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
   // what arrived, and the loop sleeps until the next write.
   const changes = changeSignal();
   const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
-  const wrapperLogs = followContainer(t, containerName, { docker, changes });
+  const wrapperLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
     const endpoint = endpointLogs.read();
     const native = wrapperLogs.read();
@@ -415,7 +419,8 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
       exitCode: native.exitCode,
     };
   };
-  // Resolves with when the wrapper exited (epoch ms, as `docker wait` returned),
+  // Resolves with when the wrapper exited (epoch ms: when `docker wait` returned,
+  // or Docker's FinishedAt when an inspect found the exit),
   // once its output is complete, or with undefined at `deadline`. At the
   // deadline Docker is asked once more, so a slow `docker wait` cannot turn an
   // exit into a timeout; that exit counts from Docker's FinishedAt.

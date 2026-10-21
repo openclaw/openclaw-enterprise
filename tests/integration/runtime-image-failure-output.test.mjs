@@ -29,10 +29,18 @@ const long = (label) => {
 if (command === "inspect" && mode === "inspect-fails") {
   process.stderr.write(long("inspect stderr"));
   process.exit(1);
-} else if (command === "inspect" && mode === "wait-hangs") {
-  process.stdout.write("false 0 2026-10-21T08:51:50.1Z 2026-10-21T08:52:18.75Z\\n");
-} else if (command === "inspect" && mode === "wait-hangs-no-finish") {
-  process.stdout.write("false 0 2026-10-21T08:51:50.1Z 0001-01-01T00:00:00Z\\n");
+} else if (command === "inspect" && mode.startsWith("wait-")) {
+  // Running, exit code, StartedAt and FinishedAt, as the follower's --format asks.
+  const finishedAt = {
+    "wait-hangs": "2026-10-21T08:52:18.75Z",
+    "wait-hangs-no-finish": "0001-01-01T00:00:00Z",
+    // A restarted container's last exit is older than its current start.
+    "wait-fails-restarted": "2026-10-21T08:51:40Z",
+  }[mode];
+  process.stdout.write(\`false|0|2026-10-21T08:51:50.1Z|\${finishedAt}\\n\`);
+} else if (command === "wait" && mode === "wait-fails-restarted") {
+  process.stderr.write("Error response from daemon: context deadline exceeded\\n");
+  process.exit(1);
 } else if (command === "inspect") {
   process.stdout.write(mode === "exited" ? "false 1\\n" : "true 0\\n");
 } else if (command === "wait" && mode.startsWith("wait-hangs")) {
@@ -195,4 +203,18 @@ test("an inspect without a real exit time counts the exit from when it was seen"
   const before = Date.now();
   assert.equal((await follower.inspect()).finishedAt, undefined);
   assert.ok(follower.read().exitedAt >= before, "not Docker's zero time");
+});
+
+test("a failed docker wait asks inspect, and an exit older than the start counts from now", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "wait-fails-restarted";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const before = Date.now();
+  const follower = followContainer(t, "fake-container");
+  while (follower.read().exitedAt === undefined) {
+    await follower.changes.wait(follower.changes.version, 10_000);
+  }
+  // No "docker wait ... failed": inspect found the exit.
+  const state = follower.read();
+  assert.equal(state.exitCode, 0);
+  assert.ok(state.exitedAt >= before, "not the restarted container's earlier exit");
 });

@@ -32,12 +32,13 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
   const exitedAt = await exited(signalledAt + budgetMs);
-  const elapsedMs = (exitedAt ?? Date.now()) - signalledAt;
+  // An exit not seen by the deadline counts as the budget, not the inspect after it.
+  const elapsedMs = exitedAt === undefined ? budgetMs : exitedAt - signalledAt;
   const state = await collect();
-  // An exit the deadline's last inspect found later than the budget is not prompt.
-  const stopped = !state.running && elapsedMs <= budgetMs;
+  // An exit found later than the budget, or not at all by the deadline, is not prompt.
+  const stopped = exitedAt !== undefined && !state.running && elapsedMs <= budgetMs;
   t.diagnostic(
-    `${description}: ${stopped || !state.running ? `exit ${state.exitCode}` : "still running"} ` +
+    `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +
       `${elapsedMs} ms after SIGTERM`,
   );
   // Kept in the lane result (files[].measurements) on passing runs too, so flake sweeps can
@@ -53,7 +54,8 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
   );
   if (!stopped) {
     assert.fail(
-      `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${failureTail(state.output)}`,
+      `${description}: SIGTERM did not stop the wrapper in ${budgetMs} ms` +
+        `${elapsedMs > budgetMs ? ` (it exited after ${elapsedMs} ms)` : ""}.\n${failureTail(state.output)}`,
     );
   }
   // A terminated wrapper exits cleanly in every phase, as it does once running.

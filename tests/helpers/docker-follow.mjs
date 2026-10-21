@@ -54,7 +54,12 @@ export function changeSignal() {
 export function followContainer(
   t,
   containerName,
-  { docker = process.env.OCC_DOCKER_BIN ?? "docker", exit = true, changes = changeSignal() } = {},
+  {
+    docker = process.env.OCC_DOCKER_BIN ?? "docker",
+    exit = true,
+    changes = changeSignal(),
+    inspectTimeoutMs = 20_000,
+  } = {},
 ) {
   const streams = { stdout: "", stderr: "" };
   const state = { running: true, exitCode: 0, exitedAt: undefined, following: true };
@@ -120,20 +125,23 @@ export function followContainer(
   // One `docker inspect`, stopped after `timeoutMs`: { running, exitCode,
   // finishedAt }, or undefined if it failed. finishedAt is Docker's exit time
   // (the daemon's clock, the same host here), or undefined when Docker has
-  // none after the container's start.
-  const inspect = async ({ timeoutMs = 20_000 } = {}) => {
+  // none after the container's start or reports one later than now.
+  const inspect = async ({ timeoutMs = inspectTimeoutMs } = {}) => {
     const child = start([
       "inspect",
       containerName,
       "--format",
-      "{{.State.Running}} {{.State.ExitCode}} {{.State.StartedAt}} {{.State.FinishedAt}}",
+      "{{.State.Running}}|{{.State.ExitCode}}|{{.State.StartedAt}}|{{.State.FinishedAt}}",
     ]);
     let text = "";
     child.child.stdout.on("data", (chunk) => (text += chunk));
     const timer = setTimeout(() => child.child.kill(), timeoutMs);
     const { code } = await child.closed;
     clearTimeout(timer);
-    const [running, exitCode, startedAt, finishedAt] = text.trim().split(/\s+/);
+    const [running, exitCode, startedAt, finishedAt] = text
+      .trim()
+      .split("|")
+      .map((field) => field.trim());
     if (code !== 0 || !["true", "false"].includes(running)) {
       return undefined;
     }
@@ -142,7 +150,8 @@ export function followContainer(
     const result = {
       running: running === "true",
       exitCode: Number(exitCode),
-      finishedAt: finished > 0 && !(finished < started) ? finished : undefined,
+      finishedAt:
+        finished > 0 && !(finished < started) && finished <= Date.now() ? finished : undefined,
     };
     if (exit && !result.running && Number.isInteger(result.exitCode)) {
       void exited(result.exitCode, result.finishedAt ?? Date.now());
@@ -164,7 +173,7 @@ export function followContainer(
       ) {
         // A wait that failed on a busy daemon is not a failed container: ask once.
         if (!settled && !stopping) {
-          await inspect();
+          await inspect().catch(() => undefined);
         }
         if (!settled) {
           fail(
@@ -185,7 +194,7 @@ export function followContainer(
       ]);
       clearTimeout(timer);
       if (!settled && !stopping) {
-        await inspect();
+        await inspect().catch(() => undefined);
       }
     });
   }

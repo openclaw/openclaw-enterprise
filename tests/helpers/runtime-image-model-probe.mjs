@@ -282,7 +282,11 @@ export async function runEmbeddedGatewayProbe(
   // what arrived, and the loop sleeps until the next write.
   const changes = changeSignal();
   const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
-  const gatewayLogs = followContainer(t, containerName, { docker, changes });
+  const gatewayLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
     const endpoint = endpointLogs.read();
     const wrapper = gatewayLogs.read();
