@@ -465,6 +465,7 @@ const MYSQL_CLIENTS: ReadonlySet<string> = new Set([
 ]);
 // Any client name above. A token's basename is a substring of the line, so a line that
 // contains none of them names no client and its tokens need no basename lookup.
+// Stateless `test`: keep it without the `g` flag.
 const CLIENT_NAME = new RegExp(
   [...MYSQL_CLIENTS, ...ARGV_CLIENT_CREDENTIALS.keys()]
     .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
@@ -499,12 +500,14 @@ export function redactArgvCredentials(value: string): string {
   const mysql = namesClient && tokens.some((index) => MYSQL_CLIENTS.has(basename(parts[index]!)));
   const clientSecrets = new Set<string>();
   const clientSeparators = new Map<string, string>();
-  for (const index of namesClient ? tokens : []) {
-    const client = ARGV_CLIENT_CREDENTIALS.get(basename(parts[index]!));
-    if (client !== undefined) {
-      client.secret.forEach((flag) => clientSecrets.add(flag));
-      for (const [flag, separator] of Object.entries(client.userinfo)) {
-        clientSeparators.set(flag, (clientSeparators.get(flag) ?? "") + separator);
+  if (namesClient) {
+    for (const index of tokens) {
+      const client = ARGV_CLIENT_CREDENTIALS.get(basename(parts[index]!));
+      if (client !== undefined) {
+        client.secret.forEach((flag) => clientSecrets.add(flag));
+        for (const [flag, separator] of Object.entries(client.userinfo)) {
+          clientSeparators.set(flag, (clientSeparators.get(flag) ?? "") + separator);
+        }
       }
     }
   }
@@ -656,11 +659,7 @@ export function maskRuntimeEventText(value: string): string {
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 
-/**
- * Removes ANSI escape sequences and C0/C1 control characters; tabs become spaces.
- * One regex pass: appending the kept characters one at a time built a string of one
- * piece per character, which every later scan of a long line had to flatten first.
- */
+/** Removes ANSI escape sequences and C0/C1 control characters; tabs become spaces. */
 export function stripRuntimeLogControls(value: string): string {
   return stripVTControlCharacters(value).replace(CONTROL_CHARACTERS, (character) =>
     character === "\t" ? " " : "",

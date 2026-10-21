@@ -963,6 +963,14 @@ test("rule prefilters skip only text a rule cannot change", () => {
   ]) {
     assert.equal(redactRuntimeLogText(input), expected, input);
   }
+  // Every character of either long-token alphabet counts toward the 40-character run.
+  for (const character of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-") {
+    assert.equal(
+      redactRuntimeLogText(`k=${`Ab1${character}`.repeat(10)}`),
+      "k=[redacted:long-token]",
+      character,
+    );
+  }
   assert.equal(
     stripRuntimeLogControls(
       "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
