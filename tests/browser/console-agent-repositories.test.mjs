@@ -1326,7 +1326,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     assert.equal(await page.locator("#repository-results").isVisible(), true);
     const add = repositoryCheckbox(page, "example/repository-001");
     assert.equal(await add.count(), 1);
-    assert.equal(await add.isEnabled(), true);
+    await waitForEnabled(add);
     assert.equal(
       await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
       true,

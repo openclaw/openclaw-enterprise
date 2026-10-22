@@ -249,7 +249,7 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   assert.equal(await page.locator("#repository-default-git-read").isDisabled(), true);
   assert.deepEqual(await editableFields(page), []);
   // Cancel stays available; nothing is left to block leaving the tab.
-  assert.equal(await page.getByRole("button", { name: "Cancel", exact: true }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Cancel", exact: true }));
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).waitFor();
 });

@@ -12,6 +12,7 @@ import {
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -420,8 +421,5 @@ test("sign-in unavailable at the credential service shows the API cause once", a
     )
     .waitFor();
   assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
-  assert.equal(
-    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Sign in with OAuth", exact: true }));
 });

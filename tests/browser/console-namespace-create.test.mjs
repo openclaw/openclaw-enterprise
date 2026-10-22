@@ -141,7 +141,7 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), "Existing team");
-  assert.equal(await name.isEnabled(), true);
+  await waitForEnabled(name);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await name.fill("New team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -365,7 +365,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   // control stays usable, since a role may still grant Namespace creation (finding 2059).
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   const emptyText = page.locator(settledView).locator(".state-panel p");
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await isPrimary(opener), false);
   assert.equal(
     await emptyText.textContent(),
@@ -484,7 +484,7 @@ test("a Refresh after an administrator grants Namespace create offers creation a
     .getByRole("link", { name: /Alpha team/ })
     .waitFor();
   assert.equal(await page.getByText(REFUSED).count(), 0);
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await opener.getAttribute("aria-describedby"), null);
   await submitCreate(page, "Granted team");
   await page.getByRole("dialog", { name: "Namespace created", exact: true }).waitFor();

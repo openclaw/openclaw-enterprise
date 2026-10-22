@@ -96,7 +96,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     0,
   );
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 
   // A one-click first deployment still requires this Agent's model Secret grant.
   const originalBindings = [...fixture.policy.bindings];
@@ -589,7 +589,7 @@ test("bound Slack credential fields show Secret references without reading value
   await waitForInputValue(appToken, secretOptionLabel(appSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("Slack credential replacement switches only selected Secret references", async (t) => {
@@ -648,7 +648,7 @@ test("Slack credential replacement switches only selected Secret references", as
     secretOptionLabel(replacementAppSecret),
   );
   await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("partially bound Slack credentials save only the missing token", async (t) => {

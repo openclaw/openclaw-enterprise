@@ -10,6 +10,7 @@ import {
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
 const SESSION = "**/api/auth/session";
@@ -467,7 +468,7 @@ test("A page held for another page keeps its Namespace selector disabled", async
   backends.release();
   await page.locator(settledView).waitFor();
   assert.equal(await page.locator(".content h1").textContent(), "Backends");
-  assert.equal(await selector.isDisabled(), false);
+  await waitForEnabled(selector);
 });
 
 test("A held Namespaces page shows no recovery for the next page's Namespace", async (t) => {

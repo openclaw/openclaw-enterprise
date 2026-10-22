@@ -28,6 +28,7 @@ import {
   secretPostRequests,
   selectSecret,
   trackSettledFetches,
+  waitForEnabled,
   waitForInputValue,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -1554,7 +1555,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     false,
   );
   await waitForCreateFormReads(page);
-  assert.equal(await save.isEnabled(), true);
+  await waitForEnabled(save);
   assert.equal(
     await page.getByLabel("AGENTS.md", { exact: true }).inputValue(),
     "# Existing Agent workspace\n",
@@ -2102,7 +2103,7 @@ test("password Preset names the taken Secret when an earlier Agent left one with
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.equal(await apiKey.inputValue(), "replacement-model-key");
-  assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Start over" }));
   await page.getByLabel("Agent name", { exact: true }).fill("Recreated Agent 2");
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -3076,7 +3077,7 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
     locator.evaluate((node) => node.classList.contains("button--primary"));
   await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
   assert.equal(await shortcut.getAttribute("aria-describedby"), "agent-preset-default-hint");
-  assert.equal(await shortcut.isEnabled(), true);
+  await waitForEnabled(shortcut);
   assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 
   await page.getByLabel("Preset template").selectOption(other.data.id);

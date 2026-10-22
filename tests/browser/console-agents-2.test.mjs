@@ -349,7 +349,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await retry.click();
   await page.getByText(/^The request does not match the operation contract\./).waitFor();
   assert.equal(await retry.isVisible(), false);
-  assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
   await page.getByLabel("Agent name").fill("Taken name");
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
@@ -358,7 +358,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     )
     .waitFor();
   assert.equal(await retry.isVisible(), false);
-  assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
 
   await page.getByLabel("Agent name").fill("Free name");
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -392,7 +392,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     .waitFor();
   assert.equal(retries, 2);
   assert.equal(await retry.isVisible(), false);
-  assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page
     .getByText(
@@ -403,7 +403,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.notEqual(bodies[2].requestId, bodies[1].requestId);
   // A cancelled job cannot be retried either; the next submit uses a new request ID.
   assert.equal(await retry.isVisible(), false);
-  assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+  await waitForEnabled(page.getByLabel("Agent name"));
   await page.getByRole("button", { name: "Create Agent" }).click();
   // Retry calls the job's retry endpoint, which cannot recover a finished job; the text
   // must point at Create Agent for that case.
@@ -427,8 +427,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await retry.isVisible(), false);
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   assert.equal(await page.getByLabel("Service account token Secret").isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), false);
-  assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
+  await waitForEnabled(page.getByRole("button", { name: "Start over" }));
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page.waitForURL(new RegExp(`/agents/${agentIds[2]}\\?`));
   assert.equal(bodies.length, 5);
@@ -532,7 +532,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
       )
       .waitFor();
     assert.equal(await retry.isVisible(), false);
-    assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
+    await waitForEnabled(page.getByLabel("Agent name"));
   }
   assert.equal(requestIds.length, 2);
 });
@@ -1479,7 +1479,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     "api_key",
   );
   const authMethod = page.getByLabel("Authentication method", { exact: true });
-  assert.equal(await authMethod.isEnabled(), true);
+  await waitForEnabled(authMethod);
   assert.deepEqual(
     await authMethod
       .locator("option:not([disabled])")
@@ -1896,7 +1896,7 @@ test("Agent creation names the Configuration field that holds an inline model cr
   // Only the editor holds the key; the explanation never repeats it.
   assert.equal((await feedback.textContent()).includes(sentinel), false);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-  assert.equal(await configuration.isDisabled(), false);
+  await waitForEnabled(configuration);
 });
 
 test("Agent creation reports unavailable Secret storage before creating Configuration or Agent", async (t) => {

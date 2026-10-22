@@ -19,6 +19,7 @@ import {
   setSlackSelection,
   slackSelectionValue,
   statusTone,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -175,7 +176,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
     const allowEveryone = page.getByLabel("Who can use the agent in these channels?");
     assert.equal(await slackSelectionValue(allowedUsers), "UOLD123");
-    assert.equal(await allowedUsers.isDisabled(), false);
+    await waitForEnabled(allowedUsers);
     assert.equal(await allowEveryone.inputValue(), "selected");
     await setSlackSelection(channelIds, "COLD123, CNEW123");
     await setSlackSelection(allowedUsers, "UNEW123");
@@ -625,7 +626,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await page.getByRole("button", { name: "Save configuration" }).click();
     await dialog.getByText(/Access denied|permission/i).waitFor();
     assert.equal(await allowEveryone.inputValue(), "everyone");
-    assert.equal(await allowEveryone.isEnabled(), true);
+    await waitForEnabled(allowEveryone);
     assert.equal(await allowedUsers.isVisible(), false);
 
     const configuration = await fixture.request("GET", configurationPath);
@@ -1055,10 +1056,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       // The Configuration saved, so the unconfirmed grant is a warning from the start, not a
       // refusal that turns into one when another Secret is picked (finding 2003).
       assert.equal(await grantWarning.getAttribute("data-tone"), "warning");
-      assert.equal(
-        await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
-        false,
-      );
+      await waitForEnabled(page.getByRole("button", { name: "Save channel Secrets" }));
       await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
       assert.equal(
         await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),

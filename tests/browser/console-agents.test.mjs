@@ -494,7 +494,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   releaseOptions();
   await page.getByText(/No approved repositories are available/).waitFor();
   await waitForCreateFormReads(page);
-  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
 
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Ordinary Agent");
@@ -639,10 +639,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
     "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
   );
   await waitForCreateFormReads(unavailablePage);
-  assert.equal(
-    await unavailablePage.getByRole("button", { name: "Create Agent" }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(unavailablePage.getByRole("button", { name: "Create Agent" }));
   // A missing repository composition cannot recover by retrying, so no Retry is offered.
   assert.equal(
     await unavailablePage.getByRole("button", { name: "Retry repository choices" }).isVisible(),
@@ -977,7 +974,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     true,
   );
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Start a new draft" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Start a new draft" }));
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 
   fixture.policy.restrictions.pop();
@@ -1013,7 +1010,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     .waitFor();
   assert.equal(await page.locator(".repository-options input").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Start a new draft" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Start a new draft" }));
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 
   // Even a post-authorization optional outage cannot satisfy a repository-scoped retry.

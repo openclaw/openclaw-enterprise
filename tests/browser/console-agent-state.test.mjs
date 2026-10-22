@@ -15,6 +15,7 @@ import {
   recordLayoutShifts,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -1383,7 +1384,7 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   // its row offers no Stop until a first deploy; Delete stays available.
   await draftRow.getByRole("button", { name: "Delete Draft Agent" }).waitFor();
   assert.equal(await draftRow.getByRole("button", { name: "Stop Draft Agent" }).count(), 0);
-  assert.equal(await stop.isDisabled(), false);
+  await waitForEnabled(stop);
   // Only a stop with a selected version is labelled; a never-deployed draft reads "No current version".
   assert.equal(await draftRow.getByText("Stop requested", { exact: true }).count(), 0);
   assert.equal(await runningRow.getByText("Stop requested", { exact: true }).count(), 0);

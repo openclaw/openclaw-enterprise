@@ -2316,7 +2316,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
   await card.getByRole("alert").getByText("Service unavailable", { exact: false }).waitFor();
   assert.equal(await card.isVisible(), true);
   const reload = card.getByRole("button", { name: "Refresh access" });
-  assert.equal(await reload.isEnabled(), true);
+  await waitForEnabled(reload);
 
   // A later answer still decides visibility: this Installation has native admin disabled.
   const reads = () => requests.filter((request) => request.path === nativeAdminPath).length;
@@ -2992,10 +2992,7 @@ test("a Workspace reread keeps a missing file's notice and clears a failed rerea
   const user = form("USER.md");
   await identity.getByText(missingNotice, { exact: true }).waitFor();
   assert.equal(await identityError.textContent(), "");
-  assert.equal(
-    await page.getByRole("button", { name: "Save IDENTITY.md", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Save IDENTITY.md", exact: true }));
 
   // The gateway cannot read SOUL.md; IDENTITY.md is still missing and says nothing new.
   await nextVersion(["SOUL.md"]);
@@ -4127,7 +4124,7 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   // Stop shows with the rest of the page once Deployment activity settles.
   await repeat.waitFor();
   assert.equal(await repeat.count(), 1, "the existing Stop API permits another authorized intent");
-  assert.equal(await repeat.isEnabled(), true);
+  await waitForEnabled(repeat);
   await repeat.focus();
   await repeat.press("Enter");
   let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });

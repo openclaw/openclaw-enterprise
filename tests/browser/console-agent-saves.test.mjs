@@ -1584,7 +1584,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   await page.getByRole("heading", { name: "Refresh Lock" }).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
   const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
-  assert.equal(await plugins.isEnabled(), true);
+  await waitForEnabled(plugins);
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await refreshing;
   assert.equal(await plugins.isDisabled(), true);

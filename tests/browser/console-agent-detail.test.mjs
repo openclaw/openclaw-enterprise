@@ -232,7 +232,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations.getByText(/Observed /).waitFor();
   await observations.getByText("slack / authentication").waitFor();
   assert.equal(await waiting.isVisible(), false);
-  assert.equal(await runDiagnostics.isEnabled(), true);
+  await waitForEnabled(runDiagnostics);
   assert.equal(await focused(runDiagnostics), true);
   const description = () =>
     runDiagnostics.evaluate(
@@ -1689,7 +1689,7 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
     await page.getByLabel("Authentication source").locator('option[value="codex_pat"]').count(),
     0,
   );
-  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isEnabled(), true);
+  await waitForEnabled(page.getByLabel("API key Secret", { exact: true }));
 
   // A credentialless Codex catalog does not make an OpenClaw harness compatible with its plugins.
   const capabilities = page.waitForResponse(
@@ -2124,10 +2124,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
     await dialog.getByLabel("Value", { exact: true }).inputValue(),
     "synthetic-duplicate-value",
   );
-  assert.equal(
-    await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
-    false,
-  );
+  await waitForEnabled(dialog.getByRole("button", { name: "Create Secret", exact: true }));
   await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
   const distinctName = "Combobox Agent corrected service account token";
@@ -2751,7 +2748,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   // Readback permits an explicit new intent; it never resends the masked request.
-  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Request Stop again" }));
 });
 
 test("An uncertain repeated Stop offers only Refresh stop status", async (t) => {
@@ -2831,10 +2828,7 @@ test("an uncertain Stop the API never received reads back as still requested to 
   const notice = stopRegion.getByText("The Agent is still requested to run.", { exact: true });
   await notice.waitFor();
   assert.deepEqual(await statusTone(notice), { className: "status", tone: "info", role: "status" });
-  assert.equal(
-    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(stopRegion.getByRole("button", { name: "Stop Agent", exact: true }));
 });
 
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
@@ -2894,7 +2888,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
 
   await page.getByText("You do not have permission to stop this Agent").waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);

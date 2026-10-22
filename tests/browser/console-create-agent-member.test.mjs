@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
-import { holdRequests, login, newPage, selectSecret } from "./console-agents-browser-helpers.mjs";
+import {
+  holdRequests,
+  login,
+  newPage,
+  selectSecret,
+  waitForEnabled,
+} from "./console-agents-browser-helpers.mjs";
 import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 
 // Create Agent for a Namespace member (UX plan A2, spec 3.11; findings 1901, 493). The real
@@ -101,7 +107,7 @@ test("a member with Agent create completes the default Preset path without Insta
   const answers = apiResponses(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`, writer.credentials);
   const open = page.getByRole("button", { name: "Create Agent", exact: true });
-  assert.equal(await open.isEnabled(), true);
+  await waitForEnabled(open);
   await open.click();
   await fillDefaultPreset(page, secret, "Member Agent");
 
@@ -238,10 +244,6 @@ const PERMISSIONS_UNREAD =
 const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
-async function waitForEnabled(locator) {
-  await locator.page().waitForFunction((node) => !node.disabled, await locator.elementHandle());
-}
-
 function unavailable(route) {
   return route.fulfill({
     status: 503,
@@ -270,7 +272,7 @@ test("a member whose permission check failed is told so and retries only that ch
   const submit = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await submit.isDisabled(), true);
   const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
-  assert.equal(await retry.isEnabled(), true);
+  await waitForEnabled(retry);
   const permissionReads = () =>
     answers.filter((answer) => answer.startsWith(`GET /namespaces/${namespace.id}/permissions `));
   const failedReads = permissionReads().length;
@@ -414,10 +416,7 @@ test("an administrator's refused credential grant keeps the retry and the API's 
     .filter({ hasText: `${CREDENTIAL_ACCESS_UNCONFIRMED} Access denied.` })
     .waitFor();
   assert.equal(await page.getByText(MEMBER_GRANT_REFUSED).count(), 0);
-  assert.equal(
-    await page.getByRole("button", { name: "Retry credential access", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Retry credential access", exact: true }));
 });
 
 test("a member's form links Create Agent to why a Namespace that turned failed refuses it", async (t) => {
