@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
@@ -9,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 // Request headers a client never finishes, so the reader holds the connection open.
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
@@ -90,20 +90,14 @@ test("public GitHub reader enforces anonymous GET, fresh visibility, bounded res
   const directory = await mkdtemp(join(tmpdir(), "public-github-provider-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const name = "api.github.com";
-  execFileSync(
-    "openssl",
-    [
-      ..."req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1".split(" "),
-      ...["-keyout", join(directory, "key"), "-out", join(directory, "cert")],
-      ...["-subj", "/CN=" + name, "-addext", "subjectAltName=DNS:" + name],
-    ],
-    { stdio: "ignore" },
-  );
-  const cert = await readFile(join(directory, "cert"));
+  const { key, cert } = await selfSigned(directory, {
+    commonName: name,
+    subjectAltName: `DNS:${name}`,
+  });
   let reply;
   let requests = 0;
   const provider = https
-    .createServer({ cert, key: await readFile(join(directory, "key")) }, (req, res) => {
+    .createServer({ cert, key }, (req, res) => {
       requests++;
       assert.equal(req.method, "GET");
       assert.equal(req.headers.host, name);

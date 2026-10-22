@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -19,6 +18,7 @@ import {
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 
@@ -579,35 +579,12 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
 });
 
 test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
-  assert.doesNotThrow(
-    () => execFileSync("openssl", ["version"], { stdio: "ignore" }),
-    "This native HTTPS regression requires openssl on PATH.",
-  );
   const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      join(directory, "key.pem"),
-      "-out",
-      join(directory, "cert.pem"),
-      "-subj",
-      "/CN=api.chatgpt.com",
-      "-addext",
-      "subjectAltName=DNS:api.chatgpt.com",
-    ],
-    { stdio: "ignore" },
-  );
-  const key = await readFile(join(directory, "key.pem"));
-  const cert = await readFile(join(directory, "cert.pem"));
+  const { key, cert } = await selfSigned(directory, {
+    commonName: "api.chatgpt.com",
+    subjectAltName: "DNS:api.chatgpt.com",
+  });
   const workspaceId = backend.configuration.workspaceId;
   for (const fault of [
     { name: "HTTP 429", status: 429, reason: /failed with HTTP 429/ },
