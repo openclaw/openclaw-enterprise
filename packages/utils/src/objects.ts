@@ -38,9 +38,9 @@ export function immutableSnapshot<T extends object>(value: T): Readonly<T> {
 
 /**
  * An `immutableSnapshot` of a value the caller has just built and shares with nobody: it is
- * frozen in place, without the copy. Any object inside that is already frozen must be frozen
- * all the way down (as `immutableCopy` and `deepFreeze` leave it), because `deepFreeze` stops
- * at a frozen object. The same plain-data rule as `immutableSnapshot` applies.
+ * frozen in place, without the copy. Any object in it, the value itself included, that is
+ * already frozen must be frozen all the way down (as `immutableCopy` and `deepFreeze` leave
+ * it), because `deepFreeze` stops at a frozen object. The same plain-data rule as `immutableSnapshot` applies.
  */
 export function freezeSnapshot<T extends object>(value: T): Readonly<T> {
   const snapshot = deepFreeze(value);

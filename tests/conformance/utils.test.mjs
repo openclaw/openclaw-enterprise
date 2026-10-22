@@ -43,7 +43,13 @@ test("freezeSnapshot freezes a new value in place and records it like immutableS
   assert.equal(snapshot, state);
   assert.equal(snapshot.roles[0].permissions, permissions);
   assert.equal(isImmutableSnapshot(snapshot), true);
-  for (const part of [snapshot, snapshot.roles, snapshot.roles[0], snapshot.groups[0]]) {
+  for (const part of [
+    snapshot,
+    snapshot.roles,
+    snapshot.roles[0],
+    snapshot.roles[0].permissions[0],
+    snapshot.groups[0],
+  ]) {
     assert.equal(Object.isFrozen(part), true);
   }
   assert.throws(() => {
