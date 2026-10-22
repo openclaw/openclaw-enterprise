@@ -12,6 +12,7 @@ import {
   createApi,
   observeAgentStop,
   smokeSlotNames,
+  stoppedGatewaySummary,
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
@@ -256,6 +257,27 @@ test("diagnostics project only fixed lifecycle fields", async () => {
     activeRevisionId: "invalid",
     status: "unknown",
   });
+});
+
+test("a stopped gateway summary names its shutdown outcome and every clean-close receipt", () => {
+  // Raw container lines, as kubectl logs returns them.
+  const line = (subsystem, message) => JSON.stringify({ level: "info", subsystem, message });
+  assert.equal(
+    stoppedGatewaySummary(
+      [
+        line("gateway", "received SIGTERM; shutting down"),
+        line("state/agent-db", "agent database clean-close receipt: active-leases"),
+        line("state/agent-db", "agent database clean-close receipt: written"),
+        line("gateway/shutdown", "shutdown completed cleanly in 513ms"),
+      ].join("\n"),
+    ),
+    "shutdown completed cleanly; clean-close receipts: active-leases, written",
+  );
+  // Finding 2198's shape: the Gateway stopped, but no receipt was logged.
+  assert.equal(
+    stoppedGatewaySummary(line("gateway", "received SIGTERM; shutting down")),
+    "shutdown not logged; clean-close receipts: none",
+  );
 });
 
 // Run the real watcher with real timers and no cluster. A `k3d` stand-in on PATH

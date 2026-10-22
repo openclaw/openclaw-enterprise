@@ -972,16 +972,90 @@ async function readLogs(stack, agent, source) {
   );
 }
 
-async function stopAgent(stack, agent) {
-  const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
-  assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
-  // The active revision clears only after Compute reports shutdown; still
-  // verify that no Agent workload remains after the controller reports it.
-  await observeAgentStop(
-    agent.label,
-    () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
-    () => agentPods(stack, agent.id, { includeTerminating: true }),
+// Finding 2198: a stopped Gateway left its agent database lease unreleased,
+// and its Pod and logs were gone before diagnostics ran. Keep the end of each
+// stopping Gateway's log, which carries OpenClaw's shutdown and the agent
+// database clean-close receipt.
+const STOPPED_GATEWAY_LOG_LINES = 300;
+const STOPPED_GATEWAY_LOG_SETTLE_MS = 15_000;
+
+// One line naming how the stopped Gateway's shutdown ended, for green runs too.
+export function stoppedGatewaySummary(output) {
+  const receipts = [...output.matchAll(/agent database clean-close receipt: ([a-z-]+)/g)].map(
+    (match) => match[1],
   );
+  const shutdown = /shutdown (completed cleanly|completed with warnings|failed)/.exec(output)?.[1];
+  return `shutdown ${shutdown ?? "not logged"}; clean-close receipts: ${
+    receipts.length === 0 ? "none" : receipts.join(", ")
+  }`;
+}
+
+// Follows a Gateway container's log until the container exits, keeping the last lines.
+function followGatewayLog(stack, pod) {
+  const child = spawn(
+    "kubectl",
+    [
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--context",
+      stack.context,
+      "logs",
+      "--follow",
+      "--tail",
+      String(STOPPED_GATEWAY_LOG_LINES),
+      "-n",
+      pod.metadata.namespace,
+      pod.metadata.name,
+      "-c",
+      "gateway",
+    ],
+    { cwd: root, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  let lines = [];
+  let partial = "";
+  child.stdout.on("data", (chunk) => {
+    const parts = (partial + chunk.toString()).split("\n");
+    partial = parts.pop();
+    lines.push(...parts);
+    if (lines.length > 2 * STOPPED_GATEWAY_LOG_LINES) {
+      lines = lines.slice(-STOPPED_GATEWAY_LOG_LINES);
+    }
+  });
+  const closed = new Promise((resolveClosed) => {
+    child.once("error", resolveClosed);
+    child.once("close", resolveClosed);
+  });
+  return {
+    async finish() {
+      const settle = delay(STOPPED_GATEWAY_LOG_SETTLE_MS, undefined, { ref: false });
+      await Promise.race([closed, settle]);
+      child.kill("SIGKILL");
+      return [...lines, partial].slice(-STOPPED_GATEWAY_LOG_LINES).join("\n");
+    },
+  };
+}
+
+async function stopAgent(stack, agent) {
+  const gateways = (await agentPods(stack, agent.id)).filter(
+    (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
+  );
+  const followers = gateways.map((pod) => followGatewayLog(stack, pod));
+  try {
+    const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
+    assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
+    // The active revision clears only after Compute reports shutdown; still
+    // verify that no Agent workload remains after the controller reports it.
+    await observeAgentStop(
+      agent.label,
+      () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+      () => agentPods(stack, agent.id, { includeTerminating: true }),
+    );
+  } finally {
+    agent.stoppedGatewayLogs = await Promise.all(followers.map((follower) => follower.finish()));
+    for (const output of agent.stoppedGatewayLogs) {
+      log(`${agent.label}: stopped gateway ${stoppedGatewaySummary(output)}`);
+    }
+  }
 }
 
 async function deployAgent(stack, agent) {
@@ -1607,6 +1681,9 @@ async function diagnostics(stack) {
       await attempt(`${agent.label} ${source} logs`, () =>
         cli(stack, ["agent", "logs", agent.id, "--source", source, "--tail", "300"]),
       );
+    }
+    for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
     }
   }
   try {
