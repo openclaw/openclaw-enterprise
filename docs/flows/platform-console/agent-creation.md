@@ -114,7 +114,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Debugging and Verification
 
-- `tests/browser/console-agents.test.mjs`, `console-agent-presets.test.mjs`, and
+- `tests/browser/console-agents.test.ts`, `console-agent-presets.test.mjs`, and
   `console-agent-repositories.test.mjs` exercise the form against the real controller.
 - A refused write shows the API's reason and a request ID; inspect saved
   Configuration and Agent IDs before retrying.

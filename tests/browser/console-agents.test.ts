@@ -1,8 +1,25 @@
+/// <reference lib="es2024.promise" />
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Route } from "playwright";
+
+import type {
+  CreateAgentBody,
+  CreateConfigurationBody,
+  CreateSecretBody,
+  ProvisionAgentBody,
+} from "../../packages/contracts/src/api/common.ts";
+import type {
+  AgentWire,
+  IAMAccessBindingWire,
+  IAMRoleWire,
+  SecretWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { IAMDriver } from "../../packages/contracts/src/index.ts";
 
 import {
   WORKSPACE_DEFAULTS,
@@ -57,8 +74,29 @@ import {
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-const createConsoleAppFixture = (t, options = {}) =>
+const createConsoleAppFixture = (t: TestContext, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+function submittedBody<Body>(request: { body: unknown } | undefined): Body {
+  assert.ok(request?.body, "expected a submitted request body");
+  return request.body as Body;
+}
+
+// Native Configuration values are open-ended. Check the Slack branch these scenarios exercise.
+function slackConfiguration(values: object) {
+  assert.ok("channels" in values);
+  const { channels } = values;
+  assert.ok(channels && typeof channels === "object" && "slack" in channels);
+  const { slack } = channels;
+  assert.ok(slack && typeof slack === "object" && "channels" in slack);
+  return slack;
+}
+
+function savedSecretReference(secrets: ReadonlyMap<string, SecretWire>, name: string) {
+  const secret = secrets.get(name);
+  assert.ok(secret, `expected the saved Secret ${name}`);
+  return secret.ref;
+}
 
 test("Agent creation stores its API key separately, grants exact access, and saves a draft without a revision", async (t) => {
   const audit = new InMemoryAuditSink();
@@ -109,7 +147,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
   await apiKeySecret.waitFor();
   assert.equal(await apiKeySecret.evaluate((node) => node.tagName), "INPUT");
-  assert.equal(await apiKeySecret.evaluate((node) => node.required), true);
+  assert.equal(await apiKeySecret.evaluate((node: HTMLInputElement) => node.required), true);
   assert.equal(await page.locator("#plugin-discovery-token").isVisible(), false);
   assert.equal(await page.getByRole("link", { name: "Create an API key", exact: true }).count(), 0);
   await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
@@ -211,8 +249,8 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await openCreateSecretDialog(createChannelDialog, "Slack bot token");
   assert.equal(await createSecretDialog.getByLabel("Value", { exact: true }).inputValue(), "");
   await createSecretDialog.getByLabel("Value", { exact: true }).fill(createdSlackBotSecretValue);
-  const secretReached = Promise.withResolvers();
-  const secretRelease = Promise.withResolvers();
+  const secretReached = Promise.withResolvers<void>();
+  const secretRelease = Promise.withResolvers<void>();
   t.after(() => secretRelease.resolve());
   // The real Secret write must finish before its dialog can be dismissed.
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/secrets`, async (route) => {
@@ -295,23 +333,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   assert.deepEqual(agentProvisionPostRequests(requests, namespace.id), []);
   assert.equal(created.data.backendId, null);
   assert.deepEqual(created.data.harnessAuth, { method: "api_key", source: secret.ref });
-  assert.equal((await page.locator("body").textContent()).includes(key), false);
-  assert.equal(
-    (await page.locator("body").textContent()).includes("never-visible-existing-slack-app-token"),
-    false,
-  );
-  assert.equal(
-    (await page.locator("body").textContent()).includes(createdSlackBotSecretValue),
-    false,
-  );
-  assert.equal(
-    (await page.locator("body").textContent()).includes(
-      "never-visible-replacement-slack-app-token",
-    ),
-    false,
-  );
+  const createdPageText = await page.locator("body").textContent();
+  assert.ok(createdPageText !== null);
+  assert.equal(createdPageText.includes(key), false);
+  assert.equal(createdPageText.includes("never-visible-existing-slack-app-token"), false);
+  assert.equal(createdPageText.includes(createdSlackBotSecretValue), false);
+  assert.equal(createdPageText.includes("never-visible-replacement-slack-app-token"), false);
   assert.equal(created.data.activeRevisionId, undefined);
-  const submittedWorkspace = agentPostRequests(requests, namespace.id)[0].body;
+  const submittedWorkspace = submittedBody<CreateAgentBody>(
+    agentPostRequests(requests, namespace.id)[0],
+  );
   assert.deepEqual(submittedWorkspace.initialWorkspaceFiles, {
     ...WORKSPACE_DEFAULTS,
     "IDENTITY.md": customIdentity.replaceAll("\r\n", "\n"),
@@ -350,6 +381,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     `/namespaces/${namespace.id}/secrets/${secret.id}`,
   );
   const visibleConfiguration = await page.locator("body").textContent();
+  assert.ok(visibleConfiguration !== null);
   assert.equal(visibleConfiguration.includes(key), false);
   assert.equal(visibleConfiguration.includes("never-visible-existing-slack-app-token"), false);
   assert.equal(visibleConfiguration.includes(createdSlackBotSecretValue), false);
@@ -381,7 +413,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
       ["POST", `/namespaces/${namespace.id}/iam/access-bindings`],
     ],
   );
-  assert.deepEqual(configurationPostRequests(requests, namespace.id)[0].body, {
+  assert.deepEqual(configurationPostRequests(requests, namespace.id)[0]?.body, {
     kind: "agent",
     values: stagedValues,
     secretBindings: stagedSecretBindings,
@@ -391,11 +423,17 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.equal(roles.status, 200);
   assert.equal(access.status, 200);
+  const [role]: IAMRoleWire[] = roles.data;
+  const bindings: IAMAccessBindingWire[] = access.data;
   assert.equal(roles.data.length, 1);
-  assert.deepEqual(roles.data[0].permissions, [{ action: "operate", resourceKind: "secret" }]);
+  assert.ok(role);
+  assert.deepEqual(role.permissions, [{ action: "operate", resourceKind: "secret" }]);
   assert.deepEqual(
-    access.data
-      .map(({ id, ...binding }) => binding)
+    bindings
+      .map(({ id, ...binding }) => {
+        assert.ok("resourceId" in binding, "the Secret grant must be scoped to one resource");
+        return binding;
+      })
       .sort((a, b) => a.resourceId.localeCompare(b.resourceId)),
     [secret.id, replacementSlackAppSecret.id, createdSlackBotSecret.id]
       .sort()
@@ -403,7 +441,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
         namespaceId: namespace.id,
         subjectKind: "identity",
         subjectId: created.data.servicePrincipalId,
-        roleId: roles.data[0].id,
+        roleId: role.id,
         resourceKind: "secret",
         resourceId,
       })),
@@ -460,7 +498,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   assert.match(page.url(), new RegExp(`/console/agents/new\\?namespace=${namespace.id}$`));
@@ -477,10 +517,7 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   ]);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  let releaseOptions;
-  const optionsGate = new Promise((resolve) => {
-    releaseOptions = resolve;
-  });
+  const { promise: optionsGate, resolve: releaseOptions } = Promise.withResolvers<void>();
   t.after(() => releaseOptions());
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, async (route) => {
     await optionsGate;
@@ -507,13 +544,16 @@ test("Agent creation keeps loading and empty repository discovery safe for an or
   const created = await (await createdResponse).json();
   assert.equal(Object.hasOwn(created.data, "repositoryBindings"), false);
   assert.equal(
-    Object.hasOwn(agentPostRequests(requests, namespace.id).at(-1).body, "repositoryBindings"),
+    Object.hasOwn(
+      submittedBody<CreateAgentBody>(agentPostRequests(requests, namespace.id).at(-1)),
+      "repositoryBindings",
+    ),
     false,
   );
 });
 
 test("Dedicated repository Agent keeps its bindings through Slack save and the channel credential gate", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "807",
@@ -660,7 +700,7 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   assert.equal(configurationPostRequests(unavailableRequests, unavailableNamespace.id).length, 1);
 
   const { fixture: deniedFixture, namespace: deniedNamespace } =
-    await createRepositoryLaunchFixture(t, (namespaceId) => [
+    await createRepositoryLaunchFixture(t, (namespaceId: string) => [
       {
         repositoryRef: "application",
         repositoryId: "802",
@@ -694,7 +734,9 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   // The disabled state must reflect both reads' outcome, not a read still pending.
   await waitForCreateFormReads(deniedPage);
   assert.equal(await deniedPage.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await deniedPage.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await deniedPage
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   assert.equal(configurationPostRequests(deniedRequests, deniedNamespace.id).length, 0);
   assert.equal(agentPostRequests(deniedRequests, deniedNamespace.id).length, 0);
 });
@@ -720,13 +762,15 @@ test("Agent creation blocks a repository-options Namespace conflict before any w
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByText("This Namespace no longer accepts new Agents.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Agent creation blocks selective Agent-create IAM unavailability even when Configuration creation is allowed", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "808",
@@ -759,7 +803,7 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
       request.action === "create" && request.resource.kind === "agent"
         ? unavailableIAM.authorize(request)
         : healthyIAM.authorize(request),
-  });
+  } satisfies IAMDriver);
   fixture.controller.selectDriver("iam", id);
   const allowed = await fixture.request("POST", `/namespaces/${namespace.id}/configurations`, {
     body: { kind: "agent", values: nativeValues("independent-configuration") },
@@ -778,7 +822,9 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Authorization unavailable Agent");
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
@@ -819,7 +865,7 @@ for (const failure of [
     const requests = apiRequests(page, fixture.origin);
     const path = `**/namespaces/${namespace.id}/agents/repository-options`;
     // These responses exercise the browser's HTTP boundary, not server authorization decisions.
-    const failDiscovery = (route) =>
+    const failDiscovery = (route: Route) =>
       failure.status === undefined
         ? route.abort("failed")
         : route.fulfill({
@@ -838,7 +884,9 @@ for (const failure of [
     await page.getByLabel("Agent name").fill("Discovery retry Agent");
     await page.locator('.repository-options[aria-busy="false"]').waitFor({ state: "attached" });
     assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+    await page
+      .locator("#create-agent-form")
+      .evaluate((form: HTMLFormElement) => form.requestSubmit());
     await settlePageRequests(page);
     assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
     assert.equal(agentPostRequests(requests, namespace.id).length, 0);
@@ -861,7 +909,7 @@ for (const failure of [
 }
 
 test("Agent repository selection enforces the 16-item limit without narrow viewport overflow", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) =>
     Array.from({ length: 17 }, (_, index) => ({
       repositoryRef: `repository-${index + 1}`,
       repositoryId: String(900 + index),
@@ -903,7 +951,7 @@ test("Agent repository selection enforces the 16-item limit without narrow viewp
 });
 
 test("Agent creation recovers from stale authoritative admission without replacing its Configuration", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "803",
@@ -979,7 +1027,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
 
   fixture.policy.restrictions.pop();
   const repositoryOptionsPath = `**/namespaces/${namespace.id}/agents/repository-options`;
-  const failRepositoryReload = (route) =>
+  const failRepositoryReload = (route: Route) =>
     route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -1014,7 +1062,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 
   // Even a post-authorization optional outage cannot satisfy a repository-scoped retry.
-  const optionalRepositoryOutage = (route) =>
+  const optionalRepositoryOutage = (route: Route) =>
     route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -1032,12 +1080,14 @@ test("Agent creation recovers from stale authoritative admission without replaci
     .filter({ hasText: /^Repository choices could not be reloaded\. Configuration / })
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   await page.unroute(repositoryOptionsPath, optionalRepositoryOutage);
 
-  const conflictRepositoryReload = (route) =>
+  const conflictRepositoryReload = (route: Route) =>
     route.fulfill({
       status: 409,
       contentType: "application/json",
@@ -1070,7 +1120,9 @@ test("Agent creation recovers from stale authoritative admission without replaci
   // Refreshing policy permits editing; it must not turn this saved attempt into an ordinary Agent.
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Start a new draft" }).isVisible(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
@@ -1080,7 +1132,9 @@ test("Agent creation recovers from stale authoritative admission without replaci
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
   await page.getByRole("button", { name: "Remove example/application" }).click();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
   await repositoryCheckbox(page, "example/application").click();
@@ -1101,7 +1155,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
 });
 
 test("Agent creation does not expose recovery actions after an unknown admission outcome", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "804",
@@ -1149,7 +1203,9 @@ test("Agent creation does not expose recovery actions after an unknown admission
     true,
   );
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
@@ -1157,7 +1213,7 @@ test("Agent creation does not expose recovery actions after an unknown admission
 test("Agent repository recovery with empty current policy requires an explicit new draft", async (t) => {
   const { fixture, namespace, replacePolicy } = await createRepositoryLaunchFixture(
     t,
-    (namespaceId) => [
+    (namespaceId: string) => [
       {
         repositoryRef: "application",
         repositoryId: "806",
@@ -1215,7 +1271,9 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await page.getByText(/Repository choices reloaded/).waitFor();
   assert.equal(await page.locator(".repository-options input").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
-  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await page
+    .locator("#create-agent-form")
+    .evaluate((form: HTMLFormElement) => form.requestSubmit());
   await settlePageRequests(page);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
@@ -1261,8 +1319,8 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   let allowProvisioningSuccess = false;
   let provisioningReads = 0;
   let deploymentStatus = "queued";
-  let provisionBody;
-  const savedSecrets = new Map();
+  let provisionBody: ProvisionAgentBody | undefined;
+  const savedSecrets = new Map<string, SecretWire>();
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
     route.fulfill({
@@ -1291,7 +1349,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     executionMode: "dedicated",
     harnessAuth: {
       method: "api_key",
-      source: null,
+      source: null as SecretWire["ref"] | null,
     },
     servicePrincipalId: "identity_provisioned_agent",
     createdAt: new Date().toISOString(),
@@ -1330,7 +1388,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   });
   assert.equal(workspacePreset.status, 201, JSON.stringify(workspacePreset.body));
 
-  const json = (data, status = 200) => ({
+  const json = (data: unknown, status = 200) => ({
     status,
     contentType: "application/json",
     body: JSON.stringify({
@@ -1344,10 +1402,10 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       await route.fallback();
       return;
     }
-    const body = request.postDataJSON();
+    const body: CreateSecretBody = request.postDataJSON();
     // Secrets use the real API; only provisioning and deployment progression are simulated.
     const response = await route.fetch();
-    const saved = (await response.json()).data;
+    const saved: SecretWire = (await response.json()).data;
     savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
       agent.harnessAuth.source = saved.ref;
@@ -1355,7 +1413,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     await route.fulfill({ response });
   });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
-    provisionBody = request.postDataJSON();
+    provisionBody = request.postDataJSON() as ProvisionAgentBody;
     await route.fulfill(
       json(
         {
@@ -1382,6 +1440,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   });
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_create`, async (route) => {
     provisioningReads += 1;
+    assert.ok(provisionBody, "the provisioning request was submitted before polling");
     await route.fulfill(
       json({
         provisioning: {
@@ -1433,7 +1492,8 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/workspace/files/*`,
     async (route) => {
-      const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      const { pathname } = new URL(route.request().url());
+      const name = decodeURIComponent(pathname.slice(pathname.lastIndexOf("/") + 1));
       await route.fulfill(json({ name, content: `# ${name}\n` }));
     },
   );
@@ -1522,6 +1582,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     .getByText("DEPENDENCY_UNAVAILABLE: Deployment reconciliation failed.", { exact: true })
     .waitFor();
 
+  assert.ok(provisionBody);
   assert.match(provisionBody.requestId, /^req_[0-9a-f-]{36}$/);
   assert.equal(provisionBody.name, agent.name);
   assert.deepEqual(provisionBody.repositoryAccess, {
@@ -1536,7 +1597,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   });
   assert.equal(provisionBody.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   assert.deepEqual(provisionBody.harnessAuth, agent.harnessAuth);
-  assert.deepEqual(provisionBody.configuration.values.channels.slack, {
+  assert.deepEqual(slackConfiguration(provisionBody.configuration.values), {
     enabled: true,
     mode: "socket",
     appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
@@ -1551,11 +1612,11 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     values: provisionBody.configuration.values,
     secretBindings: {
       SLACK_APP_TOKEN: {
-        source: savedSecrets.get("Provisioned Agent Slack app token").ref,
+        source: savedSecretReference(savedSecrets, "Provisioned Agent Slack app token"),
         delivery: { type: "env" },
       },
       SLACK_BOT_TOKEN: {
-        source: savedSecrets.get("Provisioned Agent Slack bot token").ref,
+        source: savedSecretReference(savedSecrets, "Provisioned Agent Slack bot token"),
         delivery: { type: "env" },
       },
     },
@@ -1610,8 +1671,9 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   await page.getByText("Access denied. You do not have permission for this operation.").waitFor();
   const submitted = agentProvisionPostRequests(requests, namespace.id);
   assert.equal(submitted.length, 1);
-  assert.equal(submitted[0].body.executionMode, "dedicated");
-  assert.equal(Object.hasOwn(submitted[0].body, "repositoryBindings"), false);
+  const body = submittedBody<ProvisionAgentBody>(submitted[0]);
+  assert.equal(body.executionMode, "dedicated");
+  assert.equal(Object.hasOwn(body, "repositoryBindings"), false);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
 });
@@ -1658,17 +1720,20 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
-  assert.equal((await createdResponse).status(), 201);
+  const response = await createdResponse;
+  assert.equal(response.status(), 201);
+  const createdAgent: AgentWire = (await response.json()).data;
   // Navigation follows the model Secret grant; the Agent POST alone does not finish creation.
   await page.waitForURL((url) => url.pathname.startsWith("/console/agents/agt_"));
 
   assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
   const configurationWrites = configurationPostRequests(requests, namespace.id);
   assert.equal(configurationWrites.length, 1);
-  assert.deepEqual(configurationWrites[0].body.values.channels.slack.channels, {
+  const configuration = submittedBody<CreateConfigurationBody>(configurationWrites[0]);
+  assert.deepEqual(slackConfiguration(configuration.values).channels, {
     CUNSUPPORTED123: { requireMention: true, users: ["*"] },
   });
-  assert.equal(Object.hasOwn(configurationWrites[0].body, "secretBindings"), false);
+  assert.equal(Object.hasOwn(configuration, "secretBindings"), false);
   assert.equal(accessBindingPostRequests(requests, namespace.id).length, 1);
   assert.deepEqual(
     agentPostRequests(requests, namespace.id).map((request) => request.body),
@@ -1679,17 +1744,13 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
         initialWorkspaceFiles: WORKSPACE_DEFAULTS,
         workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
         repositoryAccess: { defaultProfile: "git-full", repositories: [] },
-        harnessAuth: agentPostRequests(requests, namespace.id)[0].body.harnessAuth,
-        configurationId: requests.find(
-          (request) =>
-            request.method === "POST" && request.path === `/namespaces/${namespace.id}/agents`,
-        )?.body.configurationId,
+        harnessAuth: createdAgent.harnessAuth,
+        configurationId: createdAgent.configurationId,
       },
     ],
   );
   // Read the created draft through the real API, then verify both access choices
   // survive a new page load rather than only remaining in the create form.
-  const createdAgent = (await (await createdResponse).json()).data;
   await page.goto(detailUrl(fixture, namespace.id, createdAgent.id, "draft", "channels").href);
   await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
   let savedDialog = page.getByRole("dialog", { name: "Edit Slack" });
@@ -1761,7 +1822,7 @@ test("Dedicated Agent creation uses regular create when provisioning is unsuppor
     ["open", ["*"]],
     ["disabled", ["*"]],
     ["pairing", ["UPREAPPROVED123"]],
-  ]) {
+  ] as const) {
     await savedDialog.getByLabel("Direct-message policy").selectOption(policy);
     if (policy === "allowlist" || policy === "pairing") {
       if (policy === "pairing") {
@@ -1827,8 +1888,8 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   const agentId = "agt_00000000-0000-4000-8000-00000000babe";
   const revisionId = "rev_00000000-0000-4000-8000-00000000babe";
   const createdAt = new Date().toISOString();
-  const bodies = [];
-  const savedSecrets = new Map();
+  const bodies: ProvisionAgentBody[] = [];
+  const savedSecrets = new Map<string, SecretWire>();
   const agent = {
     id: agentId,
     namespaceId: namespace.id,
@@ -1839,7 +1900,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     executionMode: "dedicated",
     harnessAuth: {
       method: "codex_pat",
-      source: null,
+      source: null as SecretWire["ref"] | null,
     },
     servicePrincipalId: "identity_retried_agent",
     createdAt,
@@ -1861,7 +1922,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     compute: { id: "kubernetes-test", implementation: "kubernetes" },
     servicePrincipalId: agent.servicePrincipalId,
   };
-  const json = (data, status = 200) => ({
+  const json = (data: unknown, status = 200) => ({
     status,
     contentType: "application/json",
     body: JSON.stringify({
@@ -1875,10 +1936,10 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       await route.fallback();
       return;
     }
-    const body = request.postDataJSON();
+    const body: CreateSecretBody = request.postDataJSON();
     // Keep Secret persistence real while simulating an uncertain provisioning response.
     const response = await route.fetch();
-    const saved = (await response.json()).data;
+    const saved: SecretWire = (await response.json()).data;
     savedSecrets.set(body.name, saved);
     if (!body.name.endsWith("Slack app token") && !body.name.endsWith("Slack bot token")) {
       agent.harnessAuth.source = saved.ref;
@@ -1886,7 +1947,8 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     await route.fulfill({ response });
   });
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
-    bodies.push(request.postDataJSON());
+    const body: ProvisionAgentBody = request.postDataJSON();
+    bodies.push(body);
     if (bodies.length === 1) {
       await route.fulfill({
         status: 503,
@@ -1906,7 +1968,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       json(
         {
           provisioning: {
-            requestId: bodies.at(-1).requestId,
+            requestId: body.requestId,
             workId: "work_retry",
             status: "succeeded",
             phase: "handoff",
@@ -1955,7 +2017,8 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
   await page.route(
     `**/namespaces/${namespace.id}/agents/${agentId}/workspace/files/*`,
     async (route) => {
-      const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
+      const { pathname } = new URL(route.request().url());
+      const name = decodeURIComponent(pathname.slice(pathname.lastIndexOf("/") + 1));
       await route.fulfill(json({ name, content: `# ${name}\n` }));
     },
   );
@@ -2014,21 +2077,23 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
     );
   });
   assert.equal(bodies.length, 2);
-  assert.deepEqual(bodies[1], bodies[0]);
-  assert.equal(bodies[0].requestId, bodies[1].requestId);
-  assert.equal(bodies[0].name, agent.name);
-  assert.deepEqual(bodies[0].configuration.values.channels.slack.channels, {
+  const [first, retry] = bodies;
+  assert.ok(first && retry);
+  assert.equal(retry.requestId, first.requestId);
+  assert.deepEqual(retry, first);
+  assert.equal(first.name, agent.name);
+  assert.deepEqual(slackConfiguration(first.configuration.values).channels, {
     CRETRY123: { requireMention: true, users: ["*"] },
   });
-  assert.deepEqual(bodies[0].harnessAuth, agent.harnessAuth);
-  assert.equal(Object.hasOwn(bodies[0], "secrets"), false);
-  assert.deepEqual(bodies[0].configuration.secretBindings, {
+  assert.deepEqual(first.harnessAuth, agent.harnessAuth);
+  assert.equal(Object.hasOwn(first, "secrets"), false);
+  assert.deepEqual(first.configuration.secretBindings, {
     SLACK_APP_TOKEN: {
-      source: savedSecrets.get("Retried Agent Slack app token").ref,
+      source: savedSecretReference(savedSecrets, "Retried Agent Slack app token"),
       delivery: { type: "env" },
     },
     SLACK_BOT_TOKEN: {
-      source: savedSecrets.get("Retried Agent Slack bot token").ref,
+      source: savedSecretReference(savedSecrets, "Retried Agent Slack bot token"),
       delivery: { type: "env" },
     },
   });
@@ -2049,7 +2114,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   const { page } = await newPage(t, fixture);
   // Without a permission answer that grants Agent create, a denied Installation read keeps the
   // refusal; a member the Namespace lets create goes on (console-create-agent-member.test.mjs).
-  let permissions = null;
+  let permissions: { agents: { create: boolean } } | null = null;
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
     permissions
       ? route.fulfill({ json: { data: permissions } })
@@ -2126,15 +2191,18 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await mode.inputValue(), "embedded");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   // The disabled option explains itself instead of claiming Dedicated is supported.
-  const harnessHint = page.locator("#agent-harness-hint");
+  const harnessHint = await page.locator("#agent-harness-hint").textContent();
+  assert.ok(harnessHint);
   assert.equal(
-    await harnessHint.textContent(),
+    harnessHint,
     "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
   );
-  assert.doesNotMatch(await harnessHint.textContent(), /supports Dedicated/);
+  assert.doesNotMatch(harnessHint, /supports Dedicated/);
   const modeHint = page.locator("#execution-mode-hint");
-  assert.match(await modeHint.textContent(), /Dedicated OpenClaw is unavailable/);
-  assert.doesNotMatch(await modeHint.textContent(), /supports Dedicated/);
+  const embeddedHint = await modeHint.textContent();
+  assert.ok(embeddedHint);
+  assert.match(embeddedHint, /Dedicated OpenClaw is unavailable/);
+  assert.doesNotMatch(embeddedHint, /supports Dedicated/);
   // The blocking alert is reserved for a Dedicated selection; Embedded remains creatable.
   assert.equal(
     await page
@@ -2161,11 +2229,13 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   // Codex keeps Dedicated execution; only native OpenClaw depends on the runtime.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  const dedicatedHint = await modeHint.textContent();
+  assert.ok(dedicatedHint);
   assert.match(
-    await modeHint.textContent(),
+    dedicatedHint,
     /OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver/,
   );
-  assert.match(await modeHint.textContent(), /Slack requires Dedicated execution/);
+  assert.match(dedicatedHint, /Slack requires Dedicated execution/);
   assert.equal(
     await page.locator(".launch-runtime > summary").textContent(),
     "Runtime details · Dedicated",
@@ -2254,19 +2324,21 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   assert.equal(embeddedTemplate.plugins?.entries?.codex, undefined);
 
   const custom = nativeValues("manual-edit");
-  custom.agents.defaults.models["openai/gpt-4.1"].alias = "Primary assistant";
-  custom.agents.defaults.models["openai/gpt-4.1"].params = { temperature: 0.4 };
+  const customModel = custom.agents.defaults.models["openai/gpt-4.1"];
+  assert.ok(customModel);
+  Object.assign(customModel, { alias: "Primary assistant", params: { temperature: 0.4 } });
+  const openai = custom.models.providers.openai;
+  assert.ok(openai);
   const extraModel = { id: "additional-model", name: "Additional model", contextWindow: 64000 };
-  Object.assign(custom.models.providers.openai, {
+  const customProvider = Object.assign(openai, {
     baseUrl: "https://models.example.test/v1",
     api: "openai-completions",
     headers: { "X-Custom-Transport": "enterprise-route" },
-    models: [...custom.models.providers.openai.models, extraModel],
+    models: [...openai.models, extraModel],
   });
-  custom.gateway.controlUi = {
-    enabled: false,
+  Object.assign(custom.gateway.controlUi, {
     allowedOrigins: ["https://custom-control.example.test"],
-  };
+  });
   const edited = JSON.stringify(custom, null, 2);
   await openAdvancedSettings(page);
   await configuration.fill(edited);
@@ -2274,10 +2346,11 @@ test("Agent creation preserves unrelated edited JSON across model changes and re
   await modelInput.fill("gpt-4.1-updated");
   await modelInput.press("Tab");
   const assertCustomTransport = async () => {
-    const provider = JSON.parse(await configuration.inputValue()).models.providers.openai;
-    assert.equal(provider.baseUrl, custom.models.providers.openai.baseUrl);
-    assert.equal(provider.api, custom.models.providers.openai.api);
-    assert.deepEqual(provider.headers, custom.models.providers.openai.headers);
+    const provider: typeof customProvider = JSON.parse(await configuration.inputValue()).models
+      .providers.openai;
+    assert.equal(provider.baseUrl, customProvider.baseUrl);
+    assert.equal(provider.api, customProvider.api);
+    assert.deepEqual(provider.headers, customProvider.headers);
     assert.deepEqual(
       provider.models.find((entry) => entry.id === extraModel.id),
       extraModel,
@@ -2462,7 +2535,7 @@ test("Agent creation saves native models for dedicated and embedded harnesses", 
     ["dedicated", "codex", "codex", "gpt-6-astra"],
     ["dedicated", "openai", "openclaw", "gpt-5.6-sol"],
     ["embedded", "openai", "openclaw", "gpt-5.6-luna"],
-  ]) {
+  ] as const) {
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("heading", { name: "Create Agent" }).waitFor();
     await page.getByRole("button", { name: "Start with default Preset" }).click();

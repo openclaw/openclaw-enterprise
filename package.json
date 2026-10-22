@@ -42,7 +42,7 @@
     "test": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs 'tests/integration/*.test.{mjs,ts}'",
     "test:conformance": "node scripts/verify-workspace-boundary.mjs && node --test tests/conformance/*.test.mjs",
     "test:integration": "node scripts/verify-workspace-boundary.mjs && node --test 'tests/integration/*.test.{mjs,ts}'",
-    "test:console-browser": "node --test tests/browser/*.test.mjs",
+    "test:console-browser": "node --test 'tests/browser/*.test.{mjs,ts}'",
     "test:postgres": "node scripts/verify-workspace-boundary.mjs && node --test --test-concurrency=1 tests/integration/postgres-*.test.mjs",
     "docs:build": "node scripts/docs-site/build.mjs && scripts/docs-site/node_modules/.bin/pagefind --site dist/docs",
     "docs:dev": "npm run docs:build && node scripts/docs-site/serve.mjs",

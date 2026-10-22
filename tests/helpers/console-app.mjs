@@ -294,7 +294,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       permissions: role.permissions.map((item) => ({ ...item })),
     })),
     bindings: seed.bindings.map((binding) => ({ ...binding })),
-    restrictions: [],
+    restrictions: /** @type {import("../../packages/contracts/src/index.ts").Restriction[]} */ ([]),
   };
   // These grant-free accounts are fixture setup. Accounts added later through
   // createAccountWithPolicy are also shareable, because State resolves identities live.
@@ -567,6 +567,11 @@ export async function createConsoleAppFixture(t, options = {}) {
 
   const adminSession = await signIn();
 
+  /**
+   * @param {string} method
+   * @param {string} path
+   * @param {{session?: typeof adminSession | null, headers?: Record<string, string>, body?: unknown}} [options]
+   */
   async function request(method, path, { session = adminSession, headers = {}, body } = {}) {
     const result = await rawRequest(method, path, {
       headers:

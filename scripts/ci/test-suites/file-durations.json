@@ -19,7 +19,7 @@
     "tests/browser/console-agent-state.test.mjs": 38200,
     "tests/browser/console-agents-2.test.mjs": 76800,
     "tests/browser/console-agents-list-return.test.mjs": 35900,
-    "tests/browser/console-agents.test.mjs": 74000,
+    "tests/browser/console-agents.test.ts": 74000,
     "tests/browser/console-button-hierarchy.test.mjs": 23600,
     "tests/browser/console-codex-oauth.test.mjs": 6300,
     "tests/browser/console-create-agent-provisioning-400.test.mjs": 59700,

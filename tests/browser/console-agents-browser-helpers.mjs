@@ -26,6 +26,7 @@ export function persistedDeploymentError(code, data) {
 }
 
 export function apiRequests(page, origin) {
+  /** @type {{ method: string, path: string, body: unknown }[]} */
   const requests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -119,6 +120,7 @@ export function fileBrowser() {
   return sharedBrowser;
 }
 
+/** @returns {Promise<{ page: import("playwright").Page, artifacts: string }>} */
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
@@ -271,6 +273,7 @@ export async function consoleStorage(page) {
   });
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
   return requests.filter(
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
@@ -310,6 +313,7 @@ export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   return url;
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function pathRequests(requests, method, path) {
   return requests.filter((request) => request.method === method && request.path === path);
 }
