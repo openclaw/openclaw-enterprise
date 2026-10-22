@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import {
+  composePostgresDevelopment,
+  createPostgresControllerAuth,
+} from "../helpers/password-hasher.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";

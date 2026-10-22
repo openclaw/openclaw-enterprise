@@ -45,6 +45,7 @@ import {
   type OccLogger,
 } from "../logging.ts";
 import { resolveApprovedHarness } from "./production-harness.ts";
+import type { CompositionDependencies } from "./production.ts";
 import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "../gateway/native-admin.ts";
 import {
@@ -97,6 +98,7 @@ export async function composePostgresDevelopment(
   config: PostgresDevelopmentConfig,
   options: PostgresDevelopmentRuntimeOptions = {},
   serviceAccountDriverFactory?: ServiceAccountDriverFactory,
+  dependencies: CompositionDependencies = {},
 ) {
   const drivers = "installation" in options ? options : undefined;
   const auditEventFactory = "auditEventFactory" in options ? options.auditEventFactory : undefined;
@@ -186,6 +188,9 @@ export async function composePostgresDevelopment(
       ...(config.nativeAdmin?.enabled === true
         ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
         : {}),
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
     });
 
     const bootstrapPrincipal = iamState.identities.find(

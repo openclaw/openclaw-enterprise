@@ -8,7 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { chromium } from "playwright";
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";

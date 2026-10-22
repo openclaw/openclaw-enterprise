@@ -11,7 +11,7 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   CodexPluginDriver,

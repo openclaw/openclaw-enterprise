@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import {
   composeProductionSignIn,
   consoleOrigin as origin,
