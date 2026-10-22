@@ -25,6 +25,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledFetches,
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
@@ -2782,6 +2783,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   const requests = apiRequests(page, fixture.origin);
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const stopPath = `${agentPath}/stop`;
+  await trackSettledFetches(page);
   let interceptedStops = 0;
   await page.route(`**${stopPath}`, async (route, request) => {
     if (request.method() !== "POST") {
@@ -2807,13 +2809,10 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
     .click();
   await page.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
   // Only Refresh is offered until a readback settles the outcome.
-  assert.deepEqual(
-    await page
-      .getByRole("region", { name: "Stop Agent", exact: true })
-      .getByRole("button")
-      .allTextContents(),
-    ["Refresh stop status"],
-  );
+  const stopControls = page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button");
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -2827,7 +2826,30 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   );
   await page.getByRole("button", { name: "Refresh stop status" }).click();
   await page.getByText("Could not refresh stop status.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).count(), 0);
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
+
+  // Even this Agent's active status cannot tell us whether it is requested to run or stop.
+  // Omit only the desired state from the controller's real, committed Stop readback.
+  await page.route(
+    fixture.origin + agentPath,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const { data, meta } = await response.json();
+      const { desiredRuntimeState, ...rest } = data;
+      assert.equal(rest.id, agent.id);
+      assert.equal(rest.namespaceId, namespace.id);
+      assert.equal(rest.status, "active");
+      assert.equal(desiredRuntimeState, "stopped");
+      await route.fulfill({ response, json: { data: rest, meta } });
+    },
+    { times: 1 },
+  );
+  const reads = await settledFetches(page, agentPath);
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await waitForSettledFetches(page, agentPath, reads + 1);
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
 
   const refresh = page.waitForResponse(
     (response) =>

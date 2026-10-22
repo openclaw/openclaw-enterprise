@@ -1,5 +1,5 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
-import { requestFailure } from "../api-client.mjs";
+import { requestFailure, responseFields } from "../api-client.mjs";
 import { button, element, setHidden, statusBlock } from "../dom.mjs";
 import {
   type AgentLifecycleContext,
@@ -157,6 +157,33 @@ export function createAgentStop(
     (target.isConnected && !target.disabled ? target : title).focus();
   }
 
+  function readStopStatus(value: unknown): AgentRead | { status: "deleting" } {
+    const { id, namespaceId, status, desiredRuntimeState, activeRevisionId } =
+      responseFields(value);
+    if (id !== agent.id || namespaceId !== agent.namespaceId) {
+      throw new Error("Stop status did not identify this Agent");
+    }
+    if (status === "deleting") {
+      return { status };
+    }
+    if (
+      status !== "active" ||
+      (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") ||
+      (activeRevisionId !== undefined &&
+        (typeof activeRevisionId !== "string" || !activeRevisionId))
+    ) {
+      throw new Error("Invalid Agent stop status");
+    }
+    // Stop updates only these lifecycle fields. Keep the detail page's known Agent metadata.
+    const { activeRevisionId: _previousRevision, ...previous } = state.agent;
+    return {
+      ...previous,
+      status,
+      desiredRuntimeState,
+      ...(activeRevisionId === undefined ? {} : { activeRevisionId }),
+    };
+  }
+
   function setAgent(next: AgentRead) {
     const lifecycleChanged =
       state.agent.desiredRuntimeState !== next.desiredRuntimeState ||
@@ -185,22 +212,16 @@ export function createAgentStop(
     render();
     document.addEventListener("focusin", focusMoved, { once: true });
     try {
-      const current = (await context.request(path, { expectedStatus: 200 })) as AgentRead | null;
+      const response = await context.request(path, { expectedStatus: 200 });
       if (!context.isCurrent()) {
         return;
       }
-      if (current?.id !== agent.id || current.namespaceId !== agent.namespaceId) {
-        throw new Error("Stop status did not identify this Agent");
-      }
+      const current = readStopStatus(response);
       if (current.status === "deleting") {
         onDeleting({ focus: returnFocus });
         return;
       }
-      if (current.status === "active") {
-        setAgent(current);
-      } else {
-        throw new Error("Invalid Agent stop status");
-      }
+      setAgent(current);
     } catch (cause) {
       if (!context.isCurrent()) {
         return;
@@ -247,22 +268,20 @@ export function createAgentStop(
     confirm.setAttribute("aria-busy", "true");
     render();
     try {
-      const stopped = (await context.request(`${path}/stop`, {
+      const response = await context.request(`${path}/stop`, {
         method: "POST",
         expectedStatus: 202,
-      })) as AgentRead | null;
+      });
       if (!context.isCurrent()) {
         return;
       }
-      if (stopped?.id !== agent.id || stopped.namespaceId !== agent.namespaceId) {
-        throw new Error("Stop response did not identify this Agent");
-      }
+      const stopped = readStopStatus(response);
       if (stopped.status === "deleting") {
         dialog.close();
         onDeleting({ focus: true });
         return;
       }
-      if (stopped.status !== "active" || stopped.desiredRuntimeState !== "stopped") {
+      if (stopped.desiredRuntimeState !== "stopped") {
         throw new Error("Invalid Agent stop response");
       }
       dialog.close();
@@ -415,11 +434,16 @@ export function createAgentStop(
       }
     },
     updateAgent(next: AgentRead) {
-      if (state.pending || next.id !== agent.id || next.namespaceId !== agent.namespaceId) {
+      // Only Refresh stop status settles an uncertain write, not an unrelated detail-page read.
+      if (
+        state.pending ||
+        state.needsRefresh ||
+        next.id !== agent.id ||
+        next.namespaceId !== agent.namespaceId
+      ) {
         return;
       }
       state.agent = next;
-      state.needsRefresh = false;
       state.notice = "";
       render();
     },
