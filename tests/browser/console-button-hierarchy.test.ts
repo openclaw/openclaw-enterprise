@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type { Locator, Page } from "playwright";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import type { CreateAgentBody, ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import type {
+  AgentListResponse,
+  AgentRevisionWire,
+  AgentWire,
+  NamespaceWire,
+} from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -35,13 +43,15 @@ import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
 
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+
 // The visible controls painted as a primary action: filled with the accent, or with the strong
 // text colour the Agent page's older black primary used. Counted by paint, not class, so an
 // older class name or a page rule cannot hide a second primary.
-const filledActions = (page) =>
+const filledActions = (page: Page) =>
   page.evaluate(() => {
     const document = globalThis.document;
-    const resolve = (value) => {
+    const resolve = (value: string) => {
       const probe = document.createElement("div");
       probe.style.backgroundColor = value;
       document.body.append(probe);
@@ -64,11 +74,11 @@ const filledActions = (page) =>
 
 // An Agent whose v1 serves while its v2 redeploy failed; each page routes that deployment's read
 // to a DEPENDENCY_UNAVAILABLE failure.
-async function failedRedeploy(fixture, namespace) {
+async function failedRedeploy(fixture: ConsoleFixture, namespace: NamespaceWire) {
   const agent = await fixture.createAgent(namespace.id, "Failed Agent", nativeValues("failed"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const failed = await fixture.deployAgent(namespace.id, agent.id);
-  const route = (page) =>
+  const failed: AgentRevisionWire = await fixture.deployAgent(namespace.id, agent.id);
+  const route = (page: Page) =>
     routeFailedDeployment(page, fixture, {
       namespaceId: namespace.id,
       agentId: agent.id,
@@ -175,6 +185,7 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
         recovery.getByRole("link", { name }).boundingBox(),
       ),
     );
+    assert.ok(primaryBox && secondaryBox, `both recovery actions are visible at ${size}`);
     assert.equal(secondaryBox.height, primaryBox.height, size);
     assert.equal(
       await recovery
@@ -204,7 +215,7 @@ test("Secondary buttons have an edge of at least 3:1 against their fill and the 
     ],
     [detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"), "Edit Configuration"],
     [detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs"), "Download"],
-  ];
+  ] as const;
   for (const [url, name] of checks) {
     await page.goto(url.href);
     const control = page.getByRole("button", { name, exact: true });
@@ -216,8 +227,8 @@ test("Secondary buttons have an edge of at least 3:1 against their fill and the 
 });
 
 // The cursor and busy state a pending button shows while its request is held.
-const busyState = (locator) =>
-  locator.evaluate((node) => ({
+const busyState = (locator: Locator) =>
+  locator.evaluate((node: HTMLButtonElement) => ({
     busy: node.getAttribute("aria-busy"),
     cursor: globalThis.getComputedStyle(node).cursor,
     disabled: node.disabled,
@@ -279,7 +290,7 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   const refused = await holdRequests(t, page, configurationUrl, {
     method: "PATCH",
     once: true,
-    fulfill: refusal(400, "VALIDATION_FAILED", "Refused for the busy test."),
+    fulfill: refusal(400, "INVALID_REQUEST", "Refused for the busy test."),
   });
   await save.click();
   await refused.requested;
@@ -308,7 +319,7 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
 // Save repository access is busy while its request runs and not after it (finding 1972: removing
 // its aria-busy wiring left every test green).
 test("Save repository access shows busy while its request runs", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "789",
@@ -322,15 +333,12 @@ test("Save repository access shows busy while its request runs", async (t) => {
       name: "Repository busy",
       configurationId: configured.configurationId,
       repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
-    },
+    } satisfies CreateAgentBody,
   });
   assert.equal(created.status, 201);
+  const agent: AgentWire = created.data;
   const { page } = await newPage(t, fixture, { browser });
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, created.data.id, "draft", "repositories"),
-  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"));
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   const save = page.getByRole("button", { name: "Save repository access" });
   assert.equal(await save.getAttribute("aria-busy"), "false");
@@ -340,7 +348,7 @@ test("Save repository access shows busy while its request runs", async (t) => {
   const patch = await holdRequests(
     t,
     page,
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${created.data.id}`,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
     { method: "PATCH", once: true },
   );
   await save.click();
@@ -370,7 +378,7 @@ test("a permanently disabled button says not allowed, not busy", async (t) => {
     nativeValues("api-key-cursor", { harnessId: "codex" }),
     { executionMode: "dedicated" },
   );
-  assert.equal(agent.harnessAuth.method, "api_key");
+  assert.equal(agent.harnessAuth?.method, "api_key");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -388,20 +396,28 @@ test("a permanently disabled button says not allowed, not busy", async (t) => {
   );
 });
 
-const refusal = (status, code, message) => ({
+const refusal = (status: number, code: ErrorResponse["error"]["code"], message: string) => ({
   status,
   contentType: "application/json",
   body: JSON.stringify({
     error: { code, message },
     meta: { requestId: "req_00000000-0000-4000-8000-000000001961" },
-  }),
+  } satisfies ErrorResponse),
 });
 
 // The busy state the button shows after its request ended, wherever the button now is.
-const busyAfter = (handle) =>
-  handle.evaluate((node) => ({ busy: node.getAttribute("aria-busy"), disabled: node.disabled }));
+const busyAfter = (button: Locator) =>
+  button.evaluate((node: HTMLButtonElement) => ({
+    busy: node.getAttribute("aria-busy"),
+    disabled: node.disabled,
+  }));
 
-async function openCreateForm(page, fixture, namespace, name) {
+async function openCreateForm(
+  page: Page,
+  fixture: ConsoleFixture,
+  namespace: NamespaceWire,
+  name: string,
+) {
   await page.goto(new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin).href);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill(name);
@@ -433,7 +449,7 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   const refused = await holdRequests(t, page, validateUrl, {
     method: "POST",
     once: true,
-    fulfill: refusal(400, "VALIDATION_FAILED", "Refused for the busy test."),
+    fulfill: refusal(400, "INVALID_REQUEST", "Refused for the busy test."),
   });
   await create.click();
   await refused.requested;
@@ -468,7 +484,7 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
 
 // A Credential Gateway that registers model Secrets as Credential Sources. Only the browser sees
 // it: the Credential Source requests below are answered here.
-async function routeCredentialSourceInstallation(page, fixture) {
+async function routeCredentialSourceInstallation(page: Page, fixture: ConsoleFixture) {
   await page.route(`${fixture.origin}/installation`, (route) =>
     route.fulfill({
       status: 200,
@@ -570,7 +586,7 @@ test("Create Agent is busy only for its own request, not a recovery control's", 
   const refused = await holdRequests(t, page, sourcesUrl, {
     method: "POST",
     once: true,
-    fulfill: refusal(400, "VALIDATION_FAILED", "Refused registration for the busy test."),
+    fulfill: refusal(400, "INVALID_REQUEST", "Refused registration for the busy test."),
   });
   await create.click();
   await refused.requested;
@@ -585,8 +601,8 @@ test("Create Agent is busy only for its own request, not a recovery control's", 
 
 // A badge's words, tone and paint, and the gap to the element before it. `painted` is true when
 // its text has its tone's colour (muted when neutral).
-const badgeState = (locator) =>
-  locator.evaluate((node) => {
+const badgeState = (locator: Locator) =>
+  locator.evaluate((node: HTMLElement) => {
     const style = globalThis.getComputedStyle(node);
     const probe = globalThis.document.createElement("span");
     probe.style.color = `var(--color-${node.dataset.tone ?? "text-muted"})`;
@@ -646,7 +662,7 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     await version.waitFor();
     const state = await badgeState(version.locator(".badge"));
     assert.deepEqual(
-      { ...state, gap: state.gap >= 4 },
+      { ...state, gap: state.gap !== null && state.gap >= 4 },
       { badge: true, text: "Current", tone: "info", gap: true, sameLine: true, painted: true },
       `badge at ${viewport.width}: ${JSON.stringify(state)}`,
     );
@@ -659,12 +675,12 @@ test("The current version, Slack token bindings and Namespace rows use the badge
   await login(page, fixture, detailUrl(fixture, namespace.id, slack.id, "draft", "credentials"));
   const list = page.locator(".credential-status-list").filter({ hasText: "Slack bot token" });
   await list.waitFor();
-  const status = (label) =>
+  const status = (label: string) =>
     list.locator("dt", { hasText: label }).locator("xpath=following-sibling::dd[1]/span");
   for (const [label, text, tone] of [
     ["Slack app token", "Missing", "danger"],
     ["Slack bot token", "Bound", "success"],
-  ]) {
+  ] as const) {
     const state = await badgeState(status(label));
     assert.deepEqual(
       { badge: state.badge, text: state.text, tone: state.tone, painted: state.painted },
@@ -683,7 +699,11 @@ test("The current version, Slack token bindings and Namespace rows use the badge
   await row.waitFor();
   assert.deepEqual(
     await row.evaluate((node) => {
-      const table = globalThis.getComputedStyle(node.closest(".namespace-table"));
+      const container = node.closest(".namespace-table");
+      if (!container) {
+        throw new Error("expected the Namespace row inside its table");
+      }
+      const table = globalThis.getComputedStyle(container);
       return {
         card: node.classList.contains("card"),
         surface: table.backgroundColor,
@@ -717,36 +737,37 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   // The list reports a saved configuration it cannot decode in the API's degraded shape: Agent
   // metadata without the six saved-settings fields (AgentReadSchema), plus configurationReadError.
   // PostgreSQL tests own the decode failure itself.
-  const savedSettings = [
-    "plugins",
-    "pluginApprovers",
-    "repositoryBindings",
-    "repositoryAccess",
-    "harnessAuth",
-    "credentialSources",
-  ];
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue();
       return;
     }
     const response = await route.fetch();
-    const payload = await response.json();
-    payload.data = payload.data.map((item) =>
-      item.id === unreadable.id
-        ? {
-            ...Object.fromEntries(
-              Object.entries(item).filter(([field]) => !savedSettings.includes(field)),
-            ),
-            configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
-          }
-        : item,
-    );
+    const payload: AgentListResponse = await response.json();
+    payload.data = payload.data.map((item) => {
+      if (item.id !== unreadable.id) {
+        return item;
+      }
+      assert.ok("harnessAuth" in item, "the fixture returned the Agent with readable settings");
+      const {
+        plugins: _plugins,
+        pluginApprovers: _approvers,
+        repositoryBindings: _bindings,
+        repositoryAccess: _access,
+        harnessAuth: _auth,
+        credentialSources: _sources,
+        ...metadata
+      } = item;
+      return {
+        ...metadata,
+        configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+      };
+    });
     await route.fulfill({ response, json: payload });
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-  const rowBadge = (name) =>
+  const rowBadge = (name: string) =>
     table
       .getByRole("row")
       .filter({ has: page.getByRole("link", { name, exact: true }) })
@@ -754,7 +775,7 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   for (const [name, text, tone] of [
     ["Deleting Agent", "Deleting", "warning"],
     ["Unreadable Agent", "Saved configuration unreadable", "danger"],
-  ]) {
+  ] as const) {
     await rowBadge(name).waitFor();
     const { badge, text: shown, tone: shownTone, painted } = await badgeState(rowBadge(name));
     assert.deepEqual(
@@ -788,9 +809,9 @@ test("Links and disclosures use the link colour with an underline, not the accen
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   // Each node's paint against the resolved link and accent colours.
-  const tones = (locator) =>
+  const tones = (locator: Locator) =>
     locator.evaluateAll((nodes) => {
-      const resolve = (value) => {
+      const resolve = (value: string) => {
         const probe = globalThis.document.createElement("span");
         probe.style.color = value;
         globalThis.document.body.append(probe);
@@ -813,8 +834,10 @@ test("Links and disclosures use the link colour with an underline, not the accen
           };
         });
     });
-  const tone = async (locator) => {
-    const [{ text: _text, ...paint }] = await tones(locator);
+  const tone = async (locator: Locator) => {
+    const [link] = await tones(locator);
+    assert.ok(link, "expected a visible link or disclosure to measure");
+    const { text: _text, ...paint } = link;
     return paint;
   };
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { fileBrowser, login, newPage, settledView } from "./console-agents-browser-helpers.mjs";
@@ -10,7 +11,7 @@ const browser = fileBrowser();
 const desktop = { viewport: { width: 1440, height: 900 } };
 const phone = { hasTouch: true, isMobile: true, viewport: { width: 390, height: 844 } };
 
-async function openAgents(t, context) {
+async function openAgents(t: TestContext, context: BrowserContextOptions) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Shell", { ready: true });
@@ -22,7 +23,7 @@ async function openAgents(t, context) {
 }
 
 // A colour token resolved to the computed form the browser reports.
-const tokenColor = (page, token) =>
+const tokenColor = (page: Page, token: string) =>
   page.evaluate((name) => {
     const probe = globalThis.document.createElement("div");
     probe.style.color = `var(${name})`;
@@ -32,12 +33,18 @@ const tokenColor = (page, token) =>
     return value;
   }, token);
 
-const style = (locator, ...properties) =>
+const style = (locator: Locator, ...properties: (keyof CSSStyleDeclaration)[]) =>
   locator.evaluate(
     (node, names) =>
       Object.fromEntries(names.map((name) => [name, globalThis.getComputedStyle(node)[name]])),
     properties,
   );
+
+async function visibleBox(locator: Locator) {
+  const box = await locator.boundingBox();
+  assert.ok(box, "expected a visible element to measure");
+  return box;
+}
 
 // The navigation uses an inverse surface, but its account menu uses the regular surface.
 test("the desktop shell shows the sidebar surface, the current-page bar and the account row", async (t) => {
@@ -68,7 +75,7 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
     color: text,
     height: "36px",
   });
-  const pageMarker = (link) =>
+  const pageMarker = (link: Locator) =>
     link.evaluate((node) => globalThis.getComputedStyle(node, "::before").borderInlineStart);
   assert.equal(await pageMarker(current), `3px solid ${marker}`);
   const other = page.locator(".nav a", { hasText: "Namespaces" });
@@ -114,7 +121,7 @@ test("the focus ring is a 2 px focus-colour outline", async (t) => {
 test("the phone top bar opens the account menu from its avatar and the drawer from its toggle", async (t) => {
   const { fixture, page } = await openAgents(t, phone);
   const topbar = page.locator(".topbar");
-  assert.equal(Math.round((await topbar.boundingBox()).height), 56);
+  assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
   const header = await page
     .locator(".page-header")
@@ -127,10 +134,10 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
     exact: true,
   });
   for (const control of [navigation, avatar]) {
-    const box = await control.boundingBox();
+    const box = await visibleBox(control);
     assert.ok(box.width >= 44 && box.height >= 44, `${JSON.stringify(box)} is a 44 px target`);
   }
-  const circle = await avatar.locator(".account-avatar").boundingBox();
+  const circle = await visibleBox(avatar.locator(".account-avatar"));
   assert.deepEqual([circle.width, circle.height], [32, 32]);
   assert.equal(await avatar.textContent(), "CA");
 
@@ -156,7 +163,7 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
     await tokenColor(page, "--color-surface-inverse"),
   );
   for (const link of await sidebar.locator(".nav a").all()) {
-    assert.ok((await link.boundingBox()).height >= 44, "drawer links keep a 44 px target");
+    assert.ok((await visibleBox(link)).height >= 44, "drawer links keep a 44 px target");
   }
   await page.keyboard.press("Escape");
   assert.equal(
@@ -184,14 +191,14 @@ test("Settings shows the account and session cards, and its Sign out ends the se
     assert.equal(await page.locator(".page-header .scope").textContent(), "Your account", size);
     assert.equal(await page.locator("#namespace-selector").count(), 0, `${size}: no selector`);
 
-    const card = (heading) =>
+    const card = (heading: string) =>
       view.locator("section.card", {
         has: page.getByRole("heading", { name: heading, exact: true }),
       });
     const account = card("Signed-in account");
     const avatar = account.locator(".account-avatar");
     assert.equal(await avatar.textContent(), "CA", size);
-    const circle = await avatar.boundingBox();
+    const circle = await visibleBox(avatar);
     assert.deepEqual([circle.width, circle.height], [64, 64], `${size}: a 64 px avatar`);
     assert.deepEqual(
       await account
@@ -206,7 +213,8 @@ test("Settings shows the account and session cards, and its Sign out ends the se
     assert.equal(
       await signOut.evaluate(
         (node) =>
-          globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+          globalThis.document.getElementById(node.getAttribute("aria-describedby") ?? "")
+            ?.textContent,
       ),
       "Signing out ends this session on this device only.",
       size,
@@ -223,8 +231,8 @@ test("Settings shows the account and session cards, and its Sign out ends the se
     assert.equal(await view.getByText("No configurable settings", { exact: false }).count(), 0);
     assert.equal(await view.getByRole("button", { name: "Back", exact: true }).count(), 0);
 
-    const column = await view.locator(".settings-page").boundingBox();
-    const button = await signOut.boundingBox();
+    const column = await visibleBox(view.locator(".settings-page"));
+    const button = await visibleBox(signOut);
     if (context === desktop) {
       assert.equal(column.width, 720, "the Settings column is 720 px wide");
       assert.ok(button.width < column.width / 2, "Sign out keeps its own width on desktop");
@@ -287,7 +295,7 @@ test("changing between desktop and phone layouts closes the account menu left be
   await page.setViewportSize({ width: 390, height: 844 });
   // Checked before any click: a click outside the menu would close it anyway.
   await page.waitForFunction(
-    () => globalThis.document.querySelector(".account-toggle").ariaExpanded === "false",
+    () => globalThis.document.querySelector(".account-toggle")?.ariaExpanded === "false",
   );
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator("#navigation-drawer").waitFor({ state: "visible" });
@@ -302,7 +310,7 @@ test("changing between desktop and phone layouts closes the account menu left be
   assert.equal(await page.locator("#account-menu-top").isVisible(), true);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForFunction(
-    () => globalThis.document.querySelector(".topbar-avatar").ariaExpanded === "false",
+    () => globalThis.document.querySelector(".topbar-avatar")?.ariaExpanded === "false",
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator("#account-menu-top").isVisible(), false);
@@ -342,7 +350,8 @@ test("the sign-in page says Sign in, labels the email field and names the build"
   assert.equal(
     await email.evaluate(
       (node) =>
-        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+        globalThis.document.getElementById(node.getAttribute("aria-describedby") ?? "")
+          ?.textContent,
     ),
     "Use your account email.",
   );
@@ -350,7 +359,7 @@ test("the sign-in page says Sign in, labels the email field and names the build"
   await page.getByLabel("Password", { exact: true }).waitFor();
   const submit = page.getByRole("button", { name: "Sign in", exact: true });
   assert.equal(await submit.evaluate((node) => node.classList.contains("button--primary")), true);
-  assert.equal((await submit.boundingBox()).width, (await email.boundingBox()).width);
+  assert.equal((await visibleBox(submit)).width, (await visibleBox(email)).width);
 
   const brand = page.locator(".auth .brand");
   assert.equal(await brand.textContent(), "OpenClaw Enterprise");
@@ -368,7 +377,7 @@ test("the sign-in page says Sign in, labels the email field and names the build"
 
   // A phone keeps a 16 px gutter on each side of the card.
   await page.setViewportSize({ width: 390, height: 844 });
-  const card = await page.locator(".auth").boundingBox();
+  const card = await visibleBox(page.locator(".auth"));
   assert.ok(card.x >= 16 && card.x + card.width <= 390 - 16, JSON.stringify(card));
 
   await email.fill(fixture.credentials.email);
@@ -385,7 +394,7 @@ test("the sign-in page leaves the footer out without a build commit", async (t) 
   await page.goto(new URL("/console/login", fixture.origin).href);
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await page.locator(".auth-footer").count(), 0);
-  assert.equal(await page.locator("#app").evaluate((node) => node.lastChild.nodeType), 1);
+  assert.equal(await page.locator("#app").evaluate((node) => node.lastChild?.nodeType), 1);
 });
 
 // Namespaces (UX spec 3.12): one table card with Namespace, Status and Created columns. Rows stay
@@ -423,10 +432,10 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   for (const [namespace, label, tone] of [
     [ready, "Ready", "success"],
     [provisioning, "Provisioning", "warning"],
-  ]) {
+  ] as const) {
     const row = list.getByRole("listitem").filter({ hasText: namespace.id });
     assert.equal(await row.evaluate((node) => node.classList.contains("card")), false);
-    assert.ok((await row.boundingBox()).height >= 56);
+    assert.ok((await visibleBox(row)).height >= 56);
     const link = row.getByRole("link", { name: namespace.name, exact: true });
     assert.equal(
       await link.getAttribute("href"),
@@ -437,11 +446,11 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
     assert.equal(await badge.getAttribute("data-tone"), tone);
     const created = row.locator(".namespace-cell-created");
     // The column name is read with the value but shown only by the head row.
-    assert.match(await created.textContent(), /^Created \S/);
-    assert.ok((await created.locator(".namespace-cell-label").boundingBox()).width <= 1);
+    assert.match((await created.textContent()) ?? "", /^Created \S/);
+    assert.ok((await visibleBox(created.locator(".namespace-cell-label"))).width <= 1);
     // Each cell starts under its column's name.
     const lefts = await Promise.all(
-      [link, badge, created].map(async (node) => Math.round((await node.boundingBox()).x)),
+      [link, badge, created].map(async (node) => Math.round((await visibleBox(node)).x)),
     );
     assert.deepEqual(lefts, columns);
   }
@@ -471,10 +480,10 @@ test("Namespaces read as a table whose rows open each Namespace's Agents", async
   assert.equal(await head.isVisible(), false);
   const phoneRow = list.getByRole("listitem").filter({ hasText: ready.id });
   const label = phoneRow.locator(".namespace-cell-label");
-  assert.ok((await label.boundingBox()).width > 1, "the date is labelled on a phone");
-  const name = await phoneRow.locator(".resource-name").boundingBox();
-  const status = await phoneRow.locator(".badge").boundingBox();
-  const date = await phoneRow.locator(".namespace-cell-created").boundingBox();
+  assert.ok((await visibleBox(label)).width > 1, "the date is labelled on a phone");
+  const name = await visibleBox(phoneRow.locator(".resource-name"));
+  const status = await visibleBox(phoneRow.locator(".badge"));
+  const date = await visibleBox(phoneRow.locator(".namespace-cell-created"));
   assert.ok(status.x > name.x && Math.abs(status.y - name.y) < 16, "badge beside the name");
   assert.ok(date.y > name.y + name.height, "date beneath the name");
   assert.ok(

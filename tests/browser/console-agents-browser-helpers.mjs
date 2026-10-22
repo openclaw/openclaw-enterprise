@@ -177,6 +177,7 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
 // keeps that tab's session storage and history across the sign-in. So does a fixture served
 // over TLS or under another host name, whose cookies are what such a test checks. Tests about
 // the sign-in page itself use the form directly or loginThroughForm.
+/** @param {string | URL} [path] */
 export async function login(
   page,
   fixture,

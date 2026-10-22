@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import type { Page } from "playwright";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -28,10 +29,10 @@ const browser = fileBrowser();
 // The two rings the design tokens describe (--focus-ring at --focus-offset, and at
 // --focus-offset-inset for rows and items inside a scroller), resolved through a probe so the
 // test follows the tokens instead of copying their values.
-const tokenRings = (page) =>
+const tokenRings = (page: Page) =>
   page.evaluate(() => {
     const document = globalThis.document;
-    const ring = (offset, inverse = false) => {
+    const ring = (offset: string, inverse = false) => {
       const probe = document.createElement("div");
       probe.style.outline = "var(--focus-ring)";
       if (inverse) {
@@ -58,7 +59,7 @@ const tokenRings = (page) =>
 
 // The rows that draw a second ring around their focused control, a small checkbox or radio, and
 // the ring each draws.
-const FRAMES = {
+const FRAMES: Record<string, "outer" | "inset"> = {
   ".repository-result": "inset",
   ".repository-option": "outer",
   ".repository-profile": "outer",
@@ -68,9 +69,9 @@ const FRAMES = {
 // ring. A borderless input's ring is drawn by its wrapper, so the ring belongs to the nearest
 // element, the control or one of its two closest ancestors, that has an outline. `selector`
 // measures an element that shows focus without holding it, such as an aria-activedescendant option.
-const focusedRing = (page, selector = null) =>
+const focusedRing = (page: Page, selector: string | null = null) =>
   page.evaluate(
-    ([selector, frameSelectors]) => {
+    ({ selector, frameSelectors }) => {
       const document = globalThis.document;
       const focused = selector ? document.querySelector(selector) : document.activeElement;
       if (!focused || focused === document.body) {
@@ -83,7 +84,9 @@ const focusedRing = (page, selector = null) =>
       const name = (
         focused.getAttribute("aria-label") ||
         labelledBy.trim() ||
-        focused.labels?.[0]?.textContent ||
+        ("labels" in focused &&
+          focused.labels instanceof NodeList &&
+          focused.labels.item(0)?.textContent) ||
         focused.textContent ||
         focused.tagName
       )
@@ -91,7 +94,7 @@ const focusedRing = (page, selector = null) =>
         .replace(/\s+/g, " ")
         .slice(0, 40);
       const tag = focused.getAttribute("role") === "tab" ? "tab" : focused.tagName.toLowerCase();
-      let owner = focused;
+      let owner: Element | null = focused;
       for (let depth = 0; owner && depth < 3; depth += 1) {
         if (globalThis.getComputedStyle(owner).outlineStyle !== "none") {
           break;
@@ -142,11 +145,11 @@ const focusedRing = (page, selector = null) =>
         // counts as hidden there. On an axis the scroller has not scrolled along the cut is
         // layout alone, and more than half a pixel of it shows when painted (finding 1977: a
         // 0.9px sideways cut passed).
-        const hides = (cut, scrolled) => (scrolled ? cut >= 1 : cut > 0.5);
+        const hides = (cut: number, scrolled: boolean) => (scrolled ? cut >= 1 : cut > 0.5);
         for (const [axis, cut, scrolled] of [
           ["x", cutX, scroller.scrollLeft !== 0],
           ["y", cutY, scroller.scrollTop !== 0],
-        ]) {
+        ] as const) {
           if (hides(cut, scrolled)) {
             clipped.push(
               `.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px (${axis})`,
@@ -162,7 +165,7 @@ const focusedRing = (page, selector = null) =>
         if (frameStyle.outlineStyle !== "none") {
           frames.push({
             frame:
-              frameSelectors.find((frame) => node.matches(frame)) ??
+              frameSelectors.find(node.matches.bind(node)) ??
               `${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`,
             ring: [
               frameStyle.outlineStyle,
@@ -176,12 +179,14 @@ const focusedRing = (page, selector = null) =>
       const inverse = owner.closest(".sidebar, .topbar, .dialog-header") && !owner.closest(".menu");
       return { name, tag, ring: ring.join(" "), inverse: Boolean(inverse), clipped, frames };
     },
-    [selector, Object.keys(FRAMES)],
+    { selector, frameSelectors: Object.keys(FRAMES) },
   );
+
+type FocusStop = NonNullable<Awaited<ReturnType<typeof focusedRing>>>;
 
 // Tab from the current focus until focus leaves the document (or `until` matches a stop), and
 // record every stop.
-async function tabStops(page, until = () => false) {
+async function tabStops(page: Page, until?: (stop: FocusStop) => boolean) {
   const stops = [];
   for (let step = 0; step < 80; step += 1) {
     await page.keyboard.press("Tab");
@@ -190,7 +195,7 @@ async function tabStops(page, until = () => false) {
       return stops;
     }
     stops.push(stop);
-    if (until(stop)) {
+    if (until?.(stop)) {
       return stops;
     }
   }
@@ -198,13 +203,17 @@ async function tabStops(page, until = () => false) {
 }
 
 // A computed ring as its style, width and offset (the colour sits between them).
-function ringParts(ring) {
+function ringParts(ring: string) {
   const [style, width, ...rest] = ring.split(" ");
-  return { style, width: Number.parseFloat(width), offset: Number.parseFloat(rest.at(-1)) };
+  return {
+    style,
+    width: Number.parseFloat(width ?? ""),
+    offset: Number.parseFloat(rest.at(-1) ?? ""),
+  };
 }
 
 // Every stop draws one of the token rings, and no scroller hides any part of it.
-async function assertVisibleRings(page, label, stops) {
+async function assertVisibleRings(page: Page, label: string, stops: FocusStop[]) {
   const { outer, inset, inverse } = await tokenRings(page);
   const outerRing = ringParts(outer);
   const insetRing = ringParts(inset);
@@ -225,12 +234,15 @@ async function assertVisibleRings(page, label, stops) {
   // One ring per stop: a second ring comes only from a listed row frame, in its token ring.
   const rings = { outer, inset };
   const framed = stops.filter(({ frames }) =>
-    frames.some(({ frame, ring }) => rings[FRAMES[frame]] !== ring),
+    frames.some(({ frame, ring }) => {
+      const expected = FRAMES[frame];
+      return expected === undefined || rings[expected] !== ring;
+    }),
   );
   assert.deepEqual(framed, [], `${label}: no stop has a second ring beyond its row's frame`);
 }
 
-function logLine(index) {
+function logLine(index: number) {
   const time = `2026-09-30T12:00:${String(index % 60).padStart(2, "0")}.000000001Z`;
   // Structured lines render as expandable rows whose summary takes focus.
   const raw =
@@ -246,9 +258,10 @@ function logLine(index) {
 }
 
 test("every keyboard stop on Agents, Agent detail, its logs and Create Agent shows an unclipped token ring", async (t) => {
-  const computeDriver = createRuntimeLogComputeDriver();
   // Enough lines that the log pane scrolls at both widths.
-  computeDriver.state.lines = Array.from({ length: 20 }, (_, index) => logLine(index));
+  const computeDriver = createRuntimeLogComputeDriver({
+    state: { lines: Array.from({ length: 20 }, (_, index) => logLine(index)) },
+  });
   const fixture = await createConsoleAppFixture(t, {
     computeDriver,
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
@@ -278,7 +291,7 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       "Start without Preset",
       "button",
     ],
-  ];
+  ] as const;
   for (const viewport of consoleViewports) {
     for (const [title, path, role, landmark, tag] of pages) {
       const label = `${title} at ${viewport.width}`;
@@ -318,7 +331,9 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
   const stops = await tabStops(page, ({ tag }) => tag === "tab");
   for (let step = 1; step < count; step += 1) {
     await page.keyboard.press("ArrowRight");
-    stops.push(await focusedRing(page));
+    const stop = await focusedRing(page);
+    assert.ok(stop, "ArrowRight keeps focus in the tab strip");
+    stops.push(stop);
   }
   assert.equal(
     new Set(stops.filter(({ tag }) => tag === "tab").map(({ name }) => name)).size,
@@ -335,7 +350,10 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
         globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
       });
       const focused = globalThis.document.activeElement;
-      const strip = focused.closest('[role="tablist"]');
+      const strip = focused?.closest('[role="tablist"]');
+      if (!focused || !strip) {
+        throw new Error("ArrowRight moved focus outside the tab strip");
+      }
       const style = globalThis.getComputedStyle(strip);
       const before = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")) || 0;
       const after = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")) || 0;
@@ -352,7 +370,7 @@ test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clea
 });
 
 test("repository rows and the Slack people search on Create Agent show an unclipped token ring", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) =>
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) =>
     ["app", "docs"].map((repositoryRef, index) => ({
       repositoryRef,
       repositoryId: String(1700 + index),
@@ -427,11 +445,12 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     // The people search input has no outline of its own; its chip field draws the ring.
     await page.getByLabel("Default plugin approvers mode").focus();
     const people = await tabStops(page, ({ name }) => name === "Default plugin approvers people");
-    assert.equal(people.at(-1).name, "Default plugin approvers people");
+    assert.equal(people.at(-1)?.name, "Default plugin approvers people");
     await assertVisibleRings(page, label, [...repositories, ...access, ...people]);
     // The 18 px checkbox alone is easy to miss, so its whole result row draws the inset ring.
     const { inset } = await tokenRings(page);
     const app = repositories.find(({ name }) => name.includes("example/app"));
+    assert.ok(app, "Tab reached the example/app repository");
     assert.deepEqual(
       app.frames,
       [{ frame: ".repository-result", ring: inset }],
@@ -448,7 +467,8 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     await page.getByRole("option", { name: /Freeman Example/ }).waitFor();
     await search.press("ArrowDown");
     const result = await focusedRing(page, ".slack-directory-result.active");
-    assert.match(result?.name ?? "", /Freeman Example/, `${label}: ArrowDown activates a result`);
+    assert.ok(result, "ArrowDown activates a directory result");
+    assert.match(result.name, /Freeman Example/, `${label}: ArrowDown activates a result`);
     assert.equal(result.ring, inset, `${label}: the active result draws the inset ring`);
     await assertVisibleRings(page, `${label} people results`, [result]);
   }
@@ -481,7 +501,9 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     await dialog.evaluate(async (node) => {
       await Promise.all(node.getAnimations().map((animation) => animation.finished));
     });
-    const stops = [await focusedRing(page), ...(await tabStops(page))];
+    const first = await focusedRing(page);
+    assert.ok(first, "opening Configure plugins places focus in its dialog");
+    const stops = [first, ...(await tabStops(page))];
     for (const name of ["Search plugins", "Linear"]) {
       assert.ok(
         stops.some((stop) => stop.name === name),

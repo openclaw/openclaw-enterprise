@@ -23,9 +23,9 @@
     "tests/browser/console-agent-deploy-focus.test.mjs",
     "tests/browser/console-agents-list-return.test.mjs",
     "tests/browser/console-refocus-focus.test.mjs",
-    "tests/browser/console-focus-ring.test.mjs",
+    "tests/browser/console-focus-ring.test.ts",
     "tests/browser/console-drafts-kept.test.mjs",
-    "tests/browser/console-button-hierarchy.test.mjs",
+    "tests/browser/console-button-hierarchy.test.ts",
     "tests/browser/console-status-block.test.mjs",
     "tests/browser/console-page-header.test.mjs"
   ],
@@ -88,13 +88,13 @@
       "path": "tests/browser/console-refocus-focus.test.mjs"
     },
     {
-      "path": "tests/browser/console-focus-ring.test.mjs"
+      "path": "tests/browser/console-focus-ring.test.ts"
     },
     {
       "path": "tests/browser/console-drafts-kept.test.mjs"
     },
     {
-      "path": "tests/browser/console-button-hierarchy.test.mjs"
+      "path": "tests/browser/console-button-hierarchy.test.ts"
     },
     {
       "path": "tests/browser/console-status-block.test.mjs"
