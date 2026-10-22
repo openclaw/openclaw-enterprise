@@ -32,6 +32,7 @@ import {
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
   normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
@@ -5747,8 +5748,14 @@ test(
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
-        // Preparation refuses the profile too (finding 2199). The Sandbox's own v5 checks stay
-        // covered with the wiring a qualified sender would prepare from the same configuration.
+        // Compute's preparation refuses the profile too, so a revision admitted before this check
+        // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own
+        // v5 checks stay covered with the wiring a qualified sender would prepare: what
+        // configureRevision returns, without its profile gate.
+        await assert.rejects(new ProtectedExecutionDriver(owner).configure(ctx), {
+          name: "RepositoryGitSenderUnqualifiedError",
+          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+        });
         await assert.rejects(proxy.configureRevision(ctx), {
           code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
         });

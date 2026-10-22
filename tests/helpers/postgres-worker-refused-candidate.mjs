@@ -69,11 +69,12 @@ export function denyDeploy(fixture, owner) {
  * passes fail: "revoked" denies `deploy` (the next pass refuses it), "unsupported" is refused
  * by Compute, and "unqualified" by its Credential Proxy (an upgraded worker refusing a revision
  * admitted with an unqualified Git sender). The self-failures "held" (a held model-probe
- * failure) and "retried" (an ordinary error) are not refusals. Any other value, such as "late", only leaves the candidate unready.
- * `stopRevision(revision)` returns undefined to use the counting driver's stop or a promise that
- * replaces it, for example a failing stop. `compute` restarts the worker. `refusing()` false lets
- * Compute accept the candidate again, and `candidateReady()` makes it ready; `startOptions` go to
- * the worker. `admittedAt` is the time just before the replacement was admitted.
+ * failure) and "retried" (an ordinary error) are not refusals. Any other value, such as
+ * "late", only leaves the candidate unready. `stopRevision(revision)` returns undefined to use
+ * the counting driver's stop or a promise that replaces it, for example a failing stop.
+ * `compute` restarts the worker. `refusing()` false lets Compute accept the candidate again, and
+ * `candidateReady()` makes it ready; `startOptions` go to the worker. `admittedAt` is the time
+ * just before the replacement was admitted.
  */
 export async function startRefusedCandidate(
   fixture,
