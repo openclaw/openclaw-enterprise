@@ -2925,7 +2925,8 @@ test("gateway runtime status maps native Slack channel status without provider d
   let holdChannelStatusResponse = false;
   let pendingChannelSignal;
   let rpcTimeout;
-  let gatewayReadyStatus = 503;
+  // Native /startupz and /readyz answers.
+  const nativeProbeStatus = { "/startupz": 503, "/readyz": 503 };
   const sandbox = {
     AbortController,
     AbortSignal,
@@ -2963,8 +2964,8 @@ test("gateway runtime status maps native Slack channel status without provider d
             statusHandler = handler;
             return { listen() {} };
           },
-          get(_options, callback) {
-            callback({ statusCode: gatewayReadyStatus, resume() {} });
+          get(options, callback) {
+            callback({ statusCode: nativeProbeStatus[options.path], resume() {} });
             return { on() {}, destroy() {} };
           },
         };
@@ -3034,7 +3035,11 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(ready.revisionId, revisionId);
   assert.equal(channelStatusCalls, 0);
   assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
-  gatewayReadyStatus = 200;
+  // Native /readyz admits a Gateway while its agent databases are still in
+  // startup inspection, when turns fail (finding 2185): /startupz holds it.
+  nativeProbeStatus["/readyz"] = 200;
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
+  nativeProbeStatus["/startupz"] = 200;
   assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 200, body: "" });
   const assertSlackDiagnostics = async (status, expected, description) => {
     channelStatus = status;
@@ -3630,15 +3635,12 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness and startup endpoints, answered only
-  // while serving.
+  // The native Gateway's own readiness endpoint, answered only while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
+    assert.equal(request.url, "/readyz");
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
-    if (request.url === "/readyz") {
-      fixture.readinessProbes.push({ child: fixture.children.length, status });
-    }
+    fixture.readinessProbes.push({ child: fixture.children.length, status });
     response.writeHead(status).end();
   });
   fixture.gatewayPort = gatewayPort;

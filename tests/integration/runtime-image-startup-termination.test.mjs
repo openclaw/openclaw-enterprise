@@ -245,10 +245,10 @@ test(
     await withStartupProbeEvidence(first, async () => {
       assert.equal(firstTurn.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
     });
-    // A Gateway in another PID namespace takes over the killed one's state only
-    // once its owner heartbeat is 90 s old (OpenClaw's
-    // GATEWAY_OWNER_HEARTBEAT_STALE_MS); before that it exits and the kubelet
-    // restarts it. Start once it can take over.
+    // A Gateway in another PID namespace cannot verify that the killed owner
+    // is gone until its heartbeat is 90 s old (OpenClaw's
+    // GATEWAY_OWNER_HEARTBEAT_STALE_MS): an earlier start refuses the shared
+    // state and exits. Start once the restart can take over.
     await new Promise((resolve) => setTimeout(resolve, killedAt + 92_000 - Date.now()));
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn;

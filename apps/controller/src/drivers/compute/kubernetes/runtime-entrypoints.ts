@@ -2307,13 +2307,15 @@ function nativeGatewayAnswers(path) {
 
 // OpenClaw's /readyz admits a Gateway whose agent databases are still in
 // background startup inspection, and a chat turn then gets HTTP 500 until it
-// finishes (19.6 s after an unclean stop in finding 2185). /startupz stays 503
-// until that inspection settles; /readyz adds channel health.
+// finishes (19.6 s after start in finding 2185). /startupz stays 503 until
+// every agent's inspection settles; /readyz adds channel, state database,
+// failed agent database and plugin reload health.
 async function gatewayRuntimeReady() {
   if (pluginRuntimeStatusPort() !== undefined && pluginStatusReport.phase !== "ready") {
     return false;
   }
-  return (await nativeGatewayAnswers("/startupz")) && (await nativeGatewayAnswers("/readyz"));
+  const answers = await Promise.all([nativeGatewayAnswers("/startupz"), nativeGatewayAnswers("/readyz")]);
+  return answers.every((ready) => ready);
 }
 
 startPluginRuntimeStatusServer(gatewayRuntimeReady);
