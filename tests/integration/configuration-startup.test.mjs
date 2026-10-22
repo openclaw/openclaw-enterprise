@@ -452,8 +452,9 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
     ],
   ];
   // All three entrypoints map a ConfigurationValidationError to the code and its details with
-  // the same function, so the last case boots them for real. The others reach the loader all
-  // three call with the file (production mode) and get that function's one-line diagnostic.
+  // the same function, so, as in the observability test, the last case boots them for real.
+  // The others reach the loader all three call with the file (production mode) and get that
+  // function's one-line diagnostic.
   for (const [index, [mutate, details]] of cases.entries()) {
     const configuration = installation();
     configuration.occ.cluster = "production-west";
@@ -469,7 +470,10 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
           assert.ok(error instanceof ConfigurationValidationError, String(error));
           const line = formatStartupConfigurationFailure(error);
           assert.match(line, /^DRIVER_CONFIGURATION_INVALID: /);
-          assert.deepEqual(JSON.parse(line.split("DRIVER_CONFIGURATION_INVALID: ")[1]), details);
+          assert.deepEqual(
+            JSON.parse(line.slice("DRIVER_CONFIGURATION_INVALID: ".length)),
+            details,
+          );
           assert.ok(!line.includes(path));
           assert.doesNotMatch(line, /Bad_Class|ceiling\.example\.test|\/additions/);
           return true;
@@ -1983,8 +1987,10 @@ test("API and worker name a Preset file failure in their startup error code", as
             mode: "production",
             environment: { OCC_CONFIG_PATH: path },
           }),
-          PresetFileError,
-          filename,
+          (error) => {
+            assert.ok(error instanceof PresetFileError, `${filename}: ${String(error)}`);
+            return true;
+          },
         );
         return;
       }
