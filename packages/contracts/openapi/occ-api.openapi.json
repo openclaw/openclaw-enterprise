@@ -788,6 +788,11 @@
                     "type": "string"
                   },
                   {
+                    "const": "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+                    "description": "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
+                    "type": "string"
+                  },
+                  {
                     "const": "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
                     "description": "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
                     "type": "string"

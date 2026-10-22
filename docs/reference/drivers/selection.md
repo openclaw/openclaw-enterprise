@@ -97,13 +97,13 @@ both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
 At release, Compute checks the installed recipient. Select the guarantee that
 the actual sender can enforce:
 
-| Admission | Required behavior                                                                                                                                 |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| v3        | Protected request-time routes and response custody; not repository delivery.                                                                      |
-| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                    |
-| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. External packages can select this too. |
-| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                             |
-| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.            |
+| Admission | Required behavior                                                                                                                                                                                      |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| v3        | Protected request-time routes and response custody; not repository delivery.                                                                                                                           |
+| v4        | Exact dispatch: enforce exclusive `sendStartBy` before connecting and again before writing if setup took time.                                                                                         |
+| v5        | Online authorization: return the decision by `replyBy`; an authorized request may finish after withdrawal. Only external packages; bundled OpenShell refuses it (`REPOSITORY_GIT_SENDER_UNQUALIFIED`). |
+| v6        | Bundled OpenShell preview: observe the request hook per start; this does not prove the hook cannot later be disabled.                                                                                  |
+| v7        | Exact dispatch plus verified policy reduction v2; can retain independently admitted routes and the same recipient when Git is removed.                                                                 |
 
 A lost authorization reply leaves possible use recorded; do not retry that
 exchange. v7 support in OCC is available to a capable Driver, not evidence that

@@ -550,6 +550,26 @@ export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictE
 }
 
 /**
+ * Finding 2199: the selected Credential Proxy has no qualified enforcement for protected
+ * repository Git delivery (the `git-write` profile), so a revision admitted with it could only
+ * wait at Harness enrollment for the convergence deadline. No retry changes that: deploy
+ * refuses it with 409 REPOSITORY_GIT_SENDER_UNQUALIFIED, and the worker fails a revision
+ * admitted before this check at once with the same code. The message names only the
+ * Installation's capability, never the repository or grant.
+ */
+export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
+  static readonly description =
+    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.";
+  readonly code = RepositoryGitSenderUnqualifiedError.code;
+
+  constructor() {
+    super(RepositoryGitSenderUnqualifiedError.description);
+    this.name = "RepositoryGitSenderUnqualifiedError";
+  }
+}
+
+/**
  * The Configuration moved past the generation the update named. HTTP marks it with an
  * `/expectedGeneration` detail, so a caller can tell it from other Configuration conflicts,
  * such as one reserved for provisioning, and reread before saving again.

@@ -10,6 +10,8 @@ delivery profile.
 **There is no qualified stock OpenShell deployment for protected access in this
 release.** Stock OpenShell 0.1.5 is not qualified. A successful fixture, Helm
 rollout, or source registration does not establish an installed enforcing path.
+Deploy refuses a `git-write` binding on the bundled OpenShell Credential Proxy
+with `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`.
 Before enrolling real credentials, qualify the exact Driver, Compute, Sandbox,
 images, charts, and TLS path for the requested profile. The
 [Credential Proxy reference](../reference/drivers/credential-proxy.md) describes

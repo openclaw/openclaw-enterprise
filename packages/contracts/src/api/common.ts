@@ -919,6 +919,7 @@ export const ERROR_CODES = Object.freeze([
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
+  "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
@@ -1005,6 +1006,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("SANDBOX_POLICY_PROTECTED_EXECUTION", {
             description:
               "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
+          }),
+          Type.Literal("REPOSITORY_GIT_SENDER_UNQUALIFIED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:

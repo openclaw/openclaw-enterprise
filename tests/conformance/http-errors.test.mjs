@@ -45,6 +45,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
+  RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -193,6 +194,16 @@ const cases = [
       code: "SANDBOX_POLICY_PROTECTED_EXECUTION",
       message:
         "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+    },
+  ],
+  [
+    "a git-write deploy on a Credential Proxy with no qualified sender names the alternatives",
+    new RepositoryGitSenderUnqualifiedError(),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+      message:
+        "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.",
     },
   ],
   [

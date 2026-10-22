@@ -8,6 +8,7 @@ import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
@@ -16,12 +17,15 @@ import {
   createGitHubRepositoryDeliveryResolver,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   InMemoryPlatformState,
   DriverConfigurationRegistry,
+  InstalledDriver,
   OpenClawController,
+  RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
 import {
@@ -89,6 +93,14 @@ function repositorySandbox(registry, id = "repository-admission-openshell") {
           }),
     },
   );
+}
+
+// Stands in for the Kubernetes Driver composed with drivers.repo.openShell, which admits
+// dedicated Codex repository bindings in the selected OpenShell Sandbox.
+class OpenShellGitComputeDriver extends KubernetesComputeDriver {
+  validateRepositoryCredentials(harness) {
+    assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
+  }
 }
 
 function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = false) {
@@ -1154,13 +1166,6 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   const direct = grant("git-direct", "github.com", 22);
   // Finding 2145: an IP address may lead to GitHub, so it is refused the same way.
   const address = grant("git-address", "140.82.112.3");
-  class OpenShellGitComputeDriver extends KubernetesComputeDriver {
-    // Stands in for the Kubernetes Driver composed with drivers.repo.openShell, which admits
-    // dedicated Codex repository bindings in the selected OpenShell Sandbox.
-    validateRepositoryCredentials(harness) {
-      assert.deepEqual([harness.id, harness.mode], ["codex", "dedicated"]);
-    }
-  }
   const f = await fixture(t, {
     harness: "codex",
     compute: kubernetesCompute(OpenShellGitComputeDriver),
@@ -1282,6 +1287,66 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   assert.equal(applied.status, 409, JSON.stringify(applied));
   assert.equal(applied.error.message, message);
   assert.equal((await f.request("GET", policyPath(bound))).data.policy.application, undefined);
+});
+
+test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified sender", async (t) => {
+  // Finding 2199: stock OpenShell registers oce-prepared-git, so admission accepted a git-write
+  // binding as protected online authorization. No release is qualified to enforce it, so the
+  // Harness waited at enrollment until the 15-minute convergence deadline. Deploy now refuses it
+  // with a stable code before contacting the gateway, and creates no revision.
+  class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
+    // Stands in for Kubernetes Compute with its paired protected release, so only the Credential
+    // Proxy decides whether the git-write execution is admitted.
+    validateExecutionAdmission(revision) {
+      assertExecutionAdmission(revision);
+    }
+  }
+  const f = await fixture(t, {
+    harness: "codex",
+    compute: kubernetesCompute(ProtectedGitComputeDriver),
+    controllerOptions: {
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
+  });
+  const sandbox = repositorySandbox(f.registry);
+  const registration = "oce-prepared-git";
+  let gatewayReads = 0;
+  const gateway = {
+    async getGatewayInfo() {
+      gatewayReads += 1;
+      // What stock 0.1.5 reports once the request-phase service is registered.
+      return {
+        gateway_version: "0.1.5",
+        extensions: [{ configured_name: registration, kind: 4, protocol_major: 1 }],
+      };
+    },
+  };
+  const options = {
+    middlewareName: registration,
+    repositoryMiddlewareName: registration,
+    authorityScope: "execution",
+  };
+  const proxy = new OpenShellCredentialProxyDriver(options, {
+    id: sandbox.id,
+    sandbox,
+    backend: { id: "openshell", drivers: {}, client: { clientForNamespace: () => gateway } },
+  });
+  const owner = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: options },
+    { capabilities: { sandbox, credential_proxy: proxy } },
+  );
+  f.controller.registerDriver(owner);
+  f.controller.selectDriver("sandbox", sandbox.id);
+  f.controller.selectDriver("credential_proxy", proxy.id);
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
+  await f.prepareDeployment(agent);
+  const path = `${f.collection}/${agent.id}`;
+  const refused = await f.request("POST", `${path}/deploy`);
+  assert.equal(refused.status, 409, JSON.stringify(refused));
+  assert.equal(refused.error.code, "REPOSITORY_GIT_SENDER_UNQUALIFIED");
+  assert.equal(refused.error.message, RepositoryGitSenderUnqualifiedError.description);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  assert.equal(gatewayReads, 0, "the refusal needs no gateway read");
 });
 
 test("the policy worker fails a Driver's named policy refusal at once", async () => {

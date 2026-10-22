@@ -31,6 +31,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import {
   normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
@@ -5650,7 +5651,13 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
-    await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git");
+    // Finding 2199: no OpenShell release is qualified to enforce git-write, so the bundled sender
+    // refuses the profile before it reads the gateway, instead of admitting a revision that waits
+    // at enrollment until the convergence deadline.
+    await assert.rejects(
+      protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git"),
+      { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" },
+    );
 
     protectedGit.computeDriver.validateRepositoryCredentials(
       { id: "codex", mode: "dedicated" },
@@ -5740,7 +5747,16 @@ test(
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
-        const proxyWiring = await proxy.configureRevision(ctx);
+        // Preparation refuses the profile too (finding 2199). The Sandbox's own v5 checks stay
+        // covered with the wiring a qualified sender would prepare from the same configuration.
+        await assert.rejects(proxy.configureRevision(ctx), {
+          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+        });
+        const qualifiedWiring = (c) => ({
+          plan: c.plan,
+          configuration: openShellEgressConfiguration(c.plan, proxy.options),
+        });
+        const proxyWiring = qualifiedWiring(ctx);
         const required = structuredClone({ ...requirements, proxyWiring });
         const { harnessEgressEnrollment } =
           await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
@@ -5786,7 +5802,7 @@ test(
           exactRevision.executionAdmission.version = 4;
           delete exactRevision.egressPlan.repositoryGitAuthorization;
           const exact = { ...context, plan: exactRevision.egressPlan, revision: exactRevision };
-          const exactWiring = await proxy.configureRevision(exact);
+          const exactWiring = qualifiedWiring(exact);
           await assert.rejects(
             sandbox.provisionHarness({
               ...exact,

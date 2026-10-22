@@ -72,6 +72,7 @@ import {
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
   operationRefusalHint,
+  RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
@@ -4536,6 +4537,9 @@ export class ControllerWorker {
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
+          // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
+          // can never enroll, so it fails now instead of at the convergence deadline.
+          error instanceof RepositoryGitSenderUnqualifiedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
           error instanceof ActivationFailedError
