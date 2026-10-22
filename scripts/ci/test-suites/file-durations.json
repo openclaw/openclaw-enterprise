@@ -12,7 +12,7 @@
     "tests/browser/console-agent-overview.test.mjs": 58100,
     "tests/browser/console-agent-plugin-approvers.test.mjs": 16900,
     "tests/browser/console-agent-plugin-refusals.test.mjs": 10600,
-    "tests/browser/console-agent-presets.test.mjs": 70200,
+    "tests/browser/console-agent-presets.test.ts": 70200,
     "tests/browser/console-agent-repositories.test.mjs": 38600,
     "tests/browser/console-agent-save-refusals.test.ts": 10500,
     "tests/browser/console-agent-saves.test.ts": 69500,

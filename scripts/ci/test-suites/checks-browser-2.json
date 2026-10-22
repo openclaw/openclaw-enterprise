@@ -4,7 +4,7 @@
   },
   "fileConcurrency": 8,
   "parallelFiles": [
-    "tests/browser/console-agent-presets.test.mjs",
+    "tests/browser/console-agent-presets.test.ts",
     "tests/browser/console-agents.test.ts",
     "tests/integration/ci-impact.test.mjs",
     "tests/browser/console-agent-draft-guards.test.mjs",
@@ -52,7 +52,7 @@
       "path": "tests/browser/console-agent-state.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-presets.test.mjs"
+      "path": "tests/browser/console-agent-presets.test.ts"
     },
     {
       "path": "tests/browser/console-agent-channels.test.mjs"
