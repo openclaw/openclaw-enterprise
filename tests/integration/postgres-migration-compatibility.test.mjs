@@ -1135,7 +1135,7 @@ async function installProviderCompletedHistory(db) {
   try {
     await mkdir(join(directory, "meta"));
     const manifest = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
     const entries = manifest.compatibleLineages.providerCompleted.entries;
     assert.equal(entries.length, 31);
@@ -1312,7 +1312,7 @@ async function assertHistoryRefused(db, refusal) {
 
 async function assertCompletedHistory(db, previous = []) {
   const manifest = JSON.parse(
-    await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+    await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
   assert.equal(receipts.length, 62);
@@ -2566,7 +2566,7 @@ test(
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const manifest = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
     const repositorySql = await readFile(
       join(migrationsDirectory, "0025_repository_credentials.sql"),

@@ -84,7 +84,7 @@ through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
 `preCredentialProxy` (59, through `0059_administrator_sandbox_policy_grants`).
 The three credential migrations bring this history to `completed` with 62 receipts.
-The [canonical manifest](../../../migrations/meta/canonical-history.json) records
+The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
 accepted source hashes and catalogs. Intermediate pre-merge preview histories
 are unsupported; do not delete or relabel their receipts.
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and

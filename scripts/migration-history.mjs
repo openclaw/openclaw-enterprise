@@ -19,7 +19,7 @@ function refuse(reason) {
 
 async function readManifest() {
   const manifest = JSON.parse(
-    await readFile(join(directory, "meta/canonical-history.json"), "utf8"),
+    await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
   );
   const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
   const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
