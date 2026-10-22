@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { X509Certificate } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
 import { createServer as createTlsServer } from "node:tls";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { oidcNonce } from "../../apps/controller/src/auth/oidc.ts";
 import { readHarnessNodeCa } from "../../apps/controller/src/composition/installation-config.ts";
 import {
@@ -231,12 +231,6 @@ test("OIDC CA may share a public trust bundle Secret with the Gateway CA", tooli
   );
 });
 
-async function temporaryDirectory(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-oidc-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  return directory;
-}
-
 async function certificates(directory, name, hostname) {
   const file = (suffix) => join(directory, `${name}-${suffix}`);
   const run = (args) => execute("openssl", args, { timeout: 10000 });
@@ -361,7 +355,7 @@ test(
   "rendered Harness node CA carries the Gateway root and never the IdP root",
   tooling,
   async (t) => {
-    const directory = await temporaryDirectory(t);
+    const directory = await temporaryDirectory(t, "occ-oidc-ca-");
     const idp = await certificates(directory, "idp", "sso.example.test");
     const gateway = await certificates(directory, "gateway", "gateway.example.test");
     const gatewayRoot = new X509Certificate(gateway["ca.pem"]).toString();
@@ -432,7 +426,7 @@ test(
   "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",
   tooling,
   async (t) => {
-    const directory = await temporaryDirectory(t);
+    const directory = await temporaryDirectory(t, "occ-oidc-ca-");
     const idp = await certificates(directory, "idp", "sso.example.test");
     const gateway = await certificates(directory, "gateway", "gateway.example.test");
     const unrelated = await certificates(directory, "unrelated", "untrusted.example.test");
@@ -581,7 +575,7 @@ test(
   "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup",
   tooling,
   async (t) => {
-    const directory = await temporaryDirectory(t);
+    const directory = await temporaryDirectory(t, "occ-oidc-ca-");
     const database = await certificates(directory, "database", "localhost");
     const idp = await certificates(directory, "idp", "localhost");
     const api = pod(await render({ ...oidcValues, ...caValues, ...externalGatewayCa }), "api");

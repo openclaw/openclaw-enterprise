@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -10,6 +9,7 @@ import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const script = fileURLToPath(new URL("../../scripts/upgrade-node-platform.py", import.meta.url));
@@ -21,8 +21,7 @@ const imageIdentityScript = fileURLToPath(
 );
 
 async function qualify(t, nodes, selector = {}) {
-  const root = await mkdtemp(join(tmpdir(), "occ-node-platform-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-node-platform-");
   const inventory = join(root, "nodes.json");
   const values = join(root, "values.json");
   await writeFile(inventory, JSON.stringify({ items: nodes }));
@@ -42,8 +41,7 @@ function node(name, architecture, labels = {}) {
 }
 
 test("image identity keeps filesystem layers outside the metadata budget", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-image-metadata-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-image-metadata-");
   // Docker's OCI export contains compressed filesystem layers alongside JSON
   // metadata. Valid small layers must not exhaust the metadata-only allowance.
   const fixture = String.raw`
@@ -272,8 +270,7 @@ test("node qualification rejects mixed and unverified architectures", async (t) 
 });
 
 test("deployed identity requires the qualified images on a ready, owned worker Pod", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-deployed-pair-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-deployed-pair-");
   const digest = (letter) => `sha256:${letter.repeat(64)}`;
   const controller = {
     image: `controller@${digest("a")}`,
