@@ -122,6 +122,19 @@ export interface AgentRuntimeHarnessStatus {
   readonly restarts?: number;
 }
 
+/**
+ * The running Agent's active revision's dedicated Harness Sandbox, read on request. `unobserved`
+ * when there is nothing to read: no running active revision, a Harness that is not dedicated,
+ * or a Sandbox Driver that keeps no lifecycle record.
+ */
+export type AgentHarnessStatusRead =
+  | { readonly status: "unobserved" }
+  | {
+      readonly status: "observed";
+      readonly revisionId: string;
+      readonly harness: AgentRuntimeHarnessStatus;
+    };
+
 export interface AgentRuntimeDescription {
   readonly revisionId: string;
   readonly observedAt: string;

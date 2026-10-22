@@ -84,6 +84,7 @@ export type {
   AgentRuntimePodStatus,
   AgentRuntimeLogSource,
   AgentRuntimeHarnessStatus,
+  AgentHarnessStatusRead,
   AgentRuntimeDescription,
   AgentRuntimeDescribeOptions,
   AgentRuntimeLogRequest,

@@ -157,6 +157,27 @@ func runtimeHarnessLine(resource map[string]any, sandboxLogs string) string {
 	return line
 }
 
+// printAgentHarness follows the table of one Agent with its Harness Sandbox line when OCC
+// observed one. OCC does not restart a lost Sandbox, so the Agent's lifecycle alone still
+// reads active while nothing serves it. A status that cannot be read prints unknown, never lost.
+func (app *application) printAgentHarness(client *occclient.Client, namespace, agentID string) error {
+	status, err := client.GetAgentHarnessStatus(namespace, agentID)
+	resource, ok := status.(map[string]any)
+	line := "Harness Sandbox: unknown (the status could not be read)."
+	if err == nil && ok {
+		if resource["status"] != "observed" {
+			return nil
+		}
+		// Without --revision, the logs command reads the Agent's active revision, the observed one.
+		line = runtimeHarnessLine(resource, fmt.Sprintf("occ --namespace %s agent logs %s --source sandbox", namespace, agentID))
+		if line == "" {
+			return nil
+		}
+	}
+	_, err = fmt.Fprintf(app.out, "\n%s\n", line)
+	return err
+}
+
 // harnessInteger reads a JSON number that is a whole value within [minimum, maximum].
 func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
 	number, ok := value.(float64)
