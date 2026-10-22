@@ -3288,6 +3288,7 @@ export async function renderAgentDetail(
           }
           // Rebuild from the save response: the editor confirmed its identity and settings, and
           // it carries the Agent's lifecycle, which a Stop or deployment since page load changed.
+          // That identity check means agentForPage cannot throw; it only types the response.
           return refreshDraftInPlace({
             agent: agentForPage(savedAgent),
             saved: "Plugin selections saved.",
