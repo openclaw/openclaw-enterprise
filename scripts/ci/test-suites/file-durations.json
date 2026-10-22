@@ -8,7 +8,7 @@
     "tests/browser/console-agent-detail-2.test.mjs": 86700,
     "tests/browser/console-agent-detail.test.mjs": 59800,
     "tests/browser/console-agent-draft-guards.test.mjs": 45900,
-    "tests/browser/console-agent-logs.test.mjs": 88600,
+    "tests/browser/console-agent-logs.test.ts": 88600,
     "tests/browser/console-agent-overview.test.mjs": 58100,
     "tests/browser/console-agent-plugin-approvers.test.mjs": 16900,
     "tests/browser/console-agent-plugin-refusals.test.mjs": 10600,
