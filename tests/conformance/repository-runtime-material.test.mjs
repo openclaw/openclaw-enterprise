@@ -1533,10 +1533,13 @@ async function publicReaderAdmission() {
 
 test("protected execution cannot acquire the anonymous reader or use it as a fallback", async () => {
   const { f } = await publicReaderAdmission();
+  const { owner } = protectedRepositoryGitRelease(() =>
+    assert.fail("Reader refusal must not access protected repository credentials"),
+  );
   const protectedRevision = {
     ...f.revision,
-    executionAdmission: { version: 2, mode: "protected" },
-    egressPlan: { routes: [] },
+    executionAdmission: { version: 3, mode: "protected" },
+    egressPlan: { driver: owner.ref, routes: [] },
   };
   assert.equal(f.driver.admitRevision(protectedRevision), undefined);
   assert.throws(
@@ -1571,7 +1574,7 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
   assert.ok(policy.metadata.uid && deployment.metadata.uid);
   f.setPods([workloadPod(deployment, f.namespace, "selected-agent")]);
 
-  ordinary.options.network.publicGithubRead = undefined;
+  delete ordinary.options.network.publicGithubRead;
   const driver = computeAfterProxyCutover(f);
   assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
 

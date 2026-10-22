@@ -8,6 +8,7 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   advanceCleanupRetries,
   completion,
+  removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
@@ -1838,10 +1839,9 @@ for (const scenario of [
       assert.equal(agent.activeRevisionId, candidate.id);
       assert.equal(agent.desiredRuntimeState, "running");
 
-      // Real loss of independent runtime authority must still retire this exact revision.
-      compute.validateExecutionAdmission = () => {
-        throw new Error("runtime release withdrawn");
-      };
+      // Offboard the requester after Git withdrawal. IAM now denies this exact revision.
+      const removed = await removeAccessBindings(fixture, fixture.actor.id);
+      assert.ok(removed.rowCount > 0, "remove the requester's actual access bindings");
       await fixture.advanceMaintenance(candidate);
       await waitFor("runtime authority loss retires exact revision", async () =>
         (await fixture.currentAgent(owner)).activeRevisionId === undefined ? true : undefined,

@@ -46,11 +46,15 @@ export async function advanceCleanupRetries(fixture, revision) {
 // This boundary Driver supplies synthetic sessions backed by the actual receipt
 // owner. The real worker, IAM, State, and PostgreSQL queue own the lifecycle
 // decisions; these cases do not qualify the concrete credential service or Compute.
-export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 120_000 } = {}) {
+export function repositoryBoundary({
+  count = 1,
+  backendId = "repository-provider",
+  deadlineWallMs = Date.now() + 120_000,
+} = {}) {
   const bindings = Array.from({ length: count }, (_, index) => ({
     repositoryRef: `repository-${index}-${randomUUID()}`,
     profile: "read",
-    backendId: "repository-provider",
+    backendId,
     grant: {
       providerInstanceId: "repository-provider-instance",
       repositoryId: `repository-${index}`,
@@ -99,7 +103,7 @@ export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 12
       receipts = new RepositoryReceiptStore(state, {
         driverId: driver.id,
         implementation: driver.implementation,
-        backendId: bindings[0].backendId,
+        backendId,
       });
     },
     async checkAdmissionReady() {

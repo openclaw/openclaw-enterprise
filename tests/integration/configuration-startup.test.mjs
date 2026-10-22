@@ -207,7 +207,8 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
   assert.equal(loaded.proxyDriver.id, "openshell-egress");
   assert.equal(loaded.installation.drivers.credential_proxy.id, loaded.proxyDriver.id);
   assert.equal(loaded.installation.backend[0].drivers.credential_proxy, loaded.proxyDriver.id);
-  assert.equal(loaded.egressAuthority.port, 9444);
+  assert.equal(loaded.protectedDriver.require("credential_proxy"), loaded.proxyDriver);
+  assert.equal(typeof loaded.proxyDriver.bindExchange, "function");
 
   for (const [member, selected] of [
     [true, false],
@@ -229,11 +230,15 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
 
         // Direct OCC composition must enforce the same membership rule as Installation startup.
         const validateSelection = () =>
-          validateSelectedBackendDrivers(candidate.backend, {
-            sandbox: loaded.sandboxDriver,
-            credential_gateway: loaded.credentialGatewayDriver,
-            ...(selected ? { credential_proxy: loaded.proxyDriver } : {}),
-          });
+          validateSelectedBackendDrivers(
+            candidate.backend,
+            {
+              sandbox: loaded.sandboxDriver,
+              credential_gateway: loaded.credentialGatewayDriver,
+              ...(selected ? { credential_proxy: loaded.proxyDriver } : {}),
+            },
+            loaded.protectedDriver,
+          );
         if (member !== selected) {
           await assert.rejects(
             load(),
@@ -783,12 +788,16 @@ async function repositoryInstallation(t) {
       drivers: { repo: "repository-credentials" },
     },
   ];
-  configuration.drivers.repo = {
+  configuration.repository = {
     id: "repository-credentials",
-    configuration: {
+    configuration: { sessionDurationSeconds: 600 },
+    nativeSender: {
       controlSocket: "/run/openclaw/repository-control/private/control.sock",
-      sessionDurationSeconds: 600,
-      publicCaPath,
+      publicCaPath: publicCaPath,
+    },
+    preparedGitHub: {
+      custodyKeyPath: join(directory, "custody.key"),
+      privateKeyPath: join(directory, "app.pem"),
     },
   };
   configuration.drivers.compute.configuration.network.repositoryCredentials = {
@@ -813,21 +822,21 @@ test("repository startup constructs the same local resolver without a private so
     mode: "production",
     environment: { OCC_CONFIG_PATH: path },
   });
-  assert.equal(api.repoDriver.capability, "repo");
+  assert.equal(api.repositoryPolicy.capability, "repo");
   // The capability name does not replace the operator's opaque Driver identity.
-  assert.equal(api.repoDriver.id, "repository-credentials");
-  assert.equal(worker.repoDriver.id, api.repoDriver.id);
-  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repoDriver.id });
+  assert.equal(api.repositoryPolicy.id, "repository-credentials");
+  assert.equal(worker.repositoryPolicy.id, api.repositoryPolicy.id);
+  assert.deepEqual(api.installation.backend[0].drivers, { repo: api.repositoryPolicy.id });
   assert.equal(Object.hasOwn(api.installation.drivers, "repository_credentials"), false);
-  assert.equal(api.installation.drivers.repo.implementation, api.repoDriver.implementation);
+  assert.equal(api.installation.repository.implementation, api.repositoryPolicy.implementation);
   const selection = { namespaceId: "ns_repository", bindings: [{ repositoryRef: "application" }] };
-  const resolved = api.repoDriver.resolve(selection);
-  assert.deepEqual(worker.repoDriver.resolve(selection), resolved);
+  const resolved = api.repositoryPolicy.resolve(selection);
+  assert.deepEqual(worker.repositoryPolicy.resolve(selection), resolved);
   assert.equal(resolved.bindings[0].profile, "git-write");
   assert.equal(resolved.bindings[0].grant.repositoryId, "34567");
   assert.equal(resolved.sessionDurationSeconds, 600);
   assert.throws(
-    () => api.repoDriver.resolve({ ...selection, namespaceId: "ns_other" }),
+    () => api.repositoryPolicy.resolve({ ...selection, namespaceId: "ns_other" }),
     /permitted/,
   );
   const chatgpt = chatgptInstallation();
@@ -886,8 +895,8 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     [(value) => delete value.backend, /requires an owning backend/],
     [
       (value) => {
-        value.drivers.repository_credentials = value.drivers.repo;
-        delete value.drivers.repo;
+        value.drivers.repository_credentials = value.repository;
+        delete value.repository;
       },
       /unsupported option repository_credentials/,
     ],
@@ -898,7 +907,7 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       },
       /plaintext credential/,
     ],
-    [(value) => delete value.drivers.repo, /requires drivers\.repo/],
+    [(value) => delete value.repository, /requires repository/],
     [(value) => (value.backend[0].drivers.repo = "other-driver"), /must match/],
     [
       (value) => (value.backend[0].configuration.registryPath = "relative.json"),
@@ -911,13 +920,13 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.backend[0].id = "other-backend"), /invalid-repository-registry/],
     [
-      (value) => (value.drivers.repo.configuration.sessionDurationSeconds = 3601),
+      (value) => (value.repository.configuration.sessionDurationSeconds = 3601),
       /duration|configuration/,
     ],
-    [(value) => (value.drivers.repo.configuration.publicCaPath = tls.keyFile), /public CA/],
-    [(value) => (value.drivers.repo.configuration.publicCaPath = writableCaPath), /public CA/],
-    [(value) => (value.drivers.repo.package = "@example/driver"), /unsupported option package/],
-    [(value) => (value.drivers.repo.implementation = "other"), /unsupported option implementation/],
+    [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
+    [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
+    [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
+    [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
     [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],
     [
       (value) => delete value.drivers.compute.configuration.network.repositoryCredentials,

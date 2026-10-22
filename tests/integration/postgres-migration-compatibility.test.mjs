@@ -2572,6 +2572,162 @@ test(
 );
 
 test(
+  "Credential Proxy preview receipts require the exact history before the shared migration",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "proxypreview", { prefix: 59 });
+    const manifest = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    assert.equal(manifest.entries.length, 62);
+    assert.deepEqual(
+      manifest.entries.slice(58).map(({ tag }) => tag),
+      [
+        "0059_administrator_sandbox_policy_grants",
+        "0060_credential_proxy_admission",
+        "0061_repository_credential_authority",
+        "0062_credential_delivery_custody",
+      ],
+    );
+    await seedCanonicalData(db, { preset: true, computeAdmission: true });
+    const before = await historySnapshot(db);
+    const data = await canonicalData(db);
+    assert.equal(before.receipts.length, 59);
+    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+      ok: true,
+      history: "preCredentialProxy",
+    });
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await canonicalData(db), data);
+
+    // Exact retired 0060..0069 hashes from 717e737e892cc^'s canonical manifest.
+    // Exercise receipt recognition on a valid main catalog, without recreating retired
+    // preview DDL or reading Git in CI. Even the complete preview is now unsupported.
+    const preview = [
+      "41187ea37a83a33ef725c762e5c04af7381139e685795ec5a7233024810a53cf",
+      "193a18fe7ad88a7c6418749cdd52be0062267dcbed39d8286d540bd453d43cdf",
+      "1d55d6eaac9106490a62a04efa1f8f2b7061d30c757c8c9b6f9f198494bfec96",
+      "76f385a160d5662aebef2b439494f7d10e7410351f1c039f2b3f0cea2132fcdc",
+      "42835bbf93e5e6b60c28accdec0338ece93ddcb1e4f86dcdd8365a5289ff3988",
+      "dd02c82589af7ebd10640e4190cbc27959393baac910af997e836bc825292b82",
+      "5fbb2769ec51c46a48c4e6dd9102baba46d71321b39c4176cdd864e1ad178575",
+      "4cfa28c47b246638a7e3831b93f1eac25a6e6ffca4e7cbd454e4ade306089b07",
+      "76aff98b9d5d220ba089ea32ad0c7b2c34ab3b4c7adb3ea614d7fb31d246ee36",
+      "03c19cdc8e4c41b41b47886ad30b54f67ae78c99a86aaffc1d6f954187c8e3e2",
+    ];
+    const receiptRefusal =
+      /applied receipts differ from canonical history; pre-merge preview histories are unsupported/;
+    for (const [start, end] of [
+      [0, 9],
+      [9, 10],
+    ]) {
+      await db.migrator.query(
+        `INSERT INTO drizzle.__drizzle_migrations(hash,created_at)
+           SELECT hash, $2::bigint + n - 1 FROM unnest($1::text[]) WITH ORDINALITY AS entry(hash,n)
+           ORDER BY n`,
+        [preview.slice(start, end), 1787000000060 + start],
+      );
+      const receipts = await historyReceipts(db.migrator);
+      assert.deepEqual(receipts.slice(0, 59), before.receipts);
+      assert.deepEqual(
+        receipts.slice(59).map(({ hash, created_at }) => [hash, Number(created_at)]),
+        preview.slice(0, end).map((hash, index) => [hash, 1787000000060 + index]),
+      );
+      await assertHistoryRefused(db, receiptRefusal);
+      assert.deepEqual(await canonicalData(db), data);
+    }
+
+    // Only this fixture's ledger was changed: removing the injected rows restores
+    // main exactly. This is not recovery advice for a database with preview DDL.
+    assert.equal(
+      (
+        await db.migrator.query("DELETE FROM drizzle.__drizzle_migrations WHERE id > $1", [
+          before.receipts.at(-1).id,
+        ])
+      ).rowCount,
+      preview.length,
+    );
+    assert.deepEqual(await historySnapshot(db), before);
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preCredentialProxy",
+    });
+    await assertCompletedHistory(db, before.receipts);
+    const completed = await historySnapshot(db);
+    const upgradedData = await canonicalData(db);
+    assert.deepEqual(upgradedData, upgradedCanonicalData(data));
+    assert.deepEqual(
+      completed.receipts.slice(59).map(({ hash, created_at }) => [hash, Number(created_at)]),
+      manifest.entries.slice(59).map(({ sha256, when }) => [sha256, when]),
+    );
+
+    // A valid first and last receipt cannot vouch for the interior 0061 receipt.
+    // Start each fault from accepted history so rejection cannot pass merely because
+    // a retired preview hash was already unsupported.
+    const middle = completed.receipts.at(-2);
+    for (const [label, sql] of [
+      ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
+      [
+        "changed interior timestamp",
+        "UPDATE drizzle.__drizzle_migrations SET created_at=created_at+1 WHERE id=$1",
+      ],
+      ["deleted interior receipt", "DELETE FROM drizzle.__drizzle_migrations WHERE id=$1"],
+    ]) {
+      await context.test(label, async () => {
+        const parameters =
+          label === "changed interior hash" ? [middle.id, preview[1]] : [middle.id];
+        assert.equal((await db.migrator.query(sql, parameters)).rowCount, 1);
+        const receipts = await historyReceipts(db.migrator);
+        assert.deepEqual(receipts[0], completed.receipts[0]);
+        assert.deepEqual(receipts.at(-1), completed.receipts.at(-1));
+        await assertHistoryRefused(db, receiptRefusal);
+        assert.deepEqual(await canonicalData(db), upgradedData);
+        await db.migrator.query(
+          `INSERT INTO drizzle.__drizzle_migrations(id,hash,created_at) VALUES($1,$2,$3)
+             ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,created_at=excluded.created_at`,
+          [middle.id, middle.hash, middle.created_at],
+        );
+        assert.deepEqual(await historySnapshot(db), completed);
+        assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+          ok: true,
+          history: "completed",
+        });
+      });
+    }
+
+    // Discarding all three new receipts leaves main's exact ledger but the completed
+    // catalog. The runner must refuse before replaying any credential migration.
+    assert.equal(
+      (
+        await db.migrator.query("DELETE FROM drizzle.__drizzle_migrations WHERE id > $1", [
+          before.receipts.at(-1).id,
+        ])
+      ).rowCount,
+      3,
+    );
+    assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
+    await assertHistoryRefused(
+      db,
+      /catalog objects or effective grants differ for preCredentialProxy/,
+    );
+    assert.deepEqual(await canonicalData(db), upgradedData);
+    for (const receipt of completed.receipts.slice(59)) {
+      await db.migrator.query(
+        "INSERT INTO drizzle.__drizzle_migrations(id,hash,created_at) VALUES($1,$2,$3)",
+        [receipt.id, receipt.hash, receipt.created_at],
+      );
+    }
+    assert.deepEqual(await historySnapshot(db), completed);
+    for (const mode of ["development", "production"]) {
+      assert.deepEqual(await runHistoryMigration(db, mode), { ok: true, history: "completed" });
+      assert.deepEqual(await historySnapshot(db), completed);
+      assert.deepEqual(await canonicalData(db), upgradedData);
+    }
+  },
+);
+
+test(
   "Canonical migration refuses unexplained histories before mutation",
   concurrentHistoryPostgres,
   async (context) => {

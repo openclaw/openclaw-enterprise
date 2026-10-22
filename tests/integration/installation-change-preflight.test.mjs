@@ -23,6 +23,8 @@ const checkScript = await readFile(
 const tooling = await chartTooling();
 const repositoryCredentialValues = {
   "repositoryCredentials.enabled": "true",
+  "repositoryCredentials.authority": "prepared-git",
+  "repositoryCredentials.preparedCustodySecretName": "repository-custody",
   "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
   "repositoryCredentials.backendId": "github-primary",
   "repositoryCredentials.registryConfigMapName": "repository-registry-v1",

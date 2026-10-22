@@ -542,6 +542,10 @@ export function validateSelectedBackendDrivers(
       }
       if (backend.drivers.credential_proxy !== undefined) {
         requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");
+      } else if (selected.credential_proxy !== undefined) {
+        throw new DriverSelectionError(
+          "The selected Credential Proxy Driver must belong to the Sandbox's Backend.",
+        );
       }
     }
   }

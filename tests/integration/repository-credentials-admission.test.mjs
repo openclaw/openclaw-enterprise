@@ -12,11 +12,15 @@ import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-pr
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  createGitHubRepositoryDeliveryResolver,
+  validateGitHubRepositoryRegistry,
+} from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   InMemoryPlatformState,
+  DriverConfigurationRegistry,
   OpenClawController,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
@@ -32,6 +36,60 @@ import { grantRole } from "../helpers/iam-grants.mjs";
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
 const selection = [{ repositoryRef: "project", profile: "git-write" }];
+
+const sandboxRegistration = (driverId) => ({
+  capability: "sandbox",
+  driverId,
+  implementation: "openshell",
+  definition: OpenShellSandboxDriver,
+});
+
+function repositorySandbox(registry, id = "repository-admission-openshell") {
+  return new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model",
+            binaries: [{ path: "/usr/bin/codex" }],
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+          },
+        ],
+      },
+    },
+    {
+      id,
+      implementation: "openshell",
+      backend: {
+        id: "openshell",
+        drivers: { sandbox: id },
+        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
+      },
+      ...(registry === undefined
+        ? {}
+        : {
+            // Admission reads only the route's host check; nothing starts it.
+            openShellGit: new OpenShellGitRuntime(
+              {},
+              createGitHubRepositoryDeliveryResolver(
+                validateGitHubRepositoryRegistry(registry, backendId),
+              ),
+            ),
+          }),
+    },
+  );
+}
 
 function kubernetesCompute(Driver = KubernetesComputeDriver, provisioning = false) {
   const resources = {
@@ -1106,46 +1164,12 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   const f = await fixture(t, {
     harness: "codex",
     compute: kubernetesCompute(OpenShellGitComputeDriver),
-    controllerOptions: { sandboxNetworkPolicyCeiling: [docs, direct, address] },
+    controllerOptions: {
+      sandboxNetworkPolicyCeiling: [docs, direct, address],
+      driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
+    },
   });
-  const sandbox = new OpenShellSandboxDriver(
-    {
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "model",
-            binaries: [{ path: "/usr/bin/codex" }],
-            endpoints: [{ host: "api.openai.com", ports: [443] }],
-          },
-        ],
-      },
-    },
-    {
-      id: "repository-admission-openshell",
-      implementation: "openshell",
-      backend: {
-        id: "openshell",
-        drivers: { sandbox: "repository-admission-openshell" },
-        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
-      },
-      // Admission reads only the route's host check; nothing starts it.
-      openShellGit: new OpenShellGitRuntime(
-        {},
-        validateGitHubRepositoryRegistry(f.registry, backendId),
-      ),
-    },
-  );
+  const sandbox = repositorySandbox(f.registry);
   f.controller.registerDriver(sandbox);
   f.controller.selectDriver("sandbox", sandbox.id);
   const message =
@@ -1326,22 +1350,26 @@ test("the policy worker fails a Driver's named policy refusal at once", async ()
     retry: async (_claim, { code }) => outcomes.push(`retry ${code}`),
   };
   let applied = 0;
+  const configurations = new DriverConfigurationRegistry();
+  configurations.register(sandboxRegistration("sandbox"));
+  // Exercise the registered schema and real admission method before the
+  // controlled provider refusal that this worker classification case proves.
+  const driver = repositorySandbox(undefined, "sandbox");
+  driver.observeNetworkPolicy = async () => ({
+    resourceVersion: "1",
+    policyVersion: "1",
+    state: "applied",
+    matches: false,
+  });
+  driver.applyNetworkPolicy = async () => {
+    applied++;
+    throw new SandboxNetworkPolicyConflictError("remove network grant git-direct (github.com).");
+  };
   const outcome = await reconcileSandboxPolicy(
     {
+      configurations,
       state: { transactWithQueue: (operation) => operation(unit, queue) },
-      driver: {
-        id: "sandbox",
-        implementation: "openshell",
-        async observeNetworkPolicy() {
-          return { resourceVersion: "1", policyVersion: "1", state: "applied", matches: false };
-        },
-        async applyNetworkPolicy() {
-          applied++;
-          throw new SandboxNetworkPolicyConflictError(
-            "remove network grant git-direct (github.com).",
-          );
-        },
-      },
+      driver,
       compute: {
         id: "compute",
         implementation: "kubernetes",

@@ -639,6 +639,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
     repositoryRef: "project",
     durationSeconds: 60,
     profile: "git-read",
+    preparedOnly: true,
     deadlineWallMs: Date.now() + 60_000,
     expectedBinding: {
       providerInstanceId: "provider-test",
@@ -685,7 +686,10 @@ test("operator rejects unsafe or conflicting bound request files before admissio
     failed(result);
     assert.equal(requests.length, 0, "invalid request reached admission");
   };
+  const { preparedOnly: _preparedOnly, ...unprepared } = request;
   for (const value of [
+    unprepared,
+    { ...request, preparedOnly: false },
     { ...request, bearer: "unexpected-secret-field" },
     { ...request, recoverOnly: false },
     { ...request, expectedBinding: { ...request.expectedBinding, token: "unexpected" } },

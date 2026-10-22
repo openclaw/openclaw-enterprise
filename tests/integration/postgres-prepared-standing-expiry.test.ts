@@ -315,10 +315,11 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         },
       }),
     );
+    // Match the OpenShell delivery owner's snapshot receipt, tied to this live revision.
     await f.pool.query(
       `insert into occ.credential_deliveries
-    (revision_id,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
-    values($1,$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
+    (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
+    values($1,$1,'snapshot',$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
       jsonb_build_object('credentialState','bootstrap','providerId',$6::text,'profileVersion','1','resourceVersion','1','expiresAt',''),$7)`,
       [
         revisionId,
@@ -393,8 +394,8 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       // satisfy the Git binding's proof that this material was installed.
       await f.pool.query(
         `insert into occ.credential_deliveries
-           (revision_id,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed,material_version,preparation_attempt_id)
-         select revision_id,namespace_id,agent_id,target || '{"sandbox":"another-sandbox"}'::jsonb,$5,worker_instance,desired,observed,$3,$4
+           (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed,material_version,preparation_attempt_id)
+         select revision_id,live_revision_id,settlement,namespace_id,agent_id,target || '{"sandbox":"another-sandbox"}'::jsonb,$5,worker_instance,desired,observed,$3,$4
          from occ.credential_deliveries where revision_id=$1 and binding_id=$2`,
         [
           revisionId,

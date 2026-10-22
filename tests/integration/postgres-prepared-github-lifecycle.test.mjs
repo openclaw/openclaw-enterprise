@@ -358,18 +358,23 @@ test(
         const request = captureMetadata(f);
         request.deadline = wireTime(Date.now() + 3000);
         const selected = await selectSend(request);
-        // A separate contention actor holds only the table lock. Authority and custody still
+        // A separate application-role actor locks the selected row. Authority and custody still
         // use the exact same max=1 pool; this connection never serves an application read.
         const blocker = new pg.Client({ connectionString: f.pool.options.connectionString });
         await blocker.connect();
         try {
           await blocker.query("BEGIN");
-          await blocker.query("LOCK TABLE occ.prepared_github_attempts IN ACCESS EXCLUSIVE MODE");
+          const { rows: locked } = await blocker.query(
+            "SELECT pg_backend_pid() AS pid FROM occ.prepared_github_attempts WHERE material_version=$1 FOR UPDATE",
+            [old.materialVersion],
+          );
+          assert.equal(locked.length, 1);
           const pending = selected.authorize();
           let waited = false;
           for (let i = 0; i < 50; i += 1) {
             const { rows } = await blocker.query(
-              "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation='occ.prepared_github_attempts'::regclass AND NOT granted) AS waiting",
+              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS waiting",
+              [locked[0].pid],
             );
             if (rows[0].waiting) {
               waited = true;

@@ -129,6 +129,8 @@ function managedCodexInput(overrides = {}) {
 function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
   return {
     enabled: true,
+    authority: "prepared-git",
+    preparedCustodySecretName: "occ-repository-custody",
     image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
     backendId: "github-primary",
     registryConfigMapName: "occ-repository-registry-v1",
@@ -834,6 +836,7 @@ const credentialSecretNames = [
 const repositorySecretKeys = [
   "serviceConfigSecretName",
   "appKeySecretName",
+  "preparedCustodySecretName",
   "tlsSecretName",
   "publicCaSecretName",
 ];
@@ -862,6 +865,7 @@ test(
       "occ-chatgpt-admin",
       "occ-repository-service-config",
       "occ-repository-app-key",
+      "occ-repository-custody",
       "occ-repository-tls",
       "occ-repository-public-ca",
     ]) {
@@ -937,6 +941,12 @@ test(
         ["appKeySecretName", root, "the generated Gateway root CA"],
         ["appKeySecretName", "occ-database", "database.secretName"],
         ["appKeySecretName", "occ-private-gateway-key", "gatewayRouting.apiKeySecretName"],
+        ["preparedCustodySecretName", "occ-database", "database.secretName"],
+        [
+          "preparedCustodySecretName",
+          "occ-repository-app-key",
+          "repositoryCredentials.appKeySecretName",
+        ],
         ["tlsSecretName", "occ-chatgpt-admin", "backend.chatgpt.secretName"],
         ["tlsSecretName", "occ-repository-app-key", "repositoryCredentials.appKeySecretName"],
       ].map(([key, secretName, other]) => [

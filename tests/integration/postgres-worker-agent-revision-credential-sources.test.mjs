@@ -29,6 +29,7 @@ import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import {
+  createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -2845,7 +2846,8 @@ test(
 
 function attachedGitExpires({ newHost, platformProfile = false }) {
   return async (t) => {
-    const repository = repositoryBoundary();
+    const backendId = "github-primary";
+    const repository = repositoryBoundary({ backendId });
     const f = await setup(t, { repoDriver: repository.driver });
     const routes = new PostgresOpenShellGitRouteStore(f.observerPool);
     const namespaceId = f.namespace.id;
@@ -2854,7 +2856,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
     const registry = validateGitHubRepositoryRegistry(
       {
         version: 1,
-        backendId: "github-primary",
+        backendId,
         providerInstanceId: "github-com-primary",
         appId: "12345",
         githubInstallationId: "67890",
@@ -2875,7 +2877,7 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
           },
         ],
       },
-      "github-primary",
+      backendId,
     );
     const binding = resolveGitHubRepositoryBinding(registry, {
       namespaceId,
@@ -2948,7 +2950,10 @@ function attachedGitExpires({ newHost, platformProfile = false }) {
       apiOrigin: "https://api.github.com",
     };
     function releaseRuntime() {
-      const git = new OpenShellGitRuntime({ registrationName, authority: {} }, registry);
+      const git = new OpenShellGitRuntime(
+        { registrationName, authority: {} },
+        createGitHubRepositoryDeliveryResolver(registry),
+      );
       // The authority has a real TLS socket; only custody and the external installation are doubles.
       git.routes = routes;
       git.owner = { readOpenShellMaterial: async () => ({ ...material, sessionId }) };

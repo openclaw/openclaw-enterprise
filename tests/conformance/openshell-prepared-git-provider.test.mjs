@@ -32,10 +32,10 @@ const signal = () => AbortSignal.timeout(5_000);
 async function wire(t) {
   const directory = await mkdtemp(join(tmpdir(), "prepared-git-wire-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  // Independent pinned v0.1.4 oracle, extended with fields copied from released
-  // openshell.proto/datamodel.proto at 5a7728c30; never load the client schema.
+  // Independent pinned v0.1.5 oracle, extended with fields from upstream
+  // openshell.proto at bdb956f2cd65a635f1294fccf1d138d263bf650f; never load the client schema.
   let proto = await readFile(
-    new URL("../fixtures/openshell-v0.1.4-wire.proto", import.meta.url),
+    new URL("../fixtures/openshell-v0.1.5-wire.proto", import.meta.url),
     "utf8",
   );
   proto = proto.replace(
@@ -48,7 +48,19 @@ async function wire(t) {
     "  string path_template = 9;",
     "  string path_template = 9;\n  bool stable_placeholder = 12;",
   );
-  // The remaining readiness reasons of openshell.proto at 5a7728c30.
+  // The shared wire fixture omits the installed-identity fields exercised here.
+  proto = proto.replace(
+    "message ProviderMutationReceipt {",
+    "message ProviderMutationReceipt {\n  ProviderDesiredIdentity desired = 6;",
+  );
+  proto = proto.replace(
+    "message ProviderReadinessStatus {",
+    `message ProviderReadinessStatus {
+  ProviderReadinessObservation observed = 4;
+  google.protobuf.Timestamp observed_time = 106;
+  google.protobuf.Timestamp evaluated_time = 107;`,
+  );
+  // The remaining readiness reasons from the same pinned upstream source.
   proto = proto.replace(
     "  PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD = 6;\n",
     `  PROVIDER_READINESS_REASON_CREDENTIALS_WITHHELD = 6;
@@ -67,6 +79,29 @@ async function wire(t) {
     message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope = 2; }
     message GetProviderProfileRequest { string id = 1; WorkspaceSelector workspace_scope = 2; }
     message ProviderProfileResponse { ProviderProfile profile = 1; }
+    message ProviderDesiredIdentity {
+      string sandbox_id = 1;
+      string sandbox = 2;
+      string attachment_epoch = 3;
+      string provider_id = 4;
+      uint64 provider_resource_version = 5;
+      uint64 provider_env_revision = 6;
+      uint64 config_revision = 7;
+      string policy_hash = 8;
+    }
+    message ProviderReadinessObservation {
+      string session_id = 1;
+      uint64 sequence = 2;
+      string attachment_epoch = 3;
+      uint64 provider_env_revision = 4;
+      uint64 config_revision = 5;
+      string policy_hash = 6;
+      bool credentials_installed = 7;
+      bool policy_active = 8;
+      bool launch_environment_installed = 9;
+      string process_instance_id = 10;
+      ProviderReadinessReason reason = 11;
+    }
   `;
   const path = join(directory, "wire.proto");
   await writeFile(path, proto);

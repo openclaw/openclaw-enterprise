@@ -22,7 +22,8 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
-import { unusedPort, waitFor } from "../helpers/qa-utils.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { waitFor } from "../helpers/qa-utils.mjs";
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 
 const token = "synthetic-harness-transport";
@@ -73,7 +74,9 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "egress-enrollment-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
-    const port = await unusedPort();
+    let reservation = await reservePort({ host: "0.0.0.0" });
+    t.after(() => reservation.release());
+    const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
     const f = await staticEgressFixture(t, {
@@ -141,6 +144,8 @@ test(
       OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: f.revision.id,
       APP_SERVER_PORT: String(port),
       APP_TOKEN_SHA: createHash("sha256").update(token).digest("hex"),
+      // The Node fixture CLI inherits this preload through the generated Harness.
+      NODE_OPTIONS: reservedPortArgs(reservation).join(" "),
       ...pluginRuntimeEnvironment(runtime),
     };
     const start = () => {
@@ -190,6 +195,7 @@ test(
       (await readFile(callsPath, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
     const first = start();
     const oldChallenge = await getChallenge();
+    await reservation.release();
     assert.equal(oldChallenge.execution.executionId, f.revision.egressPlan.execution.executionId);
     assert.equal(businessRequests, 0);
     assert.equal((await calls()).length, 0, "no Codex, login or probe is started before release");
@@ -218,9 +224,12 @@ test(
 
     // Restart creates a new challenge even for the same admitted plan. A response
     // held by an earlier controller request cannot release the replacement process.
+    // Reacquire the hold before stopping the listener, then release only after its successor binds.
+    reservation = await reservePort({ host: "0.0.0.0", port });
     await first.stop();
     const second = start();
     const currentChallenge = await getChallenge();
+    await reservation.release();
     assert.notEqual(currentChallenge.startupId, oldChallenge.startupId);
     assert.equal((await post(oldChallenge)).status, 409);
     assert.equal(businessRequests, 0);

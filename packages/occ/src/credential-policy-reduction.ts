@@ -7,7 +7,10 @@ import type {
   ProxyRevisionContext,
 } from "@openclaw-enterprise/contracts";
 import type { InstalledDriver } from "./installed-driver.ts";
-import type { CredentialPolicyReductionState, PlatformStateStore } from "./state/platform-state.ts";
+import type {
+  CredentialPolicyReductionState,
+  CredentialPolicyReductionStore,
+} from "./ports/credential-policy-reduction.ts";
 
 /** A stored successor only removes whole routes; v2 can also remove the Git binding. */
 export function isReducedCredentialPlan(
@@ -80,7 +83,7 @@ function verifiedPolicy(expected: EgressInstallation, observed: EgressInstallati
 
 /** Compute checks source ownership; repository cleanup passes undefined after closing its sessions. */
 export async function reduceCredentialPolicy(
-  state: PlatformStateStore,
+  state: CredentialPolicyReductionStore,
   owner: InstalledDriver | undefined,
   context: ProxyRevisionContext,
   sourceId: string | undefined,

@@ -8,7 +8,8 @@ import { promisify } from "node:util";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { unusedPort, waitFor } from "../helpers/qa-utils.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { waitFor } from "../helpers/qa-utils.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-proxy/openai-provider.ts";
 import {
@@ -1084,17 +1085,22 @@ test("provider Harness protected execution is released only on current signed in
     false,
     "unprotected provider Harnesses do not receive enrollment identity",
   );
-  const port = await unusedPort();
-  const url = `http://127.0.0.1:${port}${HARNESS_EGRESS_ENROLLMENT_PATH}`;
-  // Remap only the service port; authentication and identity come from prepareRevision.
-  const environment = { ...projectedEnv(enrollmentRequirements), APP_SERVER_PORT: String(port) };
+  const environment = projectedEnv(enrollmentRequirements);
   const headers = { authorization: "Bearer test-transport", "content-type": "application/json" };
-  const release = async (body) => {
-    const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-    return response.status;
-  };
   async function launch(t, args, env) {
-    const child = spawn(process.execPath, args, { env, stdio: ["ignore", "ignore", "pipe"] });
+    // Each child owns a fresh port on the enrollment listener's actual bind address.
+    const reservation = await reservePort({ host: "0.0.0.0" });
+    t.after(reservation.release);
+    const url = `http://127.0.0.1:${reservation.port}${HARNESS_EGRESS_ENROLLMENT_PATH}`;
+    const release = async (body) => {
+      const response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+      return response.status;
+    };
+    // Remap only the service port; authentication and identity come from prepareRevision.
+    const child = spawn(process.execPath, [...reservedPortArgs(reservation), ...args], {
+      env: { ...env, APP_SERVER_PORT: String(reservation.port) },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
     const exited = once(child, "exit");
     let diagnostics = "";
     child.stderr.on("data", (chunk) => {
@@ -1116,7 +1122,9 @@ test("provider Harness protected execution is released only on current signed in
       { interval: 20, describe: () => diagnostics },
     );
     assert.equal(response.status, 200, diagnostics);
-    return { challenge: await response.json(), exited };
+    // Only the authenticated enrollment listener can answer; it now owns the port.
+    await reservation.release();
+    return { challenge: await response.json(), exited, url, release };
   }
   const program = `
     function isPlainObject(value) {
@@ -1132,7 +1140,7 @@ test("provider Harness protected execution is released only on current signed in
   await t.test(
     "production provider requirements open the authenticated enrollment challenge",
     async (t) => {
-      const { challenge, exited } = await launch(t, ["-e", program], environment);
+      const { challenge, exited, url, release } = await launch(t, ["-e", program], environment);
       assert.deepEqual(challenge.execution, plan.execution);
       assert.deepEqual(challenge.plan, { id: plan.id, generation: plan.generation });
       assert.equal((await fetch(url)).status, 401);
@@ -1254,7 +1262,6 @@ test("provider Harness protected execution is released only on current signed in
         CODEX_HOME: directory,
         OPENCLAW_WORKSPACE_DIR: directory,
         OCE_TEST_CODEX_CALLS: calls,
-        APP_SERVER_PORT: String(port),
       };
       for (const file of zeroRequirements.files) {
         const path = join(directory, file.name);
@@ -1263,7 +1270,7 @@ test("provider Harness protected execution is released only on current signed in
       }
       const script = join(directory, "harness.cjs");
       await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
-      const { challenge, exited } = await launch(t, [script], env);
+      const { challenge, exited, release } = await launch(t, [script], env);
       assert.equal(challenge.routeCount, 0);
       assert.equal(
         await readFile(calls, "utf8"),

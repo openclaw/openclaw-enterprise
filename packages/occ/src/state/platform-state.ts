@@ -6,9 +6,9 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   ProtectedEgressSource,
   EgressInstallation,
-  CredentialPolicyReduction,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
+import type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import { RepositoryTransactionLifetime } from "../ports/transaction.ts";
 import { bindPlatformUnitOfWork } from "../ports/platform-unit-of-work.ts";
@@ -107,6 +107,8 @@ import type {
   AgentProvisioningReadRepository,
   AgentProvisioningRepository,
 } from "./agent-provisioning.ts";
+
+export type { CredentialPolicyReductionState } from "../ports/credential-policy-reduction.ts";
 
 export interface InstallationReadRepository {
   findInstallation(installationId: string): Promise<Readonly<Installation> | undefined>;
@@ -381,13 +383,6 @@ export interface SecretRepository extends SecretReadRepository {
   createSecret(secret: Secret): Promise<Readonly<Secret>>;
   deleteSecret(namespaceId: string, secretId: string): Promise<boolean>;
   hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
-}
-
-/** Internal withdrawal custody, never part of caller-visible status. */
-export interface CredentialPolicyReductionState {
-  readonly bindingId: string;
-  readonly request: CredentialPolicyReduction;
-  readonly observed?: EgressInstallation;
 }
 
 export type StoredCredentialWithdrawal = CredentialWithdrawal;

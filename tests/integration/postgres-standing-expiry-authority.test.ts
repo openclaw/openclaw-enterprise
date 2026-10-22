@@ -172,6 +172,8 @@ for (const scenario of [
   "principal absent",
   "State unavailable",
   "IAM unavailable",
+  "execution admission unavailable",
+  "execution admission unavailable IAM unavailable",
   "model withdrawn gateway unavailable",
   "model withdrawn IAM unavailable",
   "actor absent IAM unavailable",
@@ -319,6 +321,7 @@ for (const scenario of [
         let sourceUnavailable = true;
         let authorityFault = false;
         let faultReads = 0;
+        let admissionFailures = 0;
         let companionId: string | undefined;
         let initialWithdrawalOwners: unknown[] = [];
         let releaseSourceClaim: (() => Promise<void>) | undefined;
@@ -640,6 +643,16 @@ for (const scenario of [
         if (scenario.startsWith("unsupported")) {
           delete (compute as Partial<ComputeDriver>).retireExpiredRepositoryAccess;
         }
+        const admissionUnavailable = scenario.startsWith("execution admission unavailable");
+        if (admissionUnavailable) {
+          // This Compute cannot confirm admission and has no withdrawal for this execution.
+          (compute as Partial<ComputeDriver>).validateExecutionAdmission = () => {
+            admissionFailures++;
+            throw Object.assign(new Error("admission check temporarily unavailable"), {
+              code: "EAGAIN",
+            });
+          };
+        }
         unavailableGateway = scenario.includes("gateway unavailable");
         authorityFault = true;
         if (account !== undefined) {
@@ -863,10 +876,13 @@ for (const scenario of [
         if (
           scenario === "principal absent" ||
           scenario.includes("State unavailable") ||
-          scenario === "IAM unavailable" ||
+          scenario.includes("IAM unavailable") ||
           scenario === "IAM invalid"
         ) {
           assert.ok(faultReads > 0);
+        }
+        if (admissionUnavailable && !scenario.includes("IAM unavailable")) {
+          assert.ok(admissionFailures > 0, "exercise inconclusive admission after expiry");
         }
         assert.deepEqual(stopped, terminal ? [revision.id] : []);
         assert.equal(
@@ -881,6 +897,7 @@ for (const scenario of [
           backendRecovery ||
           scenario === "handoff replacement revision" ||
           unavailableGateway ||
+          admissionUnavailable ||
           scenario.includes("State unavailable") ||
           scenario === "IAM unavailable" ||
           scenario === "IAM invalid"

@@ -2080,6 +2080,8 @@ test(
         cluster: { cidrs: [values["cluster.cidrs[0]"]] },
         repositoryCredentials: {
           enabled: true,
+          authority: "prepared-git",
+          preparedCustodySecretName: "repository-custody",
           image: repositoryCredentialValues["repositoryCredentials.image"],
           serviceName: "broker",
           hostname: "broker.openclaw-system.svc",
@@ -2402,7 +2404,7 @@ esac
 );
 
 test(
-  "repository credential ingress admits embedded and dedicated execution Pods only",
+  "repository credential ingress stays closed until Compute admits a prepared Harness revision",
   tooling,
   async () => {
     const objects = await resources((await render(repositoryCredentialValues)).stdout);
@@ -2416,30 +2418,34 @@ test(
     };
     const source = {
       namespace: "oce-tenant",
-      namespaceLabels: { "openclaw.dev/namespace": "tenant" },
+      namespaceLabels: {
+        "kubernetes.io/metadata.name": "oce-tenant",
+        "openclaw.dev/namespace": "tenant",
+      },
       labels: {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
         "openclaw.dev/workload-role": "agent",
+        "openclaw.dev/namespace": "tenant",
         "openclaw.dev/agent": "agent-one",
         "openclaw.dev/revision": "revision-one",
+        "openclaw.dev/service-principal": "principal-one",
         "openclaw.dev/network-profile": "broad-egress-v1",
       },
     };
     const allowed = (peer = source, port = 8443, protocol = "TCP", chart = objects) =>
       chartAllowsIngress(chart, destination, peer, port, protocol);
 
-    // Compute emits these ownership labels plus the ordinary network profile on
-    // every workload Pod template. The chart selector stays profile-agnostic: the
-    // tenant-side Compute policies already gate egress on the profile.
-    assert.equal(allowed(), true, "dedicated execution reaches the credential endpoint");
+    // Helm has no admitted revisions. Check all additive policies, since a broad
+    // grant elsewhere would bypass Compute's later admission of exact Harness peers.
+    assert.equal(allowed(), false, "dedicated revision has not been admitted by Compute");
     const embedded = {
       ...source,
       labels: { ...source.labels, "openclaw.dev/workload-role": "gateway" },
     };
     delete embedded.labels["openclaw.dev/revision"];
-    assert.equal(allowed(embedded), true, "embedded gateway access remains available");
+    assert.equal(allowed(embedded), false, "embedded gateways cannot use prepared native Git");
 
-    // Namespace and Pod selectors must match together; either alone is insufficient.
+    // Tenant ownership and workload labels alone must never grant broker access.
     for (const peer of [source, embedded]) {
       assert.equal(allowed({ ...peer, namespaceLabels: {} }), false, "unmanaged namespace");
       for (const key of ["app.kubernetes.io/managed-by", "openclaw.dev/agent"]) {

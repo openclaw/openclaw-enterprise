@@ -1,3 +1,4 @@
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   requireConfiguration,
   ConfigurationValidationError as SharedConfigurationValidationError,
@@ -247,7 +248,7 @@ test("repository capability admits only configured Compute-owned native topologi
         new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
           harness,
         ),
-      unsupported,
+      { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
     );
   }
   for (const [id, mode] of [
@@ -2806,6 +2807,13 @@ test("activation waits for the first repository Git credential install and the n
         ? supervisorPeerLabels(target.id)
         : undefined;
     },
+    repositoryAccess: openShellRepositoryAccess(
+      {
+        route: (id) => openShellGit.route(id),
+        materialInstalledAt: (id) => openShellGit.materialInstalledAt(id),
+      },
+      () => undefined,
+    ),
     async provisionHarness(context) {
       provisions.push(context);
       return {
@@ -2877,6 +2885,7 @@ test("activation waits for the first repository Git credential install and the n
   const observation = await prepare();
   assert.equal(observation.ready, true, inspect(observation));
   assert.ok(reads.route > 0, "readiness consulted the route");
+  driver.now = () => clock.now;
   const pending = (code, message) =>
     assert.rejects(driver.activateRevision(revision, authContext(revision)), (error) => {
       assert.ok(error instanceof ActivationPendingError);
@@ -7762,20 +7771,24 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
       },
     },
   });
+  const source = {
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    namespaceId: tenant.id,
+    type: "openai",
+    ownerCapability: "credential_gateway",
+    driverId: credentialGatewayDriver.id,
+  };
   const revision = {
     id: "rev-withdraw",
     namespaceId: tenant.id,
     agentId: "agent-withdraw",
     compute: { id: driver.id, implementation: driver.implementation },
     sandboxDriverId: sandboxDriver.id,
+    credentialSources: [
+      { sourceId: source.id, sourceType: source.type, credentialGatewayId: source.driverId },
+    ],
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     createdAt: "2026-09-28T00:00:00.000Z",
-  };
-  const source = {
-    id: "cs_00000000-0000-4000-8000-000000000002",
-    namespaceId: tenant.id,
-    type: "openai",
-    driverId: credentialGatewayDriver.id,
   };
   const signal = AbortSignal.timeout(5_000);
 
@@ -8273,6 +8286,7 @@ test("credential-source authentication renders no model Secret and requires the 
     type: "openai",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -8461,6 +8475,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     type: "bearer-token",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -17115,6 +17130,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
     type: snapshot.sourceType,
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: snapshot.credentialGatewayId,
     state: "ready",
     createdAt: tenant.createdAt,
