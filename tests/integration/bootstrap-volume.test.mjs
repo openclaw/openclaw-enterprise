@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
-import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { commandPath as executablePath } from "../helpers/compose.mjs";
+import { commandCalls, commandPath } from "../helpers/fake-commands.mjs";
+import { commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
@@ -22,41 +24,56 @@ const { loadYaml } = controllerRequire("@kubernetes/client-node");
 const helper = join(repository, "scripts/prepare-bootstrap-volume");
 const image = `registry.example.invalid/openclaw/controller@sha256:${"a".repeat(64)}`;
 
-async function writeFakeKubectl(directory, options = {}) {
+// The stand-in kubectl is a bash shim answered by this test process (see
+// fixture-command-server.mjs), so each call costs a bash start instead of a node start.
+// It appends one JSON line per call to kubectl-state.jsonl, so a file that does not
+// exist means kubectl never ran.
+async function writeFakeKubectl(t, directory, options = {}) {
   const statePath = join(directory, "kubectl-state.jsonl");
   const manifestPath = join(directory, "manifest.yaml");
   const phase = options.phase ?? "Succeeded";
   const logs =
     options.logs ??
     `${JSON.stringify({ event: "bootstrap-volume.prepared", uid: 1000, gid: 1000, mode: "0700" })}\n`;
-  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-  const kubectl = await writeCommand(
-    directory,
-    "kubectl",
-    `const fs = process.getBuiltinModule("node:fs");
-const args = process.argv.slice(2);
-fs.appendFileSync(${JSON.stringify(statePath)}, JSON.stringify({ args }) + "\\n");
-if (args.includes("create")) {
-  const chunks = [];
-  process.stdin.on("data", (chunk) => chunks.push(chunk));
-  process.stdin.on("end", () => {
-    fs.writeFileSync(${JSON.stringify(manifestPath)}, Buffer.concat(chunks));
-    process.stdout.write("pod/created\\n");
+  const server = await startCommandServer({
+    forwardedEnv: [],
+    handle: async ({ args, io }) => {
+      await appendFile(statePath, JSON.stringify({ args }) + "\n");
+      if (args.includes("create")) {
+        await writeFile(manifestPath, await io.readInput());
+        io.stdout("pod/created\n");
+      } else if (args.includes("get") && args.includes("persistentvolumeclaim")) {
+        io.stdout(`persistentvolumeclaim/${options.claimName ?? "occ-bootstrap-admin-password"}\n`);
+      } else if (args.includes("get") && args.includes("pod")) {
+        io.stdout(phase);
+      } else if (args.includes("logs")) {
+        io.stdout(logs);
+      } else if (args.includes("delete") && args.includes("pod")) {
+        io.stdout("pod/deleted\n");
+      } else {
+        io.stderr("unexpected kubectl invocation: " + args.join(" ") + "\n");
+        io.exit(64);
+        return;
+      }
+      io.exit(0);
+    },
   });
-} else if (args.includes("get") && args.includes("persistentvolumeclaim")) {
-  process.stdout.write("persistentvolumeclaim/${options.claimName ?? "occ-bootstrap-admin-password"}\\n");
-} else if (args.includes("get") && args.includes("pod")) {
-  process.stdout.write(${JSON.stringify(phase)});
-} else if (args.includes("logs")) {
-  process.stdout.write(${JSON.stringify(logs)});
-} else if (args.includes("delete") && args.includes("pod")) {
-  process.stdout.write("pod/deleted\\n");
-} else {
-  process.stderr.write("unexpected kubectl invocation: " + args.join(" ") + "\\n");
-  process.exit(64);
-}
-`,
-    { interpreter: "node" },
+  t.after(() => server.close());
+  const kubectl = join(directory, "kubectl");
+  const { port, clientToken, serverToken } = server;
+  await writeFile(
+    kubectl,
+    commandShim({
+      bash: "/bin/bash",
+      sleep: executablePath("sleep") || "/bin/sleep",
+      setsid: executablePath("setsid") || "/usr/bin/setsid",
+      port,
+      clientToken,
+      serverToken,
+      command: "kubectl",
+      forwardedEnv: [],
+    }),
+    { mode: 0o700 },
   );
   return { kubectl, statePath, manifestPath };
 }
@@ -65,7 +82,7 @@ async function fixture(t, options) {
   const directory = await temporaryDirectory(t, "openclaw-bootstrap-volume-");
   const kubeconfig = join(directory, "kubeconfig");
   await writeFile(kubeconfig, "apiVersion: v1\nkind: Config\n", { mode: 0o600 });
-  const fake = await writeFakeKubectl(directory, options);
+  const fake = await writeFakeKubectl(t, directory, options);
   return { directory, kubeconfig, ...fake };
 }
 
