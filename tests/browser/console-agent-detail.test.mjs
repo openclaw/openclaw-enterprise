@@ -30,6 +30,7 @@ import {
   takeLayoutShifts,
   trackSettledFetches,
   waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
   statusTone,
@@ -1582,6 +1583,56 @@ test("Agent detail saves plugin changes for the next revision without changing a
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
+});
+
+// A plugin save rebuilds the page from the saved settings. Stop and deployment polls update the
+// page's live Agent, not the draft it loaded, so the rebuild must start from the live Agent or it
+// shows a stopped Agent as running again.
+test("a plugin save keeps a Stop requested on the same page", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Plugin save after stop");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(namespace.id, "Stopped Plugins", nativeValues("stop"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
+  await page.getByRole("heading", { name: "Stopped Plugins", exact: true }).waitFor();
+
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const repeat = stopRegion.getByRole("button", { name: "Request Stop again", exact: true });
+  await repeat.waitFor();
+
+  const plugins = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page.getByLabel("Plugin selections JSON", { exact: true }).fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Plugin selections saved." }).waitFor();
+  // The save rereads permissions and the draft, then rebuilds the tab.
+  await waitForIdleFetches(page);
+
+  const saved = (await fixture.request("GET", path)).data;
+  assert.deepEqual(saved.plugins, plugins);
+  assert.equal(saved.desiredRuntimeState, "stopped");
+  assert.equal(saved.activeRevisionId, active.revision.id);
+  // The rebuilt page still shows the stop request instead of offering a first Stop again.
+  await repeat.waitFor();
+  assert.equal(await stop.count(), 0);
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("Stop requested", { exact: true })
+    .waitFor();
 });
 
 test("Plugin picker clears tab memory when its catalog or credential scope is reset", async (t) => {

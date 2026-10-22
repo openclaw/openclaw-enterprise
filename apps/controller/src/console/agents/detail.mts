@@ -3286,7 +3286,10 @@ export async function renderAgentDetail(
           if (!data.draft || agent.configurationReadError) {
             return;
           }
-          const updated = { ...agent, plugins };
+          // Stop and deployment polls update `currentAgent`, not `agent`: rebuild from the newer
+          // read, unless it lost Configuration access, which this save has just disproved.
+          const latest = currentAgent.configurationReadError ? agent : currentAgent;
+          const updated = { ...latest, plugins };
           if (pluginApprovers === undefined) {
             delete updated.pluginApprovers;
           } else {
