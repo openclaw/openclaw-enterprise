@@ -5207,7 +5207,14 @@ export class ControllerWorker {
                     revision.namespaceId,
                     revision.id,
                   );
-                  if (isDeepStrictEqual(current, installation)) {
+                  // Re-observing the same installation may advance its timestamp, not its authority.
+                  if (
+                    current &&
+                    isDeepStrictEqual(current, {
+                      ...installation,
+                      installedAt: current.installedAt,
+                    })
+                  ) {
                     return;
                   }
                   if (
