@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createPrivateKey, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -141,9 +141,14 @@ test("QA repository inputs start the controller, worker owner and repository ser
   // mounted file the way it will (a private regular file holding one private key).
   const appKey = loaded.preparedRepositoryGit.privateKeyPath;
   assert.equal(appKey, `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`);
-  const { mode } = await stat(appKey);
-  assert.ok((mode & 0o170000) === 0o100000 && (mode & 0o027) === 0);
-  createPrivateKey(await readFile(appKey));
+  const file = await open(appKey);
+  try {
+    const { mode } = await file.stat();
+    assert.ok((mode & 0o170000) === 0o100000 && (mode & 0o027) === 0);
+    createPrivateKey(await file.readFile());
+  } finally {
+    await file.close();
+  }
 
   const service = await loadConfiguration(join(root, "service-config.json"), createSystemClock());
   try {
