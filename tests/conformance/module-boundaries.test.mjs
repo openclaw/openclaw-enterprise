@@ -42,8 +42,9 @@ async function node(args, options) {
 // Runs the CLI in this process. Like a child run, it resolves to { stdout, stderr } on exit
 // 0 and otherwise rejects with an error carrying the exit `code`, `stdout` and `stderr`.
 // Real child runs stay where the process matters: exit statuses and stream output in
-// "requires explicit valid policy...", an unreadable policy file, NODE_PATH, and tests that
-// resolve with Node in this process before running the CLI (its resolution caches).
+// "requires explicit valid policy...", an unreadable policy file, an unknown option,
+// NODE_PATH, and tests that resolve with Node in this process before running the CLI (its
+// resolution caches).
 async function cliInProcess(args) {
   let stdout = "";
   let stderr = "";
@@ -136,10 +137,9 @@ async function workspace(t, overrides = {}) {
       assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
       return { item, exceptions };
     },
-    // In process, or as a child when `options` (env, cwd) are given.
-    cli: (extra = [], options) =>
-      options ? node([cli, ...args, ...extra], options) : cliInProcess([...args, ...extra]),
-    cliProcess: (extra = []) => node([cli, ...args, ...extra]),
+    cli: (extra = []) => cliInProcess([...args, ...extra]),
+    // A real child, for exit statuses, streams, env and Node's per-process caches.
+    cliProcess: (extra = [], options) => node([cli, ...args, ...extra], options),
     // Installs a workspace package directory at `at`, as a package manager would.
     link: async (path = "packages/library", at = "node_modules/@fixture/library") => {
       await mkdir(dirname(join(root, at)), { recursive: true });
@@ -243,7 +243,7 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("uses Node ESM lookup without CommonJS global search paths", async (t) => {
-    const { root, write, cli: verify } = await workspace(t);
+    const { root, write, cliProcess: verify } = await workspace(t);
     const global = join(root, "global-modules");
     await write(
       "global-modules/@fixture/library/package.json",
@@ -2059,8 +2059,9 @@ describe("module boundaries", { concurrency: true }, () => {
         ["--root", root],
         ["--root", root, "--policy", join(root, "malformed.json")],
         ["--root", root, "--policy", join(root, "invalid.json")],
-        [...args, "--unknown"],
       ].map((options) => failure(cliInProcess(options), 2)),
+      // A configuration failure without an error code, through a real child.
+      failure(node([cli, ...args, "--unknown"]), 2),
     ]);
     assert.match(text.stderr, /1 additional violations/);
     assert.equal(
