@@ -1,4 +1,3 @@
-import { once } from "node:events";
 import pg from "pg";
 
 // Real PostgreSQL tests run only when OCC_TEST_DATABASE_URL selects a migrated disposable
@@ -16,7 +15,9 @@ export const requiresPostgres = {
 export async function withPool(url, work, { max = 4 } = {}) {
   const pool = new pg.Pool({ connectionString: url, max });
   const closed = [];
-  pool.on("connect", (client) => closed.push(once(client, "end")));
+  pool.on("connect", (client) =>
+    closed.push(new Promise((resolve) => client.once("end", resolve))),
+  );
   try {
     return await work(pool);
   } finally {

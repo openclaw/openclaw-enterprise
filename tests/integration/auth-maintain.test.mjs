@@ -184,8 +184,6 @@ test("auth:maintain rejects undeclared commands before configuration", async () 
   }
 });
 
-// Short-lived pools (withPool): every mutating command refuses while any other client is connected.
-
 function sessionRecord(userId) {
   return { id: randomUUID(), token: randomBytes(32).toString("hex"), userId };
 }
