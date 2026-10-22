@@ -1,6 +1,6 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-20
+updated: 2026-10-21
 last_updated_session: authoring-run/016ma8eD5SYoBTV5kswEV3Dn
 ---
 
@@ -197,6 +197,9 @@ prevent Kubernetes calls. Duplicate names and
 `workspace-node-enrollment` prevent Driver construction.
 The template includes the Harness Pod labels. The Gateway rejects the request if
 any label key is missing from `allowed_pod_labels`.
+`openshell-gateway-client.ts` turns that `INVALID_ARGUMENT` into
+`SandboxRevisionUnsupportedError` (`SANDBOX_POD_LABELS_NOT_PERMITTED`), so the
+worker fails the deployment at once.
 
 `provisionHarness` creates or adopts the provider with final setup. Renewal checks the provider version and updates only `node_setup_json` through `UpdateProvider`. For Codex, a configured post-create delay of at most 120 seconds precedes route exposure. Compute rolls the Gateway before checking enrollment.
 
@@ -335,6 +338,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 23:00: Fail a Gateway Pod-label refusal permanently instead of retrying it as an outage. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - 6d8d23457)
 
 - 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
 

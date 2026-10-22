@@ -209,8 +209,9 @@ cannot run the requested Agent revision and a retry cannot change that, it throw
 `SandboxRevisionUnsupportedError` from `@openclaw-enterprise/occ` with a closed
 code. The worker then fails the deployment with that code and a fixed message
 at once. The driver's own message stays in the controller:
-`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED` (Secret-backed environment) and
-`SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness). `SandboxGatewayUnauthorizedError`
+`SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED` (Secret-backed environment),
+`SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness), and
+`SANDBOX_POD_LABELS_NOT_PERMITTED` (the provider refuses the Harness Pod labels). `SandboxGatewayUnauthorizedError`
 (`SANDBOX_GATEWAY_UNAUTHORIZED`) fails it the same way when the provider refuses
 the controller's identity while it confirms a Harness exposure withdrawn or a
 Sandbox removed; an Agent stop, deletion or credential withdrawal fails with it
