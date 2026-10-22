@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, get } from "node:https";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import test from "node:test";
 import pg from "pg";
 import { setTimeout as delay } from "node:timers/promises";
@@ -23,14 +22,15 @@ import {
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 test(
   "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
   requiresPostgres,
   async (t) => {
     // Both keys are generated here. Only the dedicated issuer Secret receives the private App key.
-    const dir = await mkdtemp(join(tmpdir(), "occ-prepared-gh-"));
-    t.after(() => rm(dir, { recursive: true, force: true }));
+    const dir = await temporaryDirectory(t, "occ-prepared-gh-");
     const key = join(dir, "custody.key");
     await writeFile(key, randomBytes(32), { mode: 0o600 });
     // A nine-minute provider lifetime puts renewal inside the owner's ten-minute lead.
@@ -514,20 +514,19 @@ test(
           const reports = [];
           fresh.startWorker((code) => reports.push(code));
           // Observe only the ledger. No request or readiness call drives this proactive renewal.
-          const pollDeadline = Date.now() + 15_000;
-          for (;;) {
-            const {
-              rows: [{ changed }],
-            } = await f.pool.query(
-              "SELECT count(*)=1 AS changed FROM occ.prepared_github_attempts WHERE custody='current' AND source_id=$1 AND material_version <> $2",
-              [source.key.source.id, old.materialVersion],
-            );
-            if (changed) {
-              break;
-            }
-            assert.ok(Date.now() < pollDeadline, "background loop did not proactively renew");
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
+          await waitUntil(
+            "the background loop to proactively renew",
+            async () => {
+              const {
+                rows: [{ changed }],
+              } = await f.pool.query(
+                "SELECT count(*)=1 AS changed FROM occ.prepared_github_attempts WHERE custody='current' AND source_id=$1 AND material_version <> $2",
+                [source.key.source.id, old.materialVersion],
+              );
+              return changed;
+            },
+            { timeoutMs: 15_000, intervalMs: 50 },
+          );
           await fresh.close();
           fresh = createOwner();
           await fresh.connect(f.pool);

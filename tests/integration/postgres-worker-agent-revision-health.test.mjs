@@ -2,8 +2,7 @@ import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -12,6 +11,7 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Worker health, readiness, leases and outages. Deployment and dispatch cases are in
 // postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
@@ -119,8 +119,7 @@ test(
 // needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
 // after 30 s naming the file as still running.
 async function runFixtureFile(t, body, { fixtureOptions, status: expectedStatus = 0 } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "revision-fixture-exit-");
   const file = join(directory, "abandoned.test.mjs");
   const helper = new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url);
   await writeFile(

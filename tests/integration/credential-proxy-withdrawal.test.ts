@@ -28,6 +28,7 @@ import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { requestId, staticEgressFixture } from "../helpers/static-egress.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 test(
   "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
@@ -344,14 +345,7 @@ test(
         res.writeHead(403).end("denied");
       }
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => {
-      server.closeAllConnections();
-      server.close();
-    });
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const base = `http://127.0.0.1:${address.port}`;
+    const base = `http://127.0.0.1:${await listen(t, server)}`;
     let beforeApply = async () => {};
     let afterObserve = async () => {};
     const reducer: CredentialPolicyReducer = {
