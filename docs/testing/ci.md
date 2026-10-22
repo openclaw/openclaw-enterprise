@@ -257,7 +257,8 @@ Git's private input directory contains `registry.json`, `private-key.pem`, and
 `upstream-cidrs.json`. Follow [fixture setup](../guides/deploy/local-repository-credentials.md):
 exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, approved IPv4 `/32`
 endpoints, and run-branch push permissions. The run grants `git-write` with `git-only`
-transport on one branch, `oce-qa-<run>`, and opens no PR.
+transport on one branch, `oce-qa-<run>`, and opens no PR. The run generates the
+worker's custody key.
 `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` instead supplies an isolated
 observer App's `registry.json` and `private-key.pem`. Observer credentials stay outside Agents and clean
 only verified run-owned refs.

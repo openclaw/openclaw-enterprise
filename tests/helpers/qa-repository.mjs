@@ -947,6 +947,11 @@ export async function verifyQaRepository(f, agent, scenario = "git-write") {
     }
   } catch (error) {
     cleanupFailure = error;
+    // Every git-write scenario of the run pushes the one granted branch. Keep a later
+    // one from tripping over what this one could not clean up.
+    if (!denied) {
+      f.retained = true;
+    }
   }
   if (f.pendingRepositories.has(agent.id)) {
     f.retained = true;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createPrivateKey, randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -8,7 +8,10 @@ import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
-import { REPOSITORY_CONTROL_SOCKET } from "../../scripts/lib/prepared-repository-installation.mjs";
+import {
+  PREPARED_REPOSITORY_DIRECTORY,
+  REPOSITORY_CONTROL_SOCKET,
+} from "../../scripts/lib/prepared-repository-installation.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {
@@ -21,7 +24,9 @@ import { socketDirectory } from "../helpers/socket-directory.mjs";
 // The QA matrix's repository leg (manual Full Integration only) writes these files
 // for Compose and hands the registry to `occ dev up` for k3d. Nothing else loads
 // them before a live run, so feed them through the same loaders the controller,
-// the worker's prepared owner and the repository service run at startup.
+// the worker's prepared owner and the repository service run at startup. The k3d
+// registry is also checked by `occ dev up` in Go (internal/occdev/repository_k3d.go),
+// which this file does not run.
 
 const suffix = "1a2b3c4d";
 const host = "git.oce-system.svc.cluster.local";
@@ -132,6 +137,13 @@ test("QA repository inputs start the controller, worker owner and repository ser
 
   const owner = await startWorkerOwner(root, loaded);
   await owner.close();
+  // The owner reads the App key only when it first prepares a token: check the
+  // mounted file the way it will (a private regular file holding one private key).
+  const appKey = loaded.preparedRepositoryGit.privateKeyPath;
+  assert.equal(appKey, `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`);
+  const { mode } = await stat(appKey);
+  assert.ok((mode & 0o170000) === 0o100000 && (mode & 0o027) === 0);
+  createPrivateKey(await readFile(appKey));
 
   const service = await loadConfiguration(join(root, "service-config.json"), createSystemClock());
   try {

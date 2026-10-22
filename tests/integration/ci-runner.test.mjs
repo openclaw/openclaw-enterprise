@@ -636,7 +636,7 @@ test("QA inputs", async () => {
   assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-full");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-write");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -670,7 +670,7 @@ test("QA inputs", async () => {
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-full",
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-write",
     },
   );
   assert.equal(result.status, 0, result.stderr);

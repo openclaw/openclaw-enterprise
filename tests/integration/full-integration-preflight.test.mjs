@@ -181,7 +181,7 @@ test("QA credential materializer validates isolated repository fixture target", 
   );
   const runnerSelection = selectQaMatrix({
     ...runnerEnv,
-    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_SCENARIOS: "git-write",
     OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
     OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/static-token",
   });

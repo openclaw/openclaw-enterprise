@@ -225,7 +225,7 @@ ${commands}`;
   const dedicatedPrompt = `Complete this authorized disposable repository task once using native Codex shell commands in your workspace. Execute every listed operation, including sandboxProbe, once, in order, as a separate foreground command with its specified working directory. Use the exact arguments; do not add shell cd, chaining, pipelines, redirection, comments, substitutions or wrappers to Git/gh commands. Use non-login shells. ${sandboxInstructions} Stop on any command failure. Do not request escalation, install tools, read credentials, use alternate tokens, force push, call a provider HTTP API to create the PR, or delegate.
 After clone, its natural destination is ${checkout}. readBase must equal ${baseSha}; stop if it differs. Between branch and add, configure local Git identity Repository proof <repository-proof@example.invalid> and author exactly these JSON-encoded bytes in the new file ${JSON.stringify(`${checkout}/${file}`)}: ${JSON.stringify(content)}. Do not change any other file. Make ${deliverable} Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
-  const readOnlyPrompt = `Complete this authorized read-only repository check using native Codex shell commands. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
+  const readOnlyPrompt = `Complete this authorized repository check using native Codex shell commands: read the repository, then attempt one push to a branch outside your grant. Execute every listed operation once, in order, as a separate foreground command with the specified working directory and exact arguments. Use non-login shells and do not use shell cd, chaining, pipelines, redirection, substitutions or wrappers. Do not request escalation, use alternate credentials, or delegate. ${sandboxInstructions} The sandboxProbe must succeed; clone and fetch must succeed and readBase must equal ${baseSha}. The push is intentionally unauthorized: attempt it exactly once and continue after it fails. Do not create a PR or retry; the attempted push must be the only remote write attempt. Finish your final response with the exact token ${completionMarker} on its own line.
 ${nativeCommands}`;
   const prompt = readOnly ? readOnlyPrompt : dedicated ? dedicatedPrompt : embeddedPrompt;
 
@@ -499,10 +499,11 @@ ${nativeCommands}`;
           "the push outside the grant must fail",
         );
         // Prepared native Git grants git-write on one branch: the client's pre-push
-        // guard refuses any other branch, and the broker's exact-ref policy backs it.
-        assert.ok(
-          command.pushRefRefused || command.http400,
-          "the pre-push guard or the broker must refuse the branch outside the grant",
+        // guard refuses any other branch before anything is sent.
+        assert.equal(
+          command.pushRefRefused,
+          true,
+          "the pre-push guard must refuse the branch outside the grant",
         );
       } else {
         assert.equal(command.status, "completed");
