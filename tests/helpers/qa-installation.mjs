@@ -7,9 +7,10 @@ import { join, resolve } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
+import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
   registerQaSecret,
@@ -380,7 +381,7 @@ export async function createQaInstallation(
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
-    ports.add(await unusedPort());
+    ports.add(await availablePort());
   }
   const [apiPort, kubePort, browserPort, postgresPort] = [...ports];
   const env = {
@@ -520,6 +521,7 @@ export async function createQaInstallation(
         cluster,
         "-f",
         join(stateDirectory, "compose.yaml"),
+        ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
         ...args,
       ]);
     },
@@ -614,7 +616,7 @@ export async function createQaInstallation(
     },
     async gatewayUrl(agent) {
       const pod = await f.pod(agent, "gateway");
-      const port = await unusedPort();
+      const port = await availablePort();
       const child = spawn(
         "kubectl",
         [
@@ -810,6 +812,78 @@ export async function createQaInstallation(
     sandboxDriver: "none",
   });
   return f;
+}
+
+export async function prepareQaConsoleTheme(f) {
+  const themeDirectory = join(f.directory, "console-theme");
+  await mkdir(themeDirectory);
+  for (const name of ["theme.json", "logo.png"]) {
+    await copyFile(
+      join(repository, "deploy/examples/console-theme", name),
+      join(themeDirectory, name),
+    );
+  }
+  if (f.controlPlane === "compose") {
+    f.consoleThemeComposeFile = await f.write("console-theme.compose.json", {
+      services: {
+        controller: {
+          environment: { OCC_CONSOLE_THEME_DIR: "/etc/openclaw/console-theme" },
+          volumes: [
+            {
+              type: "bind",
+              source: themeDirectory,
+              target: "/etc/openclaw/console-theme",
+              read_only: true,
+            },
+          ],
+        },
+      },
+    });
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+  } else {
+    const namespace = f.state.platformNamespace;
+    await f.apply({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "qa-console-theme", namespace },
+      data: { "theme.json": await readFile(join(themeDirectory, "theme.json"), "utf8") },
+      binaryData: {
+        "logo.png": (await readFile(join(themeDirectory, "logo.png"))).toString("base64"),
+      },
+    });
+    await f.run("helm", [
+      "upgrade",
+      "openclaw-enterprise",
+      join(repository, "deploy/helm/openclaw-enterprise"),
+      "--kubeconfig",
+      join(f.stateDirectory, "kubeconfig"),
+      "--kube-context",
+      `k3d-${f.cluster}`,
+      "--namespace",
+      namespace,
+      "--reuse-values",
+      "--set",
+      "api.consoleTheme.configMapName=qa-console-theme",
+      "--set-string",
+      "api.consoleTheme.checksum=qa-first",
+    ]);
+    await f.kubectl(
+      "-n",
+      namespace,
+      "rollout",
+      "status",
+      "deployment/openclaw-enterprise-api",
+      "--timeout=300s",
+    );
+  }
+  await waitFor("mounted console theme after API restart", async () => {
+    try {
+      const response = await fetch(f.apiUrl + "/console/login");
+      return response.ok && (await response.text()).includes("<title>Example Agents</title>");
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function prepareQaPreset(f, presetName) {

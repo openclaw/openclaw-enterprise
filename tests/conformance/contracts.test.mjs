@@ -86,6 +86,10 @@ test("network delegation covers every requested host label and port without broa
     false,
   );
   assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
+  // Coverage needs a port: an empty or reversed range never proves containment.
+  for (const ports of [[], [{ from: 445, to: 443 }], [{ from: 65535, to: 1 }]]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, ports }], ceiling), false);
+  }
   for (const [invalid, path, code, message] of [
     [
       [{ ...grant, binary: "/usr/bin/../python3.11" }],

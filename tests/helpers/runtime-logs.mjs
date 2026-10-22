@@ -5,6 +5,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
+import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import { createControllerApp } from "../../apps/controller/src/index.ts";
 import {
   authenticatedHeaders,
@@ -221,6 +222,58 @@ export function createRuntimeLogComputeDriver(options = {}) {
           },
         }),
   });
+}
+
+/**
+ * A Sandbox Driver that stands in for the provider (OpenShell) only: it names one Sandbox per
+ * revision and answers from `state`. `state.lines` (or `state.error`) answer the Sandbox log
+ * read, decoded by the OpenShell Driver's own decision parser; `state.harness` (or
+ * `state.harnessError`) answers the Harness observation, such as a Sandbox a node restart left
+ * stopped. OCC's handling of both is the production code path.
+ */
+export function createProviderSandboxDriver({ id = "console-sandbox" } = {}) {
+  const state = {
+    lines: [],
+    error: undefined,
+    harness: { state: "running" },
+    harnessError: undefined,
+  };
+  const logRequests = [];
+  const sandboxName = (revision) => `sb-${revision.id.slice(4, 12)}`;
+  const driver = {
+    id,
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness(context) {
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: sandboxName(context.revision),
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async cleanup() {},
+    async readSandboxLogs(context, request) {
+      logRequests.push({ namespace: context.namespace.name, ...request });
+      if (state.error !== undefined) {
+        throw state.error;
+      }
+      return {
+        sandbox: sandboxName(context.revision),
+        observedAt: "2026-09-30T12:00:05.000Z",
+        lines: state.lines.map(openShellLogDecision),
+        bufferTotal: state.lines.length,
+      };
+    },
+    async observeHarness() {
+      if (state.harnessError !== undefined) {
+        throw state.harnessError;
+      }
+      return state.harness;
+    },
+  };
+  return { driver, state, logRequests };
 }
 
 /**

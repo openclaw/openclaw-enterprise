@@ -84,6 +84,8 @@ export const SandboxPolicyViewResponse = Type.Object(
   },
   { additionalProperties: false },
 );
+export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
+
 export const SandboxPolicyUpdateBody = Type.Object(
   { expectedVersion: SandboxPolicyVersion, additions: SandboxNetworkGrantsSchema },
   { additionalProperties: false },

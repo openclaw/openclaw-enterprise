@@ -16,7 +16,7 @@ from confirmation to readback. See the [parent flow](../platform-console.md) and
 
 - `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
 - `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both as rows of one **Danger zone** card;
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts both as rows of one **Danger zone** card;
   [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer them.
 - A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
 
@@ -103,14 +103,16 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ### Stop or delete from an Agents list row
 
-`apps/controller/src/console/agents/collection.mjs:renderAgentList` rows use the
+`apps/controller/src/console/agents/collection.mts:renderAgentList` rows use the
 same Stop and Delete confirmations. Each row reads
 [permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
 like its deployment, and reads it again when a retained list resumes.
 Refusal disables the action and explains why; in an open confirmation, it also
 disables confirmation and focuses Cancel. A stopped Agent without a selected
-version has no Stop action. Acceptance updates the row without polling.
-After `404`, `409`, or an uncertain outcome, the actions stay disabled until **Refresh**.
+version has no Stop action. A response that confirms the action for the requested Agent
+updates its row without polling. If the response names a different Agent, the list reports an
+unknown outcome and keeps the last observed state of both Agents. After `404`, `409`, or an
+uncertain outcome, the requested row’s actions stay disabled until **Refresh** rereads it.
 
 ## Debugging and Verification
 

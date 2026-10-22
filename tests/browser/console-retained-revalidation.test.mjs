@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mjs";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,
@@ -10,6 +10,7 @@ import {
   login,
   nativeValues,
   newPage,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
 const SESSION = "**/api/auth/session";
@@ -467,7 +468,7 @@ test("A page held for another page keeps its Namespace selector disabled", async
   backends.release();
   await page.locator(settledView).waitFor();
   assert.equal(await page.locator(".content h1").textContent(), "Backends");
-  assert.equal(await selector.isDisabled(), false);
+  await waitForEnabled(selector);
 });
 
 test("A held Namespaces page shows no recovery for the next page's Namespace", async (t) => {
@@ -660,9 +661,10 @@ for (const { elapsed, held } of [
     record.release();
     if (held) {
       await settled;
-      // The overview's first read has landed: its activity panel replaced the placeholder, and
-      // the reveal is asked for in the same turn. Give it time to run.
-      await page.locator(".content .deployment-evidence").waitFor({ state: "attached" });
+      // The overview's first read has landed: its activity panel (with its details; the
+      // placeholder has none) replaced the placeholder, and the reveal is asked for in the same
+      // turn. Give it time to run.
+      await page.locator(".content .deployment-evidence > details").waitFor({ state: "attached" });
       await new Promise((resolve) => setTimeout(resolve, 300));
       assert.equal(await page.locator(activeView).getByText("Reading this Agent.").count(), 1);
       await page.clock.runFor(held - 1);
@@ -700,7 +702,8 @@ test("A fresh load whose session check outlasts the startup delay holds the load
   );
   record.release();
   await settled;
-  await page.locator(".content .deployment-evidence").waitFor({ state: "attached" });
+  // The activity panel, with its details, replaced the placeholder.
+  await page.locator(".content .deployment-evidence > details").waitFor({ state: "attached" });
   // The reveal is asked for in the same turn as the first read; give it time to run.
   await new Promise((resolve) => setTimeout(resolve, 300));
   const loading = page.locator(activeView).getByText("Reading this Agent.");

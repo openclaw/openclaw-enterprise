@@ -8,12 +8,16 @@ import { join, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -101,15 +105,6 @@ function validatedFailureDatabaseUrl() {
     );
   }
   return parsed;
-}
-
-async function withPool(databaseUrl, operation) {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-  try {
-    return await operation(pool);
-  } finally {
-    await pool.end();
-  }
 }
 
 async function resetFailureDatabase() {
@@ -246,13 +241,6 @@ async function runBootstrapScript(environment) {
   return runBootstrapInstallation(environment);
 }
 
-function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .filter((line) => line.trim().startsWith("{"))
-    .map((line) => JSON.parse(line));
-}
-
 async function bootstrapWithLostCommitAcknowledgement(environment) {
   const result = await runBootstrapInstallation({
     ...environment,
@@ -287,12 +275,7 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
 }
 
 async function request(app, method, url, apiKey, body) {
-  const response = await app.inject({
-    method,
-    url,
-    headers: { "x-api-key": apiKey, host: "127.0.0.1" },
-    ...(body === undefined ? {} : { payload: body }),
-  });
+  const response = await injectJson(app, method, url, { key: apiKey, body });
   const parsed = response.body.length === 0 ? undefined : response.json();
   return { status: response.statusCode, body: parsed };
 }
@@ -815,8 +798,7 @@ test(
   requiresFailurePostgres,
   async (context) => {
     const { environment } = await bootstrapExistingInstallation(context, "stored-name");
-    const configurationRoot = await privateOutputDirectory("openclaw-bootstrap-stored-name-");
-    context.after(() => rm(configurationRoot, { recursive: true, force: true }));
+    const configurationRoot = await temporaryDirectory(context, "openclaw-bootstrap-stored-name-");
     // An Installation stored before OCC applied the Name rule can hold a trailing NBSP:
     // PostgreSQL's name check accepts it.
     await withPool(migratorDatabaseUrl(), (pool) =>

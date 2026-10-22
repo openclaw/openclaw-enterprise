@@ -11,6 +11,7 @@ import {
   gatewayRequest,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const { inspectRequestHead } = await appModule("drivers/repo/credentials/transport/request");
 const { createUpstreamSender } = await appModule("drivers/repo/credentials/transport/upstream");
@@ -594,10 +595,11 @@ test(
       const response = await exchange(port, "/disconnect", Buffer.from("write"));
       assert.equal(response.status, 502);
       assert.deepEqual(JSON.parse(response.body), { error: { code: "exchange-failed" } });
-      const deadline = Date.now() + 1000;
-      while (!outcomes.some((entry) => entry.path === "/disconnect") && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 5));
-      }
+      await waitUntil(
+        "the /disconnect outcome",
+        () => outcomes.some((entry) => entry.path === "/disconnect"),
+        { timeoutMs: 1000, intervalMs: 5 },
+      );
       assert.equal(
         outcomes.find((entry) => entry.path === "/disconnect")?.outcome.kind,
         "possibly-dispatched",

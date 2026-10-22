@@ -165,8 +165,9 @@ export function createWorkerRevisionFixtures(
     // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
     // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
     // CI state lock briefly, but a file's first test still waits for that lock while the runner
-    // migrates the files that start with it. Before, each file migrated a template of its own
-    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    // prepares the files that start with it. Those are copies of one migrated lane template
+    // since finding 2178; a migration per file there made a 4 s first test take 10-26 s on CI.
+    // Before that, each file also migrated a template of its own (findings 1209, 1270).
     assert.ok(
       process.env.OCC_TEST_DATABASE_URL,
       "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",

@@ -4,8 +4,8 @@
 // the Compute driver renders, beside a stand-in model provider sidecar.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { availableParallelism, freemem, loadavg, tmpdir } from "node:os";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
+import { availableParallelism, freemem, loadavg } from "node:os";
 import { join } from "node:path";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
@@ -17,6 +17,7 @@ import {
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import {
   execute,
   image,
@@ -46,8 +47,7 @@ const startupProbeModel = runtimeImageModel;
 export const startupProbeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
 async function createStartupProbeMaterial(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-startup-probe-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-startup-probe-");
   const file = (name) => join(directory, name);
   // Codex rejects a self-signed end-entity certificate, so sign a leaf.
   await createModelProbeCertificates({

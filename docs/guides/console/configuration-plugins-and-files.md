@@ -64,6 +64,16 @@ at save and deployment; installation and app access are checked later during
 startup. A rejected save leaves the running version unchanged. For policy
 limits and errors, see [Agent plugins](../../reference/agent-plugins.md).
 
+If you see **Plugin selections changed**, the Console stopped before saving.
+If you see **Outcome unknown**, your changes may already be saved. Note any edits
+you want to keep, then select **Reload plugin selections**. Reload reads the Agent
+without repeating the save. A failed reload cannot resolve an unknown save outcome.
+
+When you see **Plugin selections reloaded**, the saved selections and approvers
+have replaced your draft. If they match what you intended, continue to **Deploy
+new version**. Otherwise, edit the reloaded settings and save only the changes
+you still need.
+
 When viewing a saved version, the **Plugins** tab shows that version's
 saved selection. Return to **Create new version** to make another edit.
 Native `values.plugins` in **Edit Configuration** controls the runtime's native

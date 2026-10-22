@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Minimal OpenShell v0.1.4 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.5 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
@@ -536,7 +536,8 @@ message SandboxCondition {
   string status = 2;
   string reason = 3;
   string message = 4;
-  string last_transition_time = 5;
+  reserved 5;
+  reserved "last_transition_time";
 }
 
 enum SandboxPhase {

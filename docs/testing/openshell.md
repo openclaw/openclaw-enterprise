@@ -4,7 +4,7 @@
 
 Use these tests to check OpenShell setup and real Agent execution. Run commands
 from the repository root. The current setup selects official OpenShell
-`v0.1.4`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
+`v0.1.5`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for the exact versions and qualification boundary.
 
 ## Start a reusable development environment
