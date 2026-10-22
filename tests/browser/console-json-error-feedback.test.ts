@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import type { Page } from "playwright";
+
+import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -27,12 +30,20 @@ const defaultCodexPreset = JSON.parse(
 const browser = fileBrowser();
 
 // "danger" for an error (the danger status block, UX plan C1), otherwise the line's class.
-const feedbackClass = (page) =>
+const feedbackClass = (page: Page) =>
   page
     .locator("#configuration-editor-feedback")
-    .evaluate((node) => (node.className === "status" ? node.dataset.tone : node.className));
+    .evaluate((node) =>
+      node.className === "status" ? node.getAttribute("data-tone") : node.className,
+    );
 
-async function openEditor(page, fixture, namespace, agent, marker) {
+async function openEditor(
+  page: Page,
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: NamespaceWire,
+  agent: AgentWire,
+  marker: string,
+) {
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("button", { name: "Edit Configuration", exact: true }).click();
   await openAdvancedSettings(page);
@@ -42,7 +53,7 @@ async function openEditor(page, fixture, namespace, agent, marker) {
 }
 
 // Leaving for a global route keeps the draft; coming back rebuilds the editor from it.
-async function leaveAndReturn(page) {
+async function leaveAndReturn(page: Page) {
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
@@ -165,7 +176,7 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
   const lines = template.split("\n");
   await jsonError
     .getByText(
-      `Invalid JSON at line ${lines.length}, column ${lines.at(-1).length + 1}. Enter a valid JSON object.`,
+      `Invalid JSON at line ${lines.length}, column ${template.length - template.lastIndexOf("\n")}. Enter a valid JSON object.`,
       { exact: true },
     )
     .waitFor();

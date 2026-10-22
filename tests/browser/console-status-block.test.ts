@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { BrowserContextOptions, Locator, Page, Route } from "playwright";
+
+import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type { PermissionAction } from "../../packages/contracts/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -32,12 +36,15 @@ import {
 // One Chromium for the file; each case still gets its own context.
 const browser = fileBrowser();
 
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type RGB = { r: number; g: number; b: number };
+
 // A status block's tone, whether its stripe and wash are the tone's tokens, and the contrast of
 // its text with the wash laid over the surface beneath it.
-const statusPaint = (locator) =>
+const statusPaint = (locator: Locator) =>
   locator.evaluate((node) => {
     const view = globalThis;
-    const tokenColor = (name, property = "color") => {
+    const tokenColor = (name: string, property: "color" | "backgroundColor" = "color") => {
       const probe = globalThis.document.createElement("span");
       probe.style[property] = `var(--color-${name})`;
       globalThis.document.body.append(probe);
@@ -45,13 +52,16 @@ const statusPaint = (locator) =>
       probe.remove();
       return value;
     };
-    const rgba = (value) => {
-      const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
+    const rgba = (value: string) => {
+      const [r, g, b, a = 1] = (value.match(/[\d.]+/g) ?? []).map(Number);
+      if (r === undefined || g === undefined || b === undefined) {
+        throw new Error(`Expected an RGB color, received ${value}`);
+      }
       return { r, g, b, a };
     };
     // The wash is translucent: lay each background over the one beneath until an opaque one.
     const layers = [];
-    for (let at = node; at; at = at.parentElement) {
+    for (let at: Element | null = node; at; at = at.parentElement) {
       const color = rgba(view.getComputedStyle(at).backgroundColor);
       if (color.a > 0) {
         layers.push(color);
@@ -68,19 +78,22 @@ const statusPaint = (locator) =>
       }),
       { r: 255, g: 255, b: 255 },
     );
-    const luminance = ({ r, g, b }) => {
-      const [lr, lg, lb] = [r, g, b].map((channel) => {
-        const value = channel / 255;
-        return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-      });
-      return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+    const linear = (channel: number) => {
+      const value = channel / 255;
+      return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
     };
-    const contrast = (color) => {
-      const [light, dark] = [luminance(color), luminance(backdrop)].sort((a, b) => b - a);
-      return (light + 0.05) / (dark + 0.05);
+    const luminance = ({ r, g, b }: RGB) =>
+      0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    const contrast = (color: RGB) => {
+      const text = luminance(color);
+      const surface = luminance(backdrop);
+      return (Math.max(text, surface) + 0.05) / (Math.min(text, surface) + 0.05);
     };
     const style = view.getComputedStyle(node);
-    const tone = node.dataset.tone;
+    const tone = node.getAttribute("data-tone");
+    if (!tone) {
+      throw new Error("Expected a status with a tone");
+    }
     return {
       status: node.classList.contains("status"),
       tone,
@@ -91,7 +104,11 @@ const statusPaint = (locator) =>
     };
   });
 
-function assertPaint(paint, tone, label) {
+function assertPaint(
+  paint: Awaited<ReturnType<typeof statusPaint>>,
+  tone: "info" | "warning" | "danger",
+  label: string,
+) {
   assert.deepEqual(
     { ...paint, contrast: paint.contrast >= 4.5 },
     { status: true, tone, stripe: true, wash: true, bodyText: true, contrast: true },
@@ -100,7 +117,7 @@ function assertPaint(paint, tone, label) {
 }
 
 // Whether a refusal has focus and is on screen.
-const refusalView = (locator) =>
+const refusalView = (locator: Locator) =>
   locator.evaluate((node) => {
     const { top, bottom } = node.getBoundingClientRect();
     return {
@@ -112,7 +129,7 @@ const refusalView = (locator) =>
   });
 
 // A refusal that has focus and is whole on screen.
-async function assertFocusedInView(t, locator) {
+async function assertFocusedInView(t: TestContext, locator: Locator) {
   const view = await refusalView(locator);
   t.diagnostic(JSON.stringify(view));
   assert.equal(view.focused, true, "the refusal has focus");
@@ -120,7 +137,7 @@ async function assertFocusedInView(t, locator) {
 }
 
 // Whether `locator` is whole on screen, and where it is.
-const onScreen = (locator) =>
+const onScreen = (locator: Locator) =>
   locator.evaluate((node) => {
     const { top, bottom } = node.getBoundingClientRect();
     return {
@@ -137,7 +154,7 @@ const FORBIDDEN = {
 };
 
 // The API's 403 for a policy write.
-const forbidden = async (route) => {
+const forbidden = async (route: Route) => {
   if (route.request().method() === "GET") {
     await route.continue();
     return;
@@ -147,52 +164,51 @@ const forbidden = async (route) => {
 
 // Records the role a feedback line has each time its text is written: a refusal is written into
 // an alert, not into a status that turns into one afterwards (finding 2010).
-const recordWrites = (locator) =>
-  locator.evaluate((node) => {
-    const own = Object.getOwnPropertyDescriptor(globalThis.Node.prototype, "textContent");
-    const writes = [];
-    node.recordedWrites = writes;
+async function recordWrites(locator: Locator) {
+  const recording = await locator.evaluateHandle((node) => {
+    const { get, set } =
+      Object.getOwnPropertyDescriptor(globalThis.Node.prototype, "textContent") ?? {};
+    if (!get || !set) {
+      throw new Error("Expected the textContent getter and setter");
+    }
+    const writes: { text: string; role: string | null }[] = [];
     Object.defineProperty(node, "textContent", {
       configurable: true,
       get() {
-        return own.get.call(this);
+        return get.call(node);
       },
       set(value) {
-        writes.push({ text: String(value), role: this.getAttribute("role") });
-        own.set.call(this, value);
+        writes.push({ text: String(value), role: node.getAttribute("role") });
+        set.call(node, value);
       },
     });
+    return { node, writes };
   });
-const rolesWhenWritten = (locator, text) =>
-  locator.evaluate(
-    (node, written) =>
-      node.recordedWrites.filter((write) => write.text === written).map((write) => write.role),
-    text,
-  );
+  return (text: string) =>
+    locator.evaluate(
+      (current, { recording: { node, writes }, text }) => {
+        if (current !== node) {
+          throw new Error("Feedback element was replaced after write recording began");
+        }
+        return writes.filter((write) => write.text === text).map((write) => write.role);
+      },
+      { recording, text },
+    );
+}
 
 // A feedback line read in full: its class, tone, role and text.
-const lineState = (locator) => statusTone(locator, { text: true });
-const dangerAlert = (text) => ({ className: "status", tone: "danger", role: "alert", text });
-const quietStatus = (text) => ({ className: "hint", tone: null, role: "status", text });
+const lineState = (locator: Locator) => statusTone(locator, { text: true });
+const dangerAlert = (text: string) => ({
+  className: "status",
+  tone: "danger",
+  role: "alert",
+  text,
+});
+const quietStatus = (text: string) => ({ className: "hint", tone: null, role: "status", text });
 
 // A member who reads the Agent, its versions and its Configuration, and may change none of them.
-function createReader(fixture, namespace, name) {
-  return fixture.createAccountWithPolicy(name, (principal) => {
-    fixture.policy.roles.push({
-      id: `role-${name}`,
-      namespaceId: namespace.id,
-      permissions: ["namespace", "agent", "agent_revision", "configuration"].map(
-        (resourceKind) => ({ action: "read", resourceKind }),
-      ),
-    });
-    fixture.policy.bindings.push({
-      id: `binding-${name}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: `role-${name}`,
-    });
-  });
+function createReader(fixture: ConsoleFixture, namespace: NamespaceWire, name: string) {
+  return createAgentMember(fixture, namespace, name, ["read"]);
 }
 
 const SHARE_REFUSAL =
@@ -205,12 +221,16 @@ test("Share Agent refusals", async (t) => {
   // The removal case really shares, which leaves a Role that a later share in the same Namespace
   // would reuse without the refused write; it gets a Namespace of its own.
   const removalNamespace = await fixture.createNamespace("Status removal");
-  const iam = (target) => `${fixture.origin}/namespaces/${target.id}/iam`;
+  const iam = (target: NamespaceWire) => `${fixture.origin}/namespaces/${target.id}/iam`;
   const policyPath = iam(namespace);
   let agents = 0;
   // An Agent page at `viewport` with its Share Agent panel's form filled in for the provisioned
   // person.
-  async function sharingPage(t, viewport, target = namespace) {
+  async function sharingPage(
+    t: TestContext,
+    viewport: BrowserContextOptions["viewport"],
+    target = namespace,
+  ) {
     agents += 1;
     const agent = await fixture.createAgent(
       target.id,
@@ -220,9 +240,9 @@ test("Share Agent refusals", async (t) => {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "access"));
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
-    await panel
-      .getByLabel("Existing person’s Principal ID")
-      .fill(fixture.provisionedAccounts[0].principal.id);
+    const [recipient] = fixture.provisionedAccounts;
+    assert.ok(recipient, "Share recipient was provisioned");
+    await panel.getByLabel("Existing person’s Principal ID").fill(recipient.principal.id);
     await panel.getByRole("checkbox").check();
     return { page, panel };
   }
@@ -385,7 +405,11 @@ test("Authentication source save outcomes", async (t) => {
 
   // A draft Agent's Credentials tab, in a Namespace of its own, with an API key Secret chosen
   // for its authentication source.
-  async function authenticationSourcePage(t, name, { harnessId } = {}) {
+  async function authenticationSourcePage(
+    t: TestContext,
+    name: string,
+    { harnessId }: { harnessId?: string } = {},
+  ) {
     const namespace = await fixture.createNamespace(`Status ${name}`, { ready: true });
     const agent = await fixture.createAgent(
       namespace.id,
@@ -443,7 +467,7 @@ test("Authentication source save outcomes", async (t) => {
     "an API-refused authentication source save is a focused alert, and the next save's progress a status",
     async (t) => {
       const { page, save, feedback, agentUrl } = await authenticationSourcePage(t, "auth-403");
-      await recordWrites(feedback);
+      const rolesWhenWritten = await recordWrites(feedback);
       await page.route(agentUrl, forbidden);
       await save.click();
       const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
@@ -451,7 +475,7 @@ test("Authentication source save outcomes", async (t) => {
       assert.deepEqual(await lineState(feedback), dangerAlert(AGENT_REFUSAL));
       assertPaint(await statusPaint(refusal), "danger", "authentication 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(feedback, AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
 
       // Saving again: while its preflight read runs, the line is quiet progress, not the old
       // refusal.
@@ -551,7 +575,7 @@ test("Authentication source save outcomes", async (t) => {
 });
 
 test("Repository access save refusals", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "1600",
@@ -560,10 +584,10 @@ test("Repository access save refusals", async (t) => {
     },
   ]);
   // A draft Agent whose saved access gives the repository Contributor (git-full) by default.
-  async function repositoryAgent(name, marker) {
+  async function repositoryAgent(name: string, marker: string) {
     const agent = await fixture.createAgent(namespace.id, name, nativeValues(marker));
     const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    const access = (defaultProfile) => ({
+    const access = (defaultProfile: "git-full" | "git-write") => ({
       configurationId: agent.configurationId,
       repositoryAccess: { defaultProfile, repositories: [{ repositoryRef: "application" }] },
     });
@@ -616,7 +640,7 @@ test("Repository access save refusals", async (t) => {
         .filter({ has: save })
         .locator(":scope > p")
         .last();
-      await recordWrites(feedback);
+      const rolesWhenWritten = await recordWrites(feedback);
       const refuse = async () => {
         await save.click();
         const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
@@ -628,7 +652,7 @@ test("Repository access save refusals", async (t) => {
       const refusal = await refuse();
       assertPaint(await statusPaint(refusal), "danger", "repository 403");
       await assertFocusedInView(t, refusal);
-      assert.deepEqual(await rolesWhenWritten(feedback, AGENT_REFUSAL), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(AGENT_REFUSAL), ["alert"]);
 
       // An edit (back to the saved access): guidance in a quiet status.
       await page.locator("#repository-default-git-full").check();
@@ -662,7 +686,12 @@ test("Configuration save outcomes", async (t) => {
     return fixture.createAgent(namespace.id, `Status config ${agents}`, nativeValues(`c${agents}`));
   };
   // The Configuration editor's draft for `agent`, open with an edit, and its feedback line.
-  async function editConfiguration(page, agent, marker, credentials) {
+  async function editConfiguration(
+    page: Page,
+    agent: AgentWire,
+    marker: string,
+    credentials?: ConsoleFixture["credentials"],
+  ) {
     await login(
       page,
       fixture,
@@ -709,13 +738,13 @@ test("Configuration save outcomes", async (t) => {
       const agent = await newAgent();
       const { page } = await newPage(t, fixture, { browser });
       const feedback = await editConfiguration(page, agent, "edited here");
-      await recordWrites(feedback);
+      const rolesWhenWritten = await recordWrites(feedback);
       // Saved elsewhere while this editor was open.
       await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("other"));
       await page.getByRole("button", { name: "Save Configuration" }).click();
       await page.getByRole("alert").filter({ hasText: CONFIGURATION_CHANGED }).waitFor();
       assert.deepEqual(await lineState(feedback), dangerAlert(CONFIGURATION_CHANGED));
-      assert.deepEqual(await rolesWhenWritten(feedback, CONFIGURATION_CHANGED), ["alert"]);
+      assert.deepEqual(await rolesWhenWritten(CONFIGURATION_CHANGED), ["alert"]);
 
       await page.getByRole("link", { name: "← Agents", exact: true }).click();
       assert.deepEqual(
@@ -832,17 +861,22 @@ test("Configuration save outcomes", async (t) => {
 
 // A member who reads the Agent's Namespace, versions and Configuration, with `agentActions` on
 // the Agent itself.
-function createAgentMember(fixture, namespace, name, agentActions) {
+function createAgentMember(
+  fixture: ConsoleFixture,
+  namespace: NamespaceWire,
+  name: string,
+  agentActions: PermissionAction[],
+) {
   return fixture.createAccountWithPolicy(name, (principal) => {
     fixture.policy.roles.push({
       id: `role-${name}`,
       namespaceId: namespace.id,
       permissions: [
-        ...["namespace", "agent_revision", "configuration"].map((resourceKind) => ({
-          action: "read",
+        ...(["namespace", "agent_revision", "configuration"] as const).map((resourceKind) => ({
+          action: "read" as const,
           resourceKind,
         })),
-        ...agentActions.map((action) => ({ action, resourceKind: "agent" })),
+        ...agentActions.map((action) => ({ action, resourceKind: "agent" as const })),
       ],
     });
     fixture.policy.bindings.push({
@@ -858,27 +892,33 @@ function createAgentMember(fixture, namespace, name, agentActions) {
 // Resolves once the page has read the Agent's permission answer, failed or not. The count goes up
 // one microtask before the console acts on the answer, and the console decides its controls in the
 // same microtask chain; waitForFunction checks in a later task, so they are settled by then.
-async function watchPermissionAnswer(page, agentId) {
+async function watchPermissionAnswer(page: Page, agentId: string) {
   await page.addInitScript((suffix) => {
     const json = globalThis.Response.prototype.json;
-    globalThis.permissionAnswers = 0;
+    const probe = Object.assign(globalThis, { permissionAnswers: 0 });
     globalThis.Response.prototype.json = function readJson() {
       const read = json.call(this);
       if (this.url && new URL(this.url).pathname.endsWith(suffix)) {
         const answered = () => {
-          globalThis.permissionAnswers += 1;
+          probe.permissionAnswers += 1;
         };
         read.then(answered, answered);
       }
       return read;
     };
   }, `/agents/${agentId}/permissions`);
-  return () => page.waitForFunction(() => globalThis.permissionAnswers > 0);
+  return () =>
+    page.waitForFunction(
+      () =>
+        "permissionAnswers" in window &&
+        typeof window.permissionAnswers === "number" &&
+        window.permissionAnswers > 0,
+    );
 }
 
 // A diagnostics run that answers with one passing check, counting its requests.
-async function answerDiagnostics(page, revisionId) {
-  const runs = [];
+async function answerDiagnostics(page: Page, revisionId: string) {
+  const runs: string[] = [];
   await page.route("**/deployments/*/diagnostics", (route) => {
     runs.push(route.request().method());
     return route.fulfill({
@@ -923,7 +963,11 @@ test("Run diagnostics access and outcomes", async (t) => {
     const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     return { agent, revision: active.revision };
   }
-  const openVersion = async (page, { agent, revision }, credentials) => {
+  const openVersion = async (
+    page: Page,
+    { agent, revision }: Awaited<ReturnType<typeof activeAgent>>,
+    credentials?: ConsoleFixture["credentials"],
+  ) => {
     await login(
       page,
       fixture,
@@ -945,7 +989,7 @@ test("Run diagnostics access and outcomes", async (t) => {
       const { observations, run } = await openVersion(page, version, reader.credentials);
       // The same answer that hides the Stop row disables Run diagnostics.
       await page.waitForFunction(
-        () => globalThis.document.querySelector("section.stop-note")?.hidden === true,
+        () => globalThis.document.querySelector<HTMLElement>("section.stop-note")?.hidden === true,
       );
       const reason = observations.getByRole("status").filter({ hasText: DIAGNOSTICS_REASON });
       await reason.waitFor();
@@ -996,7 +1040,12 @@ test("Run diagnostics access and outcomes", async (t) => {
     { name: "a member with operate but not update", agentActions: ["read", "operate"], runs: true },
     { name: "a member with update but not operate", agentActions: ["read", "update"], runs: false },
     { name: "an administrator whose permission answer is withheld", withheld: true, runs: true },
-  ]) {
+  ] satisfies {
+    name: string;
+    agentActions?: PermissionAction[];
+    withheld?: boolean;
+    runs: boolean;
+  }[]) {
     await t.test(
       `Run diagnostics is ${caller.runs ? "enabled" : "disabled"} for ${caller.name}`,
       async (t) => {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -27,7 +28,7 @@ const browser = fileBrowser();
 
 // The control's error as a reader meets it: under the control, inside its field, in the danger
 // colour, linked to the control, which has focus.
-const shownError = (control) =>
+const shownError = (control: Locator) =>
   control.evaluate((node) => {
     const error = globalThis.document.getElementById(`${node.id}-error`);
     if (!error || error.hidden) {
@@ -52,7 +53,7 @@ const shownError = (control) =>
     };
   });
 
-async function assertShownError(control, text) {
+async function assertShownError(control: Locator, text: string) {
   assert.deepEqual(await shownError(control), {
     text,
     inField: true,
@@ -65,7 +66,7 @@ async function assertShownError(control, text) {
 
 const PLUGIN_JSON_ERROR = "Enter a valid Plugin selections JSON object.";
 
-async function openPluginJson(page) {
+async function openPluginJson(page: Page) {
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   return page.getByLabel("Plugin selections JSON", { exact: true });
 }
@@ -118,12 +119,12 @@ test("the authentication source form names the Service account token Secret it r
   assert.equal(await token.getAttribute("aria-expanded"), "false", "the list stays closed");
   assert.equal(
     await token.evaluate((node) => {
-      const error = globalThis.document.getElementById(`${node.id}-error`).getBoundingClientRect();
-      return globalThis.document
-        .getElementById(`${node.id}-error`)
-        .contains(
-          globalThis.document.elementFromPoint(error.left + 4, error.top + error.height / 2),
-        );
+      const error = globalThis.document.getElementById(`${node.id}-error`);
+      if (!error) {
+        throw new Error(`Missing field error for ${node.id}`);
+      }
+      const { left, top, height } = error.getBoundingClientRect();
+      return error.contains(globalThis.document.elementFromPoint(left + 4, top + height / 2));
     }),
     true,
     "nothing covers the error",
@@ -139,7 +140,7 @@ test("the workspace file editor shows an oversized file's error under the file",
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
   const invalidEvents = await countInvalidEvents(page);
-  const writes = [];
+  const writes: string[] = [];
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
     (route) => {
@@ -172,7 +173,7 @@ test("the workspace file editor shows an oversized file's error under the file",
   assert.deepEqual(writes, []);
   // Its help stays linked beside the error, and an edit clears the error.
   assert.match(
-    await editor.getAttribute("aria-describedby"),
+    (await editor.getAttribute("aria-describedby")) ?? "",
     /\bworkspace-AGENTS\.md-hint\b/,
     "help stays linked",
   );
@@ -198,7 +199,7 @@ test("the workspace file editor drops an oversized file's error when Reload find
   const agent = await fixture.createAgent(namespace.id, "Workspace Missing", nativeValues("wm"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
-  const writes = [];
+  const writes: string[] = [];
   let missing = false;
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
@@ -285,7 +286,7 @@ test("Plugin selections JSON", async (t) => {
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Plugin fields", { ready: true });
   let agents = 0;
-  const pluginsTab = async (t, context) => {
+  const pluginsTab = async (t: TestContext, context?: BrowserContextOptions) => {
     agents += 1;
     const agent = await fixture.createAgent(
       namespace.id,
@@ -328,22 +329,23 @@ test("Plugin selections JSON", async (t) => {
     {
       name: "refusal",
       status: 409,
-      shown: (page) =>
+      shown: (page: Page) =>
         page.getByRole("alert").filter({
           hasText:
             "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying.",
         }),
-      takesFocus: (page) => page.getByRole("alert").filter({ hasText: "Plugin changes conflict" }),
+      takesFocus: (page: Page) =>
+        page.getByRole("alert").filter({ hasText: "Plugin changes conflict" }),
     },
     {
       name: "unknown outcome",
       status: 500,
-      shown: (page) =>
+      shown: (page: Page) =>
         page.getByText(
           "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.",
           { exact: true },
         ),
-      takesFocus: (page) =>
+      takesFocus: (page: Page) =>
         page.getByRole("button", { name: "Reload plugin selections", exact: true }),
     },
   ];

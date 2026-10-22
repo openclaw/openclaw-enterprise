@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Page } from "playwright";
 
 import {
   detailUrl,
@@ -24,9 +25,9 @@ const LONG_NAME = "Quarterly release review and signoff bot";
 
 // The header's layout: its bottom on the page, the title, every visible control in it (with the
 // region it sits in), and the Namespace selector's box.
-const headerLayout = (page) =>
+const headerLayout = (page: Page) =>
   page.locator(".content .page-header").evaluate((header) => {
-    const box = (node) => {
+    const box = (node: Element | Range) => {
       const rect = node.getBoundingClientRect();
       return {
         top: rect.top,
@@ -39,19 +40,31 @@ const headerLayout = (page) =>
     const select = header.querySelector("#namespace-selector");
     const selector = select?.closest(".namespace-selector");
     const label = selector?.querySelector("label");
+    if (!select || !selector || !label) {
+      throw new Error("Page header has no labelled Namespace selector");
+    }
     const title = header.querySelector("h1");
     // The title's text, not the block: an h1 is as wide as its column.
     const range = globalThis.document.createRange();
+    if (!title) {
+      throw new Error("Page header has no title");
+    }
     range.selectNodeContents(title);
     return {
       bottom: header.getBoundingClientRect().bottom + globalThis.scrollY,
       title: { text: title.textContent, ...box(title), lines: range.getClientRects().length },
       titleText: box(range),
-      controls: [...header.querySelectorAll("a, button, select")]
+      controls: Array.from(
+        header.querySelectorAll<HTMLAnchorElement | HTMLButtonElement | HTMLSelectElement>(
+          "a, button, select",
+        ),
+      )
         .filter((node) => node.getClientRects().length)
         .map((node) => ({
           name:
-            node.getAttribute("aria-label") || node.labels?.[0]?.textContent || node.textContent,
+            node.getAttribute("aria-label") ||
+            ("labels" in node && node.labels?.[0]?.textContent) ||
+            node.textContent,
           region: node.closest(".page-meta")
             ? "meta"
             : node.closest(".page-actions")
@@ -59,25 +72,25 @@ const headerLayout = (page) =>
               : "header",
           ...box(node),
         })),
-      selector: selector
-        ? {
-            region: selector.closest(".page-meta")
-              ? "meta"
-              : selector.closest(".page-actions")
-                ? "actions"
-                : "header",
-            ...box(selector),
-            labelInside:
-              label.getBoundingClientRect().left >= selector.getBoundingClientRect().left &&
-              label.getBoundingClientRect().right <= select.getBoundingClientRect().left + 1 &&
-              Math.abs(label.getBoundingClientRect().top - select.getBoundingClientRect().top) <
-                selector.getBoundingClientRect().height,
-          }
-        : null,
+      selector: {
+        region: selector.closest(".page-meta")
+          ? "meta"
+          : selector.closest(".page-actions")
+            ? "actions"
+            : "header",
+        ...box(selector),
+        labelInside:
+          label.getBoundingClientRect().left >= selector.getBoundingClientRect().left &&
+          label.getBoundingClientRect().right <= select.getBoundingClientRect().left + 1 &&
+          Math.abs(label.getBoundingClientRect().top - select.getBoundingClientRect().top) <
+            selector.getBoundingClientRect().height,
+      },
     };
   });
 
-const overlaps = (a, b) =>
+type Box = Pick<DOMRect, "top" | "bottom" | "left" | "right">;
+
+const overlaps = (a: Box, b: Box) =>
   a.left < b.right - 0.5 &&
   b.left < a.right - 0.5 &&
   a.top < b.bottom - 0.5 &&
@@ -105,6 +118,7 @@ test("collections show a compact Namespace selector beside Refresh and Settings 
     assert.ok(layout.selector.right - layout.selector.left <= 240, size);
     assert.equal(layout.selector.labelInside, true, `${size}: the label is the control's prefix`);
     const refresh = layout.controls.find((control) => control.name === "Refresh");
+    assert.ok(refresh, `${size}: Refresh is present`);
     assert.equal(refresh.region, "actions", size);
     assert.ok(
       Math.abs(
@@ -171,6 +185,7 @@ test("an Agent's page leads with ← Agents and keeps its ID and Namespace under
     assert.equal(layout.selector.height, 32, size);
     // ← Agents comes first, the title's text runs into no control, and the meta row is under it.
     const back = layout.controls.find((control) => control.name === "← Agents");
+    assert.ok(back, `${size}: back link is present`);
     assert.ok(back.bottom <= layout.title.top, `${size}: ← Agents is above the title`);
     for (const control of layout.controls) {
       assert.equal(
@@ -248,8 +263,13 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
   assert.equal(await page.getByRole("link", { name: "← Agents", exact: true }).count(), 1);
   // The intro card's heading sits a step under the page title, not at its size (finding 2097).
   const sizes = await page.evaluate(() => {
-    const size = (selector) =>
-      globalThis.getComputedStyle(globalThis.document.querySelector(selector)).fontSize;
+    const size = (selector: string) => {
+      const element = globalThis.document.querySelector(selector);
+      if (!element) {
+        throw new Error(`Missing ${selector}`);
+      }
+      return globalThis.getComputedStyle(element).fontSize;
+    };
     return { title: size(".page-header h1"), card: size(".launch-intro h2") };
   });
   assert.deepEqual(sizes, { title: "24px", card: "18px" });

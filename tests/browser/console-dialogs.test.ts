@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
+import type { Page } from "playwright";
 
 import {
   consoleViewports,
   detailUrl,
   fileBrowser,
+  hasFocus,
   login,
   nativeValues,
   newPage,
-  settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -19,12 +20,12 @@ const browser = fileBrowser();
 
 // The open modal dialog's chrome and box, read once its open animation has finished, and whether
 // it holds focus.
-const openDialog = (page) =>
+const openDialog = (page: Page) =>
   page.evaluate(async () => {
     const document = globalThis.document;
     const dialog = document.querySelector("dialog:modal");
     if (!dialog) {
-      return null;
+      throw new Error("Expected an open modal dialog");
     }
     await Promise.all(
       dialog
@@ -32,7 +33,7 @@ const openDialog = (page) =>
         .map((animation) => animation.finished.catch(() => {})),
     );
     const style = globalThis.getComputedStyle(dialog);
-    const corners = ["TopLeft", "TopRight", "BottomRight", "BottomLeft"].map(
+    const corners = (["TopLeft", "TopRight", "BottomRight", "BottomLeft"] as const).map(
       (corner) => style[`border${corner}Radius`],
     );
     const box = dialog.getBoundingClientRect();
@@ -57,8 +58,6 @@ const openDialog = (page) =>
       focusInside: dialog !== document.activeElement && dialog.contains(document.activeElement),
     };
   });
-
-const isFocused = (node) => node === node.ownerDocument.activeElement;
 
 test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become bottom sheets on a phone and return focus to their opener", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog pattern");
@@ -86,7 +85,8 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
 
-  const detail = (id, tab) => detailUrl(fixture, namespace.id, id, undefined, tab).href;
+  const detail = (id: string, tab?: string) =>
+    detailUrl(fixture, namespace.id, id, undefined, tab).href;
   // Each case loads its page, opens its dialog and returns the control that opened it.
   const cases = [
     {
@@ -113,20 +113,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     {
       name: "plugins",
       async open() {
-        await page.goto(new URL(`/console/agents?namespace=${namespace.id}`, fixture.origin).href);
-        await page.locator(settledView).waitFor();
-        await page.evaluate(async () => {
-          const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
-          const input = globalThis.document.createElement("textarea");
-          input.id = "dialog-pattern-plugins";
-          input.value = "{}";
-          const entries = [{ id: "alpha", name: "Alpha", tools: [] }];
-          const fields = createPluginFields({
-            input,
-            catalog: { status: "ready", canLoad: true, entries },
-          });
-          globalThis.document.body.append(fields.section);
-        });
+        await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
         const opener = page.getByRole("button", { name: "Configure plugins", exact: true });
         await opener.click();
         await page.getByRole("dialog", { name: "Configure plugins" }).waitFor();
@@ -155,27 +142,31 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
         return page.getByLabel("API key Secret", { exact: true });
       },
     },
-  ];
+  ] as const;
 
-  const seen = {};
+  const seen = new Map<string, Awaited<ReturnType<typeof openDialog>>>();
   for (const viewport of consoleViewports) {
     await page.setViewportSize(viewport);
     for (const { name, open } of cases) {
       const opener = await open();
       const state = await openDialog(page);
-      assert.ok(state, `${name}: a modal dialog is open`);
       await page.screenshot({ path: join(artifacts, `dialog-${name}-${viewport.width}.png`) });
-      seen[`${name} ${viewport.width}`] = state;
+      seen.set(`${name} ${viewport.width}`, state);
       assert.equal(state.focusInside, true, `${name}: focus moves into the dialog`);
       // Escape keeps today's rule (it closes an idle dialog), and focus returns to the opener.
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !globalThis.document.querySelector("dialog:modal"));
-      assert.equal(await opener.evaluate(isFocused), true, `${name}: focus returns to its opener`);
+      assert.equal(await hasFocus(opener), true, `${name}: focus returns to its opener`);
     }
   }
 
-  const desktop = cases.map(({ name }) => [name, seen[`${name} 1440`]]);
-  const [, first] = desktop[0];
+  const desktop = cases.map(({ name }) => {
+    const state = seen.get(`${name} 1440`);
+    assert.ok(state, `${name} was measured at desktop width`);
+    return [name, state] as const;
+  });
+  const first = seen.get("stop 1440");
+  assert.ok(first, "Stop dialog was measured at desktop width");
   assert.notEqual(first.chrome.shadow, "none");
   assert.notEqual(first.chrome.backdrop, "rgba(0, 0, 0, 0)");
   assert.notEqual(first.chrome.radius, "0px 0px");
@@ -186,7 +177,12 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   for (const [name, state] of desktop) {
     assert.equal(state.animation, "dialog-open 0.2s", `${name} opens with --duration-base`);
     const { box, viewport } = state;
-    const gaps = [box.left, viewport.width - box.right, box.top, viewport.height - box.bottom];
+    const gaps = [
+      box.left,
+      viewport.width - box.right,
+      box.top,
+      viewport.height - box.bottom,
+    ] as const;
     if (name === "slack") {
       // The drawer floats --space-4 from the right, top and bottom edges.
       assert.deepEqual(gaps.slice(1).map(Math.round), [16, 16, 16], "the drawer is full height");
@@ -196,7 +192,9 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     }
   }
   for (const { name } of cases) {
-    const { box, viewport, chrome, bottomRadius } = seen[`${name} 390`];
+    const phone = seen.get(`${name} 390`);
+    assert.ok(phone, `${name} was measured at phone width`);
+    const { box, viewport, chrome, bottomRadius } = phone;
     assert.deepEqual(
       { left: box.left, right: box.right, bottom: Math.round(box.bottom) },
       { left: 0, right: viewport.width, bottom: viewport.height },
@@ -215,9 +213,9 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   await cases[2].open();
   await openDialog(page);
   await page.setViewportSize({ width: 390, height: 844 });
-  const replayed = await page.evaluate(
-    () => globalThis.document.querySelector("dialog:modal").getAnimations({ subtree: true }).length,
-  );
+  const replayed = await page
+    .locator("dialog:modal")
+    .evaluate((dialog) => dialog.getAnimations({ subtree: true }).length);
   assert.equal(replayed, 0, "resizing an open dialog to a phone does not restart its animation");
   await page.keyboard.press("Escape");
 
@@ -229,17 +227,20 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
 
 // Where the open sheet and its actions sit against the visible area, once the visual viewport's
 // resize has been handled and the layout has followed it.
-const sheetInView = (page) =>
+const sheetInView = (page: Page) =>
   page.evaluate(async () => {
     const viewport = globalThis.visualViewport;
-    await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve()));
-    await new Promise((resolve) => globalThis.requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => globalThis.requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => globalThis.requestAnimationFrame(() => resolve()));
     const dialog = globalThis.document.querySelector("dialog:modal");
-    const vertical = (node) => {
+    if (!dialog || !viewport) {
+      throw new Error("Expected a modal in a visual viewport");
+    }
+    const vertical = (node: Element) => {
       const { top, bottom } = node.getBoundingClientRect();
       return { top: Math.round(top), bottom: Math.round(bottom) };
     };
-    const actions = [...dialog.querySelectorAll(".dialog-actions button")];
+    const actions = Array.from(dialog.querySelectorAll(".dialog-actions button"));
     return {
       visible: {
         top: Math.round(viewport.offsetTop),
@@ -247,7 +248,7 @@ const sheetInView = (page) =>
       },
       sheet: vertical(dialog),
       actions: Object.fromEntries(
-        actions.map((button) => [button.textContent.trim(), vertical(button)]),
+        actions.map((button) => [button.textContent.trim(), vertical(button)] as const),
       ),
     };
   });
@@ -272,8 +273,12 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   const nameField = page
     .getByRole("dialog", { name: "Create model credential Secret" })
     .getByRole("textbox", { name: "Name", exact: true });
-  const expectInView = async (state, label, { actions = true } = {}) => {
-    assert.equal(await nameField.evaluate(isFocused), true, `${label}: Name keeps focus`);
+  const expectInView = async (
+    state: Awaited<ReturnType<typeof sheetInView>>,
+    label: string,
+    { actions = true } = {},
+  ) => {
+    assert.equal(await hasFocus(nameField), true, `${label}: Name keeps focus`);
     assert.deepEqual(Object.keys(state.actions), ["Cancel", "Create Secret"], label);
     assert.equal(state.sheet.bottom, state.visible.bottom, `${label}: the sheet's bottom edge`);
     assert.ok(state.sheet.top >= state.visible.top, `${label}: the sheet's top is hidden`);
@@ -292,49 +297,60 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   await expectInView(resting, "no keyboard");
 
   const cdp = await page.context().newCDPSession(page);
-  const resized = () =>
-    page.evaluate(() => {
-      globalThis.visualViewportResized = new Promise((resolve) =>
-        globalThis.visualViewport.addEventListener("resize", resolve, { once: true }),
+  async function zoomTo(pageScaleFactor: number) {
+    const resize = await page.evaluateHandle(() => {
+      const viewport = globalThis.visualViewport;
+      if (!viewport) {
+        throw new Error("Expected a visual viewport");
+      }
+      const resized = new Promise<void>((resolve) =>
+        viewport.addEventListener("resize", () => resolve(), { once: true }),
       );
+      return { resized };
     });
-  await resized();
-  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.5 });
-  await page.evaluate(() => globalThis.visualViewportResized);
+    await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor });
+    await resize.evaluate(({ resized }) => resized);
+    await resize.dispose();
+  }
+  await zoomTo(1.5);
   const zoomed = await sheetInView(page);
   assert.ok(zoomed.visible.bottom < 600, "the zoom shrank the visual viewport");
   await page.screenshot({ path: join(artifacts, "dialog-secret-390-zoomed.png") });
   await expectInView(zoomed, "zoomed");
-  await resized();
-  await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
-  await page.evaluate(() => globalThis.visualViewportResized);
+  await zoomTo(1);
   await expectInView(await sheetInView(page), "zoom undone");
 
   // A 336 px keyboard: the visible area keeps its width and starts at the top (a resize). iOS may
   // then scroll it 120 px down the page (a scroll, as only its offset changes). Above a taller
   // keyboard, or a short area scrolled down, the whole sheet still fits the visible area and
   // scrolls inside it.
-  const fakeVisible = (visible, event = "resize") =>
+  const fakeVisible = (
+    visible: Pick<VisualViewport, "height" | "offsetTop"> | null,
+    event = "resize",
+  ) =>
     page.evaluate(
-      ([visible, event]) => {
+      ({ visible, event }) => {
         const viewport = globalThis.visualViewport;
-        for (const key of ["height", "offsetTop"]) {
+        if (!viewport) {
+          throw new Error("Expected a visual viewport");
+        }
+        for (const key of ["height", "offsetTop"] as const) {
           if (visible) {
             Object.defineProperty(viewport, key, { configurable: true, get: () => visible[key] });
           } else {
-            delete viewport[key];
+            Reflect.deleteProperty(viewport, key);
           }
         }
         viewport.dispatchEvent(new Event(event));
       },
-      [visible, event],
+      { visible, event },
     );
   for (const [height, offsetTop, event] of [
     [508, 0, "resize"],
     [508, 120, "scroll"],
     [400, 0, "resize"],
     [300, 200, "resize"],
-  ]) {
+  ] as const) {
     await fakeVisible({ height, offsetTop }, event);
     const keyboard = await sheetInView(page);
     const label = `${height} px visible, ${offsetTop} px down`;

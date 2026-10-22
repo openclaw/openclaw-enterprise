@@ -9,9 +9,9 @@
     "tests/integration/ci-impact.test.mjs",
     "tests/browser/console-agent-draft-guards.test.mjs",
     "tests/browser/console-agent-channels.test.mjs",
-    "tests/browser/console-dialogs.test.mjs",
-    "tests/browser/console-form-fields.test.mjs",
-    "tests/browser/console-form-fields-2.test.mjs",
+    "tests/browser/console-dialogs.test.ts",
+    "tests/browser/console-form-fields.test.ts",
+    "tests/browser/console-form-fields-2.test.ts",
     "tests/browser/console-agents-2.test.ts",
     "tests/browser/console-agent-state.test.mjs",
     "tests/browser/console-agent-saves.test.ts",
@@ -22,12 +22,12 @@
     "tests/browser/console-create-agent-provisioning-400.test.mjs",
     "tests/browser/console-agent-deploy-focus.test.mjs",
     "tests/browser/console-agents-list-return.test.mjs",
-    "tests/browser/console-refocus-focus.test.mjs",
+    "tests/browser/console-refocus-focus.test.ts",
     "tests/browser/console-focus-ring.test.ts",
     "tests/browser/console-drafts-kept.test.mjs",
     "tests/browser/console-button-hierarchy.test.ts",
-    "tests/browser/console-status-block.test.mjs",
-    "tests/browser/console-page-header.test.mjs"
+    "tests/browser/console-status-block.test.ts",
+    "tests/browser/console-page-header.test.ts"
   ],
   "files": [
     {
@@ -40,10 +40,10 @@
       "path": "tests/browser/console-codex-oauth.test.mjs"
     },
     {
-      "path": "tests/browser/console-form-fields.test.mjs"
+      "path": "tests/browser/console-form-fields.test.ts"
     },
     {
-      "path": "tests/browser/console-form-fields-2.test.mjs"
+      "path": "tests/browser/console-form-fields-2.test.ts"
     },
     {
       "path": "tests/browser/console-agent-draft-guards.test.mjs"
@@ -58,7 +58,7 @@
       "path": "tests/browser/console-agent-channels.test.mjs"
     },
     {
-      "path": "tests/browser/console-dialogs.test.mjs"
+      "path": "tests/browser/console-dialogs.test.ts"
     },
     {
       "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
@@ -85,7 +85,7 @@
       "path": "tests/browser/console-agents-list-return.test.mjs"
     },
     {
-      "path": "tests/browser/console-refocus-focus.test.mjs"
+      "path": "tests/browser/console-refocus-focus.test.ts"
     },
     {
       "path": "tests/browser/console-focus-ring.test.ts"
@@ -97,10 +97,10 @@
       "path": "tests/browser/console-button-hierarchy.test.ts"
     },
     {
-      "path": "tests/browser/console-status-block.test.mjs"
+      "path": "tests/browser/console-status-block.test.ts"
     },
     {
-      "path": "tests/browser/console-page-header.test.mjs"
+      "path": "tests/browser/console-page-header.test.ts"
     }
   ]
 }
