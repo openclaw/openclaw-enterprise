@@ -29,6 +29,10 @@ const long = (label) => {
 };
 if (mode === "exit-silent") {
   process.exit(3);
+} else if (mode === "leak-long") {
+  // One long line, so the stderr tail starts inside the planted value.
+  process.stderr.write(\`\${"z".repeat(9000)}\${process.env.FAKE_DOCKER_PLAIN}\${"w".repeat(8180)}\\n\`);
+  process.exit(1);
 } else if (mode === "cat") {
   process.stdin.pipe(process.stdout);
 } else if (mode === "hang") {
@@ -294,26 +298,29 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
   assert.equal(error.message.includes(plain), false, error.message);
   assert.match(
     error.message,
-    /^docker run -e SYNTHETIC_KEY=\[redacted\] -e PLAIN=\[env:redacted\] probe failed \(exit code 1,/,
+    /^docker run -e SYNTHETIC_KEY=\[redacted\] -e PLAIN=\[redacted\] probe failed \(exit code 1,/,
   );
   // stderr comes last, so a caller's tail cut keeps it.
   assert.match(
     error.message,
-    /\nstdout:\nstdout key \[redacted\]\n\nstderr:\nstderr key \[redacted\]\nplanted \[env:redacted\]\n$/,
+    /\nstdout:\nstdout key \[redacted\]\n\nstderr:\nstderr key \[redacted\]\nplanted \[redacted\]\n$/,
   );
   // Printing the whole error shows the raw output neither.
   assert.equal(inspect(error).includes(plain), false);
+  // A value the tail cut splits is still redacted whole, before the cut.
+  const long = await dockerFailure(t, "leak-long", ["run", "probe"], { redact: [plain] });
+  assert.equal(long.message.includes(plain.slice(-10)), false, long.message.slice(0, 400));
   // Callers that read the output themselves still get it whole.
   assert.match(error.stderr, /planted planted-plain-value-2184/);
 });
 
 test("a docker command's stdin reaches it, and an early exit reports the exit, not the pipe", async (t) => {
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
   process.env.FAKE_DOCKER_MODE = "cat";
   const { stdout } = await runDocker(["exec", "-i", "fake-container", "cat"], {}, "stdin text\n");
   assert.equal(stdout, "stdin text\n");
   // The stand-in exits 3 without reading 4 MiB of input.
   process.env.FAKE_DOCKER_MODE = "exit-silent";
-  t.after(() => delete process.env.FAKE_DOCKER_MODE);
   const error = await runDocker(
     ["exec", "-i", "fake-container", "cat"],
     {},

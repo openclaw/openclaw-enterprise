@@ -35,7 +35,7 @@ export const imageTestOptions =
 
 // `options.redact` lists extra values (synthetic credentials) a failure message must not show.
 export async function runDocker(args, options = {}, input) {
-  return runDockerCommand(docker, args, { maxBuffer: 1_000_000, ...options }, input);
+  return runDockerCommand(docker, args, options, input);
 }
 
 // Runs a docker command. A failure rejects with dockerCommandFailure's error.
@@ -77,13 +77,21 @@ const dockerArgumentLimit = 120;
 const dockerStdoutTailLimit = 4 * 1024;
 const dockerStderrTailLimit = 8 * 1024;
 
-// Redacts like CI's failure report (token shapes such as the sk- keys these tests plant,
-// secret assignments, URL passwords), plus each value in `redact`.
-function redactDockerText(text, redact) {
-  const secrets = redact
-    .filter((value) => typeof value === "string" && value.length > 0)
-    .map((value) => [value, "redacted"]);
-  return redactLogLine(text, secrets, Number.POSITIVE_INFINITY);
+// Replaces each value in `redact`. Run on the whole text, before any cut can split a value.
+function withoutRedactValues(text, redact) {
+  let result = String(text);
+  for (const value of redact) {
+    if (typeof value === "string" && value.length > 0) {
+      result = result.replaceAll(value, "[redacted]");
+    }
+  }
+  return result;
+}
+
+// Then redacts like CI's failure report: token shapes such as the sk- keys these tests plant,
+// secret assignments, URL passwords.
+function redactDockerText(text) {
+  return redactLogLine(text, [], Number.POSITIVE_INFINITY);
 }
 
 // Node's own error for a failed command names the whole command line (which can carry
@@ -103,7 +111,10 @@ export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact =
       ? `<${text.length}-char argument>`
       : text;
   });
-  const command = redactDockerText(`docker ${shown.join(" ")}`.slice(0, 512), redact);
+  const fullCommand = withoutRedactValues(`docker ${shown.join(" ")}`, redact);
+  const command = redactDockerText(
+    fullCommand.length > 512 ? `${fullCommand.slice(0, 512)}...` : fullCommand,
+  );
   const timedOut =
     error.killed === true &&
     error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" &&
@@ -122,17 +133,13 @@ export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact =
     outcome.push("killed");
   }
   const sections = [`${command} failed (${outcome.join(", ")}).`];
-  const stdout = String(error.stdout ?? "");
-  const stderr = String(error.stderr ?? "");
+  const stdout = withoutRedactValues(error.stdout ?? "", redact);
+  const stderr = withoutRedactValues(error.stderr ?? "", redact);
   if (stdout.trim() !== "") {
-    sections.push(
-      `stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit), redact)}`,
-    );
+    sections.push(`stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit))}`);
   }
   if (stderr.trim() !== "") {
-    sections.push(
-      `stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit), redact)}`,
-    );
+    sections.push(`stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit))}`);
   }
   if (stdout.trim() === "" && stderr.trim() === "") {
     sections.push("(no stdout or stderr)");
