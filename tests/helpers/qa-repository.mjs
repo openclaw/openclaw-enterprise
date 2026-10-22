@@ -31,13 +31,19 @@ export function qaRepositoryBranch(suffix) {
  * refuses any policy but git-write on exactly one branch with explicit Git
  * transport (PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF), and `occ dev up`
  * refuses it before touching the cluster. git-only grants no PR route, so the QA
- * journey pushes and stops there. A registry that already lists push refs must
- * authorize the run-owned branch.
+ * journey pushes and stops there. Only narrowing is allowed: each policy must
+ * already grant a write profile, and one that lists push refs must authorize the
+ * run-owned branch.
  */
 export function grantQaRepositoryBranch(registry, suffix) {
   assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
   const ref = `refs/heads/${qaRepositoryBranch(suffix)}`;
   for (const policy of registry.repositories[0].namespaces) {
+    // Narrow a write grant; never turn a read-only policy into one.
+    assert.ok(
+      policy.profiles?.some((profile) => profile === "git-write" || profile === "git-full"),
+      "selected registry must already grant git-write or git-full",
+    );
     if (policy.pushRefAllowlist) {
       assert.ok(
         allowsPushRef(policy.pushRefAllowlist, ref),

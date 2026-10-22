@@ -3,7 +3,7 @@ import { createPrivateKey, randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { loadConfiguration } from "../../apps/controller/src/composition/repository-credentials/config.ts";
@@ -33,7 +33,7 @@ const host = "git.oce-system.svc.cluster.local";
 const relayLabels = { "app.kubernetes.io/name": "qa-repository-relay" };
 
 // An operator's QA input, written for the retired broker: two profiles, any branch.
-function operatorRegistry(policy = {}) {
+function operatorRegistry(policy: Record<string, unknown> = {}) {
   return {
     version: 1,
     backendId: "github-qa",
@@ -53,19 +53,24 @@ function operatorRegistry(policy = {}) {
 }
 
 // Lay the generated files out under a private root, as Compose bind-mounts them.
-async function generatedInputs(t, registry, installation, serviceConfig) {
+async function generatedInputs(
+  t: TestContext,
+  registry: unknown,
+  installation: unknown,
+  serviceConfig: unknown,
+) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "qa-repository-")));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sockets = await socketDirectory(t, "qa-rc-", { longest: "private/prepared-git-use.sock" });
   await mkdir(join(sockets, "private"), { mode: 0o700 });
-  const relocate = (value) =>
+  const relocate = (value: unknown) =>
     JSON.parse(
       JSON.stringify(value)
         .replaceAll(REPOSITORY_CONTROL_SOCKET, join(sockets, "private/control.sock"))
         .replaceAll("/etc/openclaw/", `${root}/etc/openclaw/`),
     );
   const tls = await createTlsMaterial(t);
-  const files = {
+  const files: Record<string, [string | Buffer, number]> = {
     "etc/openclaw/repository-registry/registry.json": [JSON.stringify(registry), 0o600],
     "etc/openclaw/repository-ca/ca.crt": [tls.cert, 0o644],
     "etc/openclaw/repository-inputs/tls.key": [tls.key, 0o600],
@@ -81,16 +86,20 @@ async function generatedInputs(t, registry, installation, serviceConfig) {
   return { root, sockets };
 }
 
-async function startWorkerOwner(root, loaded) {
+type LoadedInstallation = Awaited<ReturnType<typeof loadInstallationConfiguration>>;
+
+async function startWorkerOwner(loaded: LoadedInstallation) {
+  assert.ok(loaded?.repositoryOwner && loaded.preparedRepositoryGit && loaded.repositoryRegistry);
   const { issuerCaPath, ...prepared } = loaded.preparedRepositoryGit;
   assert.equal(issuerCaPath, undefined);
+  // The worker serves this socket; the policy and key checks come first.
+  const { controlSocket, ...owner } = loaded.repositoryOwner;
+  assert.equal(typeof controlSocket, "string");
   return startPreparedGitHubGitOwner({
-    ...loaded.repositoryOwner,
+    ...owner,
     ...prepared,
-    // The worker serves this socket; the policy and key checks come first.
-    controlSocket: undefined,
     // Startup validates before it touches the database; maintenance stays off.
-    pool: {},
+    pool: {} as Parameters<typeof startPreparedGitHubGitOwner>[0]["pool"],
     startWorker: false,
     registry: loaded.repositoryRegistry,
   });
@@ -126,16 +135,17 @@ test("QA repository inputs start the controller, worker owner and repository ser
     mode: "production",
     environment: { OCC_CONFIG_PATH: join(root, "installation.yaml") },
   });
+  assert.ok(loaded?.repositoryOwner && loaded.repositoryPolicy && loaded.preparedRepositoryGit);
   assert.equal(loaded.repositoryGitDriver, undefined);
   assert.equal(typeof loaded.nativeRepositorySender, "object");
   assert.equal(loaded.repositoryOwner.backendId, "github-qa");
   assert.equal(
     loaded.repositoryPolicy.resolve({ namespaceId: "ns_qa", bindings: [{ repositoryRef: "qa" }] })
-      .bindings[0].profile,
+      .bindings[0]?.profile,
     "git-write",
   );
 
-  const owner = await startWorkerOwner(root, loaded);
+  const owner = await startWorkerOwner(loaded);
   await owner.close();
   // The owner reads the App key only when it first prepares a token: check the
   // mounted file the way it will (a private regular file holding one private key).
@@ -158,7 +168,21 @@ test("QA repository inputs start the controller, worker owner and repository ser
   }
 });
 
-test("QA repository grant refuses a registry that does not authorize the run branch", () => {
+test("QA repository grant only narrows an operator's write grant", () => {
+  // A read-only policy must not become git-write, whatever push refs it lists.
+  assert.throws(
+    () =>
+      grantQaRepositoryBranch(
+        operatorRegistry({ profiles: ["git-read"], pushRefAllowlist: ["refs/heads/*"] }),
+        suffix,
+      ),
+    /must already grant git-write or git-full/,
+  );
+  assert.equal(
+    grantQaRepositoryBranch(operatorRegistry({ profiles: ["git-write"] }), suffix).repositories[0]
+      .namespaces[0].pushRefAllowlist[0],
+    `refs/heads/oce-qa-${suffix}`,
+  );
   assert.throws(
     () =>
       grantQaRepositoryBranch(
@@ -177,38 +201,53 @@ test("the retired QA repository shape is refused at startup", async (t) => {
       (name) => `refs/heads/oce-qa-${suffix}-${name}`,
     ),
   });
-  const installation = createInstallationDriverConfiguration();
-  installation.backend = [
-    {
-      id: retired.backendId,
-      type: "github",
-      configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-      drivers: { repo: "repository-credentials" },
+  const base = createInstallationDriverConfiguration();
+  const compute = base.drivers.compute;
+  const installation = {
+    ...base,
+    backend: [
+      {
+        id: retired.backendId,
+        type: "github",
+        configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
+        drivers: { repo: "repository-credentials" },
+      },
+    ],
+    drivers: {
+      ...base.drivers,
+      repo: {
+        id: "repository-credentials",
+        configuration: {
+          controlSocket: REPOSITORY_CONTROL_SOCKET,
+          sessionDurationSeconds: retired.maximumDurationSeconds,
+          publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+        },
+      },
+      compute: {
+        ...compute,
+        configuration: {
+          ...compute.configuration,
+          network: {
+            ...compute.configuration.network,
+            repositoryCredentials: { namespace: "oce-system", podLabels: relayLabels, port: 8443 },
+          },
+        },
+      },
     },
-  ];
-  installation.drivers.repo = {
-    id: "repository-credentials",
-    configuration: {
-      controlSocket: REPOSITORY_CONTROL_SOCKET,
-      sessionDurationSeconds: retired.maximumDurationSeconds,
-      publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+  };
+  const prepared = qaRepositoryServiceConfig(retired, host);
+  const service = {
+    ...prepared,
+    sessionPolicy: {
+      ...prepared.sessionPolicy,
+      defaultProfile: "git-full",
+      allowedProfiles: ["git-read", "git-full"],
     },
-  };
-  installation.drivers.compute.configuration.network.repositoryCredentials = {
-    namespace: "oce-system",
-    podLabels: relayLabels,
-    port: 8443,
-  };
-  const service = qaRepositoryServiceConfig(retired, host);
-  service.sessionPolicy = {
-    ...service.sessionPolicy,
-    defaultProfile: "git-full",
-    allowedProfiles: ["git-read", "git-full"],
-  };
-  service.backend = {
-    ...service.backend,
-    kind: "github-app-registry",
-    privateKeyFile: "/etc/openclaw/repository-inputs/private-key.pem",
+    backend: {
+      ...prepared.backend,
+      kind: "github-app-registry",
+      privateKeyFile: "/etc/openclaw/repository-inputs/private-key.pem",
+    },
   };
   const { root } = await generatedInputs(t, retired, installation, service);
   await assert.rejects(
@@ -235,7 +274,7 @@ test("the retired QA repository shape is refused at startup", async (t) => {
     environment: { OCC_CONFIG_PATH: join(current, "installation.yaml") },
   });
   await assert.rejects(
-    startWorkerOwner(current, loaded),
+    startWorkerOwner(loaded),
     /PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF/,
   );
 });
