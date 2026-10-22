@@ -585,7 +585,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   assert.equal(active.role, "alert");
   assert.equal(active.text, await refusal.textContent());
   // The form unlocks for a fix, and the refusal keeps focus.
-  assert.equal(await configuration.isDisabled(), false);
+  await waitForEnabled(configuration);
 });
 
 test("Dedicated Agent provisioning names a Namespace that is not ready", async (t) => {

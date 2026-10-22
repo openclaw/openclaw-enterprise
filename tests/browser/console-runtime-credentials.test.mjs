@@ -716,7 +716,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [botSecret.id]);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("missing Slack credential fields require both Secret references before saving", async (t) => {
@@ -785,7 +785,7 @@ test("missing Slack credential fields require both Secret references before savi
     SLACK_APP_TOKEN: envBinding(appSecret),
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("Credentials shows issued-account denial only while that source is selected", async (t) => {

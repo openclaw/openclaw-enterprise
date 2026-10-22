@@ -343,11 +343,12 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
 // waits through this; one isEnabled() read can see the earlier state. A check that a control is
 // disabled at a given moment still reads isDisabled() once.
 export async function waitForEnabled(locator, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
   await waitForCondition(
     () => locator.isEnabled(),
     `${locator} stayed disabled for ${timeoutMs} ms`,
-    timeoutMs,
+    Math.max(1, deadline - Date.now()),
   );
 }
 

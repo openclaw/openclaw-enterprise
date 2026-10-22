@@ -399,7 +399,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   await save.click();
   await page.getByText("Complete ChatGPT sign-in before saving.", { exact: true }).waitFor();
   await expectNoText(page, /Service unavailable/);
-  assert.equal(await save.isEnabled(), true);
+  await waitForEnabled(save);
   assert.equal(
     requests.some((request) => request.method === "PATCH" && request.path === agentPath),
     false,
