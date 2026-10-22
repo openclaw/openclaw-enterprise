@@ -1,6 +1,6 @@
 ---
 created: 2026-10-15
-updated: "2026-10-20"
+updated: "2026-10-22"
 last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
 ---
 
@@ -54,12 +54,13 @@ availability. The registry never selects a Driver from submitted additions.
 
 `validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
 current editing flag, expected version, and pending application, then runs shared
-schema/semantic validation and current ceiling/provider admission. It returns a
-configuration result without entering a mutation transaction. Schema and semantic
-refusals carry safe `error.details`; stale or unauthorized requests retain their
-resource errors. Every later mutation repeats these checks. Ceiling refusal keeps
-its Installation-delegation cause; unsupported wildcard/range refusal names the
-Driver capability limit. Both retain field details.
+schema/semantic validation, the Driver contribution (which can only narrow it), and
+current ceiling/provider admission. An empty or reversed port range is never inside
+the ceiling. It returns a configuration result without entering a mutation
+transaction. Schema and semantic refusals carry safe `error.details`; stale or
+unauthorized requests retain their resource errors. Every later mutation repeats
+these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
+wildcard/range refusal names the Driver capability limit. Both retain field details.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
 records as escaped JSON and omits records with Unicode control characters, so
 CLI callers retain the same field and cause without terminal controls.
@@ -126,25 +127,29 @@ Driver projects representable native chunks into untrusted suggestions. The
 console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
-`console/driver-configurations.mjs:renderAgentDriverConfigurations` discovers
-sections and selects resource-owner controls. `console/configuration-fields.mjs`
+`console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
+sections and selects resource-owner controls. `console/configuration-fields.mts`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
-`console/agents/sandbox-policy.mjs:renderPolicy` keeps proposed rules local until
-preview, review, and save. Superseded preview/read responses cannot overwrite a
-newer draft. Policy reads use a separate request sequence: an earlier response
+`console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
+preview. Review shows the rules the controller validated, and Save sends those
+rules with the reviewed policy version. Superseded preview and read responses
+cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
-Failed previews retain the draft and do not mark it saved. The combined save-and-apply action waits for a successful save,
-then sends that returned policy version and the exact selected running revision
-to the apply route. Save alone leaves running enforcement unchanged. Applying a
+An unreadable preview retains the draft for another review. Save and apply checks
+that the save response names this policy, Agent, Namespace, next version, and
+the rules shown in review before requesting application to the selected revision.
+Starting a write invalidates earlier policy reads and pauses polling. After an
+unconfirmed save, only an explicit refresh started after the outcome can reopen editing.
+Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
 fails after saving, the alert identifies the saved version rather than implying
 that the entire operation was rejected.
 
-`console/agents/sandbox-policy.mjs:mutate` displays rejected saves as focused
+`console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
 preserves the attempted additions for correction without changing saved state.
-`console/navigation.mjs:createNavigation` admits the `policy` tab in login
+`console/navigation.mts:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
 
 The console reads the policy owner even when discovery returns no descriptor. This
@@ -172,6 +177,8 @@ waiting for a policy request that never starts.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
 
 - 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
 

@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { runWritableGatewayRestart } from "../fixtures/runtime-gateway-writable-restart.mjs";
 import {
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -40,8 +40,7 @@ for (const writableConfig of [false, true]) {
       // A dedicated Codex Gateway with a plugin selection follows its Harness
       // peer status and holds a workspace node binding, as after a first deploy.
       const workspaceNodeId = randomBytes(32).toString("hex");
-      const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
-      t.after(() => rm(directory, { recursive: true, force: true }));
+      const directory = await temporaryDirectory(t, "oce-runtime-image-config-");
       const configurationPath = join(directory, "openclaw.json");
       await writeFile(
         configurationPath,
@@ -193,8 +192,7 @@ test(
 );
 
 async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-image-config-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-image-config-");
   const configurationPath = join(directory, "openclaw.json");
   await writeFile(
     configurationPath,

@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -95,6 +95,35 @@ export async function renderProductionChart(overrides = {}, options = {}) {
     }
   }
   return render;
+}
+
+/**
+ * Synchronous `helm template` of the chart with a rendered Installation profile's
+ * `values.yaml` (`output.directory`), then `extraValueFiles`, then `extraArgs`. Returns the
+ * manifests; a refused render throws execFileSync's error, with Helm's stderr.
+ */
+export function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
+  return execFileSync(
+    helm,
+    [
+      "template",
+      releaseName,
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      join(output.directory, "values.yaml"),
+      ...extraValueFiles.flatMap((path) => ["--values", path]),
+      ...extraArgs,
+    ],
+    {
+      cwd: repository,
+      env: goToolEnvironment(),
+      encoding: "utf8",
+      maxBuffer: 2_000_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 }
 
 export async function parseProductionChart(manifests) {

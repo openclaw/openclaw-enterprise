@@ -1,6 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
+
+// Returns the session's status once its cleanup is recorded as uncertain.
+function uncertainCleanup(fixture, sessionId) {
+  return waitFor(
+    "the session's cleanup to be recorded as uncertain",
+    async () => {
+      const status = await fixture.status(sessionId);
+      return status.cleanup.uncertain === 1 ? status : undefined;
+    },
+    5000,
+  );
+}
 
 function outstandingToken(fixture) {
   const tokens = fixture.github.tokenState();
@@ -150,15 +163,7 @@ test(
     // Broker cleanup must remain uncertain because it never observed that result.
     fixture.github.disconnectAfterMutation("DELETE", "/installation/token");
     await fixture.close(opened.session.sessionId);
-    const deadline = Date.now() + 5000;
-    let status;
-    do {
-      status = await fixture.status(opened.session.sessionId);
-      if (status.cleanup.uncertain === 1) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    } while (Date.now() < deadline);
+    const status = await uncertainCleanup(fixture, opened.session.sessionId);
     assert.equal(status.state, "CLOSED");
     assert.equal(status.cleanup.uncertain, 1);
     assert.equal(status.cleanup.revoked, 0);
@@ -195,15 +200,7 @@ test(
     await fixture.close(opened.session.sessionId);
 
     // A provider error cannot be reported as a successful revocation.
-    const deadline = Date.now() + 5000;
-    let status;
-    do {
-      status = await fixture.status(opened.session.sessionId);
-      if (status.cleanup.uncertain === 1) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    } while (Date.now() < deadline);
+    let status = await uncertainCleanup(fixture, opened.session.sessionId);
     assert.equal(status.state, "CLOSED");
     assert.equal(status.cleanup.uncertain, 1);
     assert.equal(status.cleanup.revoked, 0);

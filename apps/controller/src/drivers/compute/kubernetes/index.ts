@@ -1280,6 +1280,8 @@ const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const WORKSPACE_NODE_ENROLLED_REVISION_KEY = "enrolledRevisionId";
 const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["state", "/home/node/.openclaw/state"],
+  // Client migration receipts refer to the retained Gateway database.
+  ["client", "/home/node/.openclaw/client"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
   // Session records retain linked worktree paths and their shared Git metadata.

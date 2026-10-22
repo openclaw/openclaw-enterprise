@@ -466,6 +466,7 @@ test("production image includes console shell and public assets", imageTestOptio
   const revision = JSON.parse(labels)?.["org.opencontainers.image.revision"] ?? "";
   const probe = String.raw`
     import assert from "node:assert/strict";
+    import { execFileSync } from "node:child_process";
     import { readConsoleAsset } from "./apps/controller/src/console-assets.ts";
 
     const shell = await readConsoleAsset("/console/");
@@ -488,6 +489,15 @@ test("production image includes console shell and public assets", imageTestOptio
     assert.equal(script.statusCode, 200);
     assert.match(script.contentType, /javascript/);
     assert.match(script.body.toString("utf8"), /api\/auth\/session/);
+
+    // Parse the shipped bytes as JavaScript. Browser tests load the module and its imports.
+    const dom = await readConsoleAsset("/console/dom.mjs");
+    assert.equal(dom.statusCode, 200);
+    assert.match(dom.contentType, /javascript/);
+    assert.ok(dom.body.length > 0);
+    execFileSync(process.execPath, ["--no-strip-types", "--check", "--input-type=module"], {
+      input: dom.body,
+    });
 
     const unknown = await readConsoleAsset("/console/index.ts");
     assert.equal(unknown.statusCode, 404);

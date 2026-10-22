@@ -12,6 +12,7 @@ import type {
 import {
   requireConfiguration,
   sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import {
   WorkClaimLostError,
@@ -190,6 +191,7 @@ export async function reconcileSandboxPolicy(
         "agent",
         "sandbox-network-policy",
       );
+      validateSandboxNetworkGrants(policy.application.snapshot.additions);
       requireConfiguration(contribution, { additions: policy.application.snapshot.additions });
       if (driver.admitNetworkPolicy === undefined) {
         throw new Error();

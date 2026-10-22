@@ -10,15 +10,11 @@ import {
   queryPrometheus,
   waitForMonitoring,
 } from "../helpers/metrics-monitoring-readiness.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 async function loopbackServer(t, respond) {
   const server = createServer(respond);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return `http://127.0.0.1:${await listen(t, server)}`;
 }
 
 // The diagnostic a non-retryable readiness query error carries.

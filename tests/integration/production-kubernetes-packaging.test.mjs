@@ -27,6 +27,52 @@ import {
 } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);
+
+test("console themes mount only on the API and restart it when the checksum changes", async () => {
+  const defaults = await resources((await renderProductionChart()).stdout);
+  const themed = await resources(
+    (
+      await renderProductionChart({
+        "api.consoleTheme.configMapName": "console-branding",
+        "api.consoleTheme.checksum": "revision-two",
+      })
+    ).stdout,
+  );
+  for (const objects of [defaults, themed]) {
+    for (const component of ["api", "worker"]) {
+      const deployment = objects.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      );
+      const enabled = objects === themed && component === "api";
+      const pod = deployment.spec.template;
+      const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
+        (item) => item.name === component,
+      );
+      assert.equal(
+        container.env.some((item) => item.name === "OCC_CONSOLE_THEME_DIR"),
+        enabled,
+      );
+      assert.equal(
+        pod.spec.volumes.some((item) => item.name === "console-theme"),
+        enabled,
+      );
+      assert.equal(
+        pod.metadata.annotations?.["openclaw.dev/console-theme-checksum"],
+        enabled ? "revision-two" : undefined,
+      );
+      if (enabled) {
+        assert.deepEqual(pod.spec.volumes.find((item) => item.name === "console-theme").configMap, {
+          name: "console-branding",
+        });
+        assert.deepEqual(
+          container.volumeMounts.find((item) => item.name === "console-theme"),
+          { name: "console-theme", mountPath: "/etc/openclaw/console-theme", readOnly: true },
+        );
+      }
+    }
+  }
+});
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),

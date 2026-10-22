@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-20
-last_updated_session: authoring-run/e988d724-dd95-4e63-a711-5fd44393f211
+updated: 2026-10-21
+last_updated_session: authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287
 ---
 
 # Platform console request flow
@@ -26,6 +26,9 @@ The [console reference](../reference/console.md) owns user-visible behavior.
 
 ```mermaid
 graph TD
+  THEME["API startup loads optional theme bundle"] -->|valid snapshot| ASSET["Serve branded HTML, CSS and images"]
+  THEME -->|invalid| FAIL["Refuse API startup"]
+  ASSET --> A
   subgraph Browser["Browser"]
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
     B --> B1["Recheck session and Namespace access"]
@@ -40,6 +43,7 @@ graph TD
     DBG --> F
     D --> E["Request current page resource"]
     E --> NC["Create Namespace"]
+    E --> SEC["Manage Namespace Secret metadata and values"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
@@ -56,6 +60,10 @@ graph TD
     NC --> NPOST["POST authorizes, persists and queues provisioning"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
+    SEC --> SAPI["Authorize Secret list, read, create, replace or delete"]
+    SAPI -->|metadata or confirmed mutation| I
+    SAPI -->|unconfirmed write| SU["Erase input and block resubmission"]
+    SU -->|manual inspection| SEC
     E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
     E1 -->|supported Dedicated and valid repository selection| M3["POST queues provisioning with inline Configuration"]
     M3 --> M4["Worker creates resources, grants and first deployment"]
@@ -93,6 +101,14 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
+`apps/controller/src/api-startup.mjs:startApi` loads an optional
+[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
+branding and links the generated stylesheet. `console/shell.mts:brandContents`
+renders the name as text. `/console/theme/` serves only referenced images and
+generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
+API restart can replace the theme.
+
 `apps/controller/src/composition/production.ts:composeProduction`
 
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`
@@ -109,10 +125,10 @@ paths return the shell with `404`; API routes retain JSON errors.
 encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
-`runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
+`runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
 exact Agent read, resolves its selected version, then calls its Compute Driver.
@@ -137,7 +153,7 @@ after one second it says **Still checking…**. The Console retains up to 16 vie
 by route, Namespace, and session owner, excluding passwords and discovery state.
 An interrupted return preserves the view; an interrupted Refresh discards it.
 
-`apps/controller/src/console/api-client.mjs:createApiClient` keeps the abort signal
+`apps/controller/src/console/api-client.mts:createApiClient` keeps the abort signal
 through the response body. Cancellation preserves its reason; a socket failure is an interrupted read,
 not invalid JSON. Neither replays the request.
 
@@ -148,7 +164,7 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mjs:currentRevision`, which reads an off-page current version alone;
+and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
 `deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
 cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
@@ -167,11 +183,11 @@ After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
+`shell.mts:namespaceSelector` disables and hides choices through session and
 Namespace checks, naming a known selection; retained-view reads do not extend this.
-`shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
+`shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
-Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
+Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
 ### 3. Authorize the selected page resource
@@ -180,14 +196,30 @@ to Agents; global pages remain open; recovered warnings disappear.
 
 `packages/occ/src/index.ts:OpenClawController.listNamespaces`, `listAgents`
 
-Agents use the selected Namespace's route. OCC authorizes Namespace reads and
+Agents and Secrets use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
 Installation-wide collection. No readable selection means no Agent request.
 `GET /backends` ignores selection and requires Installation `administer` before
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
+`apps/controller/src/console/secrets.mts:renderSecrets` lists metadata and reads
+the exact Secret's `consumers` before showing actions. Agent IDs link to their
+pages; hidden counts and truncation remain visible. Known references disable
+Delete; the server rechecks references on submission. Create and replacement
+wait for Namespace readiness. Each mutation uses the tracked request client and
+the existing Secret API; no browser code calls a Driver directly.
+
+`secrets.mjs:editValue` masks new input, preserves whitespace, and clears it after
+the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
+Secret inputs before retaining a view. Pending requests block navigation and
+dismissal. A denied write disables submission; an unconfirmed write cannot be
+replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
+status read after an uncertain delete; a denial never confirms removal.
+Replacement hands delivery to explicit Agent deployment or CredentialSource
+update under the [Secret delivery contract](../reference/drivers/kubernetes-secret.md#update-and-redeploy).
+
+`apps/controller/src/console/namespaces.mts:renderNamespaces` sends Name-rule-valid names
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
 each attempt, queues provisioning; `perform` audits. Open Agents needs the Namespace
 relisted. Closing refocuses the opener; a 403 disables it per account, across
@@ -196,7 +228,7 @@ mark names; conflicts keep input; unconfirmed responses need inspection.
 
 Agents and Create Agent read permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
-Refused `GET /installation` saves only drafts. `agents/collection.mjs` polls provisioning Namespaces;
+Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
 omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
 OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
 
@@ -218,7 +250,7 @@ Responses follow the ordering checks below.
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
 navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
 version, tab clicks/history replace only tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
@@ -228,7 +260,7 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+`agents/detail.mts:renderTab` brings a clipped selected tab into the horizontal
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.
@@ -313,6 +345,10 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
+- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
+  Agent references, denials, and lost replies with passive test Secret storage.
+  The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
+  shipped storage; it requires the documented runtime and credential setup.
 - API tests cover safe discovery, permission boundaries, empty versus missing
   wiring, static MIME/allowlisting, and unchanged API JSON errors. See
   [Testing](../testing/README.md) for commands and the image smoke boundary.
@@ -333,6 +369,10 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
+- 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
+- 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
 - 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)

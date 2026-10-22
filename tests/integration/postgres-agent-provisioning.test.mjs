@@ -11,7 +11,7 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   CodexPluginDriver,
@@ -38,6 +38,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -745,6 +746,7 @@ test(
     assert.deepEqual(Object.keys(admitted.data).sort(), ["provisioning"]);
     assert.match(admitted.data.provisioning.workId, /^agent-provisioning:/);
     assert.deepEqual(admitted.data.provisioning, {
+      requestId: body.requestId,
       workId: admitted.data.provisioning.workId,
       status: "queued",
       phase: "admitted",
@@ -807,6 +809,21 @@ test(
     });
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+
+    assert.equal(replay.data.provisioning.requestId, body.requestId);
+    // The same actor may submit the same plan twice. Each job reports the request that admitted it.
+    const otherId = requestId();
+    const other = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: { ...body, requestId: otherId },
+    });
+    assert.equal(other.status, 202);
+    const otherJob = other.data.provisioning;
+    fixture.cancelQueuedWorkAtTeardown(otherJob.workId, "Finished the request identity check.");
+    assert.equal(otherJob.requestId, otherId);
+    assert.notEqual(otherJob.workId, admitted.data.provisioning.workId);
+    const otherStatus = await fixture.request("GET", otherJob.url);
+    assert.equal(otherStatus.status, 200);
+    assert.deepEqual(otherStatus.data, otherJob);
 
     const changed = structuredClone(body);
     changed.configuration.values = { ...changed.configuration.values, changed: randomUUID() };
@@ -5173,14 +5190,11 @@ test(
       stopping = fixture.request("POST", `${agentPath}/stop`);
       // Surface an early failure through the await below instead of an unhandled rejection.
       stopping.catch(() => {});
-      await waitFor("Stop to wait on the handoff's Namespace lock", async () => {
-        const waiting = await fixture.pool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [handoffPid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
+      await waitForLockWaiter(
+        fixture.pool,
+        handoffPid,
+        "Stop to wait on the handoff's Namespace lock",
+      );
       releaseAdmission();
       const stopped = await stopping;
       assert.equal(stopped.status, 202, JSON.stringify(stopped.body));

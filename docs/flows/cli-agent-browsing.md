@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-10-20
-last_updated_session: authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77
+updated: 2026-10-22
+last_updated_session: fix-2152a
 ---
 
 # CLI Agent metadata browsing flow
@@ -110,6 +110,17 @@ ERROR` when at least one row has `configurationReadError`; the cell contains
 the formal code and field. Healthy rows in a mixed collection have no error
 value, and all-healthy tables retain their existing columns.
 
+For one Agent in table output, `cli.go:agentCommand` then reads
+`occclient.Client.GetAgentHarnessStatus`, and
+`internal/occcli/agent_runtime_output.go:printAgentHarness` prints the [Harness
+Sandbox status](../reference/drivers/sandbox.md#harness-sandbox-status) under
+the table as a `Harness Sandbox:` line, as `occ agent runtime` does. It reads
+only a running Agent with an active revision, and names that revision in the
+Sandbox logs hint. A `lost` line tells the operator to deploy the Agent again.
+An `unobserved` answer prints nothing, and a failed read prints `unknown`, never
+`lost`. `agent list` reads no Sandbox, so a list costs no Sandbox Driver call
+per Agent. JSON and YAML print the Agent resource only.
+
 The helper clones rows before formatting the error so table presentation cannot
 alter the response used elsewhere. JSON and YAML bypass this projection and
 retain the typed `configurationReadError` object, together with version active
@@ -152,6 +163,8 @@ historical version, and that `--cursor` continues the history. See the PostgreSQ
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 02:40: `occ agent get` adds the Harness Sandbox line of a running dedicated Agent (finding 2152). (fix-2152a - 912a25bb9879)
 
 - 2026-10-20 02:20: Keep same-origin CLI redirect guidance when host letter case differs. (authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77 - d331d24fdddc269c12900327733be0ae1ffc441e)
 

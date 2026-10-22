@@ -123,18 +123,39 @@ existing Agent, exact Agent `read`/`update` replaces Agent-create. Only the acto
 who started a session can poll or close it. Source use has its own exact
 `credential_source:operate` authorization; it is not tied to the login session.
 
-The session Secret stores only an opaque login handle and source identity.
+The session Secret binds an opaque login handle to the actor, scope, and source.
 The Refresh Driver hands exchanged credentials to the external service. A pending session uses
 the provider deadline; a completed session closes after 24 hours on its next
 access. **Close login** discards the handle without revoking the source or
 interrupting a deployed Agent. Failed and abandoned sources remain visible in
 credential-source management; delete unused sources separately and remove their
-unreferenced session Secrets. An uncertain exchange requires a new login.
+unreferenced session Secrets.
 
 If sign-in is unavailable, check the selected Gateway and Refresh capabilities. For a
 `503 DEPENDENCY_UNAVAILABLE`, check connectivity from OCC to that Gateway and its
 upstream provider. The paired Refresh Driver owns the provider exchange; OCC keeps only the
 opaque session handle. See [storage and limits](../../reference/drivers/kubernetes-compute/codex-oauth-storage.md).
+
+### Recover an interrupted Codex sign-in
+
+If the Console says **Sign-in may have started**, do not start again. The Console
+did not receive a usable session reference, so it cannot poll or cancel that
+attempt. Give an administrator the time, Namespace, Agent ID if already saved,
+and OCC request ID if available. Do not share the device code or Secret value.
+
+Using [approved audit access](../topics/audit-log.md#access-and-limitations), look
+for a successful `openclaw.agents.device_authorization.start` for that actor and
+request. OCC records it after saving the session Secret, before sending the reply.
+It confirms that OCC started the session, not that sign-in completed, and does not
+include the session ID. A missing event does not rule out a partial start. OCC can
+register an empty Credential Source before the session exists. Do not guess the
+session from a name or timestamp, or start again while the outcome is unknown.
+
+If the Console says **Cancel this login and sign in again** while checking a known
+session, choose **Cancel login**. Start a new sign-in only after cancellation
+succeeds. Cancelling discards the session without revoking the Credential Source.
+OCC does not repeat an exchange whose outcome is uncertain. A **Service unavailable**
+message alone does not tell you whether OCC reached that exchange.
 
 ## Preserve administrator recovery
 
