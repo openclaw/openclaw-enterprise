@@ -1781,10 +1781,14 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   const agentWrites = agentPostRequests(requests, namespace.id);
   assert.equal(agentWrites.length, 2);
   for (const { body } of agentWrites) {
-    assert.partialDeepStrictEqual(body, {
-      initialWorkspaceFiles: expectedWorkspaceFiles,
-      workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
-    } satisfies Pick<CreateAgentBody, "initialWorkspaceFiles" | "workspaceDefaultsId">);
+    assert.ok(
+      typeof body === "object" &&
+        body !== null &&
+        "initialWorkspaceFiles" in body &&
+        "workspaceDefaultsId" in body,
+    );
+    assert.deepEqual(body.initialWorkspaceFiles, expectedWorkspaceFiles);
+    assert.equal(body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   }
   assert.deepEqual(created.plugins, plugins);
   assert.equal(created.backendId, backendFixtures[0]!.id);
@@ -2203,10 +2207,14 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
-  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
-  assert.partialDeepStrictEqual(agentPostRequests(requests, namespace.id)[0]?.body, {
-    harnessAuth: { method: "api_key", source: modelSecret.ref },
-  } satisfies Pick<CreateAgentBody, "harnessAuth">);
+  const agentWrites = agentPostRequests(requests, namespace.id);
+  assert.equal(agentWrites.length, 1);
+  const body = agentWrites[0]?.body;
+  assert.ok(typeof body === "object" && body !== null && "harnessAuth" in body);
+  assert.deepEqual(body.harnessAuth, {
+    method: "api_key",
+    source: modelSecret.ref,
+  } satisfies CreateAgentBody["harnessAuth"]);
   const bindings: FixtureResponse<IAMAccessBindingWire[]> = await fixture.request(
     "GET",
     bindingPath,
@@ -2426,9 +2434,12 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   assert.equal(secretWrites.length, 0);
   const agentWrites = agentPostRequests(requests, namespace.id);
   assert.equal(agentWrites.length, 1);
-  assert.partialDeepStrictEqual(agentWrites[0]?.body, {
-    harnessAuth: { method: "codex_pat", source: modelSecret.ref },
-  } satisfies Pick<CreateAgentBody, "harnessAuth">);
+  const body = agentWrites[0]?.body;
+  assert.ok(typeof body === "object" && body !== null && "harnessAuth" in body);
+  assert.deepEqual(body.harnessAuth, {
+    method: "codex_pat",
+    source: modelSecret.ref,
+  } satisfies CreateAgentBody["harnessAuth"]);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
 });
 
