@@ -596,14 +596,11 @@ export function renderAgentSandboxPolicy(
     const form = element("form", { className: "sandbox-policy-form" });
     const draftStatus = element("p", { role: "status", className: "hint" });
     const reviewButton = element("button", { type: "submit" }, "Review changes");
-    const applyButton = button(
-      "Apply saved policy to current revision",
-      () => {
-        if (policyPanel.contains(applyButton)) {
-          void mutate(applySavedPolicy);
-        }
-      },
-    );
+    const applyButton = button("Apply saved policy to current revision", () => {
+      if (policyPanel.contains(applyButton)) {
+        void mutate(applySavedPolicy);
+      }
+    });
     function updateDraftStatus() {
       const dirty = hasProposedChanges();
       draftStatus.textContent = dirty
