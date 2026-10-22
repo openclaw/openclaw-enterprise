@@ -208,6 +208,7 @@
     "tests/integration/profile-renderer.test.mjs": 32300,
     "tests/integration/public-github-read-http.test.mjs": 7300,
     "tests/integration/qa-fixture-inputs.test.mjs": 3700,
+    "tests/integration/qa-repository-installation.test.mjs": 800,
     "tests/integration/repository-credentials-admission.test.mjs": 24400,
     "tests/integration/repository-credentials-client-config.test.mjs": 13300,
     "tests/integration/repository-credentials-config.test.mjs": 500,
