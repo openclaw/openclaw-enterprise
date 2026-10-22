@@ -580,18 +580,21 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
         );
 
         await git(["checkout", "--quiet", "-b", "installation-feature", "FETCH_HEAD"]);
-        await git([
-          "-c",
-          "user.name=Cedar",
-          "-c",
-          "user.email=cedar@example.test",
-          "commit",
-          "--quiet",
-          "--allow-empty",
-          "-m",
-          "Work in the second private repository",
-        ]);
-        const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
+        const commitWork = async (message: string) => {
+          await git([
+            "-c",
+            "user.name=Cedar",
+            "-c",
+            "user.email=cedar@example.test",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "-m",
+            message,
+          ]);
+          return (await git(["rev-parse", "HEAD"])).stdout.trim();
+        };
+        const commit = await commitWork("Work in the second private repository");
         const providerGit = (args: string[], allowFailure = false) =>
           run("git", ["-C", origin.bare, ...args], { env, allowFailure });
         assert.notEqual(
@@ -701,6 +704,37 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
           });
           assert.equal(edit.status, 200);
           assert.equal(edit.data.title, "Updated work");
+          if (resource === "pulls") {
+            // Updating an existing PR must transfer a second object to its actual head,
+            // not merely echo a successful push or PATCH response.
+            const nextCommit = await commitWork("Follow-up work on the same pull request");
+            assert.notEqual(nextCommit, commit);
+            assert.notEqual(
+              (await providerGit(["cat-file", "-e", nextCommit], true)).code,
+              0,
+              "the origin must lack the follow-up commit before the push",
+            );
+            await git([
+              "-c",
+              auth,
+              "push",
+              "--quiet",
+              remote,
+              "HEAD:refs/heads/installation-feature",
+            ]);
+            const readback = await api(at + "/" + data.number);
+            assert.equal(readback.status, 200);
+            assert.equal(readback.data.number, data.number);
+            assert.equal(readback.data.title, "Updated work");
+            const { base, head } = readback.data as {
+              base: { ref: string };
+              head: { ref: string };
+            };
+            assert.equal(base.ref, "main");
+            assert.equal(head.ref, "installation-feature");
+            assert.equal(await origin.ref("refs/heads/" + head.ref), nextCommit);
+            await providerGit(["fsck", "--strict"]);
+          }
         }
         const query =
           '{ repository(owner: "fixture", name: "private-b") { nameWithOwner isPrivate } }';
@@ -913,7 +947,7 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
       if (broad) {
         await broad.installation.verifyTokenStillWorks();
         t.diagnostic(
-          "one installation token, private Git v2 pack and push, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted",
+          "one installation token, private Git v2 pack and two distinct commits pushed to the same PR head, updated PR readback, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted",
         );
         return;
       }

@@ -1,5 +1,49 @@
 # Qualify the installed repository response and dispatch custody
 
+## Check useful Git work and conversation continuity
+
+From the repository root, use Node.js 24 or newer, Git, OpenSSL, matching installed
+workspace dependencies, and a migrated disposable PostgreSQL database. Set
+`OCC_TEST_DATABASE_URL` to its limited application role as described in the
+[PostgreSQL setup](./postgresql.md). Run:
+
+```sh
+node --test tests/integration/postgres-external-protected-git.test.ts
+```
+
+Require all four cases to pass without skips. The installation journeys fetch a
+previously absent object, push a new commit, create and update a PR, then push a
+second distinct commit to the same branch. They read the same PR through the
+authorized API route and compare its head ref with the exact commit in the real
+bare origin. They also require rejection of a provider-protected ref and fresh
+Git denial after withdrawal, with no provider traffic, while the same token
+still works directly at the controlled provider. Git and PostgreSQL are real;
+the installed external Driver, workload, placement and GitHub API are fixtures.
+
+Run the separate conversation proof with `OCC_TEST_STANDING_GIT_CODEX` set to the
+absolute path of the shipped Codex executable and the same database prerequisites:
+
+```sh
+pnpm test:standing-git-conversation
+```
+
+Require the same Agent conversation to answer before and after Git withdrawal.
+This uses shipped Codex with controlled inference, not a live model provider.
+Neither command needs live GitHub or model credentials. The generic policy
+reduction check does not establish stock OpenShell support for multiple bindings.
+
+On the deployed build, use disposable repositories and an approved GitHub
+credential source. The Agent must never receive the token. In one Agent
+conversation, repeat the fetch, two commits,
+PR creation and update; independently read back the PR and its Git head. Withdraw
+Git while its token is still valid, require a fresh Git request to fail without
+provider traffic, and continue that conversation through its retained model
+access. Record build IDs, commit SHAs, PR number, withdrawal time and both turns;
+exclude credentials. Reconcile an uncertain write by reading its state, never by
+replaying it. The local proofs do not replace this installed qualification.
+
+## Qualify installed custody
+
 Run the dedicated `egress-custody-installed` lane on a newly prepared, disposable
 controller and OpenShell pair before landing whole-execution repository authority.
 The [lane manifest](../../scripts/ci/test-suites/egress-custody-installed.json)
