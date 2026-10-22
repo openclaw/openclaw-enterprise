@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inspect } from "node:util";
 import test, { after } from "node:test";
 
 const reporterMessageLimit = 16_384;
@@ -28,6 +29,8 @@ const long = (label) => {
 };
 if (mode === "exit-silent") {
   process.exit(3);
+} else if (mode === "cat") {
+  process.stdin.pipe(process.stdout);
 } else if (mode === "hang") {
   setInterval(() => {}, 1_000);
 } else if (mode === "leak-key") {
@@ -291,12 +294,34 @@ test("a docker failure never shows a planted synthetic key", async (t) => {
   assert.equal(error.message.includes(plain), false, error.message);
   assert.match(
     error.message,
-    /^docker run -e SYNTHETIC_KEY=\[REDACTED\] -e PLAIN=\[REDACTED\] probe failed \(exit code 1,/,
+    /^docker run -e SYNTHETIC_KEY=\[redacted\] -e PLAIN=\[env:redacted\] probe failed \(exit code 1,/,
   );
+  // stderr comes last, so a caller's tail cut keeps it.
   assert.match(
     error.message,
-    /\nstderr:\nstderr key \[REDACTED\]\nplanted \[REDACTED\]\n\nstdout:\nstdout key \[REDACTED\]\n$/,
+    /\nstdout:\nstdout key \[redacted\]\n\nstderr:\nstderr key \[redacted\]\nplanted \[env:redacted\]\n$/,
   );
+  // Printing the whole error shows the raw output neither.
+  assert.equal(inspect(error).includes(plain), false);
   // Callers that read the output themselves still get it whole.
   assert.match(error.stderr, /planted planted-plain-value-2184/);
+});
+
+test("a docker command's stdin reaches it, and an early exit reports the exit, not the pipe", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "cat";
+  const { stdout } = await runDocker(["exec", "-i", "fake-container", "cat"], {}, "stdin text\n");
+  assert.equal(stdout, "stdin text\n");
+  // The stand-in exits 3 without reading 4 MiB of input.
+  process.env.FAKE_DOCKER_MODE = "exit-silent";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const error = await runDocker(
+    ["exec", "-i", "fake-container", "cat"],
+    {},
+    "x".repeat(4 << 20),
+  ).then(
+    () => assert.fail("the command should fail"),
+    (failure) => failure,
+  );
+  assert.equal(error.code, 3);
+  assert.match(error.message, /^docker exec -i fake-container cat failed \(exit code 3,/);
 });

@@ -20,6 +20,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -72,29 +73,29 @@ export async function runDockerCommand(dockerBin, args, options = {}, input) {
   return result;
 }
 
+const dockerArgumentLimit = 120;
+const dockerStdoutTailLimit = 4 * 1024;
+const dockerStderrTailLimit = 8 * 1024;
+
+// Redacts like CI's failure report (token shapes such as the sk- keys these tests plant,
+// secret assignments, URL passwords), plus each value in `redact`.
+function redactDockerText(text, redact) {
+  const secrets = redact
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .map((value) => [value, "redacted"]);
+  return redactLogLine(text, secrets, Number.POSITIVE_INFINITY);
+}
+
 // Node's own error for a failed command names the whole command line (which can carry
 // synthetic credentials and multi-line scripts) and keeps no exit code, signal or timeout in
 // its message. Finding 2184's failure had empty output, so its message was empty and its
 // cause was lost. This error's message names the command (long or multi-line arguments
-// elided), the exit code, the signal, whether the timeout killed it and how long it ran, then
-// the redacted end of stderr and stdout. The error keeps code, signal, killed, timedOut and
-// the raw stdout and stderr for callers that check them.
-const dockerArgumentLimit = 120;
-const dockerStdoutTailLimit = 4 * 1024;
-const dockerStderrTailLimit = 8 * 1024;
-// Synthetic API keys these tests plant (sk-...), as the CI failure redaction shapes them.
-const syntheticKeyShape = /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/g;
-
-export function redactDockerOutput(text, redact = []) {
-  let redacted = String(text);
-  for (const value of redact) {
-    if (typeof value === "string" && value.length > 0) {
-      redacted = redacted.replaceAll(value, "[REDACTED]");
-    }
-  }
-  return redacted.replace(syntheticKeyShape, "[REDACTED]");
-}
-
+// elided), the exit code, the signal, whether the timeout stopped it and how long it ran,
+// then the redacted ends of stdout and of stderr. stderr comes last so a caller's own tail
+// cut keeps it. The error keeps code, signal, killed and timedOut, and the raw stdout and
+// stderr (not enumerable, so printing the error shows only the redacted message) for
+// callers that check them. Node's error is not kept as the cause: its message is the raw
+// command line.
 export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact = [] } = {}) {
   const shown = args.map((arg) => {
     const text = String(arg);
@@ -102,7 +103,7 @@ export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact =
       ? `<${text.length}-char argument>`
       : text;
   });
-  const command = redactDockerOutput(`docker ${shown.join(" ")}`, redact).slice(0, 512);
+  const command = redactDockerText(`docker ${shown.join(" ")}`.slice(0, 512), redact);
   const timedOut =
     error.killed === true &&
     error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" &&
@@ -120,26 +121,36 @@ export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact =
   if (error.killed === true && !timedOut) {
     outcome.push("killed");
   }
-  const stdout = redactDockerOutput(error.stdout ?? "", redact);
-  const stderr = redactDockerOutput(error.stderr ?? "", redact);
   const sections = [`${command} failed (${outcome.join(", ")}).`];
-  if (stderr.trim() !== "") {
-    sections.push(`stderr:\n${failureTail(stderr, dockerStderrTailLimit)}`);
-  }
+  const stdout = String(error.stdout ?? "");
+  const stderr = String(error.stderr ?? "");
   if (stdout.trim() !== "") {
-    sections.push(`stdout:\n${failureTail(stdout, dockerStdoutTailLimit)}`);
+    sections.push(
+      `stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit), redact)}`,
+    );
   }
-  if (stderr.trim() === "" && stdout.trim() === "") {
+  if (stderr.trim() !== "") {
+    sections.push(
+      `stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit), redact)}`,
+    );
+  }
+  if (stdout.trim() === "" && stderr.trim() === "") {
     sections.push("(no stdout or stderr)");
   }
   const failure = new Error(sections.join("\n"));
-  failure.code = error.code;
-  failure.signal = error.signal ?? null;
-  failure.killed = error.killed === true;
-  failure.timedOut = timedOut;
-  failure.elapsedMs = elapsedMs;
-  failure.stdout = error.stdout;
-  failure.stderr = error.stderr;
+  Object.assign(failure, {
+    code: error.code,
+    signal: error.signal ?? null,
+    killed: error.killed === true,
+    timedOut,
+    elapsedMs,
+  });
+  for (const [name, value] of [
+    ["stdout", error.stdout],
+    ["stderr", error.stderr],
+  ]) {
+    Object.defineProperty(failure, name, { value, enumerable: false, writable: true });
+  }
   return failure;
 }
 
@@ -436,8 +447,8 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     };
   } catch (error) {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-    // A failed docker command's message carries its whole stderr after the
-    // line that names the command.
+    // A failed docker command's message names the command and its exit on the first
+    // line; the ends of its stdout and stderr follow, stderr last.
     const [headline, ...detail] = error.message.split("\n");
     const failure = [
       headline.slice(0, 512),
