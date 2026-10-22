@@ -430,11 +430,14 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.deepEqual(writeRequests, []);
   // List rows read revision history for Latest deployment and advisory permissions for their
   // Stop and Delete icons. Browsing these draft Agents must not read their detail or invoke any
-  // deployment operation.
+  // deployment operation. The request log also includes the shell's deployment modules.
   const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
   assert.deepEqual(
     [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
     [
+      "GET /console/agents/deployment-diagnostics.mjs",
+      "GET /console/agents/deployment-evidence.mjs",
+      "GET /console/agents/deployment-recovery.mjs",
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
