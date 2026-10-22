@@ -13,9 +13,15 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { exerciseGit, exerciseGh } from "../fixtures/repository-credentials/workflows.mjs";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
+import { registerResourceCleanup } from "../fixtures/repository-credentials/cleanup.mjs";
 
 test("pinned gh uses selected development token routing for repository, issue and pull-request REST commands", async (t) => {
-  if (await runInFixtureContainer(t, "tests/integration/repository-credentials-gh.test.mjs")) {
+  // The production launcher requires installed hooks for a push-policy session.
+  if (
+    await runInFixtureContainer(t, "tests/integration/repository-credentials-gh.test.mjs", {
+      packaged: true,
+    })
+  ) {
     return;
   }
   const fixture = await startCredentialServiceFixture(t, {
@@ -70,6 +76,51 @@ test("pinned gh uses selected development token routing for repository, issue an
   assert.ok(
     fixture.github.trace.filter((entry) => entry.tokenIndex).every((entry) => entry.userAgent),
   );
+  // The controlled provider accepts the actual gh write and loses its reply.
+  // Reconcile the exact marker through the same admitted session without replaying creation.
+  const marker = "<!-- regression-run:gh-uncertain -->";
+  const pullPath = "repos/fixture/repository/pulls";
+  const cleanups = [];
+  registerResourceCleanup(cleanups, {
+    request: async ({ method, path, body }) => {
+      const response = await gatewayRequest(fixture, `/${path}`, { method, body });
+      assert.ok(response.status < 400);
+      return response.body ? JSON.parse(response.body) : undefined;
+    },
+    repository: "fixture/repository",
+    kind: "pulls",
+    marker,
+    head: "native-feature",
+  });
+  const uncertainInput = await client.json("uncertain-pull.json", {
+    title: "Uncertain pull request",
+    body: marker,
+    base: "main",
+    head: "native-feature",
+    draft: true,
+  });
+  const beforeUncertain = fixture.github.trace.length;
+  fixture.github.disconnectAfterMutation("POST", `/${pullPath}`);
+  const uncertain = await client.gh(
+    ["api", "--method", "POST", pullPath, "--input", uncertainInput],
+    { allowFailure: true },
+  );
+  assert.notEqual(uncertain.code, 0);
+  assert.ok(/HTTP 502/.test(uncertain.stderr), "gh must report the lost response status");
+  assert.ok(
+    /exchange-uncertain/.test(uncertain.stdout + uncertain.stderr),
+    "gh must report the uncertain exchange",
+  );
+  const writes = fixture.github.trace
+    .slice(beforeUncertain)
+    .filter((entry) => entry.method === "POST" && entry.target === `/${pullPath}`);
+  assert.equal(writes.length, 1, "gh must not replay an uncertain pull-request creation");
+  assert.ok(writes[0].tokenIndex, "the controlled provider must authenticate the write");
+  const accepted = [...fixture.github.pulls.values()].filter((pull) => pull.body === marker);
+  assert.equal(accepted.length, 1, "the provider must accept the marked pull request once");
+  assert.equal(accepted[0].draft, true);
+  await cleanups[0](AbortSignal.timeout(5000));
+  assert.equal(fixture.github.pulls.get(accepted[0].number).state, "closed");
   // All fixed runtime paths below live only inside the disposable fixture
   // container. Private HOME configuration proves real child Git is preserved;
   // image-owned system include qualification belongs to the platform tests.

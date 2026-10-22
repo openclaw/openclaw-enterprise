@@ -18,16 +18,17 @@ node scripts/verify-repository-credentials-boundary.mjs
 node --test tests/conformance/repository-credentials-fixture-ownership.test.mjs \
   tests/conformance/repository-credentials-backend-conformance.test.mjs
 node --test tests/integration/repository-credentials-git.test.mjs \
-  tests/integration/repository-credentials-gh.test.mjs \
   tests/integration/repository-credentials-native-paths.test.mjs \
   tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The Git and `gh` tests require a `node:24-bookworm` image and `gh` **2.100.0**
+The source Git tests require a `node:24-bookworm` image and `gh` **2.100.0**
 at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 `REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub
-access. Prepared token renewal is exercised by the worker Token Service suites.
+access. The `gh` workflow requires the [combined qualification image](#qualify-emitted-artifacts)
+because push-policy sessions require installed client hooks. Prepared token renewal
+is exercised by the worker Token Service suites.
 
 The source boundary check also runs in `pnpm check:workspace`. Changes to its
 privileged allowlists require security review of the authority, caller, scope,
@@ -110,7 +111,10 @@ REPOSITORY_CREDENTIALS_TEST_IMAGE=repository-credentials-qualification:test \
   node --test tests/integration/repository-credentials-container.test.mjs
 ```
 
-The qualification image runs the emitted components against a controlled provider.
+The combined suite runs the emitted service/client cases, native Git paths, pinned
+`gh` REST actions (including pull requests), and common-backend conformance against
+controlled peers. It mounts only tests from the workspace and uses controlled
+credentials. The client uses its installed hooks. No GitHub credentials are required.
 The Compose check only renders the configuration; it does not start the services.
 An unset image selector skips the container cases.
 
