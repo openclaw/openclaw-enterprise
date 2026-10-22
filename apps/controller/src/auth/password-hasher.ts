@@ -12,11 +12,11 @@ export interface PasswordHasher {
 }
 
 /**
- * The controller's only password hasher: Better Auth's node:crypto scrypt (N=16384, r=16,
- * p=1, 64-byte key, 16-byte random salt), stored as `<salt hex>:<key hex>`. Deployments
+ * The controller's production password hasher: Better Auth's node:crypto scrypt (N=16384,
+ * r=16, p=1, 64-byte key, 16-byte random salt), stored as `<salt hex>:<key hex>`. Deployments
  * cannot replace it: no environment variable or configuration file selects a hasher, and the
  * production and development compositions read one only from their code-only dependencies
- * argument, never from their configuration.
+ * argument, which API startup never passes.
  */
 export const scryptPasswordHasher: PasswordHasher = Object.freeze({
   hash: (password: string) => hashPassword(password),

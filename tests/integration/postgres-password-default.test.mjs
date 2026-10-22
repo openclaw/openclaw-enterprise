@@ -417,6 +417,12 @@ test(
         );
         const refused = await passwordSignIn(production, origin, { email, password });
         assert.equal(refused.statusCode, 401, refused.body);
+        // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
+        const fixtureHash = await pool.query(
+          "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
+          [member.id],
+        );
+        assert.match(fixtureHash.rows[0].password, /^test-sha256:/);
       },
     );
   },

@@ -1,3 +1,6 @@
+// The fixtures' password hasher and the controller constructors that use it. Tests build a
+// controller through these wrappers, not the product's constructors, so this module alone
+// decides how fixtures hash passwords.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   createControllerAuth as createControllerAuthWith,
