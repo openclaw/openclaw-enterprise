@@ -492,8 +492,15 @@ export class ResourceConflictError extends ScopeViolationError {
  * names what blocks the operation. HTTP returns that message instead of the generic text.
  */
 export class ResourceStateConflictError extends ResourceConflictError {
-  constructor(message: string) {
+  readonly details?: readonly import("@openclaw-enterprise/contracts").ErrorDetail[];
+  constructor(
+    message: string,
+    details?: readonly import("@openclaw-enterprise/contracts").ErrorDetail[],
+  ) {
     super(message);
+    if (details !== undefined) {
+      this.details = details;
+    }
     this.name = "ResourceStateConflictError";
   }
 }

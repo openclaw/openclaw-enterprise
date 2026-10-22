@@ -38,7 +38,7 @@ const responseLimit = 64 * 1024;
 // emoji), and the England, Scotland and Wales flags, the only standard emoji tag sequences. Runs
 // of joiners and other tag text still become spaces. A kept joiner can still hide a bit between
 // two letters, but it cannot reorder text. The picker keeps the same ones:
-// apps/controller/src/console/agents/repositories.mjs:descriptionText.
+// apps/controller/src/console/agents/repositories.mts:descriptionText.
 const hiddenCharacter =
   /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 

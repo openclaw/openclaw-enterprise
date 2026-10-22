@@ -53,9 +53,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "guides/README"
-            ]
+            "hidden": ["guides/README"]
           },
           {
             "tab": "Topics",
@@ -127,6 +125,10 @@
                   {
                     "page": "guides/console/channels-and-credentials",
                     "label": "Channels and Credentials"
+                  },
+                  {
+                    "page": "guides/console/secrets",
+                    "label": "Manage Secrets"
                   },
                   {
                     "page": "guides/console/agent-sharing",
@@ -246,6 +248,7 @@
             ],
             "hidden": [
               "reference/console/debug-fields",
+              "reference/console/theming",
               "reference/console/agent-sharing",
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
@@ -461,6 +464,10 @@
                   {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
+                  },
+                  {
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
                   },
                   {
                     "page": "guides/deploy/private-registry-images",
@@ -727,9 +734,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "reference/postgres-auth-binding"
-            ]
+            "hidden": ["reference/postgres-auth-binding"]
           },
           {
             "tab": "Contribute",
@@ -855,6 +860,10 @@
                   {
                     "page": "contributing/local-development",
                     "label": "Environment"
+                  },
+                  {
+                    "page": "contributing/console-ui",
+                    "label": "Console UI"
                   },
                   {
                     "page": "contributing/console-storybook",

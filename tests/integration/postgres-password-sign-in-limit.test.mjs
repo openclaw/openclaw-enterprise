@@ -13,6 +13,7 @@ import {
   postgresSignInState,
 } from "../helpers/production-sign-in.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { scryptPasswordHasher } from "../helpers/password-hasher.mjs";
 import { assertSpentDeviceProofRefusal } from "../helpers/password-proof-refusal.mjs";
 
 const adminEmail = "limit-admin@example.test";
@@ -115,6 +116,8 @@ test(
       authSecret,
       secrets,
       password: "limit-account-password",
+      // The limiter and its timing parity are under test: keep the real scrypt cost.
+      passwordHasher: scryptPasswordHasher,
       accounts: {
         member: { email: "limit-member@example.test" },
         target: { email: "limit-target@example.test" },
@@ -136,6 +139,7 @@ test(
       secrets,
       logger: proxiedLog.logger,
       passwordSlowLaneFloors: slowLane,
+      passwordHasher: scryptPasswordHasher,
     });
     const plainLog = memoryLogger();
     plainApp = await composeProductionSignIn(t, {
@@ -144,6 +148,7 @@ test(
       secrets,
       logger: plainLog.logger,
       passwordSlowLaneFloors: slowLane,
+      passwordHasher: scryptPasswordHasher,
     });
     // Without a trusted proxy every browser reaches the API from the ingress address.
     const plainSignIn = (account) =>

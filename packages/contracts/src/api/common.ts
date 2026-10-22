@@ -860,6 +860,8 @@ export const ERROR_DETAIL_CODES = Object.freeze([
   "INVALID_VALUE",
   "TOO_LONG",
   "TOO_DEEP",
+  "INVALID_RANGE",
+  "OUTSIDE_CEILING",
 ] as const);
 
 export const ERROR_CODES = Object.freeze([
@@ -915,6 +917,7 @@ export const ERROR_CODES = Object.freeze([
 
 export const ErrorDetail = Type.Object(
   {
+    message: Type.Optional(Type.String({ maxLength: 512 })),
     path: Type.String({
       maxLength: 512,
       pattern: "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -927,6 +930,8 @@ export const ErrorDetail = Type.Object(
       Type.Literal("INVALID_VALUE"),
       Type.Literal("TOO_LONG"),
       Type.Literal("TOO_DEEP"),
+      Type.Literal("INVALID_RANGE"),
+      Type.Literal("OUTSIDE_CEILING"),
     ]),
   },
   { additionalProperties: false },

@@ -54,7 +54,18 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
-    for (const installation of selection.installations) {
+    if (selection.sandboxPolicy) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "shared Driver configuration and real network enforcement",
+        () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    for (const installation of selection.installations.filter((value) =>
+      selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
+    )) {
       await context.test(
         `${installation} OCC + Kubernetes compute / Sandbox none`,
         { timeout: 7_000_000 },
@@ -68,6 +79,9 @@ test(
                 repositoryInputs: selection.repository,
               }),
           );
+          const cells = selection.cells.filter(
+            (cell) => cell.installation === installation && cell.scenarios.length > 0,
+          );
           let browser;
           let repositoryReady;
           if (f && selection.browser) {
@@ -75,7 +89,10 @@ test(
               installationContext,
               installation,
               "authenticated console login",
-              () => createQaBrowser(f),
+              () =>
+                createQaBrowser(f, {
+                  themed: cells.some((cell) => cell.scenarios.includes("model-ui")),
+                }),
             );
           }
           if (f && selection.repository) {
@@ -89,9 +106,7 @@ test(
               },
             );
           }
-          for (const selectedCell of selection.cells.filter(
-            (value) => value.installation === installation && value.scenarios.length > 0,
-          )) {
+          for (const selectedCell of cells) {
             const { preset, cell } = selectedCell;
             await installationContext.test(
               `Standard ${preset}`,
@@ -143,6 +158,18 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "console-secrets",
+                    async (agent, step) => {
+                      await step(
+                        "console Secret lifecycle and Agent Configuration references",
+                        async () => {
+                          assert.ok(browser, "blocked by browser setup failure");
+                          await browser.verifySecrets(agent);
+                        },
+                      );
+                    },
+                  ],
                   [
                     "model-ui",
                     async (agent, step) => {

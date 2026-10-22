@@ -66,9 +66,9 @@ function run(root, args, env = {}, { timeout } = {}) {
 
 // run() without blocking this process, for the waiting tests below, which run side by side.
 // The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
-function runAsync(root, args, env = {}, { timeout } = {}) {
+function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [runnerPath, ...args], {
+    const child = spawn(process.execPath, [...execArgv, runnerPath, ...args], {
       cwd: repositoryRoot,
       env: runnerEnv(env),
       stdio: ["ignore", "pipe", "pipe"],
@@ -101,14 +101,38 @@ function runAsync(root, args, env = {}, { timeout } = {}) {
 
 // These tests wait out a real runner timeout, lane deadline or cleanup allowance: seconds
 // each, at almost no CPU. Each duration stays as it is, long enough for a loaded host to
-// reach the state the test needs before it elapses. Instead they run side by side, after
-// the rest of the file (see the describe at its end), so the file waits about as long as
-// the longest of them rather than their sum. Each has its own fixture root, state and lock
-// files, and starts the runner with runAsync.
+// reach the state the test needs before it elapses, or the runner's clock waits for that
+// state (heldClock below). Instead they run side by side, after the rest of the file (see
+// the describe at its end), so the file waits about as long as the longest of them rather
+// than their sum. Each has its own fixture root, state and lock files, and starts the
+// runner with runAsync.
 const waitingTests = [];
 
 function waitingTest(...args) {
   waitingTests.push(args);
+}
+
+// Node arguments that give the runner a clock that stands still at holdAt (Unix epoch
+// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.mjs). A test
+// that needs its fixture in some state before the lane deadline creates a gate there, so a
+// busy host delays the deadline instead of reaching it first (finding 2164).
+function heldClock(holdAt, gates) {
+  const preload = new URL("../helpers/ci-runner-held-clock.mjs", import.meta.url);
+  preload.searchParams.set("hold", String(holdAt));
+  for (const gate of gates) {
+    preload.searchParams.append("gate", gate);
+  }
+  return ["--import", preload.href];
+}
+
+// Node arguments that hold the runner just after it lists /proc, the first time it ends its
+// descendants, until the `forked` path exists. It creates the `window` path when
+// the hold starts (tests/helpers/ci-runner-kill-window.mjs, finding 2182).
+function killWindow(window, forked) {
+  const preload = new URL("../helpers/ci-runner-kill-window.mjs", import.meta.url);
+  preload.searchParams.set("window", window);
+  preload.searchParams.set("forked", forked);
+  return ["--import", preload.href];
 }
 
 function currentSha() {
@@ -757,6 +781,7 @@ waitingTest(
     const root = await fixture(t);
     const statePath = join(root, "state/orphan.json");
     const recordPath = join(root, "state/orphan-pids.json");
+    const waiting = join(root, "state/orphan-waiting");
     // The isolated test-file child ignores SIGTERM and has a child of its own, so the
     // Node test runner's own SIGTERM handling cannot end either of them.
     await writeFile(
@@ -774,6 +799,7 @@ waitingTest(
         "    pgid: pgid(process.pid), grandchildPgid: pgid(grandchild.pid),",
         "  }));",
         '  console.log("waiting with SIGTERM ignored");',
+        `  writeFileSync(${JSON.stringify(waiting)}, "");`,
         "  await new Promise((resolve) => setTimeout(resolve, 60_000));",
         "});",
         "",
@@ -799,6 +825,10 @@ waitingTest(
       }
     });
 
+    // The runner's clock stands still from the start until the file has recorded its pids and
+    // printed its line, so its timeout comes five seconds after that however long the host takes
+    // to get there.
+    const started = Date.now();
     const result = await runAsync(
       root,
       [
@@ -814,9 +844,11 @@ waitingTest(
         join(root, "results/orphan.json"),
       ],
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
+      { timeout: 60_000, execArgv: heldClock(started, [waiting]) },
     );
 
-    assert.equal(result.status, 1);
+    assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
+    assert.equal(result.status, 1, result.stderr);
     pids = JSON.parse(await readFile(recordPath, "utf8"));
     // The timeout record still comes from the runner's reporter before the group dies.
     const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
@@ -2566,9 +2598,12 @@ waitingTest(
     const root = await fixture(t);
     const resultsPath = join(root, "results/hang.json");
     const statePath = join(root, "state/hang.json");
+    // Holds when the file printed its last line.
+    const printed = join(root, "state/hang-printed");
     await writeFile(
       join(root, "tests/integration/hang.test.mjs"),
       [
+        'import { writeFileSync } from "node:fs";',
         'import test from "node:test";',
         'test("passes first", () => {});',
         'test("hangs", async () => {',
@@ -2578,6 +2613,7 @@ waitingTest(
         "  console.log(`credential ${process.env.CI_RUNNER_FIXTURE_CREDENTIAL}`);",
         '  console.log("Authorization: Bearer abcdefghijklmnop0123");',
         '  console.log("waiting for a reply that never comes");',
+        `  writeFileSync(${JSON.stringify(printed)}, String(Date.now()));`,
         "  // Ends by itself in case the runner leaves it behind.",
         "  await new Promise((resolve) => setTimeout(resolve, 30_000));",
         "});",
@@ -2602,6 +2638,9 @@ waitingTest(
       groups: { ci: ["hang"] },
     });
 
+    // The runner's clock stands still from the start until the file has printed everything, so its
+    // timeout comes five seconds after that however long the host takes to get there.
+    const started = Date.now();
     const result = await runAsync(
       root,
       [
@@ -2617,9 +2656,11 @@ waitingTest(
         resultsPath,
       ],
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000" },
+      { timeout: 60_000, execArgv: heldClock(started, [printed]) },
     );
 
-    assert.equal(result.status, 1);
+    assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
+    assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     assert(summary.issues.some((entry) => entry.code === "test-timeout"));
     const text = await readFile(`${statePath}.diagnostics.json`, "utf8");
@@ -2628,8 +2669,15 @@ waitingTest(
     assert.equal(record.file, "tests/integration/hang.test.mjs");
     assert.equal(record.reason, "timeout");
     assert.equal(record.timeoutMs, 5000);
-    assert(record.elapsedMs >= 5000 && record.elapsedMs < 15_000, String(record.elapsedMs));
-    assert.deepEqual(record.interruptedTests, [{ name: "hangs", line: 3 }]);
+    // The file ran at least its timeout, and the timeout (with its 5 s grace) ended it well before
+    // its own 30 s wait did. The held clock stood still until the last line, and the runner
+    // records real time, so that bound counts from then.
+    const sincePrinted = Number(await readFile(printed, "utf8")) - started;
+    assert(
+      record.elapsedMs >= 5000 && record.elapsedMs < sincePrinted + 15_000,
+      `${record.elapsedMs} ms, last line ${sincePrinted} ms in`,
+    );
+    assert.deepEqual(record.interruptedTests, [{ name: "hangs", line: 4 }]);
     // Up to the last 400 of 503 lines, newest last, with the usual redaction. Node
     // exits soon after the interruption, so on a slow host only the newest batches
     // arrive; the rest are counted.
@@ -2721,14 +2769,19 @@ waitingTest(
     const statePath = join(root, "state/deadline.json");
     const resultsPath = join(root, "results/deadline.json");
     const marker = join(root, "state/later-started");
+    const hung = join(root, "state/teardown-hung");
     await writeFile(
       join(root, "tests/integration/teardown.test.mjs"),
       [
+        'import { writeFileSync } from "node:fs";',
         'import test from "node:test";',
         'test("passes first", () => {});',
         'test("hangs in its teardown", async (t) => {',
         "  // Like a worker stop that never returns; the interval keeps the file alive.",
-        "  t.after(() => new Promise(() => setInterval(() => {}, 1_000)));",
+        "  t.after(() => {",
+        `    writeFileSync(${JSON.stringify(hung)}, "");`,
+        "    return new Promise(() => setInterval(() => {}, 1_000));",
+        "  });",
         "});",
         "",
       ].join("\n"),
@@ -2755,6 +2808,8 @@ waitingTest(
       groups: { ci: ["deadline"] },
     });
 
+    // The runner's clock stops a second in until the file hangs in its teardown, so the deadline
+    // comes at least two seconds after that, however long the host takes to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
@@ -2773,14 +2828,14 @@ waitingTest(
       // No per-file timeout: the default (60 minutes) is far past the deadline.
       {
         CI_RUNNER_TEST_TIMEOUT_MS: "",
-        CI_RUNNER_DEADLINE_MS: String(started + 4_000),
+        CI_RUNNER_DEADLINE_MS: String(started + 3_000),
         CI_RUNNER_MARKER: marker,
       },
       // Without the deadline the runner would wait out the 60-minute default.
-      { timeout: 60_000 },
+      { timeout: 60_000, execArgv: heldClock(started + 1_000, [hung]) },
     );
 
-    assert.equal(result.error, undefined, "the deadline stopped the lane");
+    assert.equal(result.error, undefined, `the deadline stopped the lane: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     const [teardown, later] = summary.files;
@@ -2797,8 +2852,8 @@ waitingTest(
     const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
     assert.equal(record.reason, "timeout");
     assert.equal(record.laneDeadline, true);
-    assert(record.timeoutMs > 0 && record.timeoutMs <= 4_000, String(record.timeoutMs));
-    assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 3 }]);
+    assert(record.timeoutMs >= 2_000 && record.timeoutMs <= 3_000, String(record.timeoutMs));
+    assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 4 }]);
     // The serial file behind it never started.
     assert.equal(later.status, "failed");
     assert.equal(later.counts.total, 0);
@@ -2872,13 +2927,18 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
   const root = await fixture(t);
   const statePath = join(root, "state/hook.json");
   const resultsPath = join(root, "results/hook.json");
+  const inHook = join(root, "state/in-hook");
   await writeFile(
     join(root, "tests/integration/hook.test.mjs"),
     [
+      'import { writeFileSync } from "node:fs";',
       'import test, { after } from "node:test";',
       'test("passes", () => {});',
-      "// Ends by itself in case the runner leaves it behind.",
-      "after(() => new Promise((resolve) => setTimeout(resolve, 30_000)));",
+      "after(() => {",
+      `  writeFileSync(${JSON.stringify(inHook)}, "");`,
+      "  // Ends by itself in case the runner leaves it behind.",
+      "  return new Promise((resolve) => setTimeout(resolve, 30_000));",
+      "});",
       "",
     ].join("\n"),
   );
@@ -2888,20 +2948,24 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
     groups: { ci: ["hook"] },
   });
 
+  // The runner's clock stands still from the start until "passes" is done and the hook has
+  // started, so the timeout comes three seconds after that however long the host takes to get
+  // there. The hook outlasts it.
+  const started = Date.now();
   const result = await runAsync(
     root,
     laneArgs(root, "hook", statePath, resultsPath),
-    // Long enough for a loaded host to finish "passes" before the timeout; the hook outlasts it.
-    { CI_RUNNER_TEST_TIMEOUT_MS: "8000" },
-    { timeout: 60_000 },
+    { CI_RUNNER_TEST_TIMEOUT_MS: "3000" },
+    { timeout: 60_000, execArgv: heldClock(started, [inHook]) },
   );
 
+  assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
   assert.equal(result.status, 1, result.stderr);
   const summary = JSON.parse(await readFile(resultsPath, "utf8"));
   const timeout = summary.issues.find((entry) => entry.code === "test-timeout");
   assert.equal(
     timeout.message,
-    "selected file exceeded the runner timeout (8000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
+    "selected file exceeded the runner timeout (3000 ms): tests/integration/hook.test.mjs; no test was running (stopped in a hook, teardown or top-level code)",
   );
 });
 
@@ -2931,11 +2995,14 @@ waitingTest(
     const root = await fixture(t);
     const statePath = join(root, "state/hung-prepare.json");
     const resultsPath = join(root, "results/hung-prepare.json");
+    const preparing = join(root, "state/preparing");
     await writeFile(
       join(root, "scripts/ci/prepare.mjs"),
       [
+        'import { writeFileSync } from "node:fs";',
         "export async function prepareFile({ file }) {",
         "  if (file.path.endsWith('hung.test.mjs')) {",
+        `    writeFileSync(${JSON.stringify(preparing)}, "");`,
         `    await ${hangForever};`,
         "  }",
         "  return {};",
@@ -2962,16 +3029,22 @@ waitingTest(
       groups: { ci: ["prepare"] },
     });
 
-    const deadline = Date.now() + 5_000;
+    // The runner's clock stands still from the start until the preparation has started, so the
+    // deadline comes three seconds after that however long the host takes to get there.
+    const started = Date.now();
     const result = await runAsync(
       root,
       laneArgs(root, "prepare", statePath, resultsPath),
-      { CI_RUNNER_DEADLINE_MS: String(deadline) },
+      { CI_RUNNER_DEADLINE_MS: String(started + 3_000) },
       // Without a limit the preparation would hold the runner forever.
-      { timeout: 30_000 },
+      { timeout: 60_000, execArgv: heldClock(started, [preparing]) },
     );
 
-    assert.equal(result.error, undefined, "the runner gave up on the preparation");
+    assert.equal(
+      result.error,
+      undefined,
+      `the runner gave up on the preparation: ${result.stderr}`,
+    );
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     const [hung, later] = summary.files;
@@ -2979,8 +3052,9 @@ waitingTest(
       hung.issues.map(({ code, file, step }) => ({ code, file, step })),
       [{ code: "prepare-timeout", file: "tests/integration/hung.test.mjs", step: "prepare" }],
     );
-    const { timeoutMs } = hung.issues[0];
-    assert(timeoutMs > 0 && timeoutMs <= 5_000, String(timeoutMs));
+    // Its limit is what was left before the deadline when it started: all of it, as the clock
+    // stood still.
+    assert.equal(hung.issues[0].timeoutMs, 3_000);
     // Its tests never started. What the preparation made is left to the job's Cleanup lane step.
     assert.equal(hung.nodeExitCode, null);
     assert.equal(hung.counts.total, 0);
@@ -3005,18 +3079,32 @@ waitingTest(
     const resultsPath = join(root, "results/hung-cleanup.json");
     const cleaned = join(root, "state/later-cleaned");
     // The hung cleanup waits for a command that started one of its own (as `docker compose`
-    // or `pnpm` would). Both record their pids.
+    // or `pnpm` would). Both record their pids, in one rename.
     const pidsPath = join(root, "state/command-pids");
+    // The command starts another child while the runner is ending it: after the runner has listed
+    // its processes and before it kills them (killWindow). That child records its pid too.
+    const windowPath = join(root, "state/kill-window");
+    const latePath = join(root, "state/late-pid");
     const commandPath = join(root, "command.cjs");
+    const writeOnce = (path, value) =>
+      `writeFileSync(${JSON.stringify(`${path}.partial`)}, ${value}); ` +
+      `renameSync(${JSON.stringify(`${path}.partial`)}, ${JSON.stringify(path)});`;
     await writeFile(
       commandPath,
       [
         'const { spawn } = require("node:child_process");',
-        'const { appendFileSync } = require("node:fs");',
-        'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
+        'const { existsSync, renameSync, writeFileSync } = require("node:fs");',
+        'const forever = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
         '  stdio: "ignore",',
         "});",
-        `appendFileSync(${JSON.stringify(pidsPath)}, process.pid + "\\n" + descendant.pid + "\\n");`,
+        "const descendant = forever();",
+        writeOnce(pidsPath, 'process.pid + "\\n" + descendant.pid + "\\n"'),
+        "const poll = setInterval(() => {",
+        `  if (existsSync(${JSON.stringify(windowPath)})) {`,
+        "    clearInterval(poll);",
+        `    ${writeOnce(latePath, 'forever().pid + "\\n"')}`,
+        "  }",
+        "}, 10);",
         "setInterval(() => {}, 1_000);",
         "",
       ].join("\n"),
@@ -3052,7 +3140,7 @@ waitingTest(
         "    return {",
         "      cleanup: async () => {",
         `        spawn(process.execPath, [${JSON.stringify(commandPath)}], { stdio: "ignore" });`,
-        // Hang only once both pids are on record (one write).
+        // Hang only once both pids are on record.
         `        while (!(await readFile(${JSON.stringify(pidsPath)}, "utf8").catch(() => ""))) {`,
         "          await delay(20);",
         "        }",
@@ -3084,15 +3172,26 @@ waitingTest(
       groups: { ci: ["cleanup"] },
     });
 
+    // The runner's clock stands still from the start until the command and its descendant are on
+    // record, so the cleanup's allowance ends two seconds after that however long the host takes
+    // to get there.
+    const started = Date.now();
     const result = await runAsync(
       root,
       laneArgs(root, "cleanup", statePath, resultsPath),
       { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
-      { timeout: 30_000 },
+      {
+        timeout: 60_000,
+        execArgv: [...heldClock(started, [pidsPath]), ...killWindow(windowPath, latePath)],
+      },
     );
     pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
+    const late = Number(await readFile(latePath, "utf8").catch(() => ""));
+    if (late > 1) {
+      pids.push(late);
+    }
 
-    assert.equal(result.error, undefined, "the runner gave up on the cleanup");
+    assert.equal(result.error, undefined, `the runner gave up on the cleanup: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     const [hung, later] = summary.files;
@@ -3117,9 +3216,10 @@ waitingTest(
     );
     assert.equal(later.counts.total, 0);
     await assert.rejects(readFile(cleaned), { code: "ENOENT" });
-    // The runner ended the abandoned cleanup's command and its descendant before it exited, so
-    // neither is left running as an orphan (finding 1225).
-    assert.equal(pids.length, 2, "the command recorded itself and its descendant");
+    // The runner ended the abandoned cleanup's command and its descendants before it exited, so
+    // none is left running as an orphan (finding 1225), not even the one the command started
+    // after the runner had listed its processes (finding 2182).
+    assert.equal(pids.length, 3, "the command recorded itself and both descendants");
     for (let attempt = 0; pids.some(running) && attempt < 50; attempt += 1) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
     }
@@ -3144,10 +3244,19 @@ waitingTest(
       join(root, "scripts/ci/prepare.mjs"),
       `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
     );
-    for (const file of files) {
+    const hung = files.map((file) => join(root, `state/${file.split("/").at(-1)}-hung`));
+    for (const [index, file] of files.entries()) {
       await writeFile(
         join(root, file),
-        `import test from "node:test";\ntest("hangs", () => ${hangForever});\n`,
+        [
+          'import { writeFileSync } from "node:fs";',
+          'import test from "node:test";',
+          'test("hangs", () => {',
+          `  writeFileSync(${JSON.stringify(hung[index])}, "");`,
+          `  return ${hangForever};`,
+          "});",
+          "",
+        ].join("\n"),
       );
     }
     await writeJson(join(root, "manifest.json"), {
@@ -3162,22 +3271,22 @@ waitingTest(
       groups: { ci: ["together"] },
     });
 
+    // The runner's clock stops a second in until all four files hang, so the deadline stops
+    // them together however long the host takes to start them.
     const allowanceMs = 5_000;
     const started = Date.now();
-    const deadline = started + 5_000;
     const result = await runAsync(
       root,
       laneArgs(root, "together", statePath, resultsPath),
       {
-        CI_RUNNER_DEADLINE_MS: String(deadline),
+        CI_RUNNER_DEADLINE_MS: String(started + 3_000),
         CI_RUNNER_CLEANUP_TIMEOUT_MS: String(allowanceMs),
         CI_RUNNER_FILE_CONCURRENCY: "4",
       },
-      { timeout: 60_000 },
+      { timeout: 60_000, execArgv: heldClock(started + 1_000, hung) },
     );
-    const ended = Date.now();
 
-    assert.equal(result.error, undefined, "the runner gave up on the cleanups");
+    assert.equal(result.error, undefined, `the runner gave up on the cleanups: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
     const summary = JSON.parse(await readFile(resultsPath, "utf8"));
     assert.deepEqual(
@@ -3185,18 +3294,19 @@ waitingTest(
       files.map((file) => [file, "timeout"]),
     );
     // Cleanups run one at a time. One allowance each would end 20 s past the deadline; the window
-    // they share closes one allowance past it, so the queued ones never start.
+    // they share closes one allowance past it. The first to start gets what is left of the window
+    // and is still running when it closes, so the queued ones never start. (On a busy host the
+    // window can close before the first one starts too.)
     const timeouts = summary.issues.filter((entry) => entry.code === "cleanup-timeout");
     assert.equal(timeouts.length, files.length);
-    assert(
-      timeouts.some((entry) => /window after the lane deadline closed/.test(entry.message)),
-      JSON.stringify(timeouts),
+    const ran = timeouts.filter(
+      (entry) => !/window after the lane deadline closed/.test(entry.message),
     );
-    // The test processes get 5 s to report after the deadline's SIGTERM; then the window closes.
-    assert(
-      ended - deadline < allowanceMs + 8_000,
-      `ended ${ended - deadline} ms past the deadline`,
-    );
+    assert(ran.length <= 1, JSON.stringify(timeouts));
+    // It starts after its file stops, past the deadline, so it gets less than a full allowance.
+    for (const entry of ran) {
+      assert(entry.timeoutMs < allowanceMs, JSON.stringify(entry));
+    }
   },
 );
 
@@ -3875,7 +3985,7 @@ test("audit rejects an unusable file duration table", async (t) => {
 test("audit requires current discovered test files and rejects duplicate ownership", async (t) => {
   const root = await fixture(t);
   await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");
-  await writeFile(join(root, "tests/integration/unmapped.test.mjs"), "import 'node:test';\n");
+  await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
   await mkdir(join(root, "tests/docs"), { recursive: true });
   await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
   await writeJson(join(root, "manifest.json"), {
@@ -3918,7 +4028,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
       .filter((entry) => entry.code === "unmapped-file")
       .map((entry) => entry.file)
       .sort(),
-    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.mjs"],
+    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.ts"],
   );
 });
 
@@ -4376,7 +4486,9 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
   });
 
   // A parent process stands in for the step's shell: it waits for the runner until the second
-  // file's cleanup kills it. No shell parses any of these arguments.
+  // file's cleanup kills it. No shell parses any of these arguments. The timeout only stops a
+  // hang: a loaded host can take over 30 s to run both files, and the shell must die by the
+  // cleanup's SIGKILL, not this SIGTERM.
   const result = spawnSync(
     process.execPath,
     [
@@ -4395,7 +4507,7 @@ test("run reports a cleanup that fails once a cancelled job's shell is gone as c
       "--results",
       resultsPath,
     ],
-    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 30_000 },
+    { cwd: repositoryRoot, encoding: "utf8", env: runnerEnv(), timeout: 120_000 },
   );
 
   assert.equal(result.signal, "SIGKILL", result.stderr);

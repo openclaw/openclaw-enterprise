@@ -9,6 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 
+import { completeJsonLines } from "../helpers/ci-logging.mjs";
+
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
 );
@@ -173,18 +175,13 @@ async function exportedRecords(out, mapRecord) {
     }
     throw error;
   }
-  return text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => {
-      const payload = JSON.parse(line);
-      return payload.resourceLogs.flatMap((resource) =>
-        resource.scopeLogs.flatMap((scope) =>
-          scope.logRecords.map((record) => mapRecord(resource, record)),
-        ),
-      );
-    });
+  return completeJsonLines(text).flatMap((payload) =>
+    payload.resourceLogs.flatMap((resource) =>
+      resource.scopeLogs.flatMap((scope) =>
+        scope.logRecords.map((record) => mapRecord(resource, record)),
+      ),
+    ),
+  );
 }
 
 // A test that checks what the Collector drops ends its OTLP request with this

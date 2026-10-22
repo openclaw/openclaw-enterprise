@@ -10,6 +10,7 @@ import {
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
 import { parseGhInvocation } from "../../apps/controller/src/drivers/repo/github/credentials/client/commands.ts";
 import { createClientEnvironment } from "../../apps/controller/src/drivers/repo/github/credentials/client/environment.ts";
 import {
@@ -54,15 +55,6 @@ async function exec(command, args, options) {
       active -= 1;
     }
   }
-}
-/** Like Promise.all, but every sibling child settles before the first failure is thrown. */
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find(({ status }) => status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map(({ value }) => value);
 }
 const gitWith =
   (defaults = {}) =>

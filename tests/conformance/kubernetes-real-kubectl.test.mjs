@@ -29,6 +29,7 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import {
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
@@ -608,10 +609,10 @@ test("a Namespace listing stopped at its deadline reports the timeout alone", as
       ],
     },
   });
-  await writeFile(
-    join(directory, "kubectl"),
-    `#!${process.execPath}
-const args = process.argv.slice(2);
+  await writeCommand(
+    directory,
+    "kubectl",
+    `const args = process.argv.slice(2);
 const verb = args.findIndex((arg) => ["delete", "get", "api-resources"].includes(arg));
 const command = args.slice(verb, verb + 2).join(" ");
 if (command === "delete namespace") {
@@ -626,13 +627,9 @@ if (command === "delete namespace") {
   setTimeout(() => {}, 30_000);
 }
 `,
-    { mode: 0o755 },
+    { interpreter: process.execPath },
   );
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const client = createKubernetesClient({
     selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
   });
@@ -1625,16 +1622,8 @@ test(
     const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const started = join(directory, "started");
-    await writeFile(
-      join(directory, "kubectl"),
-      `#!/bin/sh\necho "$$" >> '${started}'\nexec sleep 30\n`,
-      { mode: 0o755 },
-    );
-    const path = process.env.PATH;
-    process.env.PATH = `${directory}${delimiter}${path}`;
-    t.after(() => {
-      process.env.PATH = path;
-    });
+    await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
+    prependPath(t, directory);
     const { kubectl } = createKubernetesClient({
       selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
     });

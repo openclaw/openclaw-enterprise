@@ -65,9 +65,6 @@ import {
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import ValidatorSelector from "@fastify/ajv-compiler";
-import SerializerSelector from "@fastify/fast-json-stringify-compiler";
-import ajvFormats from "ajv-formats";
 import Fastify, {
   LogController,
   type FastifyBaseLogger,
@@ -95,6 +92,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -142,9 +140,17 @@ import {
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
 import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
+import {
+  cachedRequestValidators,
+  cachedResponseSerializers,
+  defaultPrecompiledRouteCompilers,
+  formatsPlugin,
+} from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+
+export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -155,6 +161,7 @@ export interface DevelopmentAdmission {
 }
 
 export interface ControllerAppOptions {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
   readonly createController?: (installation: Installation) => OpenClawController;
@@ -267,226 +274,6 @@ const RESOURCE_ID = Object.fromEntries(
     new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
-
-function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
-  return ajvFormats.default(ajv);
-}
-
-// Fastify compiles one response serializer per route and status code, and rebuilds its
-// serializer factory for every route in a plugin that added shared schemas; each
-// fast-json-stringify build then re-validates every shared schema. That was about 1,100
-// builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
-// chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
-// the serializer options, so build each distinct combination once.
-//
-// The same holds for request validators (ajv code generation) and across apps: a process that
-// builds several apps with the same routes (the test fixtures build one per test, a few
-// hundred per CI lane) compiled every validator and serializer again for each, about a second
-// of CPU per app. So both caches are process-wide and name each shared schema by its content,
-// since every app holds its own copies of them. Each app still compiles with its own compiler
-// instances; only the compiled functions, which depend on nothing else, are shared.
-//
-// Stored documents (Configuration values, Preset templates, revision snapshots) are
-// SafeJsonValue trees of up to 1 MiB each. fast-json-stringify writes that recursive anyOf by
-// running ajv on every node to pick a branch: about 160 ms per MiB against 3 ms for
-// JSON.stringify, in one synchronous call per list response (finding 1323). For any JSON value
-// the walk writes exactly JSON.stringify's bytes: the branches are the disjoint JSON types, the
-// object branch keeps every own key (additionalProperties is SafeJsonValue again), and strings,
-// numbers, booleans and null come out as JSON.stringify writes them. It strips, coerces and
-// redacts nothing. So serializers see SafeJsonValue as a typeless schema, which
-// fast-json-stringify writes with JSON.stringify. Request validation and OpenAPI keep the
-// full schema, and the fields around each document are serialized as before.
-const SAFE_JSON_VALUE_ID = "SafeJsonValue";
-const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
-
-// Never pruned. That is safe only while every validator and serializer is built at route
-// registration, a fixed set per route table. Compiling per request
-// (reply.compileSerializationSchema, request.compileValidationSchema, or serializeInput with a
-// schema assembled at request time) would grow these Maps without bound; such a route must set
-// its own compiler.
-const responseSerializers = new Map<string, SerializerSelector.Serializer>();
-const requestValidators = new Map<string, unknown>();
-
-// Content ids of shared schemas: one cacheKey per stored schema object, and short keys.
-const schemaSources = new Map<string, number>();
-const schemaContentIds = new WeakMap<object, number | null>();
-function schemaContentId(schema: unknown): number | undefined {
-  if (typeof schema !== "object" || schema === null) {
-    return undefined;
-  }
-  let id = schemaContentIds.get(schema);
-  if (id === undefined) {
-    id = null;
-    const source = cacheKey(schema);
-    if (source !== undefined) {
-      id = schemaSources.get(source) ?? schemaSources.size;
-      schemaSources.set(source, id);
-    }
-    schemaContentIds.set(schema, id);
-  }
-  return id ?? undefined;
-}
-
-// The shared schemas of one encapsulation context, by $id and content, or undefined when one
-// of them has no JSON form.
-function sharedSchemasKey(externalSchemas: unknown): string | undefined {
-  const ids: [string, number][] = [];
-  for (const [id, schema] of Object.entries((externalSchemas ?? {}) as Record<string, unknown>)) {
-    const contentId = schemaContentId(schema);
-    if (contentId === undefined) {
-      return undefined;
-    }
-    ids.push([id, contentId]);
-  }
-  return JSON.stringify(ids);
-}
-
-// A value by its JSON, except that JSON cannot tell functions (an ajv plugin, onCreate, a custom
-// keyword) or other non-plain objects (a RegExp format) apart, so those are named by identity.
-const identityIds = new WeakMap<object, number>();
-let nextIdentityId = 0;
-function cacheKey(value: unknown): string | undefined {
-  try {
-    return JSON.stringify(value ?? {}, (_key, entry: unknown) => {
-      if ((typeof entry !== "object" || entry === null) && typeof entry !== "function") {
-        return entry;
-      }
-      const prototype = typeof entry === "function" ? undefined : Object.getPrototypeOf(entry);
-      if (prototype === Object.prototype || prototype === Array.prototype || prototype === null) {
-        return entry;
-      }
-      let id = identityIds.get(entry);
-      if (id === undefined) {
-        id = nextIdentityId++;
-        identityIds.set(entry, id);
-      }
-      return `[identity ${id}]`;
-    });
-  } catch {
-    // A cycle or a BigInt keyword is never cached.
-    return undefined;
-  }
-}
-
-// Returns `compile(route)` from `cache` by `prefix` and the route schema, compiling once.
-function cachedCompile<T>(
-  cache: Map<string, T>,
-  prefix: string | undefined,
-  compile: (route: { schema?: unknown }) => T,
-): (route: { schema?: unknown }) => T {
-  if (prefix === undefined) {
-    return compile;
-  }
-  return (route) => {
-    const schema = cacheKey(route.schema);
-    if (schema === undefined) {
-      return compile(route);
-    }
-    const key = prefix + schema;
-    let compiled = cache.get(key);
-    if (compiled === undefined) {
-      compiled = compile(route);
-      cache.set(key, compiled);
-    }
-    return compiled;
-  };
-}
-
-// Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
-// content. A different schema registered under that $id keeps its own serializer.
-const contractSafeJsonValue = new WeakMap<object, boolean>();
-function isContractSafeJsonValue(schema: unknown): boolean {
-  if (typeof schema !== "object" || schema === null) {
-    return false;
-  }
-  let known = contractSafeJsonValue.get(schema);
-  if (known === undefined) {
-    known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
-    contractSafeJsonValue.set(schema, known);
-  }
-  return known;
-}
-
-export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
-  const buildSerializerCompiler = SerializerSelector();
-  const serializedSchemas = (
-    externalSchemas: Parameters<SerializerSelector.SerializerFactory>[0],
-  ): Parameters<SerializerSelector.SerializerFactory>[0] => {
-    const shared = externalSchemas as Record<string, unknown> | undefined;
-    if (shared === undefined || !isContractSafeJsonValue(shared[SAFE_JSON_VALUE_ID])) {
-      return externalSchemas;
-    }
-    return {
-      ...shared,
-      [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
-    } as typeof externalSchemas;
-  };
-  return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
-    const shared = sharedSchemasKey(externalSchemas);
-    const configuration = cacheKey(options);
-    return cachedCompile(
-      responseSerializers,
-      shared === undefined || configuration === undefined
-        ? undefined
-        : `${configuration}|${shared}|`,
-      compile as (route: { schema?: unknown }) => SerializerSelector.Serializer,
-    );
-  };
-}
-
-// Fastify lowercases the property names of a route's headers schema before compiling it, as
-// request header names arrive lowercased, but only with its default validator compiler; with
-// ours it passes the schema unchanged. So refuse a headers schema that names a header in
-// another case rather than let it never match.
-function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown }): void {
-  if (route.httpPart !== "headers" || typeof route.schema !== "object" || route.schema === null) {
-    return;
-  }
-  const { properties, required } = route.schema as { properties?: unknown; required?: unknown };
-  const names = [
-    ...(typeof properties === "object" && properties !== null ? Object.keys(properties) : []),
-    ...(Array.isArray(required)
-      ? required.filter((name): name is string => typeof name === "string")
-      : []),
-  ];
-  const mixed = names.find((name) => name !== name.toLowerCase());
-  if (mixed !== undefined) {
-    throw new Error(`Route headers schemas must name headers in lowercase: ${mixed}`);
-  }
-}
-
-export function cachedRequestValidators(): ValidatorSelector.BuildCompilerFromPool {
-  const buildValidatorCompiler = ValidatorSelector();
-  const factory = (
-    externalSchemas: Parameters<ValidatorSelector.BuildCompilerFromPool>[0],
-    options: Parameters<ValidatorSelector.BuildCompilerFromPool>[1],
-  ) => {
-    // The compiler builds an Ajv instance and adds every shared schema to it, so build it
-    // only when this context compiles a schema no app has compiled yet.
-    let compile: ((route: { schema?: unknown }) => unknown) | undefined;
-    const compileOnce = (route: { schema?: unknown }) => {
-      compile ??= buildValidatorCompiler(externalSchemas, options) as unknown as (route: {
-        schema?: unknown;
-      }) => unknown;
-      return compile(route);
-    };
-    const shared = sharedSchemasKey(externalSchemas);
-    const configuration = cacheKey(options);
-    const cached = cachedCompile(
-      requestValidators,
-      shared === undefined || configuration === undefined
-        ? undefined
-        : `${configuration}|${shared}|`,
-      compileOnce,
-    );
-    return (route: { schema?: unknown; httpPart?: unknown }) => {
-      assertLowercaseHeaders(route);
-      return cached(route);
-    };
-  };
-  return factory as unknown as ValidatorSelector.BuildCompilerFromPool;
-}
 
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
@@ -1264,6 +1051,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
   const bodyLimit = options.maxBodyBytes ?? DEFAULT_BODY_LIMIT;
+  const precompiledRouteCompilers = defaultPrecompiledRouteCompilers();
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1) {
     throw new Error("The controller request-body limit must be a positive integer.");
   }
@@ -1356,8 +1144,8 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     },
     schemaController: {
       compilersFactory: {
-        buildValidator: cachedRequestValidators(),
-        buildSerializer: cachedResponseSerializers(),
+        buildValidator: cachedRequestValidators(precompiledRouteCompilers),
+        buildSerializer: cachedResponseSerializers(precompiledRouteCompilers),
       },
     },
   }).withTypeProvider<TypeBoxTypeProvider>();
@@ -2268,6 +2056,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (!controller) {
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+
+    if (operation.operationId === "discoverInstallationConfigurations") {
+      const configurations = await controller.discoverConfigurations(context.actorId, {
+        scope: "installation",
+      });
+      reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
     }
 
     if (operation.operationId === "getInstallation") {
@@ -4302,7 +4098,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
+    const asset = await readConsoleAsset(
+      pathname,
+      request.headers["accept-encoding"],
+      options.consoleTheme,
+    );
+    if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
+      reply.header("cache-control", "no-store");
+    }
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);

@@ -16,7 +16,7 @@ only after session admission and ends at ordinary Agent detail.
 
 - `apps/controller/src/console/console.mjs:loadPage` checks the browser session.
 - `apps/controller/src/console/console.mjs:showLogin` offers available sign-in methods.
-- `apps/controller/src/console/navigation.mjs:createNavigation` validates page intents.
+- `apps/controller/src/console/navigation.mts:createNavigation` validates page intents.
 
 ## Flow
 
@@ -55,7 +55,7 @@ provider-error advice from "use your password" to asking an administrator. Pendi
 all; generations reject late redirects. With `sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
-When login interrupts a recognized console route, `navigation.mjs` records its
+When login interrupts a recognized console route, `navigation.mts` records its
 page, validated Namespace ID, and recognized Agent version and tab without unrelated
 query parameters. Password
 sign-in carries that intent in the current view; external sign-in stores it in

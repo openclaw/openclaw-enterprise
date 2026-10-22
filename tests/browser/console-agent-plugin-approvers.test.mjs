@@ -19,6 +19,7 @@ import {
   selectSecret,
   settledView,
   statusTone,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
@@ -645,7 +646,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isDisabled(), false);
+  await waitForEnabled(deploy);
 
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);

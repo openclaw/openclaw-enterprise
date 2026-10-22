@@ -11,6 +11,7 @@ import {
   localDockerCli,
   withRuntimeImageFixture,
 } from "./runtime-image-fixture.mjs";
+import { waitFor } from "./wait-for.mjs";
 
 test("runtime image test routes only to its dedicated hosted job", () => {
   const job = {
@@ -35,6 +36,7 @@ function fakeEngine(options = {}) {
   const tags = new Map([["base:fixture", baseId]]);
   const images = new Set([baseId]);
   const containers = new Set();
+  const digests = new Map();
   const calls = [];
   let builds = 0;
   const docker = async (...args) => {
@@ -80,13 +82,15 @@ function fakeEngine(options = {}) {
       if (options.omitReferences && args[2] === id) {
         return { stdout: JSON.stringify([{ Id: id }]) };
       }
+      const repoTags = [...tags].filter(([, value]) => value === id).map(([tag]) => tag);
+      // The containerd image store lists `<repository>@<image ID>` for every
+      // repository the image is tagged in; the classic store lists none for a build.
+      const stored = options.containerdStore
+        ? [...new Set(repoTags.map((tag) => `${tag.replace(/:[^/:]+$/, "")}@${id}`))]
+        : [];
       return {
         stdout: JSON.stringify([
-          {
-            Id: id,
-            RepoTags: [...tags].filter(([, value]) => value === id).map(([tag]) => tag),
-            RepoDigests: [],
-          },
+          { Id: id, RepoTags: repoTags, RepoDigests: [...stored, ...(digests.get(id) ?? [])] },
         ]),
       };
     }
@@ -110,7 +114,7 @@ function fakeEngine(options = {}) {
     }
     throw new Error(`unexpected fake command: ${args.join(" ")}`);
   };
-  return { docker, tags, images, containers, calls };
+  return { docker, tags, images, containers, digests, calls };
 }
 
 async function withDirectory(run) {
@@ -162,6 +166,31 @@ test("runtime fixture removes its exact retargeted tags and images", async () =>
     assert.deepEqual([...engine.tags], [["base:fixture", baseId]]);
     assert.equal(imageRemovals(engine).length, 3);
     assert.ok(imageRemovals(engine).every((args) => args[2] === "--no-prune"));
+  });
+});
+
+test("runtime fixture removes its images under Docker's containerd image store", async () => {
+  await withDirectory(async (directory) => {
+    const engine = fakeEngine({ containerdStore: true });
+    // A registry port must not be taken for the tag separator.
+    const tag = "localhost:5000/fixture:first";
+    await withRuntimeImageFixture(engine.docker, directory, async (fixture) => {
+      await fixture.build(tag, join(directory, "first.iid"), "first", baseId);
+      const second = await fixture.build(
+        "fixture:second",
+        join(directory, "second.iid"),
+        "second",
+        baseId,
+      );
+      assert.deepEqual((await fixture.inspectImage(tag)).RepoDigests, [
+        `localhost:5000/fixture@${ids[0]}`,
+      ]);
+      await fixture.create("owned-container", [tag]);
+      await fixture.retag(second, tag);
+    });
+    assert.deepEqual([...engine.images], [baseId]);
+    assert.deepEqual([...engine.tags], [["base:fixture", baseId]]);
+    assert.equal(imageRemovals(engine).length, 3);
   });
 });
 
@@ -417,6 +446,28 @@ test("runtime fixture refuses existing tags and foreign image references", async
     assert.equal(imageRemovals(engine).length, 0);
     assert.equal(engine.tags.get("foreign:tag"), ids[0]);
   });
+  // A pull or push digest, and a containerd-store digest for a repository the
+  // fixture holds no tag in, are references the fixture did not create.
+  for (const [store, digest] of [
+    [{}, `fixture@sha256:${"9".repeat(64)}`],
+    [{ containerdStore: true }, `fixture@sha256:${"9".repeat(64)}`],
+    [{ containerdStore: true }, `foreign@${ids[0]}`],
+  ]) {
+    await withDirectory(async (directory) => {
+      const engine = fakeEngine(store);
+      await assert.rejects(
+        withRuntimeImageFixture(engine.docker, directory, async (fixture) => {
+          const { first } = await buildPair(fixture, directory);
+          engine.digests.set(first, [digest]);
+        }),
+        (error) =>
+          error instanceof AggregateError &&
+          error.errors.some((item) => /unowned references/.test(item.message)),
+      );
+      assert.equal(imageRemovals(engine).length, 0);
+      assert.ok(ids.every((id) => engine.images.has(id)));
+    });
+  }
 });
 
 test("runtime fixture CLI binds the driver's socket without inherited endpoint overrides", async () => {
@@ -493,16 +544,12 @@ test("process group observation detects a surviving descendant", async () => {
   );
   await once(child, "close");
   assert.throws(() => assertProcessGroupSettled(child.pid), /still active/);
-  const deadline = Date.now() + 3000;
-  while (true) {
-    try {
+  await waitFor(
+    "the detached process group to settle",
+    () => {
       assertProcessGroupSettled(child.pid);
-      break;
-    } catch (error) {
-      if (Date.now() >= deadline) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
+      return true;
+    },
+    { timeoutMs: 3000, intervalMs: 25, retryErrors: true },
+  );
 });

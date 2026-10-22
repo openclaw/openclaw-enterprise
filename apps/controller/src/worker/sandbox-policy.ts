@@ -9,7 +9,11 @@ import type {
   SandboxNetworkGrant,
   SandboxPolicy,
 } from "@openclaw-enterprise/contracts";
-import { sandboxNetworkGrantsWithinCeiling } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
+} from "@openclaw-enterprise/contracts";
 import {
   WorkClaimLostError,
   type ClaimedWork,
@@ -19,6 +23,7 @@ import {
 } from "@openclaw-enterprise/occ";
 
 interface PolicyWorkOptions {
+  readonly configurations: import("@openclaw-enterprise/occ").DriverConfigurationRegistry;
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: SandboxDriver | undefined;
@@ -177,6 +182,27 @@ export async function reconcileSandboxPolicy(
       driver.observeNetworkPolicy === undefined
     ) {
       await fail("SANDBOX_POLICY_UNSUPPORTED");
+      return "permanent";
+    }
+    try {
+      const { contribution } = options.configurations.resolve(
+        "sandbox",
+        driver.id,
+        "agent",
+        "sandbox-network-policy",
+      );
+      validateSandboxNetworkGrants(policy.application.snapshot.additions);
+      requireConfiguration(contribution, { additions: policy.application.snapshot.additions });
+      if (driver.admitNetworkPolicy === undefined) {
+        throw new Error();
+      }
+      driver.admitNetworkPolicy(
+        policy.application.snapshot.additions,
+        policy.version,
+        policy.application.snapshot.defaults,
+      );
+    } catch {
+      await fail("SANDBOX_POLICY_VALIDATION_FAILED");
       return "permanent";
     }
     if (

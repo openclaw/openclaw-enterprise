@@ -9,12 +9,15 @@ import {
   redactRuntimeLogText,
   stripRuntimeLogControls,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
-import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import {
+  runtimeLogEvidence,
+  sanitizeRuntimeLogChunk,
+} from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import {
   compareRuntimeLogTime,
   readRuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/read.ts";
-import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
@@ -2427,12 +2430,14 @@ test("runtime container wire budgeting handles empty, single and grouped withhel
   assert.deepEqual(replay.data.records, []);
 });
 
-test("a full 1 MiB container window is cut for about the cost of sanitizing it once", async () => {
+test("a full 1 MiB container window is cut after sanitizing it once", async (t) => {
   // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
   // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
   // the window again for each candidate prefix (a binary search did about five
-  // window sanitizations per poll). Both costs are process CPU time, min of 3, so
-  // the bound holds on slow or loaded runners.
+  // window sanitizations per poll). Sanitizing a line classifies it (one JSON.parse of
+  // the raw line) and redacts its message (one argv split of the message text), so
+  // call-through spies on both count per-line work without depending on runner load.
+  // Every spied call returns the real result.
   const started = Date.parse("2026-09-30T12:00:00Z");
   const lines = Array.from({ length: 1000 }, (_, index) => ({
     time: iso(started + index),
@@ -2440,18 +2445,45 @@ test("a full 1 MiB container window is cut for about the cost of sanitizing it o
   }));
   assert.ok(lines.reduce((sum, { raw }) => sum + Buffer.byteLength(raw), 0) > 1024 * 1024);
   const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
-  const once = cpuTimeMs(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  const raws = new Set(lines.map(({ raw }) => raw));
+  const texts = new Set(lines.map(({ raw }) => JSON.parse(raw).message));
+  const parse = t.mock.method(JSON, "parse");
+  const split = t.mock.method(String.prototype, "split");
+  const work = async (run) => {
+    parse.mock.resetCalls();
+    split.mock.resetCalls();
+    await run();
+    return {
+      classified: parse.mock.calls.filter(({ arguments: [text] }) => raws.has(text)).length,
+      redacted: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
+    };
+  };
+  // The Driver's byte cut drops the final, partial line before any classification.
+  const complete = lines.slice(0, -1);
+  const evidence = await work(() => runtimeLogEvidence(complete));
+  const once = await work(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  // The proxies hold: one sanitization classifies and redacts each complete line once,
+  // and the evidence pass classifies without redacting.
+  assert.deepEqual(once, { classified: complete.length, redacted: complete.length });
+  assert.equal(evidence.redacted, 0);
   let page;
-  const cut = await cpuTimeMsAsync(async () => {
+  const cut = await work(async () => {
     page = await pollReader().poll(lines, { truncated: true });
   });
   const delivered = lineRecords(page).length;
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // The fetched safety evidence classifies every complete line once; the prefix
+  // builds then share one sanitization. Both bounds are exact today: classifying or
+  // redacting even the delivered prefix once more adds at least 300 lines.
   assert.ok(
-    cut < 2.5 * once,
-    `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
+    cut.classified <= evidence.classified + once.classified,
+    `the cut page classified ${cut.classified} window lines; the evidence pass and one sanitization classify ${evidence.classified + once.classified}`,
+  );
+  assert.ok(
+    cut.redacted <= once.redacted,
+    `the cut page redacted ${cut.redacted} window messages; one sanitization redacts ${once.redacted}`,
   );
 });
 
