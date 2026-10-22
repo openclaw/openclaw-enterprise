@@ -158,6 +158,56 @@ See [protected inference](../credential-sources/protected-inference.md).
 - `namespace_id`, `agent_id`, `revision_id`
 - `installation`
 
+### `credential_deliveries`
+
+Tracks delivery custody for the exact Namespace, Agent and revision. See the
+[repository flow](../../flows/agent-repository-credentials.md).
+
+- `revision_id`, `binding_id`, `namespace_id`, `agent_id`, `target`
+- `fence`, `worker_instance`, `adopted_at`, `updated_at`
+- `desired`, `observed`, `write_pending`, `blocked`, `retained_policy_hash`
+- `material_version`, `preparation_attempt_id`
+- `target_material_version`, `target_preparation_attempt_id`
+
+### `credential_delivery_reductions`
+
+Retains one delivery reduction request. A request without an observed generation
+has an unknown outcome and cannot be sent again.
+
+- `revision_id`, `binding_id`, `fence`, `recipient`, `material_version`, `retained_policy_hash`
+- `request_id`, `expected_version`, `observed_generation`
+
+### `prepared_github_families`
+
+Owns prepared token issuance and renewal for an explicitly admitted source.
+
+- `source_id`, `source`, `issuer`, `admission`
+- `enabled`, `next_check_at`, `worker_claim`
+
+### `prepared_github_attempts`
+
+Retains issuance and disposal custody, including unknown outcomes. Authenticated
+expiry is distinct from confirmed revocation.
+
+- `id`, `source_id`, `admission`, `state`, `custody`
+- `material_version`, `provider_expires_at`, `usable_until`, `sealed`
+
+### `prepared_repository_git_uses`
+
+Append-only records of possible disclosure, bound to the exact attempt and material version.
+
+- `exchange_id`, `admission_id`, `attempt_id`, `material_version`
+- `operation`, `recipient_fence`, `request_digest_sha256`
+- `send_start_by`, `authorization_reply_by` (exactly one deadline)
+
+### `prepared_repository_draft_pulls`
+
+Retains the single draft-creation allowance for a grant, independently of later PR updates.
+
+- `grant_id`, `operation_id`, `receipt_id`, `admission_id`, `attempt_id`, `material_version`
+- `request_digest_sha256`, `scope`, `admitted_at`, `send_start_by`, `authorization_reply_by`
+- `settled_at`, `outcome`, `projection`
+
 ### `protected_repository_git_recipients`
 
 Records where the selected Driver observed the protected Git recipient and which token version it installed.
@@ -215,6 +265,7 @@ Records one credential source withdrawn from one Agent revision, until the gatew
 - `completed_at`
 - `last_reason`
 - `last_attempt_at`
+- `policy_reduction` (optional exact request and observation for live policy reduction)
 
 ### `service_accounts`
 

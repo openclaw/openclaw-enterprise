@@ -450,7 +450,7 @@ export interface CredentialProxyDriver extends Driver {
 
 /** Durable admission semantics, independent of credential bindings and route count. */
 export type ExecutionAdmission =
-  | { readonly version: 2; readonly mode: "protected" | "unprotected" }
+  | { readonly version: 2; readonly mode: "unprotected" }
   | { readonly version: 3 | 4 | 5 | 6; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
@@ -466,7 +466,7 @@ export function assertExecutionAdmission(
   const admission = revision.executionAdmission;
   if (
     !admission ||
-    (admission.version !== 2 &&
+    (!(admission.version === 2 && admission.mode === "unprotected") &&
       !(
         (admission.version === 3 || protectedRepositoryGitAdmission(admission)) &&
         admission.mode === "protected"

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-21"
-last_updated_session: authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c
+updated: "2026-10-22"
+last_updated_session: authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537
 ---
 
 # Protected credential request flow
@@ -19,8 +19,8 @@ the [profile and release cutoff](../reference/credential-sources/protected-infer
 and [supported configuration](../reference/credential-sources/protected-inference.md).
 The bundled legacy supervisor is incompatible.
 
-Before serving requests, the API binds the selected Driver's authenticated exchange
-to OCC resolve, send and response operations. Requests cannot choose that owner.
+The API binds the selected Driver's authenticated exchange to OCC operations.
+Requests cannot choose that owner.
 
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding. The worker gives the same selected Driver
@@ -151,15 +151,15 @@ and the supervisor's Ed25519 signature over the domain
 request. Request JSON cannot introduce a key. Bearer-only legacy RPCs refuse.
 
 The adapter binds a private capability to this stream and copies the decoded
-request before asynchronous work. One owner verifies identity, captures origin
+request before asynchronous work. The owner verifies identity, captures origin
 and holds the response. Before its first await, Credential Proxy checks body size
 and capacity, reserves a slot and snapshots headers and body. Authorization and
 response claims must match the captured peer, exchange and installation. Reusing
 the bearer, key, request ID or handle on another stream cannot transfer custody.
 
 Closing invalidates the capability and signals cancellation. Canceled or expired
-handles drop their material reference immediately; pending policy or receipt work retains its
-slot until settled. Closing an idle handle frees its slot. Pipelining is refused.
+handles release material immediately. Pending policy or receipt work keeps its
+slot until settled; idle handles free theirs on close. The adapter refuses pipelining.
 
 The Forwarder maps the captured peer to persisted installation state and
 classifies one exact route through its registered provider. It reserves the
@@ -300,24 +300,27 @@ and never repeats a timed-out protected probe.
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy`,
 `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawSandboxCredentialSource`
 
-OCC commits source withdrawal before provider action. Multiple sources require
-`policyReduction` version 1; stock OpenShell still requires runtime retirement.
-Under the Agent lock, OCC records the exact installation, retained routes and
-operation on the withdrawal. Concurrent reductions wait for observation. Restart
-inspects that operation without replaying apply.
+OCC commits withdrawal before provider action. Under the Agent lock, it records
+the exact installation, retained routes and operation. Concurrent reductions wait;
+restart inspects without replaying apply. Multiple sources require `policyReduction`
+version 1; stock OpenShell requires runtime retirement.
 
-OCC advances the installation only after independent observation of the exact
-operation, recipient and retained plan. Remaining grants stay unchanged; the last
-route leaves observed deny-all. The Driver must prevent stale installation from
-restoring routes. The reference-peer test does not qualify released Sandboxes.
+`migrations/0060_credential_proxy_admission.sql` adds nullable withdrawal custody;
+existing withdrawals acquire no operation. `migrations/0062_credential_delivery_custody.sql`
+creates separate delivery custody. In `packages/occ/src/state/credential-delivery-reductions.ts`,
+`begin` consumes one send opportunity; `confirm` binds observation to that request.
+Worker loss leaves unknown outcomes without another send.
+
+Independent observation of the exact operation, recipient and retained plan permits
+installation advancement. Remaining grants stay unchanged; the last route leaves
+deny-all. The Driver prevents stale installation from restoring routes. Reference-peer
+proof does not qualify released Sandboxes.
 
 ## Debugging and Verification
 
-The [testing guide](../testing/static-egress.md) covers API, IAM, TLS,
-PostgreSQL currentness and rejection, and enrollment through the generated
-entrypoint with the manifest and environment from `prepareRevision`. Verify a
-real model turn, response custody, NetworkPolicy, chart and image together on the
-selected installation. Observe the origin and caller independently.
+Follow the [testing guide](../testing/static-egress.md). Qualify model execution,
+response custody and NetworkPolicy with the selected chart and image. Observe
+the origin and caller independently.
 
 ## Related docs
 
@@ -331,6 +334,8 @@ selected installation. Observe the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-22 01:51: Describe final withdrawal and delivery custody in the accompanying schema consolidation. (authoring-run/c692ffd7-9ade-4cb3-80b7-cd02340e0537 - fe6b0002a5bf41e6e418df9848337b285ce53199)
 
 - 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary in the accompanying change. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
 

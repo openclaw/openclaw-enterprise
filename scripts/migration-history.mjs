@@ -19,7 +19,7 @@ function refuse(reason) {
 
 async function readManifest() {
   const manifest = JSON.parse(
-    await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
+    await readFile(join(directory, "meta/canonical-history.json"), "utf8"),
   );
   const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
   const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
@@ -103,39 +103,14 @@ function receiptsMatchEntries(receipts, entries) {
 
 function requireReceiptsMatchEntries(receipts, entries) {
   if (!receiptsMatchEntries(receipts, entries)) {
-    refuse("the applied receipts differ from canonical history");
+    refuse(
+      "the applied receipts differ from canonical history; pre-merge preview histories are unsupported; preserve the database with its matching release or explicitly reset a disposable preview",
+    );
   }
 }
 
 function classifyReceipts(receipts, manifest) {
-  const canonicalHarnessAuth = manifest.entries[56];
-  const preview = manifest.compatibleLineages.credentialProxyPreview.sha256;
-  const receipt = receipts[56];
-  if (
-    receipt !== undefined &&
-    receipt.hash === preview[0] &&
-    Number(receipt.created_at) === canonicalHarnessAuth.when
-  ) {
-    // An experimental release installed static egress in main's Harness-auth slot.
-    // Refuse it explicitly; neither relabeling receipts nor skipping main's SQL is safe.
-    refuse(
-      "experimental 0057_static_egress occupies the canonical 0057_canonical_harness_auth slot; preserve that database with its matching release and use a fresh database for this release",
-    );
-  }
-
-  // Preview 0060–0069 and release 0060 reach the same catalog and timestamp.
-  // Compare the history that actually ran; Drizzle can then append the common suffix.
-  const release = manifest.entries;
-  const hasPreview = receipts[59]?.hash === preview[0];
-  const firstPreviewTime = release[59].when - preview.length + 1;
-  const expected = hasPreview
-    ? [
-        ...release.slice(0, 59),
-        ...preview.map((sha256, i) => ({ sha256, when: firstPreviewTime + i })),
-        ...release.slice(60),
-      ]
-    : release;
-
+  const expected = manifest.entries;
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   const providerCount = providerCompleted?.entries.length ?? 0;
   const providerLineage =
@@ -151,14 +126,7 @@ function classifyReceipts(receipts, manifest) {
     return "providerCompleted";
   }
   // The Provider and canonical lineages share every subsequent migration and catalog.
-  const count = receipts.length - (expected.length - release.length);
-  if (hasPreview && count < 60) {
-    refuse(
-      "partial Credential Proxy preview; preserve this database, stop its writers, and finish migrations " +
-        "through 0070 using commit 78b106f1ddc6aa5f638a49c12954be732ab16982 before upgrading to this release",
-    );
-  }
-  return catalogAtMigrationCount(count, release.length);
+  return catalogAtMigrationCount(receipts.length, expected.length);
 }
 
 function catalogAtMigrationCount(count, completedCount) {
@@ -271,43 +239,7 @@ function catalogAtMigrationCount(count, completedCount) {
     return "preSandboxPolicyAdministrator";
   }
   if (count === 59) {
-    return "preStaticEgress";
-  }
-  if (count === 60) {
-    return "preOpenShellExpiredGit";
-  }
-  if (count === 61) {
-    return "preStandingApproval";
-  }
-  if (count === 62) {
-    return "prePreparedStandingGitExpiry";
-  }
-  if (count === 63) {
-    return "preProtectedDriverRegistration";
-  }
-  if (count === 64) {
-    return "preCredentialProxyRepositorySession";
-  }
-  if (count === 70) {
-    return "preCredentialDeliveries";
-  }
-  if (count === 71) {
-    return "preCredentialPolicyReduction";
-  }
-  if (count === 69) {
-    return "preRepositoryGitObservedHook";
-  }
-  if (count === 68) {
-    return "preRepositoryGitOnlineAuthorization";
-  }
-  if (count === 67) {
-    return "preCredentialProxyGitHubInstallation";
-  }
-  if (count === 66) {
-    return "preProtectedRepositoryGitRecipients";
-  }
-  if (count === 65) {
-    return "prePreparedRepositoryDraftUses";
+    return "preCredentialProxy";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

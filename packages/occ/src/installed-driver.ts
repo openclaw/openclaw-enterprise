@@ -25,7 +25,6 @@ export class InstalledDriver {
   readonly capabilities: readonly DriverCapability[];
   readonly lifecycleDriver: Driver | undefined;
   readonly #views = new Map<DriverCapability, { id: string; driver: Driver }>();
-  readonly #acceptsLegacyProxyPlan: boolean;
   readonly #close: (() => void | Promise<void>) | undefined;
   #closing: Promise<void> | undefined;
 
@@ -36,7 +35,7 @@ export class InstalledDriver {
       readonly configuration: unknown;
     },
     registration: DriverRegistration,
-    // Only installation composition can supply the capability IDs pinned by older revisions.
+    // Installation composition supplies the configured identity for each capability.
     capabilityIds: Readonly<Partial<Record<DriverCapability, string>>> = {},
   ) {
     const { id, implementation, configuration } = selection;
@@ -78,8 +77,6 @@ export class InstalledDriver {
       }
       this.lifecycleDriver = Object.freeze(lifecycle);
     }
-    this.#acceptsLegacyProxyPlan =
-      capabilityIds.sandbox !== undefined && capabilityIds.credential_proxy !== undefined;
     this.#close = registration.close?.bind(registration);
     Object.freeze(this);
   }
@@ -113,14 +110,12 @@ export class InstalledDriver {
     return proxy.bindRepositoryGit.bind(proxy);
   }
 
-  /** Match a stored plan, including only the legacy capability IDs explicitly received at installation. */
+  /** Match the exact registered owner and configured capability identities. */
   ownsProxyPlan(plan: ProxyPlan): boolean {
     return (
       this.require("sandbox").id === plan.sandboxDriverId &&
       this.require("credential_proxy").id === plan.egressDriverId &&
-      (plan.driver === undefined
-        ? this.#acceptsLegacyProxyPlan
-        : isDeepStrictEqual(plan.driver, this.ref))
+      isDeepStrictEqual(plan.driver, this.ref)
     );
   }
 

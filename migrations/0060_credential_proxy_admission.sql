@@ -1,6 +1,18 @@
--- Protected static inputs are opt-in for existing sources. NULL preserves the
--- legacy gateway's approved copy; it must never be reinterpreted as a live Secret.
-ALTER TABLE occ.credential_sources ADD COLUMN egress jsonb;
+-- Existing sources retain Gateway ownership and approved material semantics.
+ALTER TABLE occ.credential_sources
+  ADD COLUMN egress jsonb,
+  ADD COLUMN owner_capability text NOT NULL DEFAULT 'credential_gateway',
+  ADD CONSTRAINT credential_sources_owner_capability_valid CHECK (
+    owner_capability = 'credential_gateway' OR (owner_capability = 'credential_proxy' AND egress IS NOT NULL)
+  );
+--> statement-breakpoint
+ALTER TABLE occ.credential_sources ALTER COLUMN owner_capability DROP DEFAULT;
+--> statement-breakpoint
+DROP TRIGGER credential_source_metadata_is_immutable ON occ.credential_sources;
+--> statement-breakpoint
+CREATE TRIGGER credential_source_metadata_is_immutable
+BEFORE UPDATE OF id, namespace_id, name, type, config, driver_id, owner_capability, created_at
+ON occ.credential_sources FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
 --> statement-breakpoint
 CREATE FUNCTION occ.egress_ref_is_valid(value jsonb) RETURNS boolean
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
@@ -30,39 +42,129 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
     AND occ.egress_ref_is_valid(value->'secretDriver') AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver'), false)
 $$;
 --> statement-breakpoint
-GRANT EXECUTE ON FUNCTION occ.egress_ref_is_valid(jsonb), occ.static_egress_source_is_valid(jsonb, text, text) TO occ_app;
+CREATE FUNCTION occ.prepared_token_source_is_valid(value jsonb, owner_namespace text, owner_source text)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT COALESCE(
+    value ?& fields AND value - fields = '{}'::jsonb
+    AND value->'schemaVersion' = '4'::jsonb AND value->>'adoption' = 'prepared' AND value->>'retention' = 'none'
+    AND value->>'origin' ~ '^https://[a-z0-9.-]+(:[0-9]+)?$'
+    AND key ?& keys AND key - keys = '{}'::jsonb
+    AND key->>'installationId' ~ '^ins_[0-9a-f-]{36}$' AND key->>'namespaceId' = owner_namespace
+    AND key #>> '{source,id}' = owner_source AND occ.egress_ref_is_valid(key->'source')
+    AND occ.egress_ref_is_valid(key->'backend') AND occ.egress_ref_is_valid(key->'provider')
+    AND key #>> '{provider,id}' <> 'github-app-metadata'
+    AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver')
+    AND g ?& grants AND g - grants = '{}'::jsonb AND g->>'kind' = 'prepared_scope'
+    AND g->>'isolationId' ~ '^agt_[0-9a-f-]{36}$'
+    AND CASE WHEN jsonb_typeof(g->'scope') = 'object' THEN
+      (SELECT count(*) BETWEEN 1 AND 16 AND bool_and(
+          k ~ '^[a-z][a-z0-9_]{0,63}$' AND jsonb_typeof(v) = 'string' AND length(v #>> '{}') BETWEEN 1 AND 1024)
+       FROM jsonb_each(g->'scope') AS scope(k,v))
+      ELSE false END, false)
+    FROM (SELECT value->'key' AS key, value->'grant' AS g,
+      ARRAY['key','schemaVersion','adoption','retention','sender','resolver','origin','grant'] AS fields,
+      ARRAY['installationId','namespaceId','source','backend','provider'] AS keys,
+      ARRAY['kind','isolationId','scope'] AS grants) source
+$$;
 --> statement-breakpoint
-CREATE TABLE occ.egress_installations (
-  sender_id text NOT NULL,
-  sandbox_id text NOT NULL,
-  namespace_id text NOT NULL,
-  revision_id text NOT NULL,
-  agent_id text NOT NULL,
-  installation jsonb NOT NULL,
-  PRIMARY KEY (sender_id, sandbox_id),
-  UNIQUE (namespace_id, revision_id),
-  FOREIGN KEY (namespace_id, agent_id, revision_id) REFERENCES occ.agent_revisions(namespace_id, agent_id, id) ON DELETE CASCADE,
-  CHECK (length(sender_id) BETWEEN 1 AND 200 AND length(sandbox_id) BETWEEN 1 AND 200),
-  CHECK (COALESCE(installation->'sender'->>'id' = sender_id
-    AND installation->>'sandboxId' = sandbox_id
-    AND installation->'plan'->'execution'->>'namespaceId' = namespace_id
-    AND installation->'plan'->'execution'->>'revisionId' = revision_id
-    AND installation->'plan'->'execution'->>'agentId' = agent_id, false))
-);
-
+CREATE FUNCTION occ.egress_source_is_valid(value jsonb, owner_namespace text, owner_source text)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT occ.prepared_token_source_is_valid(value, owner_namespace, owner_source)
+    OR occ.static_egress_source_is_valid(value, owner_namespace, owner_source) OR COALESCE(
+    jsonb_typeof(value) = 'object'
+    AND value ?& fields AND value - fields = '{}'::jsonb
+    AND value->'schemaVersion' = '2'::jsonb AND value->>'adoption' = 'prepared' AND value->>'retention' = 'none'
+    AND value->>'origin' ~ '^https://[a-z0-9.-]+(:[0-9]+)?$'
+    AND jsonb_typeof(key) = 'object' AND key ?& keys AND key - keys = '{}'::jsonb
+    AND key->>'installationId' ~ '^ins_[0-9a-f-]{36}$'
+    AND key->>'namespaceId' = owner_namespace AND key->'source'->>'id' = owner_source
+    AND occ.egress_ref_is_valid(key->'source') AND occ.egress_ref_is_valid(key->'backend')
+    AND key->'provider' = '{"id":"github-app-metadata","generation":1}'::jsonb
+    AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver')
+    AND jsonb_typeof(grant_value) = 'object' AND grant_value ?& grants AND grant_value - grants = '{}'::jsonb
+    AND grant_value->>'kind' = 'github_repository_metadata' AND grant_value->>'profile' = 'metadata-read'
+    AND grant_value->>'appId' ~ '^[1-9][0-9]*$' AND grant_value->>'installationId' ~ '^[1-9][0-9]*$'
+    AND grant_value->>'repositoryId' ~ '^[1-9][0-9]*$'
+    AND grant_value->>'repository' ~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$'
+    AND grant_value->>'repository' !~ '/[.]{1,2}$'
+    AND grant_value->>'isolationId' ~ '^agt_[0-9a-f-]{36}$',
+    false)
+  FROM (SELECT value->'key' AS key, value->'grant' AS grant_value,
+    ARRAY['key','schemaVersion','adoption','retention','sender','resolver','origin','grant'] AS fields,
+    ARRAY['installationId','namespaceId','source','backend','provider'] AS keys,
+    ARRAY['kind','appId','installationId','repositoryId','repository','isolationId','profile'] AS grants) source
+$$;
 --> statement-breakpoint
--- A provider rejection fences the selected store-qualified version across restart
--- and rereads. Rotation to a new version does not inherit the old rejection.
-CREATE TABLE occ.egress_rejected_material (
-  namespace_id text NOT NULL REFERENCES occ.namespaces(id) ON DELETE CASCADE,
-  secret_driver_id text NOT NULL,
-  material_id text NOT NULL,
-  material_version text NOT NULL,
-  PRIMARY KEY (namespace_id, secret_driver_id, material_id, material_version),
-  CHECK (length(secret_driver_id) > 0 AND length(material_id) > 0 AND length(material_version) > 0)
-);
+CREATE FUNCTION occ.credential_free_metadata_source_is_valid(value jsonb, owner_namespace text, owner_source text)
+RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+  SELECT COALESCE(
+    value ?& fields AND value - fields = '{}'::jsonb
+    AND value->'schemaVersion' = '3'::jsonb AND value->>'retention' = 'none' AND value->>'adoption' = 'credential_free'
+    AND value->>'origin' ~ '^https://[a-z0-9.-]+(:[0-9]+)?$'
+    AND key ?& keys AND key - keys = '{}'::jsonb
+    AND key->>'installationId' ~ '^ins_[0-9a-f-]{36}$' AND key->>'namespaceId' = owner_namespace
+    AND key #>> '{source,id}' = owner_source AND occ.egress_ref_is_valid(key->'source')
+    AND occ.egress_ref_is_valid(key->'backend')
+    AND key->'provider' = '{"id":"credential-free-repository-metadata","generation":1}'::jsonb
+    AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver')
+    AND grant_value ?& grants AND grant_value - grants = '{}'::jsonb
+    AND grant_value->>'kind' = 'credential_free_repository_metadata' AND grant_value->>'profile' = 'metadata-read'
+    AND grant_value->>'isolationId' ~ '^agt_[0-9a-f-]{36}$' AND grant_value->>'repositoryId' ~ '^[1-9][0-9]*$'
+    AND grant_value->>'repository' ~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$'
+    AND grant_value->>'repository' !~ '/[.]{1,2}$',
+    false)
+  FROM (SELECT value->'key' AS key, value->'grant' AS grant_value,
+    ARRAY['key','schemaVersion','adoption','retention','sender','resolver','origin','grant'] AS fields,
+    ARRAY['installationId','namespaceId','source','backend','provider'] AS keys,
+    ARRAY['kind','profile','isolationId','repositoryId','repository'] AS grants) source
+$$;
 --> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE, DELETE ON occ.egress_installations, occ.egress_rejected_material TO occ_app;
+GRANT EXECUTE ON FUNCTION occ.egress_ref_is_valid(jsonb), occ.static_egress_source_is_valid(jsonb,text,text), occ.prepared_token_source_is_valid(jsonb,text,text), occ.egress_source_is_valid(jsonb,text,text), occ.credential_free_metadata_source_is_valid(jsonb,text,text) TO occ_app;
+--> statement-breakpoint
+ALTER TABLE occ.credential_sources
+  ADD CONSTRAINT credential_sources_egress_valid CHECK (CASE WHEN type = 'credential-free-repository-metadata' THEN
+      config->'authority' = '"execution"'::jsonb
+      AND config->'agent_id' = egress #> '{grant,isolationId}' AND config->'origin' = egress->'origin'
+      AND config->'repository_id' = egress #> '{grant,repositoryId}' AND config->'repository' = egress #> '{grant,repository}'
+      AND occ.credential_free_metadata_source_is_valid(egress, namespace_id, id)
+    ELSE egress IS NULL OR occ.egress_source_is_valid(egress, namespace_id, id) END IS TRUE);
+--> statement-breakpoint
+GRANT UPDATE (egress) ON occ.credential_sources TO occ_app;
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION occ.credential_source_snapshots_are_valid(snapshots jsonb) RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+SET search_path = pg_catalog, occ, pg_temp
+AS $$
+DECLARE
+  entry jsonb;
+  owner_key text;
+  ids text[] := ARRAY[]::text[];
+BEGIN
+  IF jsonb_typeof(snapshots) IS DISTINCT FROM 'array'
+    OR jsonb_array_length(snapshots) = 0
+    OR jsonb_array_length(snapshots) > 8 THEN
+    RETURN false;
+  END IF;
+  FOR entry IN SELECT value FROM jsonb_array_elements(snapshots) LOOP
+    owner_key := CASE WHEN entry ? 'credentialProxyId' THEN 'credentialProxyId' ELSE 'credentialGatewayId' END;
+    IF jsonb_typeof(entry) IS DISTINCT FROM 'object'
+      OR NOT (entry ?& ARRAY['sourceId', owner_key, 'sourceType'])
+      OR entry - 'sourceId' - owner_key - 'sourceType' <> '{}'::jsonb
+      OR jsonb_typeof(entry->'sourceId') IS DISTINCT FROM 'string'
+      OR (entry->>'sourceId') !~ '^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      OR (entry->>'sourceId') = ANY(ids)
+      OR jsonb_typeof(entry->owner_key) IS DISTINCT FROM 'string'
+      OR COALESCE(btrim(entry->>owner_key), '') = ''
+      OR jsonb_typeof(entry->'sourceType') IS DISTINCT FROM 'string'
+      OR (entry->>'sourceType') !~ '^[a-z][a-z0-9-]{0,63}$' THEN
+      RETURN false;
+    END IF;
+    ids := array_append(ids, entry->>'sourceId');
+  END LOOP;
+  RETURN true;
+END;
+$$;
 --> statement-breakpoint
 -- Strip the protected reader marker only from an object. A JSON scalar must fail
 -- the snapshot constraint (23514), not raise an error from the JSON deletion operator.
@@ -147,8 +249,6 @@ ALTER TABLE occ.agent_revisions
       OR occ.credential_source_snapshots_are_valid(admitted_spec->'credential_sources')
     )
   );
-
-
 --> statement-breakpoint
 ALTER TABLE occ.agent_revisions ADD CONSTRAINT agent_revisions_egress_scope CHECK (
   NOT (admitted_spec ? 'egress_plan') OR COALESCE(
@@ -160,23 +260,42 @@ ALTER TABLE occ.agent_revisions ADD CONSTRAINT agent_revisions_egress_scope CHEC
     false)
 );
 --> statement-breakpoint
--- Require a decision on every new write. In this transaction we record the actual
--- unprotected admission of earlier revisions, restore immutability, then validate all rows.
-ALTER TABLE occ.agent_revisions ADD CONSTRAINT agent_revisions_execution_admission CHECK (
-  COALESCE(
-    jsonb_typeof(admitted_spec->'execution_admission') = 'object'
-    AND (admitted_spec->'execution_admission') ?& ARRAY['version', 'mode']
-    AND ((admitted_spec->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
-    AND admitted_spec->'execution_admission'->'version' = '2'::jsonb
-    AND (
-      (admitted_spec->'execution_admission'->>'mode' = 'unprotected'
-        AND NOT (admitted_spec ? 'egress_plan')
-        AND NOT ((admitted_spec->'harness_auth') ? 'protectedExecutionVersion'))
-      OR (admitted_spec->'execution_admission'->>'mode' = 'protected'
-        AND admitted_spec ? 'egress_plan'
-        AND admitted_spec #> '{harness_auth,protectedExecutionVersion}' = '2'::jsonb)
-    ), false)
-) NOT VALID;
+-- Record the pre-proxy decision while the immutable revision rows are transactionally fenced.
+ALTER TABLE occ.agent_revisions
+  ADD CONSTRAINT agent_revisions_execution_admission CHECK (COALESCE(
+        jsonb_typeof(admitted_spec->'execution_admission') = 'object'
+        AND (admitted_spec->'execution_admission') ?& ARRAY['version', 'mode']
+        AND ((admitted_spec->'execution_admission') - 'version' - 'mode') = '{}'::jsonb
+        AND (
+          (admitted_spec->'execution_admission'->>'mode' = 'unprotected'
+            AND admitted_spec #> '{execution_admission,version}' = '2'::jsonb
+            AND NOT (admitted_spec ? 'egress_plan')
+            AND NOT ((admitted_spec->'harness_auth') ? 'protectedExecutionVersion'))
+          OR (admitted_spec->'execution_admission'->>'mode' = 'protected'
+            AND admitted_spec ? 'egress_plan'
+            AND admitted_spec #> '{harness_auth,protectedExecutionVersion}'
+              = admitted_spec #> '{execution_admission,version}'
+            AND (
+                admitted_spec #>> '{execution_admission,version}' IN ('3','4','5','6')
+                AND ((admitted_spec #>> '{execution_admission,version}') IN ('4','5','6'))
+                  = ((admitted_spec->'egress_plan') ? 'repositoryGit')
+                AND (NOT ((admitted_spec->'egress_plan') ? 'repositoryGit')
+                  OR (jsonb_typeof(admitted_spec->'repository_credentials')='object'
+                    AND admitted_spec #> '{egress_plan,repositoryGit}' = admitted_spec->'repository_credentials'))
+                AND CASE WHEN admitted_spec #>> '{execution_admission,version}' = '5'
+                    THEN admitted_spec #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
+                    WHEN admitted_spec #>> '{execution_admission,version}' = '6' THEN
+                      admitted_spec #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
+                      AND admitted_spec #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+                      AND jsonb_array_length(admitted_spec #> '{egress_plan,repositoryGit,bindings}') = 1
+                    ELSE NOT ((admitted_spec->'egress_plan') ? 'repositoryGitAuthorization') END
+                AND
+                jsonb_typeof(admitted_spec #> '{egress_plan,driver}') = 'object'
+                AND length(admitted_spec #>> '{egress_plan,driver,id}') > 0
+                AND length(admitted_spec #>> '{egress_plan,driver,implementation}') > 0
+                AND admitted_spec #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
+              ))
+        ), false)) NOT VALID;
 --> statement-breakpoint
 DROP TRIGGER agent_revisions_are_immutable ON occ.agent_revisions;
 --> statement-breakpoint
@@ -192,83 +311,46 @@ FOR EACH ROW EXECUTE FUNCTION occ.reject_row_mutation();
 --> statement-breakpoint
 ALTER TABLE occ.agent_revisions VALIDATE CONSTRAINT agent_revisions_execution_admission;
 --> statement-breakpoint
--- Recognize a freshly consented, Agent-isolated repository metadata grant. No rows or grants are rewritten.
-CREATE FUNCTION occ.egress_source_is_valid(value jsonb, owner_namespace text, owner_source text)
-RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-  SELECT occ.static_egress_source_is_valid(value, owner_namespace, owner_source) OR COALESCE(
-    jsonb_typeof(value) = 'object'
-    AND value ?& fields AND value - fields = '{}'::jsonb
-    AND value->'schemaVersion' = '2'::jsonb AND value->>'adoption' = 'prepared' AND value->>'retention' = 'none'
-    AND value->>'origin' ~ '^https://[a-z0-9.-]+(:[0-9]+)?$'
-    AND jsonb_typeof(key) = 'object' AND key ?& keys AND key - keys = '{}'::jsonb
-    AND key->>'installationId' ~ '^ins_[0-9a-f-]{36}$'
-    AND key->>'namespaceId' = owner_namespace AND key->'source'->>'id' = owner_source
-    AND occ.egress_ref_is_valid(key->'source') AND occ.egress_ref_is_valid(key->'backend')
-    AND key->'provider' = '{"id":"github-app-metadata","generation":1}'::jsonb
-    AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver')
-    AND jsonb_typeof(grant_value) = 'object' AND grant_value ?& grants AND grant_value - grants = '{}'::jsonb
-    AND grant_value->>'kind' = 'github_repository_metadata' AND grant_value->>'profile' = 'metadata-read'
-    AND grant_value->>'appId' ~ '^[1-9][0-9]*$' AND grant_value->>'installationId' ~ '^[1-9][0-9]*$'
-    AND grant_value->>'repositoryId' ~ '^[1-9][0-9]*$'
-    AND grant_value->>'repository' ~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$'
-    AND grant_value->>'repository' !~ '/[.]{1,2}$'
-    AND grant_value->>'isolationId' ~ '^agt_[0-9a-f-]{36}$',
-    false)
-  FROM (SELECT value->'key' AS key, value->'grant' AS grant_value,
-    ARRAY['key','schemaVersion','adoption','retention','sender','resolver','origin','grant'] AS fields,
-    ARRAY['installationId','namespaceId','source','backend','provider'] AS keys,
-    ARRAY['kind','appId','installationId','repositoryId','repository','isolationId','profile'] AS grants) source
-$$;
+CREATE TABLE occ.egress_installations (
+  sender_id text NOT NULL,
+  sandbox_id text NOT NULL,
+  namespace_id text NOT NULL,
+  revision_id text NOT NULL,
+  agent_id text NOT NULL,
+  installation jsonb NOT NULL,
+  PRIMARY KEY (sender_id, sandbox_id),
+  UNIQUE (namespace_id, revision_id),
+  FOREIGN KEY (namespace_id, agent_id, revision_id) REFERENCES occ.agent_revisions(namespace_id, agent_id, id) ON DELETE CASCADE,
+  CHECK (length(sender_id) BETWEEN 1 AND 200 AND length(sandbox_id) BETWEEN 1 AND 200),
+  CHECK (COALESCE(installation->'sender'->>'id' = sender_id
+    AND installation->>'sandboxId' = sandbox_id
+    AND installation->'plan'->'execution'->>'namespaceId' = namespace_id
+    AND installation->'plan'->'execution'->>'revisionId' = revision_id
+    AND installation->'plan'->'execution'->>'agentId' = agent_id, false))
+);
 --> statement-breakpoint
-GRANT EXECUTE ON FUNCTION occ.egress_source_is_valid(jsonb, text, text) TO occ_app;
+CREATE TABLE occ.egress_rejected_material (
+  namespace_id text NOT NULL REFERENCES occ.namespaces(id) ON DELETE CASCADE,
+  secret_driver_id text NOT NULL,
+  material_id text NOT NULL,
+  material_version text NOT NULL,
+  PRIMARY KEY (namespace_id, secret_driver_id, material_id, material_version),
+  CHECK (length(secret_driver_id) > 0 AND length(material_id) > 0 AND length(material_version) > 0)
+);
 --> statement-breakpoint
--- Explicit consent to one protected repository identity read. Never migrate a credentialed grant.
-CREATE FUNCTION occ.credential_free_metadata_source_is_valid(value jsonb, owner_namespace text, owner_source text)
-RETURNS boolean LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-  SELECT COALESCE(
-    value ?& fields AND value - fields = '{}'::jsonb
-    AND value->'schemaVersion' = '3'::jsonb AND value->>'retention' = 'none' AND value->>'adoption' = 'credential_free'
-    AND value->>'origin' ~ '^https://[a-z0-9.-]+(:[0-9]+)?$'
-    AND key ?& keys AND key - keys = '{}'::jsonb
-    AND key->>'installationId' ~ '^ins_[0-9a-f-]{36}$' AND key->>'namespaceId' = owner_namespace
-    AND key #>> '{source,id}' = owner_source AND occ.egress_ref_is_valid(key->'source')
-    AND occ.egress_ref_is_valid(key->'backend')
-    AND key->'provider' = '{"id":"credential-free-repository-metadata","generation":1}'::jsonb
-    AND occ.egress_ref_is_valid(value->'sender') AND occ.egress_ref_is_valid(value->'resolver')
-    AND grant_value ?& grants AND grant_value - grants = '{}'::jsonb
-    AND grant_value->>'kind' = 'credential_free_repository_metadata' AND grant_value->>'profile' = 'metadata-read'
-    AND grant_value->>'isolationId' ~ '^agt_[0-9a-f-]{36}$' AND grant_value->>'repositoryId' ~ '^[1-9][0-9]*$'
-    AND grant_value->>'repository' ~ '^[a-zA-Z0-9_-]+/[a-zA-Z0-9_.-]+$'
-    AND grant_value->>'repository' !~ '/[.]{1,2}$',
-    false)
-  FROM (SELECT value->'key' AS key, value->'grant' AS grant_value,
-    ARRAY['key','schemaVersion','adoption','retention','sender','resolver','origin','grant'] AS fields,
-    ARRAY['installationId','namespaceId','source','backend','provider'] AS keys,
-    ARRAY['kind','profile','isolationId','repositoryId','repository'] AS grants) source
-$$;
+REVOKE ALL ON occ.egress_installations, occ.egress_rejected_material FROM PUBLIC, occ_app;
+GRANT SELECT, INSERT, UPDATE(installation) ON occ.egress_installations TO occ_app;
+GRANT SELECT, INSERT ON occ.egress_rejected_material TO occ_app;
 --> statement-breakpoint
-GRANT EXECUTE ON FUNCTION occ.credential_free_metadata_source_is_valid(jsonb, text, text) TO occ_app;
---> statement-breakpoint
-ALTER TABLE occ.credential_sources
-  ADD CONSTRAINT credential_sources_egress_valid CHECK (CASE WHEN type = 'credential-free-repository-metadata' THEN
-      config->'authority' = '"execution"'::jsonb
-      AND config->'agent_id' = egress #> '{grant,isolationId}' AND config->'origin' = egress->'origin'
-      AND config->'repository_id' = egress #> '{grant,repositoryId}' AND config->'repository' = egress #> '{grant,repository}'
-      AND occ.credential_free_metadata_source_is_valid(egress, namespace_id, id)
-    ELSE egress IS NULL OR occ.egress_source_is_valid(egress, namespace_id, id) END IS TRUE);
---> statement-breakpoint
-
-GRANT UPDATE (egress) ON occ.credential_sources TO occ_app;
---> statement-breakpoint
--- This evidence can identify a committed selection; it is never the credential or a permit to use it.
--- Static and prepared receipts both retain attempts whose outcome is uncertain.
 CREATE FUNCTION occ.egress_receipt_material_is_valid(material jsonb) RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT material->>'kind' = 'static' OR COALESCE(
-    material->>'kind' = 'prepared_github' AND material ?& fields AND material - fields = '{}'::jsonb
+    material->>'kind' IN ('prepared_github','prepared_token') AND material ?& fields AND material - fields = '{}'::jsonb
     AND src ?& source_fields AND src - source_fields = '{}'::jsonb
     AND src->>'installationId' ~ '^ins_[0-9a-f-]{36}$' AND length(src->>'namespaceId') > 0
     AND occ.egress_ref_is_valid(src->'source') AND occ.egress_ref_is_valid(src->'backend')
-    AND src->'provider' = '{"id":"github-app-metadata","generation":1}'::jsonb
+    AND (CASE material->>'kind' WHEN 'prepared_github' THEN
+        src->'provider' = '{"id":"github-app-metadata","generation":1}'::jsonb
+      ELSE occ.egress_ref_is_valid(src->'provider') AND src #>> '{provider,id}' <> 'github-app-metadata' END)
     AND occ.egress_ref_is_valid(material->'binding') AND occ.egress_ref_is_valid(material->'family')
     AND material->>'grantHash' ~ '^[0-9a-f]{64}$' AND material->>'isolationId' ~ '^agt_[0-9a-f-]{36}$'
     AND jsonb_typeof(material->'ownerEpoch') = 'number' AND material->>'ownerEpoch' ~ '^[1-9][0-9]*$'
@@ -281,8 +363,6 @@ CREATE FUNCTION occ.egress_receipt_material_is_valid(material jsonb) RETURNS boo
           'materialId','materialVersion','providerExpiresAt','usableUntil'] AS fields) evidence
 $$;
 --> statement-breakpoint
-
--- Bind this prepared receipt to the same execution isolation, enrolled installation, stream and reply custody.
 CREATE FUNCTION occ.prepared_github_dispatch_matches(dispatch jsonb, material jsonb)
 RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
   SELECT COALESCE(
@@ -374,146 +454,19 @@ CREATE TABLE occ.egress_send_receipts (
     END) IS TRUE)
 );
 --> statement-breakpoint
+REVOKE ALL ON occ.egress_send_receipts FROM PUBLIC, occ_app;
+--> statement-breakpoint
 GRANT SELECT, INSERT, UPDATE (authorized_dispatch, outcome, observation, settled, feedback) ON occ.egress_send_receipts TO occ_app;
 --> statement-breakpoint
--- Only explicit prepared sources enroll. Keep the family and its attempt receipts after
--- withdrawal: an unavailable issuer or a lost commit must not turn into another issuance.
-CREATE TABLE occ.prepared_github_families (
-  source_id text PRIMARY KEY,
-  source jsonb NOT NULL,
-  issuer jsonb NOT NULL,
-  admission jsonb NOT NULL,
-  enabled boolean NOT NULL DEFAULT true,
-  next_check_at timestamptz NOT NULL DEFAULT now(),
-  worker_claim uuid,
-  CONSTRAINT prepared_github_families_check CHECK ((source #>> '{key,source,id}' = source_id AND (
-  (source->>'adoption' = 'prepared' AND source #>> '{grant,profile}' = 'metadata-read'
-   AND admission->>'familyId' = source_id AND jsonb_typeof(issuer->'backendRef') = 'object')
-  OR
-  (source->>'adoption' = 'prepared_repository_git' AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
-   AND ((source #>> '{grant,profile}' = 'git-ref-write' AND NOT (source->'grant' ? 'pullRequestBase'))
-       OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
-   AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
-   AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'
-   AND source #>> '{grant,id}' = source #>> '{session,grant,grantId}'
-   AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}'
-   AND source #>> '{grant,isolationId}' = source #>> '{session,revisionId}'
-   AND issuer = '{"kind":"worker-mounted-github-app-key"}'::jsonb)
-)) IS TRUE)
-);
+-- Generic policy reductions belong to their existing source withdrawal, separate
+-- from the protected Git registered-installation and delivery witnesses.
+ALTER TABLE occ.credential_withdrawals ADD COLUMN policy_reduction jsonb,
+  ADD CONSTRAINT credential_withdrawals_policy_reduction CHECK (policy_reduction IS NULL OR COALESCE(
+    jsonb_typeof(policy_reduction) = 'object'
+    AND policy_reduction->'request'->>'version' = '1'
+    AND policy_reduction->'request'->>'operationId' ~ '^[0-9a-f-]{36}$'
+    AND policy_reduction #>> '{request,expected,plan,execution,namespaceId}' = namespace_id
+    AND policy_reduction #>> '{request,expected,plan,execution,revisionId}' = revision_id
+    AND jsonb_typeof(policy_reduction #> '{request,retained,routes}') = 'array', false));
 --> statement-breakpoint
-CREATE INDEX prepared_github_families_due ON occ.prepared_github_families(next_check_at) WHERE enabled;
---> statement-breakpoint
-CREATE TABLE occ.prepared_github_attempts (
-  id uuid PRIMARY KEY,
-  source_id text NOT NULL REFERENCES occ.prepared_github_families(source_id),
-  admission jsonb NOT NULL,
-  state text NOT NULL CHECK (state IN ('issuing', 'committed', 'quarantined')),
-  custody text NOT NULL DEFAULT 'intent' CHECK (custody IN
-    ('intent', 'current', 'retire', 'revoking', 'revoked', 'unknown')),
-  -- version is generated by custody, independent of the provider and secret bytes.
-  material_version uuid UNIQUE,
-  provider_expires_at timestamptz,
-  usable_until timestamptz,
-  sealed bytea,
-  CHECK (custody <> 'current' OR (state = 'committed' AND sealed IS NOT NULL
-    AND material_version IS NOT NULL AND usable_until IS NOT NULL
-    AND provider_expires_at IS NOT NULL AND usable_until <= provider_expires_at)),
-  CHECK ((sealed IS NOT NULL) = (custody IN ('current','retire','revoking','unknown')))
-);
---> statement-breakpoint
-CREATE UNIQUE INDEX prepared_github_current ON occ.prepared_github_attempts(source_id) WHERE custody = 'current';
---> statement-breakpoint
-CREATE INDEX prepared_github_attempts_family ON occ.prepared_github_attempts(source_id);
---> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE ON occ.prepared_github_families, occ.prepared_github_attempts TO occ_app;
---> statement-breakpoint
--- Existence is a possible credential disclosure, not a Git outcome. Reusing its exchange ID fails.
-CREATE TABLE occ.prepared_repository_git_uses (
-  exchange_id uuid PRIMARY KEY,
-  admission_id text NOT NULL REFERENCES occ.repository_session_attempts(admission_id),
-  attempt_id uuid NOT NULL REFERENCES occ.prepared_github_attempts(id),
-  material_version uuid NOT NULL,
-  operation text NOT NULL CHECK (operation IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack')),
-  request_digest_sha256 text NOT NULL CHECK (request_digest_sha256 ~ '^[a-f0-9]{64}$'),
-  send_start_by timestamptz NOT NULL
-);
---> statement-breakpoint
-GRANT SELECT, INSERT ON occ.prepared_repository_git_uses TO occ_app;
---> statement-breakpoint
--- One admitted draft per explicitly selected grant (repository, review ref and base).
--- No expiry, retry, cascading deletion, or result from an untrusted caller.
-CREATE TABLE occ.prepared_repository_draft_pulls (
-  grant_id text PRIMARY KEY,
-  operation_id uuid NOT NULL,
-  receipt_id uuid NOT NULL UNIQUE,
-  admission_id text NOT NULL REFERENCES occ.repository_session_attempts(admission_id),
-  attempt_id uuid NOT NULL REFERENCES occ.prepared_github_attempts(id),
-  material_version uuid NOT NULL,
-  request_digest_sha256 text NOT NULL CHECK (request_digest_sha256 ~ '^[a-f0-9]{64}$'),
-  scope jsonb NOT NULL,
-  admitted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  send_start_by timestamptz NOT NULL,
-  settled_at timestamptz,
-  outcome text NOT NULL DEFAULT 'outcome_unknown'
-    CHECK (outcome IN ('created', 'not-submitted', 'outcome_unknown')),
-  projection jsonb,
-  CHECK ((outcome = 'created') = (projection IS NOT NULL)),
-  CHECK (settled_at IS NOT NULL OR outcome = 'outcome_unknown')
-);
---> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE(outcome, projection, settled_at)
-ON occ.prepared_repository_draft_pulls TO occ_app;
---> statement-breakpoint
--- A revision's OpenShell Git route as the worker that prepared it last verified it: the
--- identity and custody facts a restarted or replacement worker needs to re-observe the
--- installation and re-adopt the route instead of requiring a new revision (finding 2128).
--- Never token material: the material is read again from prepared custody through the
--- normal preparation path. `fence` names the adoption; every write by the worker that
--- holds a route carries its fence, so a worker whose fence is stale writes nothing and
--- stops using the route. `write_pending` outlives a worker that stopped mid-write: the
--- outcome of that provider write is unknown, and the next worker tombstones the route.
--- `blocked` is the tombstone; a blocked route is never adopted again.
-CREATE TABLE occ.openshell_git_routes (
-  revision_id text PRIMARY KEY REFERENCES occ.agent_revisions(id) ON DELETE CASCADE,
-  namespace_id text NOT NULL,
-  agent_id text NOT NULL,
-  workspace text NOT NULL,
-  sandbox text NOT NULL,
-  binding_id text NOT NULL CHECK (binding_id ~ '^[A-Za-z0-9_-]{32}$'),
-  fence bigint NOT NULL DEFAULT 1 CHECK (fence >= 1),
-  worker_instance uuid NOT NULL,
-  adopted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
-  provider_id text,
-  profile_version text CHECK (profile_version ~ '^[1-9][0-9]*$'),
-  provider_resource_version text CHECK (provider_resource_version ~ '^[1-9][0-9]*$'),
-  credential_state text CHECK (credential_state IN ('bootstrap', 'active')),
-  material_expires_at timestamptz,
-  material_version uuid,
-  preparation_attempt_id uuid,
-  observed jsonb,
-  write_pending text CHECK (write_pending IN ('bootstrap', 'rotate')),
-  blocked text,
-  CHECK ((provider_id IS NULL) = (profile_version IS NULL)
-    AND (provider_id IS NULL) = (provider_resource_version IS NULL)
-    AND (provider_id IS NULL) = (credential_state IS NULL)),
-  CHECK ((credential_state = 'active') = (material_expires_at IS NOT NULL)),
-  CHECK ((material_version IS NULL) = (preparation_attempt_id IS NULL)),
-  CHECK (observed IS NULL OR (jsonb_typeof(observed) = 'object'
-    AND observed ?& ARRAY['workspace', 'sandbox', 'sandboxId', 'executionId', 'provider',
-      'providerId', 'providerResourceVersion', 'profileVersion', 'credentialState',
-      'attachmentEpoch', 'providerEnvRevision', 'configRevision', 'policyHash',
-      'supervisorSessionId', 'processInstanceId', 'networkInstanceId']
-    AND (observed - ARRAY['workspace', 'sandbox', 'sandboxId', 'executionId', 'provider',
-      'providerId', 'providerResourceVersion', 'profileVersion', 'credentialState',
-      'attachmentEpoch', 'providerEnvRevision', 'configRevision', 'policyHash',
-      'supervisorSessionId', 'processInstanceId', 'networkInstanceId']) = '{}'::jsonb))
-);
---> statement-breakpoint
-CREATE INDEX openshell_git_routes_namespace ON occ.openshell_git_routes (namespace_id);
---> statement-breakpoint
-GRANT SELECT, INSERT, UPDATE(fence, worker_instance, adopted_at, updated_at, provider_id,
-  profile_version, provider_resource_version, credential_state, material_expires_at,
-  material_version, preparation_attempt_id, observed, write_pending, blocked)
-ON occ.openshell_git_routes TO occ_app;
+GRANT UPDATE(policy_reduction) ON occ.credential_withdrawals TO occ_app;

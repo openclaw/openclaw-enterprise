@@ -716,9 +716,7 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} ? 'egress_plan'
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
-            AND CASE ${table.admittedSpec} #>> '{execution_admission,version}'
-              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ?| ARRAY['driver','repositoryGit','repositoryGitAuthorization'])
-              ELSE
+            AND (
                 ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6')
                 AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
@@ -737,7 +735,7 @@ export const agentRevisions = occSchema.table(
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,implementation}') > 0
                 AND ${table.admittedSpec} #>> '{egress_plan,driver,configurationId}' ~ '^[0-9a-f]{64}$'
-              END)
+              ))
         ), false)`,
     ),
     check(
@@ -2035,9 +2033,7 @@ export const preparedRepositoryGitUses = occSchema.table(
     admissionId: text("admission_id")
       .notNull()
       .references(() => repositorySessionAttempts.admissionId),
-    attemptId: uuid("attempt_id")
-      .notNull()
-      .references(() => preparedGitHubAttempts.id),
+    attemptId: uuid("attempt_id").notNull(),
     materialVersion: uuid("material_version").notNull(),
     operation: text("operation").notNull(),
     recipientFence: bigint("recipient_fence", { mode: "number" }),
@@ -2046,6 +2042,10 @@ export const preparedRepositoryGitUses = occSchema.table(
     authorizationReplyBy: timestamp("authorization_reply_by", { withTimezone: true }),
   },
   (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.materialVersion],
+      foreignColumns: [preparedGitHubAttempts.id, preparedGitHubAttempts.materialVersion],
+    }),
     check(
       "prepared_repository_git_uses_decision_deadline",
       sql`num_nonnulls(${t.sendStartBy}, ${t.authorizationReplyBy}) = 1`,
@@ -2073,9 +2073,7 @@ export const preparedRepositoryDraftPulls = occSchema.table(
     admissionId: text("admission_id")
       .notNull()
       .references(() => repositorySessionAttempts.admissionId),
-    attemptId: uuid("attempt_id")
-      .notNull()
-      .references(() => preparedGitHubAttempts.id),
+    attemptId: uuid("attempt_id").notNull(),
     materialVersion: uuid("material_version").notNull(),
     requestDigestSha256: text("request_digest_sha256").notNull(),
     scope: jsonb("scope").notNull(),
@@ -2089,6 +2087,10 @@ export const preparedRepositoryDraftPulls = occSchema.table(
     projection: jsonb("projection"),
   },
   (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.materialVersion],
+      foreignColumns: [preparedGitHubAttempts.id, preparedGitHubAttempts.materialVersion],
+    }),
     check(
       "prepared_repository_draft_pulls_decision_deadline",
       sql`num_nonnulls(${t.sendStartBy}, ${t.authorizationReplyBy}) = 1`,
@@ -2115,9 +2117,7 @@ export const preparedRepositoryDraftPulls = occSchema.table(
 export const credentialDeliveries = occSchema.table(
   "credential_deliveries",
   {
-    revisionId: text("revision_id")
-      .notNull()
-      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
     bindingId: text("binding_id").notNull(),
     namespaceId: text("namespace_id").notNull(),
     agentId: text("agent_id").notNull(),
@@ -2141,6 +2141,10 @@ export const credentialDeliveries = occSchema.table(
     retainedPolicyHash: text("retained_policy_hash"),
   },
   (t) => [
+    foreignKey({
+      columns: [t.namespaceId, t.agentId, t.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    }).onDelete("cascade"),
     primaryKey({ columns: [t.revisionId, t.bindingId] }),
     index("credential_deliveries_namespace").on(t.namespaceId),
     unique("credential_deliveries_revision_id_target_key").on(t.revisionId, t.target),
@@ -2211,114 +2215,6 @@ export const credentialDeliveryReductions = occSchema.table(
     check(
       "credential_delivery_reductions_check1",
       sql`${t.observedGeneration} IS NULL OR ${t.requestId} IS NOT NULL`,
-    ),
-  ],
-);
-
-// The identity keys of one verified OpenShell Git installation (the provider's
-// OpenShellPreparedGitInstalled), the only keys `observed` may carry.
-const openShellGitObservedKeys = sql`ARRAY['workspace', 'sandbox', 'sandboxId', 'executionId', 'provider',
-      'providerId', 'providerResourceVersion', 'profileVersion', 'credentialState',
-      'attachmentEpoch', 'providerEnvRevision', 'configRevision', 'policyHash',
-      'supervisorSessionId', 'processInstanceId', 'networkInstanceId']`;
-
-// A revision's OpenShell Git route as the worker that holds it last verified it, so a
-// restarted or replacement worker can re-adopt it (migration 0060, finding 2128). Identity
-// and custody facts only, never token material; `fence` names the adoption.
-export const openShellGitRoutes = occSchema.table(
-  "openshell_git_routes",
-  {
-    revisionId: text("revision_id")
-      .primaryKey()
-      .references(() => agentRevisions.id, { onDelete: "cascade" }),
-    namespaceId: text("namespace_id").notNull(),
-    agentId: text("agent_id").notNull(),
-    workspace: text("workspace").notNull(),
-    sandbox: text("sandbox").notNull(),
-    bindingId: text("binding_id").notNull(),
-    fence: bigint("fence", { mode: "number" }).notNull().default(1),
-    workerInstance: uuid("worker_instance").notNull(),
-    adoptedAt: timestamp("adopted_at", { withTimezone: true })
-      .notNull()
-      .default(sql`clock_timestamp()`),
-    updatedAt: timestamp("updated_at", { withTimezone: true })
-      .notNull()
-      .default(sql`clock_timestamp()`),
-    providerId: text("provider_id"),
-    profileVersion: text("profile_version"),
-    providerResourceVersion: text("provider_resource_version"),
-    credentialState: text("credential_state"),
-    materialExpiresAt: timestamp("material_expires_at", { withTimezone: true }),
-    materialVersion: uuid("material_version"),
-    preparationAttemptId: uuid("preparation_attempt_id"),
-    observed: jsonb("observed"),
-    writePending: text("write_pending"),
-    blocked: text("blocked"),
-    retainedLaunchHash: text("retained_launch_hash"),
-    detachRequestId: uuid("detach_request_id"),
-    detachResourceVersion: text("detach_resource_version"),
-    detachedEpoch: text("detached_epoch"),
-  },
-  (t) => [
-    index("openshell_git_routes_namespace").on(t.namespaceId),
-    check("openshell_git_routes_binding_id_check", sql`${t.bindingId} ~ '^[A-Za-z0-9_-]{32}$'`),
-    check("openshell_git_routes_fence_check", sql`${t.fence} >= 1`),
-    check("openshell_git_routes_profile_version_check", sql`${t.profileVersion} ~ '^[1-9][0-9]*$'`),
-    check(
-      "openshell_git_routes_provider_resource_version_check",
-      sql`${t.providerResourceVersion} ~ '^[1-9][0-9]*$'`,
-    ),
-    check(
-      "openshell_git_routes_credential_state_check",
-      sql`${t.credentialState} IN ('bootstrap', 'active')`,
-    ),
-    check(
-      "openshell_git_routes_write_pending_check",
-      sql`${t.writePending} IN ('bootstrap', 'rotate')`,
-    ),
-    check(
-      "openshell_git_routes_check",
-      sql`(${t.providerId} IS NULL) = (${t.profileVersion} IS NULL)
-    AND (${t.providerId} IS NULL) = (${t.providerResourceVersion} IS NULL)
-    AND (${t.providerId} IS NULL) = (${t.credentialState} IS NULL)`,
-    ),
-    check(
-      "openshell_git_routes_check1",
-      sql`(${t.credentialState} = 'active') = (${t.materialExpiresAt} IS NOT NULL)`,
-    ),
-    check(
-      "openshell_git_routes_check2",
-      sql`(${t.materialVersion} IS NULL) = (${t.preparationAttemptId} IS NULL)`,
-    ),
-    check(
-      "openshell_git_routes_retained_launch_hash_check",
-      sql`${t.retainedLaunchHash} ~ '^[a-f0-9]{64}$'`,
-    ),
-    check(
-      "openshell_git_routes_detach_resource_version_check",
-      sql`${t.detachResourceVersion} ~ '^[1-9][0-9]*$'`,
-    ),
-    check(
-      "openshell_git_routes_detach_check",
-      sql`
-      (${t.detachRequestId} IS NULL) = (${t.detachResourceVersion} IS NULL)
-      AND (${t.detachedEpoch} IS NULL OR (${t.detachRequestId} IS NOT NULL AND ${t.detachedEpoch} <> ''))
-      AND (${t.detachRequestId} IS NULL OR
-        (${t.retainedLaunchHash} IS NOT NULL AND ${t.blocked} IS NOT NULL AND ${t.blocked} IN ('repository_expired', 'withdrawn')))`,
-    ),
-    check(
-      "openshell_git_routes_observed_check",
-      sql`${t.observed} IS NULL OR (jsonb_typeof(${t.observed}) = 'object'
-    AND ${t.observed} ?& ${openShellGitObservedKeys}
-    AND ((${t.observed} - 'observedHook') - ${openShellGitObservedKeys}) = '{}'::jsonb
-    AND (NOT (${t.observed} ? 'observedHook') OR (
-      jsonb_typeof(${t.observed}->'observedHook') = 'object'
-      AND (${t.observed}->'observedHook') ?& ARRAY['startupId','observationId']
-      AND ((${t.observed}->'observedHook') - ARRAY['startupId','observationId']) = '{}'::jsonb
-      AND jsonb_typeof(${t.observed}#>'{observedHook,startupId}') = 'string'
-      AND (${t.observed}#>>'{observedHook,startupId}') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-      AND jsonb_typeof(${t.observed}#>'{observedHook,observationId}') = 'string'
-      AND (${t.observed}#>>'{observedHook,observationId}') ~ '^[0-9a-f]{64}$')))`,
     ),
   ],
 );

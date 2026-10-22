@@ -121,7 +121,7 @@ test(
 );
 
 test(
-  "PostgreSQL preserves the admitted Driver, accepts historical v2 and refuses missing or mixed-version custody",
+  "PostgreSQL preserves the admitted Driver, rejects draft-only protected v2 and refuses missing or mixed-version custody",
   requiresPostgres,
   async (t) => {
     const f = await staticEgressFixture(t, { appFactory: postgresApp });
@@ -186,9 +186,9 @@ test(
       execution_admission: { version: 2, mode: "protected" },
       harness_auth: { ...fencedAuth, protectedExecutionVersion: 2 },
     };
-    // A historical row is still valid. Mixing its reader fence, admission or plan with v3 never is.
-    await insert(v2);
+    // Protected v2 never existed on main. Neither it nor a mixed reader fence is admitted.
     for (const spec of [
+      v2,
       { ...row.admitted_spec, harness_auth: unfencedAuth },
       { ...protectedWithoutPlan, execution_admission: { version: 2, mode: "unprotected" } },
       missing,

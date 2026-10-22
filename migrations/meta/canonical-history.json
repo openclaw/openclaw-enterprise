@@ -475,108 +475,28 @@
       "sha256": "5693d93865d61360d2b8943846cfbfb5590c9e52e90f89eac50fec7bd3672498"
     },
     {
+      "idx": 59,
+      "version": "7",
+      "when": 1787000000060,
+      "tag": "0060_credential_proxy_admission",
+      "breakpoints": true,
+      "sha256": "5dcffafe7c969b0ab78b270b853d07ed9dee3ffca843154528c1ffb164c9e37a"
+    },
+    {
       "idx": 60,
       "version": "7",
-      "when": 1787000000069,
-      "tag": "0060_credential_proxy",
+      "when": 1787000000061,
+      "tag": "0061_repository_credential_authority",
       "breakpoints": true,
-      "sha256": "00bb5e7e735f186b234c5c444de51ef2873ce9fa1f51fc8baea2147424bd2702"
+      "sha256": "3627ff50edac4154650be93f4e9b54a579d2e832301d129404891bc8507d3cf4"
     },
     {
       "idx": 61,
       "version": "7",
-      "when": 1787000000070,
-      "tag": "0061_openshell_expired_git",
+      "when": 1787000000062,
+      "tag": "0062_credential_delivery_custody",
       "breakpoints": true,
-      "sha256": "b85b69c0712769be71e28ebc58e0bc5564595bec12f3c90c96467d4628b356dc"
-    },
-    {
-      "idx": 62,
-      "version": "7",
-      "when": 1787000000071,
-      "tag": "0062_repository_standing_approvals",
-      "breakpoints": true,
-      "sha256": "c27970b135bc008d14c9b01625e27af51b510f762cc4c77e7897e459e0d82d0d"
-    },
-    {
-      "idx": 63,
-      "version": "7",
-      "when": 1787000000072,
-      "tag": "0063_prepared_standing_git_expiry",
-      "breakpoints": true,
-      "sha256": "d7acb34642de88f790c56f53095fe5014e59e7a26f7f64556fcea68ee55bd31b"
-    },
-    {
-      "idx": 64,
-      "version": "7",
-      "when": 1787000000073,
-      "tag": "0064_protected_driver_registration",
-      "breakpoints": true,
-      "sha256": "145cd795c62a44f70ef8d481df8c9f84cfeea0bd177b003a661e7ba73570ad81"
-    },
-    {
-      "idx": 65,
-      "version": "7",
-      "when": 1787000000074,
-      "tag": "0065_credential_proxy_repository_sessions",
-      "breakpoints": true,
-      "sha256": "48ae2bde81542d6ab522f9cba8a7a0c71f05e58e1e2239be20f0dc2f5539b357"
-    },
-    {
-      "idx": 66,
-      "version": "7",
-      "when": 1787000000075,
-      "tag": "0066_prepared_repository_draft_uses",
-      "breakpoints": true,
-      "sha256": "57c6937653b063dc9e5a0ead6850149af423dfdb0b94bf9eda220909e881ddf6"
-    },
-    {
-      "idx": 67,
-      "version": "7",
-      "when": 1787000000076,
-      "tag": "0067_protected_repository_git_recipients",
-      "breakpoints": true,
-      "sha256": "2f0c6bd413c15bea392ffe4f8a029762a2816f1443cfd2b312e7f956a926e689"
-    },
-    {
-      "idx": 68,
-      "version": "7",
-      "when": 1787000000077,
-      "tag": "0068_credential_proxy_github_installation",
-      "breakpoints": true,
-      "sha256": "02580431e99d6e8c9d5d9b6db5ecf16d154aea81e959cf1105addc5a4267a010"
-    },
-    {
-      "idx": 69,
-      "version": "7",
-      "when": 1787000000078,
-      "tag": "0069_repository_git_online_authorization",
-      "breakpoints": true,
-      "sha256": "cc70b98383fa749212ec15f630730781461c92364049cf4a7a199acc61de03bc"
-    },
-    {
-      "idx": 70,
-      "version": "7",
-      "when": 1787000000079,
-      "tag": "0070_repository_git_observed_hook",
-      "breakpoints": true,
-      "sha256": "c1cd85c059b0164edfb3138f32fee67bf522bedf10b81998b05fdfef54ba8019"
-    },
-    {
-      "idx": 71,
-      "version": "7",
-      "when": 1787000000080,
-      "tag": "0071_credential_deliveries",
-      "breakpoints": true,
-      "sha256": "0925954aceb16a28ffa9b2240329b26d3fc801be39fddef0920cb643dd63b12d"
-    },
-    {
-      "idx": 72,
-      "version": "7",
-      "when": 1787000000081,
-      "tag": "0072_credential_policy_reduction",
-      "breakpoints": true,
-      "sha256": "4c946b84a280c22952bf9059163e256db206e3987939f78a0be1ec509d01bdf5"
+      "sha256": "e5332734d1180260fc32fdaeeb3477c048fc8312045903ac76d47070526eb063"
     }
   ],
   "initialSchemaStates": {
@@ -604,11 +524,7 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
-    "completed": "c17c41f4ab35779daf3ee11cf07068bfd88567586db57d1c8ccdc077bba977b1",
-    "preRepositoryGitObservedHook": "2827e9348b133afd96c1c130275af333fb743696eacd72caebd6782a3c33141c",
-    "prePreparedRepositoryDraftUses": "d34b71856f3105853950b8bb145ee45f109e90add7b86a15346ea708ff36c4c8",
-    "preProtectedDriverRegistration": "cc231e4e9c7569e1bc3ba45c37b5c62c5515246e1ba51ec35b6b43fce05c98da",
+    "completed": "2dd167cec9643aceecb68a52cbdf31bb1c7217f99a60bfb567a469d8691dfcd4",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",
@@ -640,15 +556,7 @@
     "preCanonicalHarnessAuth": "f2ebd947c770ed1eab2628742752b924c203cdd038094d3f162db411099e2c8d",
     "preSandboxPolicies": "2a66cf512e621405a10b1c8629303220523e1dcc2d2aa90bc857855ed1d26504",
     "preSandboxPolicyAdministrator": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
-    "preStaticEgress": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
-    "preStandingApproval": "82b56b8960b2c20ff16d724e8fd3bf0dcbac42b76d4c7a65b548cfe38cd526fe",
-    "prePreparedStandingGitExpiry": "75bc5f056ccc413ef76b478a136a133d9357859a3ca4fd7922644c5620b796d7",
-    "preCredentialProxyRepositorySession": "c59728a69651f4312f0c4ffbf9abb8aeb7a6e6cbba877f29765cc987dd68b3dd",
-    "preProtectedRepositoryGitRecipients": "c2670f27d3bdeab66d86fda080f82d98561dec192bd68d1350640e516cb60852",
-    "preCredentialProxyGitHubInstallation": "219ac774a61fdb0e5c155c34e1556fd97ea09d3ebda30f188f06e0a3248a9f83",
-    "preRepositoryGitOnlineAuthorization": "e5cae0385ebe224f2246a0accf4e0c7404530b4788b901633c50310a201baaad",
-    "preCredentialDeliveries": "9c36bc3a770d921c5194425a8685c3b5d694e712f1e0b335b1e7f411b63f0ac3",
-    "preCredentialPolicyReduction": "607d1db485f8c4b6144b0fe10ce774debe68f9915af41b26387dda96abe8c0cc"
+    "preCredentialProxy": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -657,7 +565,7 @@
   "catalogEvidence": {
     "postgres": "18.6",
     "drizzleOrm": "0.45.3",
-    "method": "Stock Drizzle execution with occ_migrator and effective occ_app privileges"
+    "method": "Historical catalogs retain their recorded qualification. The final completed catalog is unqualified pending PostgreSQL 18 verification."
   },
   "compatibleLineages": {
     "providerCompleted": {
@@ -910,20 +818,6 @@
           "breakpoints": true,
           "sha256": "dd8bc173e141b7cc0320f3d5f4e9bd097ca37a6819bf61bbe1834cdb0c20598c"
         }
-      ]
-    },
-    "credentialProxyPreview": {
-      "sha256": [
-        "41187ea37a83a33ef725c762e5c04af7381139e685795ec5a7233024810a53cf",
-        "193a18fe7ad88a7c6418749cdd52be0062267dcbed39d8286d540bd453d43cdf",
-        "1d55d6eaac9106490a62a04efa1f8f2b7061d30c757c8c9b6f9f198494bfec96",
-        "76f385a160d5662aebef2b439494f7d10e7410351f1c039f2b3f0cea2132fcdc",
-        "42835bbf93e5e6b60c28accdec0338ece93ddcb1e4f86dcdd8365a5289ff3988",
-        "dd02c82589af7ebd10640e4190cbc27959393baac910af997e836bc825292b82",
-        "5fbb2769ec51c46a48c4e6dd9102baba46d71321b39c4176cdd864e1ad178575",
-        "4cfa28c47b246638a7e3831b93f1eac25a6e6ffca4e7cbd454e4ade306089b07",
-        "76aff98b9d5d220ba089ea32ad0c7b2c34ab3b4c7adb3ea614d7fb31d246ee36",
-        "03c19cdc8e4c41b41b47886ad30b54f67ae78c99a86aaffc1d6f954187c8e3e2"
       ]
     }
   }

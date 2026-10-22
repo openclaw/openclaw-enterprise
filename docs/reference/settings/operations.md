@@ -82,11 +82,11 @@ has 46 through `0046_model_probe_failure_cause`;
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preStaticEgress` (59). `preOpenShellExpiredGit` ends at `0060_credential_proxy`;
-`preRepositoryGitOnlineAuthorization` means public `0068`.
-[Upgrade](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation)
-appends `0069_repository_git_online_authorization`: 69 public receipts, 78 on the
-[recognized preview path](../../../migrations/meta/_canonical-history.json).
+`preCredentialProxy` (59, through `0059_administrator_sandbox_policy_grants`).
+The three credential migrations bring this history to `completed` with 62 receipts.
+The [canonical manifest](../../../migrations/meta/canonical-history.json) records
+accepted source hashes and catalogs. Intermediate pre-merge preview histories
+are unsupported; do not delete or relabel their receipts.
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
 `USAGE` privileges, with no objects or unexpected default privileges. An empty
 stock Drizzle ledger left by a rolled-back first migration is also supported.

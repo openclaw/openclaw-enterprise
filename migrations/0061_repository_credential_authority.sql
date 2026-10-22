@@ -292,13 +292,25 @@ BEGIN
 END;
 $$;
 --> statement-breakpoint
+-- Protocol 2 is an OCC-owned finite session; the existing receipt guard accepts only protocol 1.
+ALTER TABLE occ.repository_session_attempts
+  DROP CONSTRAINT repository_session_attempts_broker_protocol_valid,
+  ADD CONSTRAINT repository_session_attempts_broker_protocol_valid CHECK (broker_protocol IN (0,1,2));
+--> statement-breakpoint
 CREATE FUNCTION occ.guard_standing_repository_session() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, occ, pg_temp AS $$
-DECLARE credentials jsonb; predecessor occ.repository_session_attempts; ceiling bigint; now_ms bigint;
+DECLARE version integer; credentials jsonb; predecessor occ.repository_session_attempts; ceiling bigint; now_ms bigint;
 BEGIN
+ IF TG_OP='UPDATE' AND NEW.broker_protocol<>OLD.broker_protocol THEN
+   RAISE EXCEPTION 'Repository session authority is immutable' USING ERRCODE='23514';
+ END IF;
  IF NEW.phase NOT IN ('opening','open') THEN RETURN NEW; END IF;
- SELECT admitted_spec->'repository_credentials' INTO credentials FROM occ.agent_revisions
+ SELECT admitted_spec->'repository_credentials', (admitted_spec #>> '{execution_admission,version}')::int
+ INTO credentials,version FROM occ.agent_revisions
  WHERE id=NEW.revision_id AND namespace_id=NEW.namespace_id AND agent_id=NEW.agent_id;
+ IF ((NEW.broker_protocol=2) IS DISTINCT FROM (version IN (4,5,6))) THEN
+   RAISE EXCEPTION 'Repository session requires its admitted sender' USING ERRCODE='23514';
+ END IF;
  IF NOT coalesce(credentials ? 'standingApprovalId',false) THEN
    IF NEW.predecessor_admission_id IS NULL THEN RETURN NEW; END IF;
    RAISE EXCEPTION 'Finite repository admission cannot succeed another session' USING ERRCODE='23514';
@@ -309,15 +321,17 @@ BEGIN
    RAISE EXCEPTION 'Standing repository session requires current approval and running Agent' USING ERRCODE='23514';
  END IF;
  IF NEW.predecessor_admission_id IS NOT NULL THEN
-   IF NEW.broker_protocol IS DISTINCT FROM 1
+   IF NEW.broker_protocol NOT IN (1,2)
      OR NOT occ.repository_standing_execution_is_current(credentials,NEW.namespace_id,NEW.agent_id,NEW.revision_id)
      OR NOT EXISTS (SELECT FROM occ.repository_standing_executions
           WHERE revision_id=NEW.revision_id AND fingerprint=NEW.execution_fingerprint AND NOT closed) THEN
      RAISE EXCEPTION 'Repository successor requires the same current standing execution' USING ERRCODE='23514';
    END IF;
    IF TG_OP='INSERT' THEN
-     SELECT s.* INTO predecessor FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b USING (admission_id)
-       WHERE s.admission_id=NEW.predecessor_admission_id AND s.phase='disposed' AND b.state='disposed' AND b.session_id=s.session_id;
+     SELECT s.* INTO predecessor FROM occ.repository_session_attempts s LEFT JOIN occ.repository_broker_receipts b USING (admission_id)
+       WHERE s.admission_id=NEW.predecessor_admission_id AND s.phase='disposed' AND s.broker_protocol=NEW.broker_protocol
+         AND (CASE WHEN NEW.broker_protocol=2 THEN b.admission_id IS NULL
+                   ELSE b.state='disposed' AND b.session_id=s.session_id END);
      IF NOT FOUND THEN RAISE EXCEPTION 'Repository predecessor disposal is unconfirmed' USING ERRCODE='23514'; END IF;
      SELECT (scope->>'maximumSessionDurationSeconds')::bigint INTO ceiling FROM occ.repository_standing_approvals
        WHERE id=credentials->>'standingApprovalId' AND revoked_at IS NULL;
@@ -335,3 +349,124 @@ END; $$;
 --> statement-breakpoint
 CREATE TRIGGER repository_session_standing_guard BEFORE INSERT OR UPDATE ON occ.repository_session_attempts
  FOR EACH ROW EXECUTE FUNCTION occ.guard_standing_repository_session();
+--> statement-breakpoint
+CREATE TABLE occ.prepared_github_families (
+  source_id text PRIMARY KEY,
+  source jsonb NOT NULL,
+  issuer jsonb NOT NULL,
+  admission jsonb NOT NULL,
+  enabled boolean NOT NULL DEFAULT true,
+  next_check_at timestamptz NOT NULL DEFAULT now(),
+  worker_claim uuid,
+  CONSTRAINT prepared_github_families_check CHECK ((source #>> '{key,source,id}' = source_id AND (
+  (source->>'adoption' = 'prepared' AND source #>> '{grant,profile}' = 'metadata-read'
+   AND admission->>'familyId' = source_id AND jsonb_typeof(issuer->'backendRef') = 'object')
+  OR
+  (
+   (((source->>'adoption' = 'prepared_repository_git' OR (
+       source->>'adoption' = 'credential_proxy_repository_git'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'))
+   AND ((source #>> '{grant,profile}' = 'git-ref-write' AND NOT (source->'grant' ? 'pullRequestBase'))
+       OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
+   AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
+   AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}')
+   OR (source->>'adoption' = 'credential_proxy_github_installation'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
+       AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_installation'
+       AND source #>> '{session,binding,profile}' = 'github-installation'
+       AND source #>> '{grant,profile}' = 'github-installation'
+       AND (source->'grant') - ARRAY['id','isolationId','appId','installationId','profile'] = '{}'::jsonb
+       AND source #>> '{grant,appId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{session,grant,repositoryId}' = 'github-installation:' || (source #>> '{grant,installationId}'))
+   )
+   AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
+   AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'
+   AND source #>> '{grant,id}' = source #>> '{session,grant,grantId}'
+   AND source #>> '{grant,isolationId}' = source #>> '{session,revisionId}'
+   AND issuer = '{"kind":"worker-mounted-github-app-key"}'::jsonb)
+)) IS TRUE)
+);
+--> statement-breakpoint
+CREATE INDEX prepared_github_families_due ON occ.prepared_github_families(next_check_at) WHERE enabled;
+--> statement-breakpoint
+CREATE TABLE occ.prepared_github_attempts (
+  id uuid PRIMARY KEY,
+  source_id text NOT NULL REFERENCES occ.prepared_github_families(source_id),
+  admission jsonb NOT NULL,
+  state text NOT NULL CHECK (state IN ('issuing', 'committed', 'quarantined')),
+  custody text NOT NULL DEFAULT 'intent' CHECK (custody IN
+    ('intent', 'current', 'retire', 'revoking', 'revoked', 'expired', 'unknown')),
+  -- version is generated by custody, independent of the provider and secret bytes.
+  material_version uuid UNIQUE,
+  provider_expires_at timestamptz,
+  usable_until timestamptz,
+  sealed bytea,
+  CONSTRAINT prepared_github_attempt_version UNIQUE (id, material_version),
+  CONSTRAINT prepared_github_attempts_expired_check CHECK
+    (custody <> 'expired' OR (state = 'committed' AND material_version IS NOT NULL
+      AND isfinite(usable_until) AND isfinite(provider_expires_at)
+      AND usable_until < provider_expires_at) IS TRUE),
+  CHECK (custody <> 'current' OR (state = 'committed' AND sealed IS NOT NULL
+    AND material_version IS NOT NULL AND usable_until IS NOT NULL
+    AND provider_expires_at IS NOT NULL AND usable_until <= provider_expires_at)),
+  CHECK ((sealed IS NOT NULL) = (custody IN ('current','retire','revoking','unknown')))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX prepared_github_current ON occ.prepared_github_attempts(source_id) WHERE custody = 'current';
+--> statement-breakpoint
+CREATE INDEX prepared_github_attempts_family ON occ.prepared_github_attempts(source_id);
+--> statement-breakpoint
+REVOKE ALL ON occ.prepared_github_families, occ.prepared_github_attempts FROM PUBLIC, occ_app;
+GRANT SELECT, INSERT, UPDATE(admission, enabled, next_check_at, worker_claim) ON occ.prepared_github_families TO occ_app;
+GRANT SELECT, INSERT, UPDATE(state, custody, material_version, provider_expires_at, usable_until, sealed) ON occ.prepared_github_attempts TO occ_app;
+--> statement-breakpoint
+CREATE TABLE occ.prepared_repository_git_uses (
+  exchange_id uuid PRIMARY KEY,
+  admission_id text NOT NULL REFERENCES occ.repository_session_attempts(admission_id),
+  attempt_id uuid NOT NULL,
+  material_version uuid NOT NULL,
+  operation text NOT NULL,
+  recipient_fence bigint,
+  CONSTRAINT prepared_repository_git_uses_operation_check CHECK (
+    (operation IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack')
+      OR (recipient_fence IS NULL AND operation = 'create-draft-pull')
+      OR (recipient_fence IS NOT NULL AND operation IN ('github-rest','github-graphql')))
+    AND (recipient_fence IS NULL OR recipient_fence > 0)),
+  request_digest_sha256 text NOT NULL CHECK (request_digest_sha256 ~ '^[a-f0-9]{64}$'),
+  authorization_reply_by timestamptz,
+  send_start_by timestamptz,
+  FOREIGN KEY (attempt_id, material_version) REFERENCES occ.prepared_github_attempts(id, material_version),
+  CONSTRAINT prepared_repository_git_uses_decision_deadline CHECK (num_nonnulls(send_start_by, authorization_reply_by) = 1)
+);
+--> statement-breakpoint
+REVOKE ALL ON occ.prepared_repository_git_uses FROM PUBLIC, occ_app;
+--> statement-breakpoint
+GRANT SELECT, INSERT ON occ.prepared_repository_git_uses TO occ_app;
+--> statement-breakpoint
+CREATE TABLE occ.prepared_repository_draft_pulls (
+  grant_id text PRIMARY KEY,
+  operation_id uuid NOT NULL,
+  receipt_id uuid NOT NULL UNIQUE,
+  admission_id text NOT NULL REFERENCES occ.repository_session_attempts(admission_id),
+  attempt_id uuid NOT NULL,
+  material_version uuid NOT NULL,
+  request_digest_sha256 text NOT NULL CHECK (request_digest_sha256 ~ '^[a-f0-9]{64}$'),
+  scope jsonb NOT NULL,
+  admitted_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  authorization_reply_by timestamptz,
+  send_start_by timestamptz,
+  settled_at timestamptz,
+  outcome text NOT NULL DEFAULT 'outcome_unknown'
+    CHECK (outcome IN ('created', 'not-submitted', 'outcome_unknown')),
+  projection jsonb,
+  CHECK ((outcome = 'created') = (projection IS NOT NULL)),
+  CHECK (settled_at IS NOT NULL OR outcome = 'outcome_unknown'),
+  FOREIGN KEY (attempt_id, material_version) REFERENCES occ.prepared_github_attempts(id, material_version),
+  CONSTRAINT prepared_repository_draft_pulls_decision_deadline CHECK (num_nonnulls(send_start_by, authorization_reply_by) = 1)
+);
+--> statement-breakpoint
+REVOKE ALL ON occ.prepared_repository_draft_pulls FROM PUBLIC, occ_app;
+--> statement-breakpoint
+GRANT SELECT, INSERT, UPDATE(outcome, projection, settled_at)
+ON occ.prepared_repository_draft_pulls TO occ_app;

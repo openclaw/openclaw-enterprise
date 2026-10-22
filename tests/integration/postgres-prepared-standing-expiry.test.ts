@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
 import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
-import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -154,13 +153,7 @@ for (const draftPullLimit of [undefined, "none"] as const) {
   );
 }
 
-test(
-  "an unregistered protected v4 sender keeps its possible use and custody until actual withdrawal",
-  requiresPostgres,
-  protectedSuccessor(undefined, true),
-);
-
-function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = false) {
+function protectedSuccessor(draftPullLimit: "none" | undefined) {
   return async (t: TestContext) => {
     // Start at the real historical authority, including its possibly-spent, never-settled draft.
     // The installation below is controlled evidence: the standing transfer test exercises release.
@@ -195,13 +188,13 @@ function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = f
       "outcome_unknown",
     );
     const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = f.revision;
-    if (unregistered) {
+    if (!draftPullLimit) {
       const brokerRequest =
         f.request() as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
       assert.equal(
         await f.owner.authorizeOpenShellRequest(brokerRequest, used, t.signal),
         true,
-        "the explicitly selected protocol-1 broker trial retains its original decision",
+        "the explicitly selected protocol-1 broker retains its original decision",
       );
     }
     const driver = {
@@ -438,122 +431,6 @@ function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = f
     const permit = await exact.authorize(first, installed, signal);
     assert.equal(permit.kind, "permit", "v4 requires the exact send-start deadline");
     assert.deepEqual(await exact.online.authorize(request(), installed, signal), unavailable);
-    if (unregistered) {
-      // Model the family's historical shape around real committed custody and a possible use.
-      // That receipt cannot establish whether the old sender observed its send-start deadline.
-      const familyId = "repository-git:" + admissionId;
-      const historical = await f.pool.query(
-        `UPDATE occ.prepared_github_families
-         SET source=jsonb_set(source #- '{session,credentialProxyExecution,driver}',
-           '{adoption}', '"prepared_repository_git"')
-         WHERE source_id=$1 AND source #> '{session,credentialProxyExecution,driver}'=$2::jsonb`,
-        [familyId, JSON.stringify(driver)],
-      );
-      assert.equal(historical.rowCount, 1);
-      const legacy = await f.startOwner({ controlSocket: undefined });
-      const custody = async () =>
-        (
-          await f.pool.query(
-            "SELECT custody FROM occ.prepared_github_attempts WHERE source_id=$1 AND id=$2",
-            [familyId, installed.preparationAttemptId],
-          )
-        ).rows[0].custody;
-      const receipts = async () =>
-        (
-          await f.pool.query(
-            `SELECT u.exchange_id, u.material_version, p.receipt_id, p.outcome, p.settled_at
-         FROM occ.prepared_repository_git_uses u JOIN occ.prepared_repository_draft_pulls p
-         ON p.receipt_id=$2 WHERE u.admission_id=$1`,
-            [admissionId, used.exchangeId],
-          )
-        ).rows;
-      const retained = [
-        {
-          exchange_id: first.exchangeId,
-          material_version: installed.materialVersion,
-          receipt_id: used.exchangeId,
-          outcome: "outcome_unknown",
-          settled_at: null,
-        },
-      ];
-      assert.equal(legacy.protectedGit, undefined);
-      await legacy.maintain();
-      assert.equal(await custody(), "current", "missing owner does not retire live custody");
-      const denied = await legacy.readOpenShellMaterial(revisionId, signal, route);
-      assert.equal(denied && "absent" in denied ? denied.absent : undefined, "unprepared");
-      assert.equal(await legacy.authorizeOpenShellRequest(request(), installed, signal), false);
-      assert.equal(await legacy.authorizeOpenShellRequest(first, installed, signal), false);
-      // Observe the actual stores that these two worker configurations use. We will stop at the
-      // committed queue and claim boundaries below; discovery and both custody writes are real.
-      const discover = t.mock.method(PreparedRepositoryGitStore.prototype, "discover");
-      await f.owner.maintain();
-      const broker = discover.mock.calls.at(-1)!.this as PreparedRepositoryGitStore;
-      await owner.maintain();
-      const selected = discover.mock.calls.at(-1)!.this as PreparedRepositoryGitStore;
-      discover.mock.restore();
-      assert.equal(await custody(), "current");
-      assert.deepEqual(await read(), { absent: "unprepared" });
-      assert.deepEqual(await exact.authorize(first, installed, signal), unavailable);
-      assert.deepEqual(
-        await exact.authorize(request(), installed, signal),
-        unavailable,
-        "no adoption by a new owner",
-      );
-      assert.deepEqual(await receipts(), retained);
-      await f.state.transact((u) =>
-        u.repositorySessions.advanceAttempt({
-          admissionId,
-          expectedPhase: "open",
-          phase: "closing",
-          updatedAt: new Date().toISOString(),
-        }),
-      );
-      const revocations = () => f.gh.trace.filter((call) => call.method === "DELETE").length;
-      const before = revocations();
-      assert.equal(before, 1, "the broker retired its own token after disposal");
-      const otherDriver = await start({
-        protectedGitDriver: { ...driver, configurationId: "a".repeat(64) },
-      });
-      const otherIssuer = await start({ apiOrigin: f.gh.origin.replace("127.0.0.1", "localhost") });
-      for (const other of [legacy, f.owner, otherDriver, otherIssuer]) {
-        await other.maintain();
-        assert.equal(await custody(), "current", "leave custody with the original owner");
-        assert.equal(revocations(), before);
-      }
-
-      // Stop after the protected owner queues retirement, then run the supported
-      // protocol-1 broker worker with the very same issuer and custody key.
-      await selected.discover();
-      assert.equal(await custody(), "retire");
-      await f.owner.maintain();
-      assert.equal(await custody(), "retire", "the broker must not take protected retirement");
-      assert.equal(revocations(), before);
-
-      // Try the broker's settlement with the real attempt ID after the provider response,
-      // while the selected owner's claim is committed but its settlement has not yet run.
-      const finish = selected.finishRetirement.bind(selected);
-      t.mock.method(selected, "finishRetirement", async (id: string, revoked: boolean) => {
-        assert.equal(id, installed.preparationAttemptId);
-        await broker.finishRetirement(id, revoked);
-        assert.equal(
-          await custody(),
-          "revoking",
-          "the broker must not settle protected retirement",
-        );
-        await finish(id, revoked);
-      });
-      await owner.maintain();
-      assert.equal(await custody(), "revoked", "the selected worker retires old custody");
-      await owner.maintain();
-      assert.equal(revocations(), before + 1, "one confirmed revocation");
-      assert.deepEqual(
-        await receipts(),
-        retained,
-        "neither possible use nor spent draft was resolved or replayed",
-      );
-      assert.equal(f.gh.issuesOfTokens.length, 2, "no replacement credential issued");
-      return;
-    }
     await assert.rejects(
       owner.use(request()),
       { message: "Prepared GitHub custody transaction did not complete (guard)." },

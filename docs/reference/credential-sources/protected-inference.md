@@ -15,8 +15,9 @@ shared exchange but does not establish static inference or Git transport support
 
 New protected revisions record version 3 admission, including the Driver identity and
 configuration shared by Sandbox and Credential Proxy. Upgrade the API and workers
-before creating one: an older worker refuses this revision. Existing version 2
-revisions retain their original capability IDs and cleanup ownership.
+before creating one: an older worker refuses this revision. Version 2 represents
+unprotected admission only. Protected versions 4, 5 and 6 carry the distinct
+[repository authorization contracts](../repository-credentials/protected-openshell-git.md).
 A protected plan with no bindings means deny all, including direct networking.
 Readers that cannot interpret the decision refuse the revision. Other Compute
 implementations refuse protected admission. A protected revision keeps only its

@@ -25,7 +25,6 @@ import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   legacyAdoption,
   protectedGitAdoption,
-  unregisteredGitAdmissionEnded,
   installationGitAdoption,
   releasedGitProfile,
   registeredGitSelection,
@@ -367,11 +366,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         : proxy
           ? "false"
           : repositoryGitBrokerOwnerPredicate,
-      ...(driver && {
-        driver,
-        retireHistorical: (issuer) =>
-          `f.admission->>'issuerAuthority'=${issuer} AND ${unregisteredGitAdmissionEnded}`,
-      }),
+      ...(driver && { driver }),
     });
     this.proxy = proxy;
     this.adoption = adoption;
@@ -399,7 +394,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { rows: retired } = await c.query(
         `WITH stopped AS (
         UPDATE ${families} f SET enabled=false
-        WHERE enabled AND ${this.retiringFamily("$1", "$2", ended)}
+        WHERE enabled AND ${this.retiringFamily("$1", ended)}
         RETURNING source_id, source, admission->>'issuerAuthority' IS DISTINCT FROM $2 AS foreign),
         moved AS (UPDATE ${attempts} a SET custody='retire' FROM stopped s
         WHERE a.source_id=s.source_id AND custody='current' RETURNING a.source_id, a.provider_expires_at)

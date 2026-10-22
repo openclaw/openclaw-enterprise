@@ -416,94 +416,24 @@
       "breakpoints": true
     },
     {
+      "idx": 59,
+      "version": "7",
+      "when": 1787000000060,
+      "tag": "0060_credential_proxy_admission",
+      "breakpoints": true
+    },
+    {
       "idx": 60,
       "version": "7",
-      "when": 1787000000069,
-      "tag": "0060_credential_proxy",
+      "when": 1787000000061,
+      "tag": "0061_repository_credential_authority",
       "breakpoints": true
     },
     {
       "idx": 61,
       "version": "7",
-      "when": 1787000000070,
-      "tag": "0061_openshell_expired_git",
-      "breakpoints": true
-    },
-    {
-      "idx": 62,
-      "version": "7",
-      "when": 1787000000071,
-      "tag": "0062_repository_standing_approvals",
-      "breakpoints": true
-    },
-    {
-      "idx": 63,
-      "version": "7",
-      "when": 1787000000072,
-      "tag": "0063_prepared_standing_git_expiry",
-      "breakpoints": true
-    },
-    {
-      "idx": 64,
-      "version": "7",
-      "when": 1787000000073,
-      "tag": "0064_protected_driver_registration",
-      "breakpoints": true
-    },
-    {
-      "idx": 65,
-      "version": "7",
-      "when": 1787000000074,
-      "tag": "0065_credential_proxy_repository_sessions",
-      "breakpoints": true
-    },
-    {
-      "idx": 66,
-      "version": "7",
-      "when": 1787000000075,
-      "tag": "0066_prepared_repository_draft_uses",
-      "breakpoints": true
-    },
-    {
-      "idx": 67,
-      "version": "7",
-      "when": 1787000000076,
-      "tag": "0067_protected_repository_git_recipients",
-      "breakpoints": true
-    },
-    {
-      "idx": 68,
-      "version": "7",
-      "when": 1787000000077,
-      "tag": "0068_credential_proxy_github_installation",
-      "breakpoints": true
-    },
-    {
-      "idx": 69,
-      "version": "7",
-      "when": 1787000000078,
-      "tag": "0069_repository_git_online_authorization",
-      "breakpoints": true
-    },
-    {
-      "idx": 70,
-      "version": "7",
-      "when": 1787000000079,
-      "tag": "0070_repository_git_observed_hook",
-      "breakpoints": true
-    },
-    {
-      "idx": 71,
-      "version": "7",
-      "when": 1787000000080,
-      "tag": "0071_credential_deliveries",
-      "breakpoints": true
-    },
-    {
-      "idx": 72,
-      "version": "7",
-      "when": 1787000000081,
-      "tag": "0072_credential_policy_reduction",
+      "when": 1787000000062,
+      "tag": "0062_credential_delivery_custody",
       "breakpoints": true
     }
   ]

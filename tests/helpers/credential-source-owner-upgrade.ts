@@ -1,92 +1,136 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type pg from "pg";
-import {
-  credentialFreeMetadataGrant,
-  credentialFreeProviderRef,
-  githubMetadataGrant,
-  preparedGitHubProviderRef,
-} from "../../packages/contracts/src/index.ts";
 
-/** Insert into real 0066, where owner_capability does not exist. No credential or issuer is used. */
+/** Exercise real main source metadata and Secret relationships before owner admission exists. */
 export async function retainGatewaySourcesAcrossProxyAdmission(
   app: pg.Client,
   migrator: pg.Client,
   namespaceId: string,
 ) {
-  const generation = 1;
-  const ref = { id: "source-owner", generation };
-  const config = {
-    origin: "https://fixture.example.test",
-    repository_id: "7",
-    repository: "fixture/metadata",
-    authority: "execution",
-    agent_id: `agt_${randomUUID()}`,
-    app_id: "8",
-    installation_id: "9",
-  };
-  for (const [provider, grant, schemaVersion, adoption] of [
-    [credentialFreeProviderRef, credentialFreeMetadataGrant(config), 3, "credential_free"],
-    [preparedGitHubProviderRef, githubMetadataGrant(config), 2, "prepared"],
+  const secretId = `sec_${randomUUID()}`;
+  await app.query(
+    `INSERT INTO occ.secrets(id,namespace_id,name,driver_id,backend_namespace_name,backend_name,backend_key,backend_uid,created_at)
+     VALUES($1,$2,'Source upgrade secret','secrets','fixture','source-upgrade','value',$3,now())`,
+    [secretId, namespaceId, randomUUID()],
+  );
+  const ids: string[] = [];
+  for (const [type, field] of [
+    ["openai", "api_key"],
+    ["codex-pat", "access_token"],
+    ["codex-oauth", undefined],
   ] as const) {
     const id = `cs_${randomUUID()}`;
-    const egress = {
-      key: {
-        installationId: `ins_${randomUUID()}`,
-        namespaceId,
-        source: { id, generation },
-        backend: ref,
-        provider,
-      },
-      grant,
-      schemaVersion,
-      adoption,
-      retention: "none",
-      origin: config.origin,
-      sender: ref,
-      resolver: ref,
-    };
+    ids.push(id);
     await app.query(
-      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at,egress)
-       VALUES($1,$2,$3,$3,$4,$5,'ready',clock_timestamp(),$6)`,
-      [id, namespaceId, provider.id, config, ref.id, egress],
+      `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
+       VALUES($1,$2,$3,$3,'{}','external-gateway','ready',clock_timestamp())`,
+      [id, namespaceId, type],
     );
+    if (field) {
+      await app.query(
+        `INSERT INTO occ.credential_source_secrets(namespace_id,credential_source_id,field,secret_id)
+         VALUES($1,$2,$3,$4)`,
+        [namespaceId, id, field, secretId],
+      );
+    }
   }
-  async function sources(omitOwner: boolean) {
+  async function sources(omitAnnotations: boolean) {
     return (
       await app.query(
-        `SELECT to_jsonb(s) ${omitOwner ? "- 'owner_capability'" : ""} AS source
-       FROM occ.credential_sources s WHERE namespace_id=$1 ORDER BY id`,
-        [namespaceId],
+        `SELECT to_jsonb(s) ${omitAnnotations ? "- 'owner_capability' - 'egress'" : ""} AS source
+         FROM occ.credential_sources s WHERE id=ANY($1) ORDER BY id`,
+        [ids],
       )
     ).rows.map((row) => row.source);
   }
+  async function relationships() {
+    return (
+      await app.query(
+        "SELECT * FROM occ.credential_source_secrets WHERE credential_source_id=ANY($1) ORDER BY credential_source_id",
+        [ids],
+      )
+    ).rows;
+  }
   const before = await sources(false);
-  assert.equal(before.length, 2);
+  const secretsBefore = await relationships();
   return async function assertOwnershipAfterUpgrade() {
+    assert.deepEqual(await sources(true), before, "main source fields survive unchanged");
+    assert.deepEqual(await relationships(), secretsBefore, "Secret ownership remains exact");
     assert.deepEqual(
-      await sources(true),
-      before,
-      "every historical source field survives unchanged",
+      (await sources(false)).map(({ owner_capability, egress }) => ({ owner_capability, egress })),
+      ids.map(() => ({ owner_capability: "credential_gateway", egress: null })),
+      "main sources retain Gateway ownership without acquiring proxy authority",
     );
-    assert.deepEqual(
-      (await sources(false)).map(({ owner_capability }) => owner_capability),
-      ["credential_gateway", "credential_gateway"],
-      "protected sources were admitted by the Gateway through 0066",
-    );
-    const id = before[0].id;
     const relabel =
       "UPDATE occ.credential_sources SET owner_capability='credential_proxy' WHERE id=$1";
-    await assert.rejects(app.query(relabel, [id]), { code: "42501" });
-    await assert.rejects(migrator.query(relabel, [id]), { code: "55000" });
-    // A stale writer after the cutover must fail, rather than implicitly create a Gateway owner.
+    await assert.rejects(app.query(relabel, [ids[0]]), { code: "42501" });
+    await assert.rejects(migrator.query(relabel, [ids[0]]), { code: "55000" });
+    // A stale writer must fail rather than implicitly select a source owner.
     await assert.rejects(
       app.query(
         `INSERT INTO occ.credential_sources(id,namespace_id,name,type,config,driver_id,state,created_at)
-       VALUES($1,$2,'unspecified owner','openai','{}',$3,'ready',now())`,
-        [`cs_${randomUUID()}`, namespaceId, ref.id],
+         VALUES($1,$2,'unspecified owner','openai','{}','external-gateway','ready',now())`,
+        [`cs_${randomUUID()}`, namespaceId],
       ),
       { code: "23502", column: "owner_capability" },
     );
   };
+}
+
+/** Effective privileges include role membership and default ACLs, not just explicit grants. */
+export async function assertCredentialSchemaPrivileges(app: pg.Client) {
+  const tables = [
+    ["egress_installations", "installation"],
+    ["egress_rejected_material", ""],
+    ["egress_send_receipts", "authorized_dispatch,outcome,observation,settled,feedback"],
+    ["prepared_github_families", "admission,enabled,next_check_at,worker_claim"],
+    [
+      "prepared_github_attempts",
+      "state,custody,material_version,provider_expires_at,usable_until,sealed",
+    ],
+    ["prepared_repository_git_uses", ""],
+    ["prepared_repository_draft_pulls", "outcome,projection,settled_at"],
+    [
+      "credential_deliveries",
+      "fence,worker_instance,adopted_at,updated_at,desired,observed,material_version,preparation_attempt_id,target_material_version,target_preparation_attempt_id,write_pending,blocked,retained_policy_hash",
+    ],
+    ["credential_delivery_reductions", "request_id,expected_version,observed_generation"],
+    ["protected_repository_git_recipients", "fence,state,attempt_id,material_version"],
+  ] as const;
+  for (const [table, mutable] of tables) {
+    const result = await app.query(
+      `SELECT pg_get_userbyid(c.relowner) = 'occ_migrator' AS owned,
+         has_table_privilege(current_user,c.oid,'SELECT') AS readable,
+         has_table_privilege(current_user,c.oid,'INSERT') AS insertable,
+         has_table_privilege(current_user,c.oid,'UPDATE') AS update_all,
+         has_table_privilege(current_user,c.oid,'DELETE') AS deletable,
+         has_table_privilege(current_user,c.oid,'TRUNCATE') AS truncatable,
+         array_agg(a.attname::text ORDER BY a.attname)
+           FILTER (WHERE has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')) AS mutable
+       FROM pg_class c JOIN pg_attribute a ON a.attrelid=c.oid
+       WHERE c.oid=$1::regclass AND a.attnum>0 AND NOT a.attisdropped
+       GROUP BY c.oid,c.relowner`,
+      [`occ.${table}`],
+    );
+    assert.deepEqual(
+      result.rows,
+      [
+        {
+          owned: true,
+          readable: true,
+          insertable: true,
+          update_all: false,
+          deletable: false,
+          truncatable: false,
+          mutable: mutable ? mutable.split(",").sort() : null,
+        },
+      ],
+      `${table} must expose only its required receipt transitions`,
+    );
+  }
+  assert.deepEqual(
+    (await app.query("SELECT to_regclass('occ.openshell_git_routes') AS obsolete")).rows,
+    [{ obsolete: null }],
+  );
 }

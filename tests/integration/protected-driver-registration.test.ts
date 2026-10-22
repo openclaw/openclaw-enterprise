@@ -113,6 +113,19 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   const worker = (await load())!;
   const check = worker.computeDriver.validateExecutionAdmission!.bind(worker.computeDriver);
   check(admission, "stored");
+  // Even an otherwise current registered plan cannot revive draft-only protected v2.
+  assert.throws(
+    () =>
+      check(
+        {
+          ...admission,
+          // @ts-expect-error Exercise a persisted value that the public type excludes.
+          executionAdmission: { version: 2, mode: "protected" },
+        },
+        "stored",
+      ),
+    /Missing or unsupported durable execution admission/,
+  );
   assert.throws(() => check(admission, owner), /exact paired Compute release/);
   assert.throws(
     () =>
@@ -127,11 +140,11 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   );
   const { driver: _, ...legacyPlan } = plan;
   const legacy = {
-    executionAdmission: { version: 2, mode: "protected" },
+    executionAdmission: { version: 3, mode: "protected" },
     egressPlan: legacyPlan,
   } as const;
-  assert.throws(() => check(legacy, worker.protectedDriver), /exact paired Compute release/);
-  assert.throws(() => check(legacy, "stored"), /exact paired Compute release/);
+  assert.throws(() => check(legacy, worker.protectedDriver), /registration in execution admission/);
+  assert.throws(() => check(legacy, "stored"), /registration in execution admission/);
   assert.throws(
     () => check({ ...admission, egressPlan: legacyPlan }, "stored"),
     /registration in execution admission/,
@@ -145,14 +158,14 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
       ),
     /no longer supplies the selected capability/,
   );
-  // Only installation composition that explicitly received the historical IDs can release a stored v2 plan.
+  // Capability IDs alone cannot authorize a plan without its registered owner.
   const previous = new InstalledDriver(
     { ...owner.ref, configuration: {} },
     { capabilities: { sandbox, credential_proxy: proxy } },
     { sandbox: sandbox.id, credential_proxy: proxy.id },
   );
   const compatibility = new ProtectedExecutionDriver(previous);
-  assert.equal(compatibility.admits(legacy, "stored"), true);
+  assert.equal(compatibility.admits(legacy, "stored"), false);
   assert.equal(compatibility.admits(legacy, previous), false);
 
   const release = new ProtectedExecutionDriver(owner);

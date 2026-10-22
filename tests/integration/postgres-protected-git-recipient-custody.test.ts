@@ -26,9 +26,8 @@ test(
     const protectedOwner = (extra = {}) =>
       f.startOwner({ controlSocket: undefined, protectedGitDriver: driver, ...extra });
     const owner = await protectedOwner();
-    const other = await protectedOwner({
-      protectedGitDriver: { ...driver, configurationId: "a".repeat(64) },
-    });
+    const otherDriver = { ...driver, configurationId: "a".repeat(64) };
+    const other = await protectedOwner({ protectedGitDriver: otherDriver });
     const legacy = await f.startOwner({ controlSocket: undefined });
     const mine = owner.protectedGit!;
     const notMine = other.protectedGit!;
@@ -79,6 +78,15 @@ test(
     await legacy.maintain();
     assert.equal(revocations(), 0);
     const familyId = "repository-git:" + admissionId;
+    assert.equal((await f.pool.query("SELECT current_user")).rows[0].current_user, "occ_app");
+    await assert.rejects(
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET source = jsonb_set(source, '{session,credentialProxyExecution,driver}', $2::jsonb) WHERE source_id = $1",
+        [familyId, JSON.stringify(otherDriver)],
+      ),
+      { code: "42501" },
+      "the application role cannot rewrite the protected owner's identity",
+    );
     const inspect = () => owner.inspectTokenAttempt(familyId, preparationAttemptId);
     assert.equal((await inspect())?.custody, "current");
     assert.equal(await other.inspectTokenAttempt(familyId, preparationAttemptId), undefined);
@@ -178,8 +186,10 @@ test(
     // Now retirement is really due. Even with the correct issuer/key, the other recipient owner cannot take it.
     await other.maintain();
     await legacy.maintain();
+    await f.owner.maintain();
     assert.equal(revocations(), 0);
     assert.equal((await inspect())?.custody, "retire");
+    await owner.maintain();
     await owner.maintain();
     assert.equal(revocations(), 1);
     assert.equal((await inspect())?.custody, "revoked");
