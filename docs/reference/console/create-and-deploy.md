@@ -159,6 +159,10 @@ select **Retry permission check**.
 Uncertain responses block another attempt: check displayed IDs and the Agents list;
 give the request ID to your operator if the outcome remains unknown.
 
+If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
+start in that form. Without the session reference it cannot poll or cancel the
+attempt. Follow [interrupted sign-in recovery](../../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+
 After a lost admission response, **Retry provisioning request** resubmits the same
 request ID and saved Secret references. Retry acknowledged jobs through their URL;
 if refused after an unknown outcome, **Create Agent** resends
