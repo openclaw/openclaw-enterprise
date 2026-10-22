@@ -28,7 +28,7 @@ async function sourceFiles(directory) {
         }
         return sourceFiles(path);
       }
-      return entry.isFile() && /\.(?:m?ts|mjs)$/.test(entry.name) ? [path] : [];
+      return entry.isFile() && /\.(?:[cm]?ts|mjs)$/.test(entry.name) ? [path] : [];
     }),
   );
   return files.flat();
@@ -96,9 +96,14 @@ for (const name of activePackages) {
 for (const name of activeApplications) {
   assert.ok(references.has(`./apps/${name}`), `Missing ${name} TypeScript project reference.`);
 }
+assert.ok(
+  references.has("./tsconfig.node.json"),
+  "The solution must type-check Node tooling and test helpers.",
+);
+assert.ok(references.has("./tests"), "The solution must type-check the existing test project.");
 assert.equal(
   references.size,
-  activePackages.length + activeApplications.length,
+  activePackages.length + activeApplications.length + 2,
   "The solution contains an unexpected project.",
 );
 

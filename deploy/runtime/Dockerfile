@@ -62,11 +62,11 @@ RUN set -eu; \
     test -x "$client/dist/drivers/repo/github/credentials/client/hooks/pre-push"; \
     find .build/runtime-client -exec touch -h -d @0 {} +
 
-# Build the service from the full, type-checked workspace of the same checkout.
+# Build the service from the controller project and its package references.
 # Keep the service closure separate from the Agent runtime and its unprivileged
 # client.
 FROM repository-credentials-deps AS repository-credentials-build
-COPY tsconfig.base.json tsconfig.json ./
+COPY tsconfig.base.json ./
 COPY packages packages
 COPY apps/controller apps/controller
 COPY scripts/build-repository-credentials.mjs scripts/build-repository-credentials.mjs

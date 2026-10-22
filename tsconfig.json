@@ -18,6 +18,12 @@
     },
     {
       "path": "./apps/controller"
+    },
+    {
+      "path": "./tests"
+    },
+    {
+      "path": "./tsconfig.node.json"
     }
   ],
   "exclude": ["legacy", "legacy/**", "node_modules", "**/node_modules", "**/dist"]

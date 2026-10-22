@@ -2,11 +2,15 @@
 // parent argument still requires an experimental flag. This bounded compatibility
 // layer selects workspace ESM export URLs only; it does not resolve files.
 // https://nodejs.org/api/esm.html#resolution-algorithm-specification
-export function selectPackageExport(exports, subpath, conditions) {
-  function invalid() {
+export function selectPackageExport(
+  exports: unknown,
+  subpath: string,
+  conditions: ReadonlySet<string>,
+): string | null | undefined {
+  function invalid(): never {
     throw new Error("Invalid or unsupported package export target.");
   }
-  function target(value, wildcard) {
+  function target(value: unknown, wildcard?: string): string | null | undefined {
     if (value === null) {
       return null;
     }
@@ -36,8 +40,9 @@ export function selectPackageExport(exports, subpath, conditions) {
       return selected;
     }
     if (Array.isArray(value)) {
-      let lastError;
-      for (const item of value) {
+      let lastError: unknown;
+      const items: readonly unknown[] = value;
+      for (const item of items) {
         try {
           const result = target(item, wildcard);
           if (result !== undefined && result !== null) {
@@ -55,7 +60,7 @@ export function selectPackageExport(exports, subpath, conditions) {
       }
       return null;
     }
-    if (!value || typeof value !== "object") {
+    if (!isRecord(value)) {
       return invalid();
     }
     if (Object.keys(value).some((key) => key.startsWith(".") || /^(0|[1-9][0-9]*)$/.test(key))) {
@@ -71,7 +76,7 @@ export function selectPackageExport(exports, subpath, conditions) {
     }
     return undefined;
   }
-  if (exports && typeof exports === "object" && !Array.isArray(exports)) {
+  if (isRecord(exports)) {
     const keys = Object.keys(exports);
     const paths = keys.filter((key) => key.startsWith("."));
     if (paths.length && paths.length !== keys.length) {
@@ -85,7 +90,9 @@ export function selectPackageExport(exports, subpath, conditions) {
         .filter((key) => key.includes("*") && key.indexOf("*") === key.lastIndexOf("*"))
         .sort((a, b) => b.indexOf("*") - a.indexOf("*") || b.length - a.length);
       for (const pattern of patterns) {
-        const [prefix, suffix] = pattern.split("*");
+        const wildcardIndex = pattern.indexOf("*");
+        const prefix = pattern.slice(0, wildcardIndex);
+        const suffix = pattern.slice(wildcardIndex + 1);
         if (
           subpath.startsWith(prefix) &&
           subpath.endsWith(suffix) &&
@@ -101,4 +108,8 @@ export function selectPackageExport(exports, subpath, conditions) {
     }
   }
   return subpath === "." ? target(exports) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
