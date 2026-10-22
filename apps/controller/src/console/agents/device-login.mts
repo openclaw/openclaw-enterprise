@@ -139,7 +139,7 @@ export function createDeviceLogin({
       (busy
         ? "Checking Codex login…"
         : unconfirmed
-          ? "Sign-in may have started, but the Console could not confirm it. Ask an administrator to check this Namespace’s credential sources before starting another sign-in."
+          ? "Sign-in may have started, but the Console could not confirm it. Do not start another sign-in until an administrator investigates the pending attempt."
           : challenge?.status === "ready"
             ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
             : challenge

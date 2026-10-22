@@ -452,7 +452,9 @@ test("Codex sign-in can retry a refused start but cannot repeat one with an unre
   await start.click();
   await waitForSettledFetches(page, beginPath, 2);
   assert.equal(await start.isDisabled(), true, "a login may already exist");
-  await page.getByText(/may have started.*check this Namespace.s credential sources/i).waitFor();
+  await page
+    .getByText(/may have started.*until an administrator investigates the pending attempt/i)
+    .waitFor();
   assert.equal(await page.getByRole("button", { name: "Cancel login" }).isVisible(), false);
 
   // Changing the method rerenders the controls. Even a delivered click must not repeat Begin.
