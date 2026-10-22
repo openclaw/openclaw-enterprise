@@ -174,3 +174,21 @@ only its temporary branch through your team's GitHub workflow. Keep the shared
 App and platform Secrets while other Agents depend on them. For permanent
 offboarding, retire affected Agents, resolve cleanup, and then remove the
 repository from the App installation and publish a new immutable registry policy.
+
+## Replace a rejected App key
+
+Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
+`blocked`) for the affected revision and repository. Already issued material can
+remain usable until expiry. An active Agent or a working model reply does not
+prove Git access. After expiry, the OpenShell route reports unavailable material;
+a new deployment can wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its
+convergence deadline.
+
+Put a key GitHub accepts in `private-key.pem` of the Secret selected by
+`repositoryCredentials.appKeySecretName`, using the protected-input procedure in
+[installation](installation.md#prepare-the-registry-and-protected-inputs).
+Keep it worker-only. Allow the mounted Secret to update, then deploy a new
+revision of each affected Agent and verify a fresh fetch. The worker re-reads the
+key; restoring it alone does not reopen a quarantined preparation. Preserve
+unresolved retirement with its original owner; see
+[Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).

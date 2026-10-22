@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { randomUUID } from "node:crypto";
+import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
   OpenShellGitRouteBlockedError,
   OpenShellGitRuntime,
@@ -7,9 +9,14 @@ import {
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { OpenShellPreparedGitProviderError } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 import {
+  createGitHubRepositoryDeliveryResolver,
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  openShellGitRuntimeFixture as fixture,
+  registry,
+} from "../helpers/openshell-git-runtime.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -19,281 +26,6 @@ import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 // The worker-local runtime's reconcile and lookup, driven at the class boundary with a fake
 // gateway client, provider and material owner: no OpenShell wire, no database. The provider's
 // own wire behaviour is covered by openshell-prepared-git-provider.test.mjs.
-const PUSH_REF = "refs/heads/review/task";
-const registry = validateGitHubRepositoryRegistry(
-  {
-    version: 1,
-    backendId: "github-primary",
-    providerInstanceId: "github-com-primary",
-    appId: "12345",
-    githubInstallationId: "67890",
-    maximumDurationSeconds: 86400,
-    repositories: [
-      {
-        repositoryRef: "application",
-        repositoryId: "34567",
-        repository: "example/application",
-        namespaces: [
-          {
-            namespaceId: "namespace-a",
-            profiles: ["git-write"],
-            pushRefAllowlist: [PUSH_REF],
-            transport: "git-only",
-          },
-        ],
-      },
-    ],
-  },
-  "github-primary",
-);
-const admitted = resolveGitHubRepositoryBinding(registry, {
-  namespaceId: "namespace-a",
-  repositoryRef: "application",
-  profile: "git-write",
-});
-const future = () => new Date(Date.now() + 600_000).toISOString();
-
-function fixture({ store, world } = {}) {
-  const revision = Object.freeze({
-    id: "rev-one",
-    namespaceId: "namespace-a",
-    agentId: "agent-one",
-    harness: { id: "codex", mode: "dedicated" },
-    repositoryCredentials: {
-      driver: { id: "repo-driver", implementation: "github" },
-      deadlineWallMs: Date.now() + 3_600_000,
-      bindings: [admitted],
-    },
-  });
-  // `world` shares the gateway, supervisor, faults and owner of an earlier fixture: the state a
-  // restarted worker process finds (finding 2128).
-  const sandbox = world?.sandbox ?? {
-    id: "sandbox-id-one",
-    name: "git-execution",
-    workspace: "team-workspace",
-    phase: "SANDBOX_PHASE_READY",
-    restartCount: 0,
-    spec: { restart_policy: "SANDBOX_RESTART_POLICY_NEVER" },
-  };
-  const supervisor = world?.supervisor ?? {
-    supervisorSessionId: "session-one",
-    processInstanceId: "process-one",
-    networkInstanceId: "network-one",
-    attachmentEpoch: "epoch-one",
-  };
-  const calls = world?.calls ?? {
-    getSandbox: 0,
-    observe: 0,
-    rotate: 0,
-    material: 0,
-    observedWith: [],
-  };
-  const faults = world?.faults ?? {
-    gateway: undefined,
-    material: undefined,
-    rotate: undefined,
-    onRead: undefined,
-    observe: undefined,
-    observeAfterRotate: undefined,
-    environmentLag: undefined,
-    duringObserve: undefined,
-  };
-  const client = {
-    getProvider: async () => ({ type: "openai", profileWorkspace: "" }),
-    getProviderProfile: async () => ({
-      definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] },
-    }),
-    getSandbox: async () => {
-      calls.getSandbox += 1;
-      faults.onRead?.();
-      if (faults.gateway) {
-        throw faults.gateway;
-      }
-      return { ...sandbox };
-    },
-    getGatewayInfo: async () => {
-      if (faults.gateway) {
-        throw faults.gateway;
-      }
-      return {
-        extensions: [
-          {
-            configured_name: "oce-prepared-git",
-            kind: "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE",
-            protocol_major: 1,
-          },
-        ],
-      };
-    },
-    getWorkspace: async () => ({ id: "workspace-id-one", name: sandbox.workspace }),
-  };
-  const provider = {
-    observe: async (binding, sandboxId, _signal, installed) => {
-      calls.observe += 1;
-      calls.observedWith.push(installed);
-      faults.duringObserve?.();
-      if (faults.environmentLag) {
-        // Like the real observe(): only the provider environment moved and the supervisor has
-        // not installed it yet, so the verified installation (if any) is answered unchanged.
-        return installed;
-      }
-      if (faults.observe) {
-        // The provider status does not verify yet (observe() answers undefined, never throws).
-        return undefined;
-      }
-      // Like the real observe(): the generation it reports is the one this binding holds.
-      return Object.freeze({
-        credentialState: binding.credentialState,
-        providerResourceVersion: binding.resourceVersion,
-        sandboxId,
-        ...supervisor,
-      });
-    },
-    rotate: async (binding, release) => {
-      const token = await release();
-      if (!token) {
-        return;
-      }
-      calls.rotate += 1;
-      if (faults.rotate) {
-        throw faults.rotate;
-      }
-      if (faults.observeAfterRotate) {
-        // The supervisor has not applied the written generation yet: the verifying read
-        // that follows reports nothing until the test clears faults.observe.
-        faults.observe = true;
-      }
-      return {
-        ...binding,
-        credentialState: "active",
-        expiresAt: token.expiresAt,
-        resourceVersion: String(Number(binding.resourceVersion) + 1),
-      };
-    },
-  };
-  const material = {
-    value: "synthetic-installation-token",
-    expiresAt: future(),
-    preparationAttemptId: "attempt-one",
-    materialVersion: "version-one",
-    repository: registry.repositories[0].repository,
-    providerInstanceId: admitted.grant.providerInstanceId,
-    repositoryId: admitted.grant.repositoryId,
-    grantId: admitted.grant.grantId,
-    pushRef: PUSH_REF,
-    apiOrigin: "https://api.github.com",
-    sessionId: "session-one",
-  };
-  const owner = world?.owner ?? {
-    readOpenShellMaterial: async () => {
-      calls.material += 1;
-      if (faults.material) {
-        throw faults.material;
-      }
-      return owner.material;
-    },
-    material,
-    authorizeOpenShellRequest: async () => true,
-  };
-  const entry = {
-    revision,
-    client,
-    provider,
-    bindingId: "binding_0123456789abcdefghijklmn",
-    delivery: { repository: registry.repositories[0].repository },
-    otherProviders: ["openai"],
-    binding: {
-      workspace: sandbox.workspace,
-      sandbox: sandbox.name,
-      provider: "oce-git",
-      providerId: "provider-id-one",
-      profileVersion: "7",
-      resourceVersion: "11",
-      credentialState: "bootstrap",
-      expiresAt: "",
-    },
-    ...(store === undefined ? {} : { fence: 1 }),
-    verify: (observed) => {
-      if (observed.name !== "git-execution") {
-        throw new Error("Refusing OpenShell Sandbox without exact AgentRevision ownership.");
-      }
-    },
-  };
-  const events = [];
-  const runtime = new OpenShellGitRuntime(
-    { registrationName: "oce-prepared-git", authority: {} },
-    registry,
-  );
-  runtime.owner = owner;
-  runtime.emit = (event) => events.push(event);
-  runtime.routes = store;
-  if (store !== undefined && !store.rows.has(revision.id)) {
-    // The row this worker's own bootstrap left: fence 1, the bootstrap generation written.
-    store.rows.set(revision.id, {
-      revisionId: revision.id,
-      namespaceId: revision.namespaceId,
-      agentId: revision.agentId,
-      workspace: sandbox.workspace,
-      sandbox: sandbox.name,
-      bindingId: entry.bindingId,
-      fence: 1,
-      workerInstance: "worker-one",
-      generation: {
-        providerId: entry.binding.providerId,
-        profileVersion: entry.binding.profileVersion,
-        resourceVersion: entry.binding.resourceVersion,
-        expiresAt: entry.binding.expiresAt,
-        credentialState: entry.binding.credentialState,
-      },
-      material: undefined,
-      observed: undefined,
-      writePending: undefined,
-      blocked: undefined,
-    });
-  }
-  runtime.entries.set(revision.id, Promise.resolve(entry));
-  runtime.states.set(revision.id, { entry });
-  const identity = {
-    sandboxId: sandbox.id,
-    bindingId: entry.bindingId,
-    workspace: sandbox.workspace,
-    requestId: "request-one",
-  };
-  const f = { entry };
-  const reconcile = async () => {
-    // Force the refresh and backoff clocks so each call observes now.
-    f.entry.nextRefreshAt = 0;
-    f.entry.nextObserveAt = 0;
-    await runtime.reconcile(f.entry);
-  };
-  const lookup = () => runtime.lookup(identity, AbortSignal.timeout(2_000));
-  const prepare = () =>
-    runtime.prepare(revision, client, sandbox.workspace, sandbox.name, AbortSignal.timeout(2_000), [
-      "openai",
-    ]);
-  const errors = () => events.filter((event) => event.event === "worker.error");
-  const denials = () => events.filter((event) => event.event === "worker.openshell-git-denied");
-  return Object.assign(f, {
-    runtime,
-    client,
-    provider,
-    store,
-    sandbox,
-    supervisor,
-    calls,
-    faults,
-    owner,
-    events,
-    reconcile,
-    lookup,
-    prepare,
-    identity,
-    errors,
-    denials,
-    revision,
-  });
-}
-
 /**
  * A new worker process finding the Sandbox and persisted route of `f`: the same gateway,
  * supervisor and owner, an empty runtime and the shared route store (finding 2128). The
@@ -1233,11 +965,14 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   // version needs no provider write; nothing is replayed.
   const store = routeStore();
   const f = fixture({ store });
+  const beforeRotation = store.rows.get(f.revision.id).fence;
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1);
   const row = store.rows.get(f.revision.id);
-  assert.equal(row.fence, 1);
+  assert.equal(row.fence, beforeRotation + 1);
+  const installedFence = row.fence;
+  assert.equal(row.operationFence, installedFence);
   assert.deepEqual(row.generation, {
     providerId: "provider-id-one",
     profileVersion: "7",
@@ -1262,8 +997,10 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
     "material",
     "namespaceId",
     "observed",
+    "operationFence",
     "revisionId",
     "sandbox",
+    "targetMaterial",
     "workerInstance",
     "workspace",
     "writePending",
@@ -1271,7 +1008,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   assert.ok(!store.dump().includes("synthetic-installation-token"), "a token was persisted");
 
   const g = await restarted(f);
-  assert.equal(store.rows.get(f.revision.id).fence, 2, "adoption moves the fence");
+  assert.equal(store.rows.get(f.revision.id).fence, installedFence + 1, "adoption moves the fence");
   assert.deepEqual(
     g.events.filter((event) => event.status === "adopted"),
     [
@@ -1279,7 +1016,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
         event: "worker.openshell-git-route",
         status: "adopted",
         reason: "worker_restarted",
-        fence: 2,
+        fence: installedFence + 1,
         namespaceId: "namespace-a",
         agentId: "agent-one",
         revisionId: "rev-one",
@@ -1299,7 +1036,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
   assert.equal(restorations(g)[0].reason, "worker_restarted");
   assert.ok(Number.isFinite(restorations(g)[0].durationMs) && restorations(g)[0].durationMs >= 0);
   assert.equal(g.entry.supervisor.supervisorSessionId, "session-one");
-  assert.equal(store.rows.get(f.revision.id).fence, 2);
+  assert.equal(store.rows.get(f.revision.id).fence, installedFence + 1);
   await g.reconcile();
   assert.equal(restorations(g).length, 1, "a restoration is reported once");
 
@@ -1383,6 +1120,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
     assert.equal(await g.lookup(), undefined);
     assert.equal(g.denials().at(-1).reason, "route_blocked");
     // A third worker finds the tombstone: refused at once, logged once, no fence moved.
+    const blockedFence = f.store.rows.get(f.revision.id).fence;
     const h = fixture({ store: f.store, world: f });
     h.runtime.entries.clear();
     h.runtime.states.clear();
@@ -1390,7 +1128,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
     await assert.rejects(h.prepare(), { name: "OpenShellGitRouteBlockedError", reason });
     assert.deepEqual(h.runtime.route(f.revision.id), { state: "blocked", reason });
     assert.equal(h.errors().length, 1);
-    assert.equal(f.store.rows.get(f.revision.id).fence, 2);
+    assert.equal(f.store.rows.get(f.revision.id).fence, blockedFence);
   }
 
   // A replaced Sandbox under the persisted name.
@@ -1409,7 +1147,14 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
   // unknown, never resumed or replayed. Refused at adoption, before any gateway read.
   const w0 = fixture({ store: routeStore() });
   await w0.reconcile();
-  w0.store.rows.get(w0.revision.id).writePending = "rotate";
+  const pendingMaterial = { materialVersion: "version-two", preparationAttemptId: "attempt-two" };
+  const pendingFence = await w0.store.writing(
+    w0.revision.id,
+    w0.entry.fence,
+    "rotate",
+    pendingMaterial,
+  );
+  assert.equal(pendingFence, w0.entry.fence + 1);
   const w = fixture({ store: w0.store, world: w0 });
   w.runtime.entries.clear();
   w.runtime.states.clear();
@@ -1420,6 +1165,25 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
   });
   assert.equal(w0.calls.getSandbox, reads);
   assert.equal(w0.store.rows.get(w0.revision.id).blocked, "write_unknown");
+  const unknown = w0.store.rows.get(w0.revision.id);
+  assert.equal(unknown.fence, pendingFence + 1);
+  assert.equal(unknown.operationFence, pendingFence);
+  assert.equal(unknown.writePending, "rotate");
+  assert.deepEqual(unknown.targetMaterial, pendingMaterial);
+  assert.equal(await w0.store.cancelWriting(w0.revision.id, pendingFence), false);
+  assert.equal(await w0.store.cancelWriting(w0.revision.id, unknown.fence), false);
+  assert.equal(
+    await w0.store.record(w0.revision.id, pendingFence, {
+      generation: unknown.generation,
+      material: pendingMaterial,
+      observed: unknown.observed,
+    }),
+    false,
+    "the stale writer cannot settle after adoption and closure",
+  );
+  await w0.store.withdraw({ revisionId: w0.revision.id });
+  assert.equal(unknown.writePending, "rotate");
+  assert.deepEqual(unknown.targetMaterial, pendingMaterial);
   assert.deepEqual(w.runtime.route(w.revision.id), { state: "blocked", reason: "write_unknown" });
   assert.equal(w.errors()[0]?.reason, "write_unknown");
 
@@ -1446,9 +1210,10 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
   assert.deepEqual(s.runtime.route(s.revision.id), { state: "none" });
   assert.deepEqual(s.errors(), []);
   s0.store.fault = undefined;
+  const beforeAdoption = s0.store.rows.get(s0.revision.id).fence;
   await s.prepare();
   assert.deepEqual(s.runtime.route(s.revision.id), { state: "pending", reason: "unverified" });
-  assert.equal(s0.store.rows.get(s0.revision.id).fence, 2);
+  assert.equal(s0.store.rows.get(s0.revision.id).fence, beforeAdoption + 1);
 });
 
 test("only the worker that adopted a persisted Git route holds it: a stale fence stops", async () => {
@@ -1460,8 +1225,9 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   const f = fixture({ store: routeStore() });
   await f.reconcile();
   assert.equal((await f.lookup())?.executionId, f.revision.id);
+  const installedFence = f.store.rows.get(f.revision.id).fence;
   const g = await restarted(f);
-  assert.equal(f.store.rows.get(f.revision.id).fence, 2);
+  assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 1);
 
   // The stale worker's request lookup is fenced before it admits anything.
   assert.equal(await f.lookup(), undefined);
@@ -1474,7 +1240,7 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   assert.equal(closed[0].event, "worker.openshell-git-route-warning");
   assert.equal(closed[0].status, "closed");
   assert.equal(f.store.rows.get(f.revision.id).blocked, undefined, "the adopter's row stays");
-  assert.equal(f.store.rows.get(f.revision.id).fence, 2);
+  assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 1);
 
   // The adopter reopens the route and serves.
   await g.reconcile();
@@ -1490,14 +1256,14 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   again.provider = f.provider;
   await f.runtime.bind(f.revision.id, f.entry.verify);
   f.entry = again;
-  assert.equal(f.store.rows.get(f.revision.id).fence, 3);
+  assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 2);
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal((await f.lookup())?.executionId, f.revision.id);
   await g.reconcile();
   assert.deepEqual(g.runtime.route(f.revision.id), { state: "none" });
   assert.equal(await g.lookup(), undefined);
-  assert.equal(f.store.rows.get(f.revision.id).fence, 3);
+  assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 2);
 
   // A store that does not answer a request's fence check denies that request only: the
   // route stays as the worker's reconcile left it.
@@ -1806,7 +1572,10 @@ test("Git expiry observes the original model in the reduced stock installation, 
     if (fault === "pending") {
       assert.deepEqual(trace, ["detach-receipt", "detach-receipt"]);
     }
-    const cold = new OpenShellGitRuntime(f.runtime.configuration, registry);
+    const cold = new OpenShellGitRuntime(
+      f.runtime.configuration,
+      createGitHubRepositoryDeliveryResolver(registry),
+    );
     cold.routes = store;
     cold.owner = f.owner;
     const expected =
@@ -1844,4 +1613,218 @@ test("Git expiry observes the original model in the reduced stock installation, 
   ]) {
     await t.test(fault, () => exercise(fault));
   }
+});
+
+test("protected material selection is serialized with the reservation fence at the final read", async () => {
+  const store = routeStore();
+  const f = fixture({ store });
+  const revision = {
+    ...f.revision,
+    executionAdmission: { version: 5, mode: "protected" },
+    egressPlan: {
+      driver: { id: "openshell" },
+      repositoryGitAuthorization: "online-request",
+      repositoryGit: f.revision.repositoryCredentials,
+    },
+  };
+  f.entry.revision = revision;
+  f.runtime.configuration.protectedExecution = true;
+  const reads = [];
+  const material = f.owner.material;
+  f.owner.readOpenShellMaterial = async (_revisionId, _signal, route) => {
+    // Serialize as the real custody transaction does. The selected observation must remain
+    // unchanged; only the fence from this attempt's durable reservation may advance.
+    const wire = JSON.parse(JSON.stringify(route));
+    reads.push(wire);
+    return wire.fence === store.rows.get(revision.id).fence ? material : { absent: "unprepared" };
+  };
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1, "the current reservation authorizes one provider write");
+  assert.deepEqual(
+    reads.map(({ fence }) => fence),
+    [1, 2],
+  );
+  assert.deepEqual(reads[1].observed, reads[0].observed);
+  assert.equal(f.runtime.route(revision.id).state, "installed");
+});
+
+test("an admitted preview rotates at its new fence only in the original worker", async () => {
+  const previewRegistry = validateGitHubRepositoryRegistry(
+    {
+      version: 1,
+      backendId: registry.backendId,
+      providerInstanceId: registry.providerInstanceId,
+      appId: registry.appId,
+      githubInstallationId: registry.githubInstallationId,
+      maximumDurationSeconds: 86400,
+      repositories: registry.repositories,
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId: "namespace-a", accessMode: "installation" }],
+      },
+    },
+    registry.backendId,
+  );
+  const resolve = createGitHubRepositoryDeliveryResolver(previewRegistry);
+  const f = fixture({ store: routeStore(), resolveDelivery: resolve });
+  const binding = resolveGitHubRepositoryBinding(previewRegistry, {
+    namespaceId: "namespace-a",
+    repositoryRef: "installation",
+    profile: "github-installation",
+  });
+  const credentials = { ...f.revision.repositoryCredentials, bindings: [binding] };
+  const revision = {
+    ...f.revision,
+    repositoryCredentials: credentials,
+    executionAdmission: { version: 6, mode: "protected" },
+    egressPlan: {
+      driver: { id: "openshell" },
+      execution: { executionId: f.entry.bindingId },
+      repositoryGitAuthorization: "request-hook-observed",
+      repositoryGit: credentials,
+    },
+  };
+  f.entry.revision = revision;
+  f.entry.authorization = resolve(revision);
+  f.runtime.configuration.protectedExecution = true;
+  f.runtime.configuration.observedHookPreviewWorkspace = f.sandbox.workspace;
+  f.runtime.configuration.authority.audience = "preview";
+  const preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  f.entry.preview = preview;
+  f.store.rows.get(revision.id).workerInstance = f.runtime.instance;
+  f.entry.continuity = { model: "openai", workload: async () => "original-pods" };
+  f.entry.binding.provider = "oce-github-installation-" + "a".repeat(32);
+  f.entry.binding.executionId = revision.id;
+  const runtimeProvider = "oce-runtime-" + "a".repeat(16);
+  const gitRule = { name: "git", endpoints: [{ host: "github.com", port: 443 }] };
+  f.provider.previewNetworkRule = () => gitRule;
+  f.provider.settlePreviewReceipt = async () => true;
+  const observe = f.provider.observe;
+  f.provider.observe = async (...args) => {
+    const result = await observe(...args);
+    return (
+      result && {
+        ...result,
+        workspace: f.sandbox.workspace,
+        sandbox: f.sandbox.name,
+        executionId: revision.id,
+        provider: f.entry.binding.provider,
+        providerId: f.entry.binding.providerId,
+        profileVersion: f.entry.binding.profileVersion,
+        providerEnvRevision: f.entry.binding.resourceVersion,
+        configRevision: "1",
+        policyHash: "original-policy",
+      }
+    );
+  };
+  f.sandbox.mainProcessStartedAt = new Date().toISOString();
+  f.sandbox.mainProcessInstanceId = f.supervisor.networkInstanceId;
+  f.sandbox.spec.policy = { network_policies: {} };
+  f.sandbox.spec.providers = ["openai", runtimeProvider, f.entry.binding.provider];
+  f.sandbox.spec.provider_attachment_epoch = f.supervisor.attachmentEpoch;
+  const admission = () => ({
+    state: 2,
+    instance_id: "configuration",
+    policy_version: "1",
+    policy_hash: "original-policy",
+    config_revision: "1",
+    provider_env_revision: f.entry.binding.resourceVersion,
+  });
+  const sandbox = f.client.getSandbox;
+  f.client.getSandbox = async (...args) => ({
+    ...(await sandbox(...args)),
+    configurationAdmission: admission(),
+  });
+  f.client.readExclusivePreviewWorkspace = async () => true;
+  f.client.getSandboxConfig = async () => ({
+    policy: {
+      network_policies: {
+        git: gitRule,
+        _provider_openai: {
+          name: "_provider_openai",
+          endpoints: [{ host: "api.openai.com", port: 443 }],
+        },
+        ["_provider_" + runtimeProvider.replaceAll("-", "_")]: {
+          name: "_provider_" + runtimeProvider.replaceAll("-", "_"),
+        },
+      },
+    },
+    version: "1",
+    workspace: f.sandbox.workspace,
+    configuration_instance_id: "configuration",
+    policy_source: 1,
+    configuration_admitted: true,
+    policy_validation_failure_mode: "fail_closed",
+    extension_authentication_enabled: true,
+    provider_attachment_epoch: f.supervisor.attachmentEpoch,
+    policy_hash: "original-policy",
+    config_revision: "1",
+    provider_env_revision: f.entry.binding.resourceVersion,
+    supervisor_middleware_services: [
+      {
+        name: "oce-prepared-git",
+        audience: "preview",
+        request_timeout: { seconds: "5" },
+        grpc_endpoint: "https://middleware.example.test",
+      },
+    ],
+  });
+  f.owner.material = {
+    ...binding.grant,
+    value: "synthetic-installation-token",
+    scope: "github-installation",
+    installationId: registry.githubInstallationId,
+    expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    sessionId: "preview-session",
+    preparationAttemptId: "preview-attempt",
+    materialVersion: "preview-material",
+    apiOrigin: "https://api.github.com",
+  };
+  await f.reconcile();
+  assert.ok(preview.recipient, "the original bootstrap observation qualifies the recipient");
+  const startupId = randomUUID();
+  const signal = AbortSignal.timeout(5000);
+  const probe = async (path) => ({
+    startupId,
+    probePath: path,
+    reasonCode: preview.deny(
+      {
+        ...f.identity,
+        target: {
+          reportedScheme: "https",
+          host: "github.com",
+          port: 443,
+          method: "GET",
+          path,
+          query: "service=git-upload-pack",
+        },
+        headers: [],
+        body: new Uint8Array(),
+        deadlineAt: new Date(Date.now() + 5000).toISOString(),
+      },
+      f.sandbox.id,
+    ),
+  });
+  assert.equal(await f.runtime.observeHeldPreview(revision.id, startupId, signal, probe), "held");
+  // The controlled supervisor delays the post-write observation. The production runtime
+  // must nevertheless cross its own pre-write observation at the new reservation fence.
+  f.faults.observeAfterRotate = true;
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(f.entry.fence, 2);
+  assert.equal(f.store.rows.get(revision.id).writePending, undefined);
+
+  const replacement = new OpenShellGitRuntime(f.runtime.configuration, resolve);
+  replacement.owner = f.owner;
+  replacement.routes = f.store;
+  await assert.rejects(
+    replacement.prepare(revision, f.client, f.sandbox.workspace, f.sandbox.name, signal, [
+      "openai",
+    ]),
+    { reason: "worker_replaced" },
+  );
+  assert.equal(f.store.rows.get(revision.id).blocked, "worker_replaced");
+  f.faults.observe = false;
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1, "neither the replacement nor the fenced original can replay");
 });

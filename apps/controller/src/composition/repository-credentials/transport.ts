@@ -35,7 +35,43 @@ export async function bindRepositoryGitTransport(
     return repositoryTransport.bind(owner, pool, emit);
   }
   if (repositoryGitDriver && owner.protectedGit) {
-    return repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
+    const binding = await repositoryGitDriver.requireRepositoryGitTransport()(owner.protectedGit);
+    if (!binding.reconcile) {
+      return binding;
+    }
+    const stop = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let running: Promise<void>;
+    const tick = async () => {
+      try {
+        await binding.reconcile!(AbortSignal.any([stop.signal, AbortSignal.timeout(25_000)]));
+      } catch {
+        // The next pass must observe an uncertain effect, never repeat it.
+        // The Driver retains the operation; request authorization remains fail-closed.
+        if (!stop.signal.aborted) {
+          emit?.({
+            event: "worker.repository-delivery-pending",
+            driverId: repositoryGitDriver.ref.id,
+          });
+        }
+      } finally {
+        if (!stop.signal.aborted) {
+          timer = setTimeout(() => {
+            running = tick();
+          }, 1_000);
+          timer.unref();
+        }
+      }
+    };
+    running = tick();
+    return {
+      async close() {
+        stop.abort();
+        clearTimeout(timer);
+        await running;
+        await binding.close();
+      },
+    };
   }
   return undefined;
 }

@@ -9,7 +9,7 @@ Compute, with no Sandbox Driver selected. The Agent receives a short-lived OCE
 repository session, not a GitHub credential. Native Git verifies HTTPS to the OCE
 repository service. This topology does not provide OpenShell network isolation.
 An Installation that requires OpenShell must not fall back to it automatically.
-For the opt-in stock OpenShell trial, see [OpenShell Git](openshell-git.md).
+For the protected OpenShell qualification boundary, see [OpenShell Git](protected-openshell-git.md).
 
 ## What a request authorizes
 

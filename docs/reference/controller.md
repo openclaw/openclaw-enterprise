@@ -160,7 +160,7 @@ The worker emits fixed operational event classes through the same logger:
   credential codes `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and
   `PREPARED_GITHUB_RECOVERY_REQUIRED` add a `reason` class and the affected
   Namespace, revision and `repositoryRef` (see
-  [Git through OpenShell](repository-credentials/openshell-git.md#route-state-restarts-and-recovery)).
+  [Git through OpenShell](repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
 - `worker.claim-renewal-warning`: a lease renewal that succeeded but answered after
   the lease could have run out, at warn level with the work identity, code
   `CLAIM_RENEWAL_LATE` and the renewal's `durationMs`. The worker stops that work,

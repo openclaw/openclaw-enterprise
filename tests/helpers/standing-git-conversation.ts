@@ -84,6 +84,7 @@ export async function standingGitConversation(t: TestContext, executable: string
       environment: Record<string, string>,
       check: (phase: string) => Promise<void>,
       release: (startupId: string) => Promise<ReturnType<typeof signComputeExecutionRelease>>,
+      routeCount = 1,
     ) {
       observed = () => check(phase);
       assert.equal(environment.CODEX_LOGIN_MODE, "api_key");
@@ -121,8 +122,16 @@ export async function standingGitConversation(t: TestContext, executable: string
       child.stderr.on("data", (data) => {
         log = (log + data).slice(-9000);
       });
+      const sockets = new Set<InstanceType<typeof WebSocket>>();
+      const pendingMessages = new Set<() => void>();
       const exited = once(child, "exit");
       t.after(async () => {
+        for (const cancel of pendingMessages) {
+          cancel();
+        }
+        for (const socket of sockets) {
+          socket.terminate();
+        }
         if (child.exitCode === null && child.signalCode === null) {
           child.kill();
         }
@@ -133,10 +142,17 @@ export async function standingGitConversation(t: TestContext, executable: string
       const challenge = await waitFor("native protected enrollment", async () => {
         assert.equal(child.exitCode, null, log);
         const result = await fetch(url, { headers }).catch(() => undefined);
-        return result && (await result.json());
+        if (!result) {
+          return;
+        }
+        assert.equal(result.status, 200, "native enrollment challenge must be available");
+        return result.json();
       });
       assert.equal(responses.length, 0, "not even a probe before signed Compute release");
-      assert.deepEqual([challenge.inference, challenge.routeCount], ["credential_source", 1]);
+      assert.deepEqual(
+        [challenge.inference, challenge.routeCount],
+        ["credential_source", routeCount],
+      );
       assert.equal(
         (
           await fetch(url, {
@@ -156,6 +172,8 @@ export async function standingGitConversation(t: TestContext, executable: string
             return;
           }
           const ws = new WebSocket("ws://127.0.0.1:" + port, { headers });
+          sockets.add(ws);
+          ws.once("close", () => sockets.delete(ws));
           if (
             await once(ws, "open").then(
               () => true,
@@ -167,7 +185,6 @@ export async function standingGitConversation(t: TestContext, executable: string
         },
         65000,
       );
-      t.after(() => socket.terminate());
       let n = 0;
       // Only one RPC is outstanding; never replay a turn after an ambiguous outcome.
       async function call(method: string, params: object) {
@@ -191,23 +208,28 @@ export async function standingGitConversation(t: TestContext, executable: string
       };
       function waitForMessage(match: (m: Message) => boolean) {
         return new Promise<Message>((resolve, reject) => {
-          const timeout = setTimeout(
-            () => reject(Error("Codex response deadline, no replay: " + log.slice(-2400))),
-            40000,
-          );
+          const cleanup = () => {
+            clearTimeout(timeout);
+            socket.off("message", message);
+            pendingMessages.delete(cleanup);
+          };
+          const timeout = setTimeout(() => {
+            cleanup();
+            reject(Error("Codex response deadline, no replay: " + log.slice(-2400)));
+          }, 40000);
           const message = (data: Buffer) => {
             const m = JSON.parse(data.toString()) as Message;
             if (!match(m)) {
               return;
             }
-            clearTimeout(timeout);
-            socket.off("message", message);
+            cleanup();
             if (m.error) {
               reject(Error(JSON.stringify(m.error)));
             } else {
               resolve(m);
             }
           };
+          pendingMessages.add(cleanup);
           socket.on("message", message);
         });
       }

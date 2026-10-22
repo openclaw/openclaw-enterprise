@@ -385,15 +385,18 @@ export interface SecretRepository extends SecretReadRepository {
 
 /** Internal withdrawal custody, never part of caller-visible status. */
 export interface CredentialPolicyReductionState {
+  readonly bindingId: string;
   readonly request: CredentialPolicyReduction;
   readonly observed?: EgressInstallation;
 }
 
-export interface StoredCredentialWithdrawal extends CredentialWithdrawal {
-  readonly policyReduction?: CredentialPolicyReductionState;
-}
+export type StoredCredentialWithdrawal = CredentialWithdrawal;
 
 export interface CredentialSourceReadRepository {
+  listCredentialPolicyReductions(
+    namespaceId: string,
+    revisionId: string,
+  ): Promise<readonly CredentialPolicyReductionState[]>;
   isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
   findEgressInstallation(
     senderId: string,
@@ -432,10 +435,6 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
     sourceId: string,
     expected: CredentialPolicyReductionState | undefined,
     next: CredentialPolicyReductionState,
-  ): Promise<boolean>;
-  reduceEgressInstallation(
-    expected: EgressInstallation,
-    next: EgressInstallation,
   ): Promise<boolean>;
   admitEgressSource(
     namespaceId: string,
@@ -1043,6 +1042,7 @@ interface PlatformSnapshot {
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
+  readonly credentialPolicyReductions: Map<string, CredentialPolicyReductionState>;
   readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
   readonly egressRejected: Set<string>;
@@ -1119,6 +1119,7 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
     egressInstallations: new Map(
       Array.from(snapshot.egressInstallations, ([key, value]) => [key, immutableCopy(value)]),
     ),
+    credentialPolicyReductions: new Map(snapshot.credentialPolicyReductions),
     credentialWithdrawals: new Map(
       Array.from(snapshot.credentialWithdrawals, ([key, withdrawal]) => [
         key,
@@ -2038,7 +2039,23 @@ function repositories(
       evidence.materialId,
       evidence.materialVersion,
     ]);
+  const currentInstallation = (original: EgressInstallation): EgressInstallation =>
+    [...snapshot.credentialPolicyReductions.values()].reduce(
+      (current, { request, observed }) =>
+        observed &&
+        request.expected.plan.execution.revisionId === original.plan.execution.revisionId &&
+        observed.plan.generation > current.plan.generation
+          ? observed
+          : current,
+      original,
+    );
   const credentialSources: CredentialSourceRepository = {
+    listCredentialPolicyReductions: async (namespaceId, revisionId) =>
+      [...snapshot.credentialPolicyReductions.values()].filter(
+        ({ request }) =>
+          request.expected.plan.execution.namespaceId === namespaceId &&
+          request.expected.plan.execution.revisionId === revisionId,
+      ),
     isEgressMaterialRejected: async (evidence) =>
       snapshot.egressRejected.has(materialKey(evidence)),
     rejectEgressMaterial: async (evidence) => {
@@ -2053,30 +2070,21 @@ function repositories(
           ) ?? []
         ).some((revision) => revision.id === found.plan.execution.revisionId)
         ? undefined
-        : immutableCopy(found);
+        : currentInstallation(found);
     },
-    findRevisionEgressInstallation: async (namespaceId, revisionId) =>
-      [...snapshot.egressInstallations.values()].find(
+    findRevisionEgressInstallation: async (namespaceId, revisionId) => {
+      const found = [...snapshot.egressInstallations.values()].find(
         ({ plan: { execution } }) =>
           execution.namespaceId === namespaceId && execution.revisionId === revisionId,
-      ),
-    saveCredentialPolicyReduction: async (namespaceId, revisionId, sourceId, expected, next) => {
-      const current = await findCredentialWithdrawal(namespaceId, revisionId, sourceId);
-      if (!current || !isDeepStrictEqual(current.policyReduction, expected)) {
-        return false;
-      }
-      snapshot.credentialWithdrawals.set(
-        JSON.stringify([namespaceId, revisionId, sourceId]),
-        immutableCopy({ ...current, policyReduction: next }),
       );
-      return true;
+      return found && currentInstallation(found);
     },
-    reduceEgressInstallation: async (expected, next) => {
-      const key = JSON.stringify([expected.sender.id, expected.sandboxId]);
-      if (!isDeepStrictEqual(snapshot.egressInstallations.get(key), expected)) {
+    saveCredentialPolicyReduction: async (namespaceId, revisionId, bindingId, expected, next) => {
+      const key = JSON.stringify([namespaceId, revisionId, bindingId]);
+      if (!isDeepStrictEqual(snapshot.credentialPolicyReductions.get(key), expected)) {
         return false;
       }
-      snapshot.egressInstallations.set(key, immutableCopy(next));
+      snapshot.credentialPolicyReductions.set(key, immutableCopy(next));
       return true;
     },
     recordEgressInstallation: async (installation) => {
@@ -3679,6 +3687,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     presets: new Map(),
     secrets: new Map(),
     credentialSources: new Map(),
+    credentialPolicyReductions: new Map(),
     credentialWithdrawals: new Map(),
     egressInstallations: new Map(),
     egressRejected: new Set(),

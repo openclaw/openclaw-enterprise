@@ -456,7 +456,7 @@ export function createExternalProtectedDriver(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
   // Composition that changes the installed authority must also change its durable identity.
-  protectedRepository?: unknown,
+  repositoryAuthorityIdentity?: string,
 ): InstalledDriver {
   const { id, configuration } = selection;
   const registration = asRecord(
@@ -468,9 +468,9 @@ export function createExternalProtectedDriver(
     );
   }
   const owner = new InstalledDriver(
-    protectedRepository === undefined
+    repositoryAuthorityIdentity === undefined
       ? selection
-      : { ...selection, configuration: { sandbox: configuration, protectedRepository } },
+      : { ...selection, configuration: { sandbox: configuration, repositoryAuthorityIdentity } },
     registration as unknown as DriverRegistration,
   );
   owner.require("sandbox");

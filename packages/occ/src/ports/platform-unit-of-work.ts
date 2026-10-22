@@ -66,6 +66,7 @@ export function bindPlatformUnitOfWork(
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
       "findEgressInstallation",
       "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
       "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
@@ -76,7 +77,6 @@ export function bindPlatformUnitOfWork(
       "replaceCredentialSourceSecrets",
       "recordEgressInstallation",
       "saveCredentialPolicyReduction",
-      "reduceEgressInstallation",
       "rejectEgressMaterial",
       "admitEgressSource",
       "deleteCredentialSource",

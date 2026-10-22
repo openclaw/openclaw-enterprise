@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import pg from "pg";
 import {
   assertCredentialSchemaPrivileges,
+  assertInjectedMigrationRollback,
   retainGatewaySourcesAcrossProxyAdmission,
 } from "../helpers/credential-source-owner-upgrade.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
@@ -1224,7 +1225,7 @@ async function runHistoryCommand(db, mode = "development", flag, refusal) {
 // command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
 // never the migration; `runHistoryCommand` covers the process contract. flag and refusal
 // are as for runHistoryCommand: the command prints this same error.message on refusal.
-async function runHistoryMigration(db, mode = "development", flag, refusal) {
+async function runHistoryMigration(db, mode = "development", flag, refusal, assertFailure) {
   assert.ok(["development", "production"].includes(mode));
   assert.ok([undefined, "--check", "--expect-empty"].includes(flag));
   const pool = await createPostgresPool(db.migrationUrl, { max: 1 });
@@ -1235,6 +1236,7 @@ async function runHistoryMigration(db, mode = "development", flag, refusal) {
     });
     return { ok: true, history };
   } catch (error) {
+    assertFailure?.(error);
     if (error?.code === "MIGRATION_HISTORY_UNSUPPORTED") {
       if (refusal !== undefined) {
         assert.match(error.message, refusal);
@@ -2503,7 +2505,7 @@ test(
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
-        // Fail the final custody grant after admission backfill and repository authority.
+        // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         const rollbackTag = [
           [58, "GRANT"],
@@ -2522,7 +2524,7 @@ test(
         ].find(([minimum]) => prefix >= minimum)[1];
         const failAt =
           prefix >= 58
-            ? "IF to_regclass('occ.protected_repository_git_recipients') IS NULL THEN RETURN; END IF;"
+            ? "IF to_regclass('occ.credential_delivery_reductions') IS NULL THEN RETURN; END IF;"
             : "";
         await historyAdmin(
           db,
@@ -2530,7 +2532,16 @@ test(
           `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN ${failAt} RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
         CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
-        assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
+        assert.deepEqual(
+          await runHistoryMigration(
+            db,
+            "development",
+            undefined,
+            undefined,
+            assertInjectedMigrationRollback,
+          ),
+          { ok: false, code: "MIGRATION_FAILED" },
+        );
         assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
         assert.deepEqual(await migrationCatalog(db.migrator), before.occ);
         if (prefix) {

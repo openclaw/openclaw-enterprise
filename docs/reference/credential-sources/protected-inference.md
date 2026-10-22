@@ -18,6 +18,16 @@ configuration shared by Sandbox and Credential Proxy. Upgrade the API and worker
 before creating one: an older worker refuses this revision. Version 2 represents
 unprotected admission only. Protected versions 4, 5 and 6 carry the distinct
 [repository authorization contracts](../repository-credentials/protected-openshell-git.md).
+Version 7 requires exact-dispatch Git and authenticated reduction v2 support.
+Advertising v2 does not replace v4, v5 or v6 admission or imply v1 support.
+Ordinary v3 can omit reduction for one source; multiple static sources require
+explicit reduction v1 support. Production uses the selected Driver registration
+for these checks, including dedicated-only and static-only configurations.
+A pending reduction retains its original operation and installation receipt.
+Missing or inconclusive policy evidence keeps the credential denied and the
+original execution under reconciliation. Only positive recipient replacement or
+an explicitly unsupported legacy policy permits terminal retirement.
+
 A protected plan with no bindings means deny all, including direct networking.
 Readers that cannot interpret the decision refuse the revision. Other Compute
 implementations refuse protected admission. A protected revision keeps only its

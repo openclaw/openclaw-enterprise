@@ -679,7 +679,9 @@ export function createWorkerRevisionFixtures(
     function start(
       computeDriver,
       {
-        emit = () => {},
+        emit = /** @type {NonNullable<Parameters<typeof createControllerWorker>[0]["emit"]>} */ (
+          () => {}
+        ),
         convergenceTimeoutMs,
         providers,
         pool = workerPool,

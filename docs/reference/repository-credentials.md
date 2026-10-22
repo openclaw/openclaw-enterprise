@@ -185,6 +185,16 @@ a canonical upstream path; a literal `.git` repository name remains part of the
 admitted identity. Endpoint, method, media-type, service-query and profile
 restrictions still apply; API paths and repository authority are unchanged.
 
+## Token Service lifecycle
+
+Worker preparation and renewal precede requests; cold or expired reads cannot
+issue tokens. Renewal does not extend OCC grants or sessions. See the
+[preparation flow](../flows/credential-source-refresh.md#6-oce-prepared-github-core).
+Retain original custody through retirement. `PREPARED_GITHUB_RECOVERY_REQUIRED`
+(`quarantined` or `blocked`) requires owner recovery, never replay. Distinguish
+confirmed revocation, expiry and unknown outcomes. See
+[App key recovery](../guides/repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
 ## Sessions and closure
 
 The trusted worker or local operator uses HTTP over a private mode-0600 Unix socket:

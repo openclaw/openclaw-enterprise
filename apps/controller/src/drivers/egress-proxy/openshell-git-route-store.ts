@@ -94,13 +94,15 @@ export interface OpenShellGitRouteStore {
     | { route: OpenShellGitRouteRecord; retainedLaunchHash: string; executionFingerprint: string }
     | undefined
   >;
-  /** Marks a provider write in flight. False when the fence is stale. */
+  /** Reserve a provider write and return its new fence; undefined refuses the write. */
   writing(
     revisionId: string,
     fence: number,
     write: OpenShellGitRouteWrite,
     material?: OpenShellGitMaterialReference,
-  ): Promise<boolean>;
+  ): Promise<number | undefined>;
+  /** Clear only a definitely unsent write reserved by this exact holder. */
+  cancelWriting(revisionId: string, fence: number): Promise<boolean>;
   /** Records the route as verified and clears a pending write. False when the fence is stale. */
   record(revisionId: string, fence: number, snapshot: OpenShellGitRouteSnapshot): Promise<boolean>;
   /** Whether the fence still names the holder. */
@@ -137,7 +139,7 @@ export interface OpenShellGitRouteStore {
 }
 
 const table = "occ.credential_deliveries";
-const recognizedGitDelivery = `r.target->>'transport'='${openShellGitDeliveryTransport}'
+const recognizedGitDelivery = `r.settlement='snapshot' AND r.target->>'transport'='${openShellGitDeliveryTransport}'
   AND (r.namespace_id,r.agent_id)=(v.namespace_id,v.agent_id)
   AND r.binding_id ~ '^[A-Za-z0-9_-]{32}$'
   AND jsonb_typeof(r.target->'workspace')='string' AND jsonb_typeof(r.target->'sandbox')='string'
@@ -255,7 +257,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   > {
     const { rows } = await c.query(
       `SELECT r.binding_id,r.fence,r.blocked,r.retained_policy_hash,(${recognizedGitDelivery}) AS recognized
-       FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.revision_id
+       FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.live_revision_id
        WHERE r.revision_id=$1${lock ? " FOR UPDATE OF r" : ""}`,
       [revisionId],
     );
@@ -342,7 +344,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       const { rows } = await c.query(
         `SELECT ${columns}, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
          JOIN occ.repository_standing_executions e USING (namespace_id, agent_id, revision_id)
-         JOIN occ.agent_revisions v ON v.id = r.revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
+         JOIN occ.agent_revisions v ON v.id = r.live_revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
            AND r.binding_id=$5
            AND v.admitted_spec->'repository_credentials' = $4::jsonb
@@ -393,8 +395,15 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     fence: number,
     write: OpenShellGitRouteWrite,
     material?: OpenShellGitMaterialReference,
-  ): Promise<boolean> {
-    return this.held(revisionId, (state, key) => state.writing(key, fence, write, material));
+  ): Promise<number | undefined> {
+    return this.query(async (c) => {
+      const key = await this.key(c, revisionId);
+      return key ? new CredentialDeliveries(c).writing(key, fence, write, material) : undefined;
+    });
+  }
+
+  async cancelWriting(revisionId: string, fence: number): Promise<boolean> {
+    return this.held(revisionId, (state, key) => state.cancelWriting(key, fence));
   }
 
   async record(
@@ -526,8 +535,10 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
         return;
       }
       const { rows } = await c.query(
-        `UPDATE ${table} r SET blocked = 'repository_expired'
-        FROM occ.agent_revisions v JOIN occ.agents a ON a.namespace_id = v.namespace_id AND a.id = v.agent_id
+        `SELECT r.binding_id, r.fence, r.material_version,
+          r.retained_policy_hash AS retained_launch_hash, r.observed
+        FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.live_revision_id
+        JOIN occ.agents a ON a.namespace_id = v.namespace_id AND a.id = v.agent_id
         WHERE r.revision_id = $1 AND r.namespace_id = $2 AND r.agent_id = $3
           AND r.binding_id = $8
           AND (r.target->>'workspace') = $4 AND (r.target->>'sandbox') = $5 AND r.revision_id = v.id
@@ -543,8 +554,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           AND r.observed->>'sandbox' = (r.target->>'sandbox') AND r.observed->>'providerId' = (r.desired->>'providerId')
           AND r.observed->>'providerResourceVersion' = (r.desired->>'resourceVersion')
           AND r.observed->>'profileVersion' = (r.desired->>'profileVersion')
-          AND (r.blocked IS NULL OR r.blocked = 'repository_expired')
-        RETURNING r.binding_id, r.fence, r.material_version, r.retained_policy_hash AS retained_launch_hash, r.observed`,
+          AND (r.blocked IS NULL OR r.blocked = 'repository_expired')`,
         [
           revision.id,
           revision.namespaceId,
@@ -566,6 +576,12 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           }
         | undefined;
       if (row) {
+        if (
+          key.blocked === null &&
+          !(await new CredentialDeliveries(c).block(key, Number(row.fence), "repository_expired"))
+        ) {
+          return;
+        }
         const progress = await new CredentialDeliveryReductions(c).desire({
           revisionId: revision.id,
           bindingId: row.binding_id,
@@ -589,30 +605,27 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     });
   }
 
-  private async reducing<T>(
-    revision: string,
-    launch: string,
-    work: (state: CredentialDeliveryReductions, binding: string, fence: number) => Promise<T>,
-  ): Promise<T | false> {
-    return this.query(async (c) => {
-      const key = await this.key(c, revision);
-      // Keep the exact provider tombstone locked through the common state change.
-      if (!key || key.blocked !== "repository_expired" || key.retainedPolicyHash !== launch) {
-        return false;
-      }
-      return work(new CredentialDeliveryReductions(c), key.bindingId, key.fence);
-    });
-  }
-
   async beginDetach(
     revision: string,
     launch: string,
     requestId: string,
     resourceVersion: string,
   ): Promise<boolean> {
-    return this.reducing(revision, launch, (state, binding, fence) =>
-      state.begin(revision, binding, fence, launch, requestId, resourceVersion),
-    );
+    return this.query(async (c) => {
+      const key = await this.key(c, revision);
+      // A new apply requires the live, exact provider tombstone.
+      if (!key || key.blocked !== "repository_expired" || key.retainedPolicyHash !== launch) {
+        return false;
+      }
+      return new CredentialDeliveryReductions(c).begin(
+        revision,
+        key.bindingId,
+        key.fence,
+        launch,
+        requestId,
+        resourceVersion,
+      );
+    });
   }
 
   async confirmDetached(
@@ -621,9 +634,33 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     requestId: string,
     epoch: string,
   ): Promise<boolean> {
-    return this.reducing(revision, launch, (state, binding, fence) =>
-      state.confirm(revision, binding, fence, launch, requestId, epoch),
-    );
+    return this.query(async (c) => {
+      // Terminal evidence is resolved without the live revision. Pin the original
+      // owner, recipient and consumed request; this path never grants another apply.
+      const { rows } = await c.query(
+        `SELECT d.binding_id,d.fence FROM occ.credential_delivery_reductions d
+         JOIN ${table} r USING (revision_id,binding_id)
+         WHERE d.revision_id=$1 AND d.retained_policy_hash=$2 AND d.request_id=$3
+           AND r.target->>'transport'='${openShellGitDeliveryTransport}' AND r.settlement='snapshot'
+           AND r.blocked IS NOT NULL AND r.fence=d.fence
+           AND r.retained_policy_hash=d.retained_policy_hash
+           AND r.material_version=d.material_version AND r.observed=d.recipient
+         FOR UPDATE OF r,d`,
+        [revision, launch, requestId],
+      );
+      if (rows.length !== 1) {
+        return false;
+      }
+      const row = rows[0] as { binding_id: string; fence: string };
+      return new CredentialDeliveryReductions(c).confirm(
+        revision,
+        row.binding_id,
+        Number(row.fence),
+        launch,
+        requestId,
+        epoch,
+      );
+    });
   }
 
   async withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void> {
@@ -634,7 +671,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     await this.query(async (c) => {
       const { rows } = await c.query(
         `SELECT r.revision_id,r.binding_id FROM ${table} r
-         JOIN occ.agent_revisions v ON v.id=r.revision_id
+         JOIN occ.agent_revisions v ON v.id=r.live_revision_id
          WHERE r.${column}=$1 AND ${recognizedGitDelivery}
          ORDER BY r.revision_id,r.binding_id FOR UPDATE OF r`,
         [value],

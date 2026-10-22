@@ -1,3 +1,4 @@
+import type { CredentialProxyBinding } from "./credential-proxy-exchange.ts";
 import type { EgressInstallation } from "./credential-proxy.ts";
 import type {
   PreparedGitHubInstallationUseRequest,
@@ -136,4 +137,11 @@ export interface RepositoryGitAuthority<
     installed: Version & { readonly route: Route },
     signal: AbortSignal,
   ): Promise<RepositoryGitDenied | Allow>;
+}
+
+/** Worker-owned delivery loop for the selected registered sender. */
+export interface RepositoryGitBinding extends CredentialProxyBinding {
+  /** Reconcile eligible material and independently observe unresolved operations.
+   * A lost response must never cause a second installation. No request may invoke this. */
+  reconcile?(signal: AbortSignal): Promise<void>;
 }

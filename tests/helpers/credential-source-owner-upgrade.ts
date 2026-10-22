@@ -91,12 +91,16 @@ export async function assertCredentialSchemaPrivileges(app: pg.Client) {
     ],
     ["prepared_repository_git_uses", ""],
     ["prepared_repository_draft_pulls", "outcome,projection,settled_at"],
+    // The operation fence can advance; settlement role, target and revision identity cannot.
     [
       "credential_deliveries",
-      "fence,worker_instance,adopted_at,updated_at,desired,observed,material_version,preparation_attempt_id,target_material_version,target_preparation_attempt_id,write_pending,blocked,retained_policy_hash",
+      "fence,worker_instance,adopted_at,updated_at,desired,observed,material_version,preparation_attempt_id,target_material_version,target_preparation_attempt_id,write_pending,blocked,retained_policy_hash,operation_fence",
     ],
-    ["credential_delivery_reductions", "request_id,expected_version,observed_generation"],
-    ["protected_repository_git_recipients", "fence,state,attempt_id,material_version"],
+    // Policy requests and recipient identities stay fixed while request/ack progress advances.
+    [
+      "credential_delivery_reductions",
+      "request_id,expected_version,observed_generation,policy_observed",
+    ],
   ] as const;
   for (const [table, mutable] of tables) {
     // The migration security test leaves a hostile pg_temp.text domain on this connection.
@@ -131,7 +135,20 @@ export async function assertCredentialSchemaPrivileges(app: pg.Client) {
     );
   }
   assert.deepEqual(
-    (await app.query("SELECT to_regclass('occ.openshell_git_routes') AS obsolete")).rows,
-    [{ obsolete: null }],
+    (
+      await app.query(`SELECT to_regclass('occ.openshell_git_routes') AS obsolete,
+        to_regclass('occ.protected_repository_git_recipients') AS obsolete_recipients`)
+    ).rows,
+    [{ obsolete: null, obsolete_recipients: null }],
   );
+}
+
+/** A different PostgreSQL failure must not satisfy the injected rollback scenario. */
+export function assertInjectedMigrationRollback(error: unknown) {
+  assert.ok(error instanceof Error);
+  const failure = error.cause ?? error;
+  assert.ok(failure instanceof Error);
+  assert.ok("code" in failure);
+  assert.equal(failure.code, "55000");
+  assert.equal(failure.message, "migration rollback fixture");
 }

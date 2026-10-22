@@ -9,7 +9,7 @@ import type { PostgresPool } from "@openclaw-enterprise/occ";
 import type { OpenShellGateway } from "../../backends/openshell.ts";
 import type { startPreparedGitHubGitOwner } from "../../backends/repository-credentials/prepared-git-owner.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
-import type { GitHubRepositoryRegistry } from "../repo/github/credentials/registry.ts";
+import type { RepositoryGitDeliveryResolver } from "../repo/credentials/delivery.ts";
 import type { OpenShellSandboxDriverSelection } from "../sandbox/openshell.ts";
 import { openShellGitRecipientEvidence } from "../repo/credentials/protected-repository-git-installation.ts";
 import { OpenShellCredentialProxyDriver, type OpenShellProxyOptions } from "./openshell.ts";
@@ -42,8 +42,8 @@ export function createOpenShellCapabilities(input: {
   readonly backend: Backend<OpenShellGateway>;
   readonly operatorOwnedKubernetesResources: boolean;
   readonly repository?: {
-    readonly configuration: OpenShellGitRuntimeConfiguration;
-    readonly registry: GitHubRepositoryRegistry;
+    readonly configuration: OpenShellGitRuntimeConfiguration | undefined;
+    readonly resolveDelivery: RepositoryGitDeliveryResolver | undefined;
   };
   readonly proxy?: {
     readonly id: string;
@@ -52,9 +52,18 @@ export function createOpenShellCapabilities(input: {
     readonly preparedProviders: readonly CredentialProviderDefinition[];
   };
 }) {
+  const configuration = input.repository?.configuration;
+  const resolveDelivery = input.repository?.resolveDelivery;
+  if (configuration && !resolveDelivery) {
+    throw new Error("OpenShell Git requires its Repo delivery binding.");
+  }
   const git =
-    input.repository &&
-    new OpenShellGitRuntime(input.repository.configuration, input.repository.registry);
+    configuration &&
+    resolveDelivery &&
+    new OpenShellGitRuntime(
+      { ...configuration, ...(input.proxy && { protectedExecution: true }) },
+      resolveDelivery,
+    );
   const sandbox = input.createSandbox(
     { ...input.sandbox.configuration, ...(input.proxy && { egress: input.proxy.configuration }) },
     {
@@ -82,7 +91,7 @@ export function createOpenShellCapabilities(input: {
     evidence: openShellGitRecipientEvidence,
     async bind(owner, pool, emit) {
       const routes = git.connectRouteStore(pool, emit);
-      if (input.repository!.configuration.protectedExecution) {
+      if (git.configuration.protectedExecution) {
         if (!owner.protectedGit || !proxy?.bindRepositoryGit) {
           throw new Error("Missing the selected Driver's protected repository Git authority.");
         }

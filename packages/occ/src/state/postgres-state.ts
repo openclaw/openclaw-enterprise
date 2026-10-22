@@ -1,13 +1,10 @@
+import { CredentialDeliveryReductions } from "./credential-delivery-reductions.ts";
 import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
-import type {
-  CredentialPolicyReductionState,
-  SandboxPolicyRepository,
-  StoredCredentialWithdrawal,
-} from "./platform-state.ts";
+import type { SandboxPolicyRepository, StoredCredentialWithdrawal } from "./platform-state.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
@@ -558,8 +555,16 @@ const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.
     WHERE css.credential_source_id = cs.id
   ), '{}'::jsonb) AS secret_ids`;
 
+// Preserve the original reliable installation receipt. The current view uses only a
+// separately confirmed successor; an unobserved request never changes authority.
+const currentEgressInstallation = `SELECT COALESCE((
+  SELECT policy_observed FROM occ.credential_delivery_reductions r
+  WHERE r.revision_id=e.revision_id AND r.policy_observed IS NOT NULL
+  ORDER BY (r.policy_observed #>> '{plan,generation}')::bigint DESC LIMIT 1
+), installation) AS installation FROM occ.egress_installations e`;
+
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
-  state, requested_by, requested_at, completed_at, last_reason, last_attempt_at, policy_reduction`;
+  state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
 
 function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentialWithdrawal> {
   const state = text(row, "state");
@@ -581,13 +586,6 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentia
     ...(completedAt === undefined ? {} : { completedAt }),
     ...(lastReason === undefined ? {} : { lastReason }),
     ...(lastAttemptAt === undefined ? {} : { lastAttemptAt }),
-    ...(row.policy_reduction == null
-      ? {}
-      : {
-          policyReduction: jsonObject(
-            row.policy_reduction,
-          ) as unknown as CredentialPolicyReductionState,
-        }),
   });
 }
 
@@ -2741,7 +2739,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       findEgressInstallation: async (senderId, sandboxId) => {
         const result = await client.query(
-          "SELECT installation FROM occ.egress_installations WHERE sender_id = $1 AND sandbox_id = $2",
+          `${currentEgressInstallation} WHERE sender_id = $1 AND sandbox_id = $2`,
           [senderId, sandboxId],
         );
         const row = rows(result.rows)[0];
@@ -2751,7 +2749,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
       findRevisionEgressInstallation: async (namespaceId, revisionId) => {
         const result = await client.query(
-          "SELECT installation FROM occ.egress_installations WHERE namespace_id = $1 AND revision_id = $2",
+          `${currentEgressInstallation} WHERE namespace_id = $1 AND revision_id = $2`,
           [namespaceId, revisionId],
         );
         const row = rows(result.rows)[0];
@@ -2759,29 +2757,16 @@ export class PostgresPlatformState implements PlatformStateStore {
           ? undefined
           : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
       },
-      saveCredentialPolicyReduction: async (namespaceId, revisionId, sourceId, expected, next) => {
-        const result = await client.query(
-          `UPDATE occ.credential_withdrawals SET policy_reduction=$5::jsonb
-           WHERE namespace_id=$1 AND revision_id=$2 AND credential_source_id=$3
-             AND policy_reduction IS NOT DISTINCT FROM $4::jsonb`,
-          [
-            namespaceId,
-            revisionId,
-            sourceId,
-            expected ? JSON.stringify(expected) : null,
-            JSON.stringify(next),
-          ],
-        );
-        return result.rowCount === 1;
-      },
-      reduceEgressInstallation: async (expected, next) => {
-        const result = await client.query(
-          `UPDATE occ.egress_installations SET installation=$4::jsonb
-           WHERE sender_id=$1 AND sandbox_id=$2 AND installation=$3::jsonb`,
-          [expected.sender.id, expected.sandboxId, JSON.stringify(expected), JSON.stringify(next)],
-        );
-        return result.rowCount === 1;
-      },
+      listCredentialPolicyReductions: (namespaceId, revisionId) =>
+        new CredentialDeliveryReductions(client).listPolicies(namespaceId, revisionId),
+      saveCredentialPolicyReduction: (namespaceId, revisionId, bindingId, expected, next) =>
+        new CredentialDeliveryReductions(client).savePolicy(
+          namespaceId,
+          revisionId,
+          bindingId,
+          expected,
+          next,
+        ),
       recordEgressInstallation: async (installation) => {
         const execution = installation.plan.execution;
         const inserted = await client.query(

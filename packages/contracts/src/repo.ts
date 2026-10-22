@@ -1,3 +1,4 @@
+import type { RepositoryGitDeliveryProfile } from "./credential-proxy.ts";
 import type { Driver } from "./index.ts";
 
 /** Opaque, nonempty identities: at most 512 UTF-8 bytes each, without ASCII controls. */
@@ -175,3 +176,18 @@ export type RepositoryCredentialRuntimeBinding = RepositoryCredentialMaterialRef
     | { readonly kind: "new"; readonly files: RepositoryCredentialSessionFiles }
     | { readonly kind: "retained" }
   );
+
+/** The Repo contract owns the mapping from admitted profiles to sender requirements. */
+export function repositoryGitDeliveryProfile(
+  repository: RepositoryRevisionState | undefined,
+): RepositoryGitDeliveryProfile | undefined {
+  if (repository?.bindings?.length !== 1) {
+    return undefined;
+  }
+  const profile = repository.bindings[0]?.profile;
+  return isInstallationRepositoryProfile(profile)
+    ? "github_installation"
+    : profile === "git-write"
+      ? "repository_git"
+      : undefined;
+}

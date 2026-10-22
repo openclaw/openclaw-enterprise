@@ -3,8 +3,13 @@ import type {
   CredentialProxyExchange,
   EgressExchangeOwner,
 } from "./credential-proxy-exchange.ts";
-import { isInstallationRepositoryProfile } from "./repo.ts";
-import type { ProtectedRepositoryGitAuthority } from "./protected-repository-git.ts";
+import { repositoryGitDeliveryProfile } from "./repo.ts";
+
+export { repositoryGitDeliveryProfile } from "./repo.ts";
+import type {
+  ProtectedRepositoryGitAuthority,
+  RepositoryGitBinding,
+} from "./protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
   CredentialFreeMetadataGrant,
@@ -125,12 +130,12 @@ export interface ProxyPlan {
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
   /** Capability required by this admission, including after process restart. */
-  readonly policyReductionVersion?: 1;
-  /** v4–v6: the repository or installation grant, independent of sender and grant duration. */
+  readonly policyReductionVersion?: 1 | 2;
+  /** v4–v7: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
-  /** v4 is exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
+  /** v4/v7 are exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
   readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
-  /** v4–v6: the Harness model attachment independently admitted by the Credential Gateway. */
+  /** v4–v7: the Harness model attachment independently admitted by the Credential Gateway. */
   readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
@@ -160,20 +165,6 @@ export type RepositoryGitRecipient = Readonly<
 >;
 
 export type RepositoryGitDeliveryProfile = "repository_git" | "github_installation";
-
-export function repositoryGitDeliveryProfile(
-  repository: RepositoryRevisionState | undefined,
-): RepositoryGitDeliveryProfile | undefined {
-  if (repository?.bindings?.length !== 1) {
-    return undefined;
-  }
-  const profile = repository.bindings[0]?.profile;
-  return isInstallationRepositoryProfile(profile)
-    ? "github_installation"
-    : profile === "git-write"
-      ? "repository_git"
-      : undefined;
-}
 
 export function validRepositoryGitRecipient(
   value: RepositoryGitRecipient | undefined,
@@ -390,7 +381,7 @@ export interface ProxyRevisionContext {
 /** Versioned, compare-and-reduce operation. The paired Sandbox must retain deny-all
  * when routes is empty. No creation, replacement, expansion or business request replay. */
 export interface CredentialPolicyReduction {
-  readonly version: 1;
+  readonly version: 1 | 2;
   readonly operationId: string;
   readonly expected: EgressInstallation;
   readonly retained: ProxyPlan;
@@ -406,8 +397,18 @@ export interface CredentialPolicyObservation {
  * honor persistent reduction tombstones: stale configure/enroll cannot restore a route.
  * Observation identifies the currently enforced policy, not just an accepted request.
  * An already authorized send may finish; this does not replace per-request OCC checks. */
-export interface CredentialPolicyReducer {
-  readonly version: 1;
+export type CredentialPolicyReducer = CredentialPolicyReducerOperations &
+  (
+    | { readonly version: 1 }
+    | {
+        /** v2 also removes repositoryGit, preserving the exact recipient and other bindings. */
+        readonly version: 2;
+        /** Authenticate the configured enforcing counterpart's reduction capability. */
+        assertAvailable(signal: AbortSignal): Promise<void>;
+      }
+  );
+
+interface CredentialPolicyReducerOperations {
   /** Compare exact Driver registration, execution, recipient and policy generation before
    * applying. Persist operation identity and reject stale or conflicting reductions. */
   apply(context: ProxyRevisionContext, reduction: CredentialPolicyReduction): Promise<void>;
@@ -434,7 +435,7 @@ export interface CredentialProxyDriver extends Driver {
     createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
   ): Promise<CredentialProxyBinding>;
   /** Worker process: bind this sender to the installation's checked Git delivery authority. */
-  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<CredentialProxyBinding>;
+  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<RepositoryGitBinding>;
   configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring>;
   wiringStatus(
     context: ProxyRevisionContext,
@@ -448,15 +449,20 @@ export interface CredentialProxyDriver extends Driver {
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
 }
 
-/** Durable admission semantics, independent of credential bindings and route count. */
+/** Durable admission semantics. v7 adds verified Git policy reduction to exact dispatch. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "unprotected" }
-  | { readonly version: 3 | 4 | 5 | 6; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6 | 7; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
 ): boolean {
-  return admission?.version === 4 || admission?.version === 5 || admission?.version === 6;
+  return (
+    admission?.version === 4 ||
+    admission?.version === 5 ||
+    admission?.version === 6 ||
+    admission?.version === 7
+  );
 }
 
 /** Recognition only. A valid protected schema is not proof of deployability. */
@@ -485,12 +491,18 @@ export function assertExecutionAdmission(
   const plan = revision.egressPlan;
   if (
     (plan?.policyReductionVersion !== undefined &&
-      (plan.policyReductionVersion !== 1 || admission.version !== 3)) ||
+      !(
+        (plan.policyReductionVersion === 1 && admission.version === 3) ||
+        (plan.policyReductionVersion === 2 && admission.version === 7)
+      )) ||
     (plan &&
       new Set(plan.routes.map((route) => route.binding.source.source.id)).size > 1 &&
-      plan.policyReductionVersion !== 1)
+      plan.policyReductionVersion === undefined)
   ) {
     throw new Error("Protected execution requires its admitted policy reduction capability.");
+  }
+  if (admission.version === 7 && plan?.policyReductionVersion !== 2) {
+    throw new Error("Reducible repository Git requires reduction version 2.");
   }
   const repository = revision.egressPlan?.repositoryGit;
   if (
@@ -514,7 +526,7 @@ export function assertExecutionAdmission(
       !source.sourceId ||
       !source.credentialGatewayId ||
       !source.sourceType ||
-      revision.egressPlan!.routes.length !== 0)
+      (admission.version !== 7 && revision.egressPlan!.routes.length !== 0))
   ) {
     throw new Error(
       "Invalid independent Harness credential source in repository execution admission.",

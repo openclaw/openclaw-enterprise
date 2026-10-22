@@ -73,7 +73,7 @@ export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProx
 export const legacyAdoption = "prepared_repository_git";
 export const protectedGitAdoption = "credential_proxy_repository_git";
 export const installationGitAdoption = "credential_proxy_github_installation";
-export const repositoryGitRecipients = "occ.protected_repository_git_recipients";
+export const repositoryGitDeliveryTransport = "registered-repository-git/v1";
 
 // The broker owns only its recorded admission, session and generation; the receipt remains after disposal.
 export const repositoryGitBrokerOwnerPredicate = `EXISTS (
@@ -126,7 +126,7 @@ const openShellRoute = "occ.credential_deliveries";
 const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AND fence=$2
   AND binding_id=(SELECT admitted_spec#>>'{egress_plan,execution,executionId}' FROM occ.agent_revisions WHERE id=$1)
   AND target->>'transport'='${openShellGitDeliveryTransport}'
-  AND observed=$3::jsonb AND blocked IS NULL`;
+  AND live_revision_id IS NOT NULL AND settlement='snapshot' AND observed=$3::jsonb AND blocked IS NULL`;
 
 /** Only a terminal tombstone for this same observed preview retires its possibly installed
  * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
@@ -143,17 +143,27 @@ export const openShellPreviewEnded = `EXISTS (
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
-  released: `${protectedRepositoryGitInstallationSql} AND r.blocked IS NULL`,
+  released: `${protectedRepositoryGitInstallationSql} AND r.live_revision_id IS NOT NULL AND r.settlement='snapshot' AND r.blocked IS NULL`,
   observed: openShellObserved,
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
+    AND desired->>'credentialState'='active'
+    AND observed->>'providerId'=desired->>'providerId'
+    AND observed->>'providerResourceVersion'=desired->>'resourceVersion'
+    AND observed->>'profileVersion'=desired->>'profileVersion'
     AND preparation_attempt_id=$4 AND material_version=$5`,
 });
 
-const registeredObservation = `SELECT FROM ${repositoryGitRecipients} WHERE revision_id=$1 AND fence=$2
-    AND installation=$3::jsonb AND state <> 'installing'`;
+const registeredObservation = `SELECT FROM occ.credential_deliveries WHERE revision_id=$1 AND fence=$2
+    AND binding_id=$3::jsonb#>>'{plan,execution,executionId}'
+    AND target=jsonb_build_object('transport','${repositoryGitDeliveryTransport}','installation',$3::jsonb)
+    AND settlement='witness' AND live_revision_id IS NOT NULL AND blocked IS NULL AND write_pending IS NULL`;
 export const registeredGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
-  join: `${repositoryGitRecipients} r USING(revision_id)`,
-  released: `p.installation=r.installation AND r.state <> 'installing' AND ${registeredGitSelection}`,
+  join: `occ.credential_deliveries r USING(namespace_id,agent_id,revision_id)`,
+  released: `p.installation=r.target->'installation'
+    AND r.target->>'transport'='${repositoryGitDeliveryTransport}'
+    AND r.binding_id=p.installation#>>'{plan,execution,executionId}'
+    AND r.settlement='witness' AND r.live_revision_id IS NOT NULL AND r.blocked IS NULL AND r.write_pending IS NULL
+    AND ${registeredGitSelection}`,
   observed: registeredObservation,
-  installed: `${registeredObservation} AND state='installed' AND attempt_id=$4 AND material_version=$5`,
+  installed: `${registeredObservation} AND preparation_attempt_id=$4 AND material_version=$5`,
 });

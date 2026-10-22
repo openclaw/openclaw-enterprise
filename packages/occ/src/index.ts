@@ -33,6 +33,7 @@ import {
 } from "@openclaw-enterprise/contracts";
 import { EgressSendReceipts } from "./egress-send-receipts.ts";
 import type {
+  ExecutionAdmission,
   StaticEgressSource,
   ProxyPlan,
   EgressBinding,
@@ -5522,7 +5523,7 @@ export class OpenClawController {
         "Protected egress requires an explicitly admitted source for every credential binding.",
       );
     }
-    if (sourceCount > 1 && driver.policyReduction?.version !== 1) {
+    if (sourceCount > 1 && !repositoryGit && driver.policyReduction?.version !== 1) {
       throw new ScopeViolationError(
         "Multiple credential sources require a Credential Proxy that can verify a reduced policy.",
       );
@@ -5530,23 +5531,37 @@ export class OpenClawController {
     if (!sandboxDriverId || agent.executionMode !== "dedicated") {
       throw new ScopeViolationError("Protected egress requires a dedicated enforcing Sandbox.");
     }
-    if (repositoryGit && sources.length) {
-      throw new ScopeViolationError(
-        "Repository Credential Proxy does not admit unrelated credential routes.",
-      );
-    }
     if (installationAccess) {
       owner.requireRepositoryGitTransport();
     }
+    const gitProfile = repositoryGitDeliveryProfile(repositoryGit);
     const gitAuthorization = await repositoryGitAuthorization(
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      repositoryGitDeliveryProfile(repositoryGit),
+      gitProfile,
     );
     if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy did not confirm installation-wide repository access.",
       );
+    }
+    const reducibleGit =
+      gitProfile !== undefined &&
+      gitAuthorization === "exact-dispatch" &&
+      driver.policyReduction?.version === 2;
+    if (repositoryGit && sources.length && !reducibleGit) {
+      throw new ScopeViolationError(
+        "Repository Credential Proxy does not admit unrelated credential routes.",
+      );
+    }
+    if (reducibleGit && driver.policyReduction?.version === 2) {
+      await driver.policyReduction.assertAvailable(
+        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      );
+    }
+    let policyReductionVersion: ProxyPlan["policyReductionVersion"] = reducibleGit ? 2 : undefined;
+    if (!repositoryGit && sources.length > 0 && driver.policyReduction?.version === 1) {
+      policyReductionVersion = 1;
     }
     const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
     const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
@@ -5576,12 +5591,23 @@ export class OpenClawController {
         throw new DependencyUnavailableError("The admitted egress composition is unavailable.");
       }
       const grant = provider.normalizeGrant([modelId], source.config);
+      let digestGrant = grant;
+      if (source.type === credentialFreeMetadataType && admitted.adoption === "credential_free") {
+        const canonical = credentialFreeMetadataGrant(source.config);
+        if (!isDeepStrictEqual(grant, canonical)) {
+          throw new ScopeViolationError(
+            "Credential-free metadata grant does not match the source.",
+          );
+        }
+        // Preserve the contracts digest without dropping any Driver-supplied grant fields.
+        digestGrant = canonical;
+      }
       return provider.routes(source, {
         binding: { id: crypto.randomUUID(), generation: 1 },
         execution,
         source: admitted.key,
         grant,
-        grantHash: createHash("sha256").update(JSON.stringify(grant)).digest("hex"),
+        grantHash: createHash("sha256").update(JSON.stringify(digestGrant)).digest("hex"),
         isolationId: agent.id,
       });
     });
@@ -5592,8 +5618,7 @@ export class OpenClawController {
       sandboxDriverId,
       egressDriverId: driver.id,
       driver: owner.ref,
-      ...(sources.length > 0 &&
-        driver.policyReduction && { policyReductionVersion: driver.policyReduction.version }),
+      ...(policyReductionVersion !== undefined && { policyReductionVersion }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
         (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
@@ -9162,20 +9187,25 @@ export class OpenClawController {
         repositoryCredentials,
         harnessAuth,
       );
-      const executionAdmission =
-        egressPlan === undefined
-          ? ({ version: 2, mode: "unprotected" } as const)
-          : ({
-              version:
-                egressPlan.repositoryGitAuthorization === "request-hook-observed"
-                  ? 6
-                  : egressPlan.repositoryGitAuthorization
-                    ? 5
-                    : egressPlan.repositoryGit
-                      ? 4
-                      : 3,
-              mode: "protected",
-            } as const);
+      let executionAdmission: ExecutionAdmission;
+      if (egressPlan === undefined) {
+        executionAdmission = { version: 2, mode: "unprotected" };
+      } else {
+        let version: 3 | 4 | 5 | 6 | 7 = 3;
+        if (egressPlan.repositoryGit) {
+          version = 4;
+        }
+        if (egressPlan.repositoryGitAuthorization === "online-request") {
+          version = 5;
+        }
+        if (egressPlan.repositoryGitAuthorization === "request-hook-observed") {
+          version = 6;
+        }
+        if (egressPlan.repositoryGit && egressPlan.policyReductionVersion === 2) {
+          version = 7;
+        }
+        executionAdmission = { version, mode: "protected" };
+      }
       const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
       assertExecutionAdmission(execution);
       try {

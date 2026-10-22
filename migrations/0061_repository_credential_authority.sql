@@ -308,7 +308,7 @@ BEGIN
  SELECT admitted_spec->'repository_credentials', (admitted_spec #>> '{execution_admission,version}')::int
  INTO credentials,version FROM occ.agent_revisions
  WHERE id=NEW.revision_id AND namespace_id=NEW.namespace_id AND agent_id=NEW.agent_id;
- IF ((NEW.broker_protocol=2) IS DISTINCT FROM (version IN (4,5,6))) THEN
+ IF ((NEW.broker_protocol=2) IS DISTINCT FROM (version IN (4,5,6,7))) THEN
    RAISE EXCEPTION 'Repository session requires its admitted sender' USING ERRCODE='23514';
  END IF;
  IF NOT coalesce(credentials ? 'standingApprovalId',false) THEN

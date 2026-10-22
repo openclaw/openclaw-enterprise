@@ -1,3 +1,4 @@
+import { createGitHubRepositoryDeliveryResolver } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
@@ -161,7 +162,7 @@ test(
           protectedExecution: true,
           authority: {} as EgressAuthorityConfiguration,
         },
-        registry,
+        createGitHubRepositoryDeliveryResolver(registry),
       );
       r["routes"] = routes;
       r["owner"] = onlineOwner;

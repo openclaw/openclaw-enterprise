@@ -163,19 +163,21 @@ See [protected inference](../credential-sources/protected-inference.md).
 Tracks delivery custody for the exact Namespace, Agent and revision. See the
 [repository flow](../../flows/agent-repository-credentials.md).
 
-- `revision_id`, `binding_id`, `namespace_id`, `agent_id`, `target`
-- `fence`, `worker_instance`, `adopted_at`, `updated_at`
+- `revision_id`, `live_revision_id`, `binding_id`, `namespace_id`, `agent_id`, `target`
+- `fence`, `operation_fence`, `settlement`, `worker_instance`, `adopted_at`, `updated_at`
 - `desired`, `observed`, `write_pending`, `blocked`, `retained_policy_hash`
 - `material_version`, `preparation_attempt_id`
 - `target_material_version`, `target_preparation_attempt_id`
 
 ### `credential_delivery_reductions`
 
-Retains one delivery reduction request. A request without an observed generation
-has an unknown outcome and cannot be sent again.
+Retains material-delivery and execution-policy reduction requests for static and
+repository bindings. An unobserved request cannot be sent again. See the
+[policy reduction flow](../../flows/credential-source-egress.md#6-reduce-the-live-credential-policy).
 
 - `revision_id`, `binding_id`, `fence`, `recipient`, `material_version`, `retained_policy_hash`
 - `request_id`, `expected_version`, `observed_generation`
+- `policy_request`, `policy_observed`, `delivery_binding_id`
 
 ### `prepared_github_families`
 
@@ -265,7 +267,6 @@ Records one credential source withdrawn from one Agent revision, until the gatew
 - `completed_at`
 - `last_reason`
 - `last_attempt_at`
-- `policy_reduction` (optional exact request and observation for live policy reduction)
 
 ### `service_accounts`
 

@@ -1,3 +1,4 @@
+import type { CredentialPolicyReductionState } from "./platform-state.ts";
 import type { PostgresClient } from "./postgres-state.ts";
 
 /** Public, nonsecret identity of the delivery being reduced. The Driver owns the
@@ -23,6 +24,71 @@ export class CredentialDeliveryReductions {
 
   constructor(client: PostgresClient) {
     this.client = client;
+  }
+
+  async listPolicies(
+    namespaceId: string,
+    revisionId: string,
+  ): Promise<readonly CredentialPolicyReductionState[]> {
+    const { rows } = await this.client.query(
+      `SELECT binding_id, policy_request, policy_observed FROM occ.credential_delivery_reductions
+       WHERE revision_id=$1 AND policy_request #>> '{expected,plan,execution,namespaceId}'=$2`,
+      [revisionId, namespaceId],
+    );
+    return (rows as Record<string, unknown>[]).map((row) => ({
+      bindingId: row.binding_id as string,
+      request: row.policy_request as CredentialPolicyReductionState["request"],
+      ...(row.policy_observed
+        ? {
+            observed: row.policy_observed as NonNullable<
+              CredentialPolicyReductionState["observed"]
+            >,
+          }
+        : {}),
+    }));
+  }
+
+  async savePolicy(
+    namespaceId: string,
+    revisionId: string,
+    bindingId: string,
+    expected: CredentialPolicyReductionState | undefined,
+    next: CredentialPolicyReductionState,
+  ): Promise<boolean> {
+    if (!expected) {
+      const result = await this.client.query(
+        `INSERT INTO occ.credential_delivery_reductions
+          (revision_id,binding_id,fence,policy_request,request_id,expected_version)
+         SELECT $1,$2,$3,$4::jsonb,$5,$6 FROM occ.agent_revisions
+         WHERE namespace_id=$7 AND id=$1 ON CONFLICT DO NOTHING`,
+        [
+          revisionId,
+          bindingId,
+          next.request.expected.plan.generation,
+          JSON.stringify(next.request),
+          next.request.operationId,
+          String(next.request.expected.plan.generation),
+          namespaceId,
+        ],
+      );
+      return result.rowCount === 1;
+    }
+    const result = await this.client.query(
+      `UPDATE occ.credential_delivery_reductions SET policy_observed=$5::jsonb,observed_generation=$6
+       WHERE revision_id=$1 AND binding_id=$2 AND policy_request=$3::jsonb
+         AND policy_observed IS NOT DISTINCT FROM $4::jsonb
+         AND policy_request #>> '{expected,plan,execution,namespaceId}'=$7`,
+      [
+        revisionId,
+        bindingId,
+        JSON.stringify(expected.request),
+        expected.observed ? JSON.stringify(expected.observed) : null,
+        JSON.stringify(next.observed),
+        String(next.observed?.plan.generation),
+        namespaceId,
+      ],
+    );
+    return result.rowCount === 1;
   }
 
   async desire(

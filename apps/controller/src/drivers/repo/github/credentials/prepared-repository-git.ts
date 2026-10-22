@@ -16,7 +16,12 @@ import type {
   RepositoryGitInstallationFence,
   RepositoryGitSendDecision,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  CredentialDeliveries,
+  type PostgresClient,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
+import { randomUUID } from "node:crypto";
 import type { OperationReceipt } from "../../credentials/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
@@ -35,7 +40,7 @@ import {
   repositoryGitAdmissionEnded,
   repositoryGitBrokerOwnerPredicate,
   repositoryGitOwnerPredicate,
-  repositoryGitRecipients,
+  repositoryGitDeliveryTransport,
   selectedRepositoryGitDriver,
   validRecipient,
 } from "../../credentials/protected-repository-git-installation.ts";
@@ -153,8 +158,10 @@ function sessionQuery(proxy: Recipient): string {
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
     AND rev.admitted_spec #>> '{execution_admission,version}' =
-      CASE p.installation #>> '{plan,repositoryGitAuthorization}' WHEN 'online-request' THEN '5'
-        WHEN 'request-hook-observed' THEN '6' ELSE '4' END
+      CASE WHEN p.installation #>> '{plan,policyReductionVersion}' = '2' THEN '7'
+        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5'
+        WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'request-hook-observed' THEN '6'
+        ELSE '4' END
     AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
@@ -329,6 +336,7 @@ export interface PreparedRepositoryGitForeignRetirement {
 }
 
 export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
+  private readonly deliveryWorker = randomUUID();
   private readonly authority: string;
   private readonly policy: Policy;
   private readonly proxy: Recipient;
@@ -528,6 +536,19 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     });
   }
 
+  private async deliveryKey(c: PostgresClient, revisionId: string, observed: unknown) {
+    const { rows } = await c.query(
+      `SELECT binding_id FROM occ.credential_deliveries
+       WHERE revision_id=$1 AND target->>'transport'='${repositoryGitDeliveryTransport}'
+         AND target->'installation'=$2::jsonb
+         AND target#>'{installation,plan,driver}'=${selectedRepositoryGitDriver}`,
+      [revisionId, JSON.stringify(observed)],
+    );
+    return rows.length === 1
+      ? { revisionId, bindingId: (rows[0] as { binding_id: string }).binding_id }
+      : undefined;
+  }
+
   private readonly recipients: ProtectedRepositoryGitAuthority["recipients"] = Object.freeze({
     observe: async (installation) => {
       if (this.proxy?.evidence !== registeredGitRecipientEvidence) {
@@ -538,27 +559,23 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         const same = `p.revision_id=$1 AND p.installation=$2::jsonb
           AND p.installation#>'{plan,driver}' = ${selectedRepositoryGitDriver}`;
         const values = [revisionId, JSON.stringify(installation)];
-        // The independently observed installation must equal the one OCC committed for Compute release.
-        // Never replace its recipient, an indeterminate install, or an existing fence.
-        await c.query(
-          `INSERT INTO ${repositoryGitRecipients} (revision_id, installation)
-           SELECT p.revision_id, p.installation FROM occ.egress_installations p
-           WHERE ${same} AND p.installation#>>'{enforcement,authorityScope}'='execution'
-           AND ${validRecipient} AND ${registeredGitSelection}
-           ON CONFLICT (revision_id) DO NOTHING`,
+        // Keep the Driver's independent GET equal to the committed Compute release.
+        const released = await c.query(
+          `SELECT FROM occ.egress_installations p WHERE ${same}
+           AND p.installation#>>'{enforcement,authorityScope}'='execution'
+           AND ${validRecipient} AND ${registeredGitSelection}`,
           values,
         );
-        const { rows } = await c.query(
-          `SELECT r.fence FROM ${repositoryGitRecipients} r JOIN occ.egress_installations p
-           ON p.installation=r.installation WHERE ${same} AND r.state <> 'installing'`,
-          values,
+        if (released.rowCount !== 1) {
+          return;
+        }
+        const fence = await new CredentialDeliveries(c).observe(
+          { ...installation.plan.execution, bindingId: installation.plan.execution.executionId },
+          { transport: repositoryGitDeliveryTransport, installation },
+          this.deliveryWorker,
         );
-        if (rows.length === 1) {
-          return {
-            revisionId,
-            fence: Number((rows[0] as { fence: string }).fence),
-            observed: installation,
-          };
+        if (fence !== undefined) {
+          return { revisionId, fence, observed: installation };
         }
       });
     },
@@ -574,25 +591,18 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         if (!source || !(await this.tokens.current(c, source, version))) {
           return;
         }
-        const { rows } = await c.query(
-          `UPDATE ${repositoryGitRecipients} SET state='installing', fence=fence+1, attempt_id=$4, material_version=$5
-           WHERE revision_id=$1 AND fence=$2 AND installation=$3::jsonb AND state <> 'installing'
-             AND (attempt_id, material_version) IS DISTINCT FROM ($4::uuid, $5::uuid) RETURNING fence`,
-          [
-            revisionId,
-            route.fence,
-            JSON.stringify(observed),
-            preparationAttemptId,
-            materialVersion,
-          ],
+        const key = await this.deliveryKey(c, revisionId, observed);
+        if (!key) {
+          return;
+        }
+        const fence = await new CredentialDeliveries(c).beginInstall(
+          key,
+          route.fence,
+          { transport: repositoryGitDeliveryTransport, installation: observed },
+          version,
         );
-        if (rows.length === 1) {
-          return {
-            revisionId,
-            observed,
-            fence: Number((rows[0] as { fence: string }).fence),
-            ...version,
-          };
+        if (fence !== undefined) {
+          return { revisionId, observed, fence, ...version };
         }
       });
     },
@@ -608,15 +618,18 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       }
       // Settle the observed effect, even if authority ended. This never confers permission to send.
       return this.transaction(async (c) => {
-        const { rowCount } = await c.query(
-          `UPDATE ${repositoryGitRecipients} SET state='installed'
-           WHERE revision_id=$1 AND fence=$2 AND installation=$3::jsonb AND state='installing'
-             AND installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
-             AND (attempt_id, material_version)=($4::uuid, $5::uuid)`,
-          [revisionId, fence, JSON.stringify(observed), preparationAttemptId, materialVersion],
+        const key = await this.deliveryKey(c, revisionId, observed);
+        if (!key) {
+          return;
+        }
+        const currentFence = await new CredentialDeliveries(c).confirmInstall(
+          key,
+          fence,
+          { transport: repositoryGitDeliveryTransport, installation: observed },
+          { preparationAttemptId, materialVersion },
         );
-        if (rowCount === 1) {
-          return { revisionId, fence, observed };
+        if (currentFence !== undefined) {
+          return { revisionId, fence: currentFence, observed };
         }
       });
     },

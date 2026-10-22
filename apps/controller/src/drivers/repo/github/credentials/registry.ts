@@ -1,3 +1,4 @@
+import type { RepositoryGitDeliveryResolver } from "../../credentials/delivery.ts";
 import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
@@ -405,6 +406,26 @@ export function resolveGitHubStandingApprovalScope(
     binding: AdmittedRepositoryBinding;
   },
 ): RepositoryApprovalScope | undefined {
+  const scope = standingApprovalScope(registry, input);
+  if (!scope) {
+    return;
+  }
+  const current = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: input.namespaceId,
+    repositoryRef: input.binding.repositoryRef,
+    profile: input.binding.profile,
+  });
+  if (!isDeepStrictEqual(current, input.binding)) {
+    return;
+  }
+  return scope;
+}
+
+/** Only the standing ceiling; callers must also verify the exact grant. */
+function standingApprovalScope(
+  registry: GitHubRepositoryRegistry,
+  input: { namespaceId: string; binding: AdmittedRepositoryBinding },
+): RepositoryApprovalScope | undefined {
   const installation = input.binding.profile === githubInstallationProfile;
   const repository = registry.repositories.find(
     (r) => r.repositoryRef === input.binding.repositoryRef,
@@ -416,14 +437,6 @@ export function resolveGitHubStandingApprovalScope(
     registry.allowStandingApprovals !== true ||
     policy?.allowStandingApproval !== true
   ) {
-    return;
-  }
-  const current = resolveGitHubRepositoryBinding(registry, {
-    namespaceId: input.namespaceId,
-    repositoryRef: input.binding.repositoryRef,
-    profile: input.binding.profile,
-  });
-  if (!isDeepStrictEqual(current, input.binding)) {
     return;
   }
   if (installation) {
@@ -448,7 +461,7 @@ export function resolveGitHubStandingApprovalScope(
     repositorySelection: "repository",
     repositoryId: repository.repositoryId,
     repository: repository.repository,
-    profile: current.profile,
+    profile: input.binding.profile,
     allowedProfiles: policy.profiles,
     pushRefAllowlist: policy.pushRefAllowlist ?? null,
     transport: policy.transport ?? null,
@@ -460,10 +473,67 @@ export function resolveGitHubStandingApprovalScope(
         ? "git-ref-write"
         : policy.transport === "git-and-draft-pr"
           ? "git-ref-draft-pr"
-          : (current.profile as GitHubProfile),
+          : (input.binding.profile as GitHubProfile),
     ),
     maximumSessionDurationSeconds: registry.maximumDurationSeconds,
     installationPolicyAllowsStanding: true,
     namespacePolicyAllowsStanding: true,
   });
+}
+
+/** Repo owns the policy ceiling; OCC still owns approval validity and withdrawal. */
+export function createGitHubRepositoryDeliveryResolver(
+  registry: GitHubRepositoryRegistry,
+): RepositoryGitDeliveryResolver {
+  return (revision) => {
+    const state = revision.repositoryCredentials;
+    const binding = state?.bindings[0];
+    if (!state || state.bindings.length !== 1 || !binding) {
+      throw new Error("Repository Git delivery requires one admitted binding.");
+    }
+    const resolved = resolveGitHubRepositoryBinding(registry, {
+      namespaceId: revision.namespaceId,
+      repositoryRef: binding.repositoryRef,
+      profile: binding.profile,
+    });
+    if (!isDeepStrictEqual(binding, resolved)) {
+      throw new Error("Repository Git delivery requires the current exact registry grant.");
+    }
+    if (
+      state.standingApprovalId !== undefined &&
+      !standingApprovalScope(registry, {
+        namespaceId: revision.namespaceId,
+        binding,
+      })
+    ) {
+      throw new Error("Standing repository policy is unavailable.");
+    }
+    if (binding.profile === githubInstallationProfile) {
+      return Object.freeze({
+        binding: resolved,
+        delivery: Object.freeze({ installationId: registry.githubInstallationId }),
+      });
+    }
+    const repository = registry.repositories.find((r) => r.repositoryRef === binding.repositoryRef);
+    const policy = repository?.namespaces.find((p) => p.namespaceId === revision.namespaceId);
+    if (
+      binding.profile !== "git-write" ||
+      !repository ||
+      policy?.pushRefAllowlist?.length !== 1 ||
+      !["git-only", "git-and-draft-pr"].includes(policy.transport ?? "")
+    ) {
+      throw new Error("Repository Git delivery requires one explicit review ref and transport.");
+    }
+    return Object.freeze({
+      binding: resolved,
+      delivery: Object.freeze({ repository: repository.repository }),
+      repository: Object.freeze({
+        pushRef: policy.pushRefAllowlist[0]!,
+        draftPullRequest: policy.transport === "git-and-draft-pr",
+        ...(policy.pullRequestBase === undefined
+          ? {}
+          : { pullRequestBase: policy.pullRequestBase }),
+      }),
+    });
+  };
 }

@@ -101,14 +101,17 @@
     "tests/conformance/split-layout-adopt.test.mjs",
     "tests/conformance/url-authority.test.mjs",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
     "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
+    "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
     "tests/integration/egress-prepared-github-metadata.test.mjs"
@@ -452,6 +455,24 @@
       "path": "tests/conformance/url-authority.test.mjs"
     },
     {
+      "path": "tests/integration/credential-proxy-peer-pin.test.ts",
+      "expectedTests": [
+        "exchange send rejects identity changes before receipt creation",
+        "exchange response and renewal reject identity changes",
+        "exchange accepts stable keys and both absent keys",
+        "exchange rejects malformed peer expiry at each public boundary",
+        "exchange renewal preserves progress while bounded by original peer expiry",
+        "exchange renewal respects a shorter fresh peer expiry",
+        "exchange send snapshots authenticated peers across receipt reservation",
+        "exchange held response respects a shorter authenticated lifetime",
+        "exchange busy phases retain concurrent authenticated lifetime reductions",
+        "exchange reserves simultaneous response phases without discarding the winner",
+        "exchange busy lifetime observation requires a live exact owner",
+        "duplicate send retains only an exact authenticated lifetime contraction",
+        "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
       "path": "tests/integration/static-egress.test.mjs",
       "expectedTests": [
         "Responses output text assembled across parts and messages cannot reveal selected material",
@@ -510,9 +531,24 @@
       ]
     },
     {
+      "path": "tests/integration/credential-free-metadata-grant.test.ts",
+      "expectedTests": [
+        "credential-free metadata exchange accepts a reordered Driver grant",
+        "credential-free route admission rejects changed, missing and undefined extra grant fields"
+      ]
+    },
+    {
       "path": "tests/integration/protected-driver-registration.test.ts",
       "expectedTests": [
-        "one installed Driver owns both protected capabilities, lifecycle and verified release"
+        "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
+        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-policy-recovery.test.ts",
+      "expectedTests": [
+        "Git reduction recovery observes its original operation despite discovery failure"
       ]
     },
     {

@@ -32,6 +32,7 @@ import type {
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
+import { egressAssociationInstallation } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 
 export type {
@@ -105,6 +106,8 @@ interface OperationRecord {
   phase: "resolved" | "checking" | "permitted" | "renewing" | "protecting" | "observing";
   /** Liveness bound: the request deadline until the first stream renewal. */
   expiresAt: number;
+  /** Narrowest authenticated peer lifetime observed, independent of the idle deadline. */
+  peerExpiresAt: number;
   /** Null when progress kept the original deadline without a successful policy check. */
   stream?: {
     readonly bodyBytes: number;
@@ -119,6 +122,17 @@ function refuse(
   code: Extract<EgressRefusal, { kind: "denied" }>["code"],
 ): EgressResolution & { kind: "refused" } {
   return { kind: "refused", error: { kind: "denied", code } };
+}
+
+/** Expiry is checked separately: renewed authentication cannot change captured identity. */
+function samePeerIdentity(captured: EgressPeer, fresh: EgressPeer): boolean {
+  return (
+    isDeepStrictEqual(captured.sender, fresh.sender) &&
+    captured.sandboxId === fresh.sandboxId &&
+    captured.instanceId === fresh.instanceId &&
+    captured.exchangeId === fresh.exchangeId &&
+    captured.peerKeyId === fresh.peerKeyId
+  );
 }
 
 function sameSecret(left: string, right: string): boolean {
@@ -160,6 +174,13 @@ export class CredentialProxy implements CredentialProxyExchange {
 
   constructor(ports: EgressAuthorityPorts) {
     this.ports = ports;
+  }
+
+  private async verifyPeer(authorization: string): Promise<EgressPeer | undefined> {
+    const peer = await this.ports.exchangeOwner.verify(authorization);
+    // Driver-owned descriptors may be reused. Detach identity, including sender,
+    // before any subsequent Driver, policy or receipt await can change it.
+    return peer === undefined ? undefined : immutableCopy(peer);
   }
 
   private releaseCharge(charge: OperationCharge): void {
@@ -234,9 +255,9 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (signal.aborted) {
       return { kind: "refused", error: { kind: "cancelled" } };
     }
-    const peer = await this.ports.exchangeOwner.verify(authorization);
+    const peer = await this.verifyPeer(authorization);
     const now = this.ports.now();
-    if (!peer || peer.sandboxId !== sandboxId || Date.parse(peer.expiresAt) <= now) {
+    if (!peer || peer.sandboxId !== sandboxId || !(Date.parse(peer.expiresAt) > now)) {
       return refuse("identity");
     }
     const deadline = Date.parse(request.deadlineAt);
@@ -370,6 +391,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         value: material.value,
         phase: "resolved",
         expiresAt: deadline,
+        peerExpiresAt: Date.parse(peer.expiresAt),
       };
       charge.holds += 1;
       this.records.set(handle, record);
@@ -517,15 +539,28 @@ export class CredentialProxy implements CredentialProxyExchange {
     ).unref();
   }
 
+  private narrowPeerLifetime(handle: string, record: OperationRecord, peer: EgressPeer): void {
+    record.peerExpiresAt = Math.min(record.peerExpiresAt, Date.parse(peer.expiresAt));
+    if (record.stream) {
+      record.stream = {
+        ...record.stream,
+        ceiling: Math.min(record.stream.ceiling, record.peerExpiresAt),
+      };
+    }
+    if (record.expiresAt > record.peerExpiresAt) {
+      record.expiresAt = record.peerExpiresAt;
+      this.expireAt(handle, record, record.expiresAt);
+    }
+  }
+
   private owns(association: AcceptedEgressAssociation, use: CapturedEgressUse): boolean {
     return (
       isDeepStrictEqual(association.execution, use.route.binding.execution) &&
       isDeepStrictEqual(association.execution, use.installation.plan.execution) &&
-      isDeepStrictEqual(association.installation, {
-        sandboxId: use.installation.sandboxId,
-        ...use.installation.enforcement,
-        plan: { id: use.installation.plan.id, generation: use.installation.plan.generation },
-      }) &&
+      isDeepStrictEqual(
+        association.installation,
+        egressAssociationInstallation(use.installation),
+      ) &&
       this.ports.exchangeOwner.owns(association, use) === true
     );
   }
@@ -575,25 +610,30 @@ export class CredentialProxy implements CredentialProxyExchange {
     signal: AbortSignal,
     record: OperationRecord | undefined,
   ): Promise<EgressSendDecision> {
-    const peer = await this.ports.exchangeOwner.verify(authorization);
+    const peer = await this.verifyPeer(authorization);
     if (
       !record ||
       this.records.get(handle) !== record ||
-      record.phase !== "resolved" ||
+      !(record.expiresAt > this.ports.now()) ||
       !peer ||
       peer.sandboxId !== sandboxId ||
-      !isDeepStrictEqual(peer.sender, record.use.peer.sender) ||
-      peer.instanceId !== record.use.peer.instanceId ||
-      peer.exchangeId !== record.use.peer.exchangeId ||
-      sandboxId !== record.use.peer.sandboxId ||
+      !samePeerIdentity(record.use.peer, peer) ||
+      !(Date.parse(peer.expiresAt) > this.ports.now()) ||
+      !(Date.parse(record.use.peer.expiresAt) > this.ports.now()) ||
       requestId !== record.use.request.id ||
       deadlineAt !== record.use.request.deadlineAt ||
       (selection === true
         ? record.evidence.kind !== "no_material_required"
         : record.evidence.kind === "no_material_required" ||
           !isDeepStrictEqual(record.evidence, selection)) ||
-      !sameSecret(record.digest, injectionDigest)
+      !sameSecret(record.digest, injectionDigest) ||
+      !this.owns(record.association, record.use)
     ) {
+      return refuse("invalid_handle");
+    }
+    this.narrowPeerLifetime(handle, record, peer);
+    // An exact authenticated duplicate can shorten custody, but cannot authorize again.
+    if (record.phase !== "resolved") {
       return refuse("invalid_handle");
     }
     // Reserve before any persistence/policy I/O. A duplicate or unknown commit never permits send.
@@ -628,7 +668,7 @@ export class CredentialProxy implements CredentialProxyExchange {
     let decision: ProtectedEgressSource | EgressRefusal;
     let finalPeer: EgressPeer | undefined;
     try {
-      finalPeer = await this.ports.exchangeOwner.verify(authorization);
+      finalPeer = await this.verifyPeer(authorization);
       if (!finalPeer || !isDeepStrictEqual(finalPeer, peer)) {
         return deny({ kind: "denied", code: "identity" });
       }
@@ -654,8 +694,13 @@ export class CredentialProxy implements CredentialProxyExchange {
         ? Infinity
         : Date.parse(record.evidence.usableUntil),
       Date.parse(finalPeer.expiresAt),
+      record.peerExpiresAt,
     );
-    if (sendStartBy <= now || this.records.get(handle) !== record || record.phase !== "checking") {
+    if (
+      !(sendStartBy > now) ||
+      this.records.get(handle) !== record ||
+      record.phase !== "checking"
+    ) {
       return deny({ kind: "deadline_exceeded" });
     }
     const authorized: AuthorizedSend = immutableCopy({
@@ -695,6 +740,7 @@ export class CredentialProxy implements CredentialProxyExchange {
         this.records.get(handle) !== record ||
         record.phase !== "checking" ||
         this.ports.now() >= sendStartBy ||
+        sendStartBy > record.peerExpiresAt ||
         !this.owns(record.association, record.use)
       ) {
         this.discard(handle, record);
@@ -716,27 +762,34 @@ export class CredentialProxy implements CredentialProxyExchange {
   }
 
   /** The one permitted operation this authenticated stream may still claim, if any. */
-  private async permitted(
-    authorization: string,
+  private permitted(
+    peer: EgressPeer | undefined,
     sandboxId: string,
     requestId: string,
-  ): Promise<{ peer: EgressPeer; handle: string; record: OperationRecord } | undefined> {
+  ): { peer: EgressPeer; handle: string; record: OperationRecord } | undefined {
     this.prune();
-    const peer = await this.ports.exchangeOwner.verify(authorization);
-    if (!peer || peer.sandboxId !== sandboxId || Date.parse(peer.expiresAt) <= this.ports.now()) {
+    if (!peer || peer.sandboxId !== sandboxId || !(Date.parse(peer.expiresAt) > this.ports.now())) {
       return undefined;
     }
     const entry = [...this.records].find(
       ([, record]) =>
-        record.phase === "permitted" &&
         record.use.request.id === requestId &&
-        record.use.peer.sandboxId === sandboxId &&
-        record.use.peer.instanceId === peer.instanceId &&
-        record.use.peer.exchangeId === peer.exchangeId &&
-        isDeepStrictEqual(record.use.peer.sender, peer.sender) &&
+        samePeerIdentity(record.use.peer, peer) &&
+        Date.parse(record.use.peer.expiresAt) > this.ports.now() &&
+        record.expiresAt > this.ports.now() &&
         this.owns(record.association, record.use),
     );
-    return entry ? { peer, handle: entry[0], record: entry[1] } : undefined;
+    if (!entry) {
+      return undefined;
+    }
+    const [handle, record] = entry;
+    // An accepted operation retains every shorter verified lifetime from its
+    // exact owner; the phase only decides whether this call may claim it.
+    this.narrowPeerLifetime(handle, record, peer);
+    if (record.phase !== "permitted") {
+      return undefined;
+    }
+    return { peer, handle, record };
   }
 
   /** Claim exactly one authenticated response stream before its preflight decision. */
@@ -745,7 +798,9 @@ export class CredentialProxy implements CredentialProxyExchange {
     sandboxId: string,
     requestId: string,
   ): Promise<string | undefined> {
-    const claimed = await this.permitted(authorization, sandboxId, requestId);
+    const peer = await this.verifyPeer(authorization);
+    // Match, narrow and reserve in one turn, after authentication has settled.
+    const claimed = this.permitted(peer, sandboxId, requestId);
     if (!claimed) {
       return undefined;
     }
@@ -768,7 +823,9 @@ export class CredentialProxy implements CredentialProxyExchange {
     requestId: string,
     progress: EgressStreamProgress,
   ): Promise<EgressStreamLease | undefined> {
-    const claimed = await this.permitted(authorization, sandboxId, requestId);
+    const authenticated = await this.verifyPeer(authorization);
+    // No yield between the permitted check and either cached return or reservation.
+    const claimed = this.permitted(authenticated, sandboxId, requestId);
     if (!claimed) {
       return undefined;
     }
@@ -807,7 +864,9 @@ export class CredentialProxy implements CredentialProxyExchange {
       if (
         this.records.get(handle) !== record ||
         record.phase !== "renewing" ||
-        record.expiresAt <= now ||
+        !(record.expiresAt > now) ||
+        !(Date.parse(record.use.peer.expiresAt) > now) ||
+        !(Date.parse(peer.expiresAt) > now) ||
         !this.owns(record.association, record.use)
       ) {
         this.discard(handle, record);
@@ -834,9 +893,9 @@ export class CredentialProxy implements CredentialProxyExchange {
         record.stream ??= null;
         return lease();
       }
-      const ceiling = Math.min(createdAt + STREAM_LEASE_CEILING_MS, Date.parse(peer.expiresAt));
+      const ceiling = Math.min(createdAt + STREAM_LEASE_CEILING_MS, record.peerExpiresAt);
       const renewBy = Math.min(now + STREAM_LEASE_IDLE_MS, ceiling);
-      if (renewBy <= now) {
+      if (!(renewBy > now)) {
         this.discard(handle, record);
         return undefined;
       }

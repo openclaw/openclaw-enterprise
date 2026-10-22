@@ -1966,6 +1966,7 @@ export class ControllerWorker {
     let completionCode: string | undefined;
     let expiryRevision: Readonly<AgentRevision> | undefined;
     let withdrawal: "withdrawn" | "pending" | "retire-runtime" | undefined;
+    let denial: RevisionDispatchResult | undefined;
     let cause: string | undefined;
     let stoppedRevision: Readonly<AgentRevision> | undefined;
     const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
@@ -2014,7 +2015,11 @@ export class ControllerWorker {
           }
           // Session service outages cannot delay exact workload/material retirement.
           if (expiryRevision !== undefined) {
-            withdrawal = await this.withdrawExpiredRepositoryAccess(claim, revision, resources);
+            ({ withdrawal, denial } = await this.withdrawExpiredRepositoryAccess(
+              claim,
+              revision,
+              resources,
+            ));
             if (withdrawal === "pending") {
               complete = false;
               cause ??= "REPOSITORY_WITHDRAWAL_UNCONFIRMED";
@@ -2045,6 +2050,9 @@ export class ControllerWorker {
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
+      }
+      if (denial !== undefined) {
+        await this.appendRevisionDenial(unit, claim, denial);
       }
       if (stoppedRevision !== undefined) {
         // Record a confirmed runtime stop even when session disposal is still pending.
@@ -2171,17 +2179,19 @@ export class ControllerWorker {
       namespace,
       agent,
     }: { namespace: Readonly<Namespace> | undefined; agent: Readonly<Agent> | undefined },
-  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+  ): Promise<{
+    withdrawal: "withdrawn" | "pending" | "retire-runtime";
+    denial?: RevisionDispatchResult;
+  }> {
     const compute = this.compute;
     if (
-      !compute.retireExpiredRepositoryAccess ||
       namespace?.status !== "ready" ||
       agent?.status !== "active" ||
       agent.desiredRuntimeState !== "running" ||
       agent.activeRevisionId !== revision.id ||
       agent.servicePrincipalId !== revision.servicePrincipalId
     ) {
-      return "retire-runtime";
+      return { withdrawal: "pending" };
     }
 
     const { namespaceId, agentId, id: revisionId } = revision;
@@ -2190,27 +2200,79 @@ export class ControllerWorker {
       // independent authority checks, including an actual model credential withdrawal. Never
       // run repository admission, prepareRevision or activation to observe this reduced runtime.
       const expiry = await this.queue.repositoryExpiryState({ namespaceId, agentId, revisionId });
-      if (
-        expiry === undefined ||
-        expiry === "retiring" ||
-        (await this.authorizeRevision(claim, agent, revision)) !== undefined ||
-        (await this.resolveRevisionBackend(revision)) !== undefined ||
-        "result" in (await this.resolveRevisionSecretContext(revision))
-      ) {
-        return "retire-runtime";
+      if (expiry === undefined || expiry === "retiring") {
+        return { withdrawal: "pending" };
       }
+      // These facts are independent. A failed read cannot erase a definite authority loss
+      // established by the other read, and mutable Gateway readiness cannot hide a withdrawal.
+      const [authorization, modelWithdrawn] = await Promise.allSettled([
+        this.authorizeRevision(claim, agent, revision),
+        this.requiredModelCredentialWithdrawn(revision),
+      ]);
+      signal.throwIfAborted();
+      if (
+        (authorization.status === "fulfilled" &&
+          authorization.value !== undefined &&
+          ["AUTHORIZATION_DENIED", "ACTOR_REVOKED", "INVALID_AGENT_PRINCIPAL"].includes(
+            authorization.value.code,
+          )) ||
+        (modelWithdrawn.status === "fulfilled" && modelWithdrawn.value) ||
+        (revision.egressPlan?.policyReductionVersion !== 2 &&
+          compute.retireExpiredRepositoryAccess === undefined)
+      ) {
+        // The caller matched Compute to this revision. Missing withdrawal capability is
+        // definitive too, even when an independent dependency cannot report its state.
+        return {
+          withdrawal: "retire-runtime",
+          ...(authorization.status === "fulfilled" &&
+          authorization.value?.authorization !== undefined
+            ? { denial: authorization.value }
+            : {}),
+        };
+      }
+      // Both retained expiry work and regular maintenance supervise the running revision.
+      // Recover the original source obligations, including companions, without replaying here.
       await this.recoverPendingCredentialWithdrawals(claim, revision);
+      if (
+        authorization.status === "rejected" ||
+        authorization.value !== undefined ||
+        modelWithdrawn.status === "rejected"
+      ) {
+        return { withdrawal: "pending" };
+      }
+      const secrets = await this.resolveRevisionSecretContext(revision);
+      if ("result" in secrets) {
+        // Only the independently required Harness source produces this result. Optional
+        // withdrawn sources remain detached and cannot require retirement of a healthy Agent.
+        return {
+          withdrawal: secrets.result.code === "CREDENTIAL_WITHDRAWN" ? "retire-runtime" : "pending",
+        };
+      }
+      if ((await this.resolveRevisionBackend(revision)) !== undefined) {
+        return { withdrawal: "pending" };
+      }
+      // Expiry recovery observes the original operation; it must not replay source detaches.
       signal.throwIfAborted();
       try {
-        const result = await compute.retireExpiredRepositoryAccess!(revision, signal);
-        return result === "withdrawn" || result === "retire-runtime" ? result : "pending";
+        const result =
+          revision.egressPlan?.policyReductionVersion === 2
+            ? await reduceCredentialPolicy(
+                this.state,
+                this.protectedDriver,
+                { namespace, revision, plan: revision.egressPlan, signal },
+                undefined,
+              )
+            : await compute.retireExpiredRepositoryAccess!(revision, signal);
+        return {
+          withdrawal: result === "withdrawn" || result === "retire-runtime" ? result : "pending",
+        };
       } catch (error) {
         if (signal.aborted || error instanceof WorkClaimLostError) {
           throw error;
         }
         // PostgreSQL already fenced this expired grant. A lost supplier reply proves neither
         // successful withdrawal nor that the separately authorized runtime should be stopped.
-        return "pending";
+        return { withdrawal: "pending" };
       }
     });
   }
@@ -4068,17 +4130,31 @@ export class ControllerWorker {
         });
         return;
       }
-      const denied = await this.authorizeRevision(claim, agent, revision);
-      if (denied !== undefined) {
-        await this.finalizeRevision(claim, denied);
-        return;
+      const expiredMaintenance =
+        revision.repositoryCredentials !== undefined &&
+        agent.activeRevisionId === revision.id &&
+        agent.desiredRuntimeState === "running" &&
+        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`) &&
+        (await this.queue.repositoryExpiryState({
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        })) !== undefined;
+      // Expired maintenance rechecks independent authority in cleanup after the existing
+      // successor decision. Authorization and Backend checks must not strand its retirement work.
+      if (!expiredMaintenance) {
+        const denied = await this.authorizeRevision(claim, agent, revision);
+        if (denied !== undefined) {
+          await this.finalizeRevision(claim, denied);
+          return;
+        }
+        const backend = await this.resolveRevisionBackend(revision);
+        if (backend !== undefined) {
+          await this.finalizeRevision(claim, backend);
+          return;
+        }
       }
-      const backend = await this.resolveRevisionBackend(revision);
-      if (backend !== undefined) {
-        await this.finalizeRevision(claim, backend);
-        return;
-      }
-      // Authorization and the backend are decided again above on every pass. Once a stored
+      // Reconciliation authorization and the backend are decided again above on every pass. Once a stored
       // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
       // continues, as it did before the wait was stored. Past the convergence deadline it cannot
       // converge any more: preparing the candidate again only restarted it, and the deadline then
@@ -4227,19 +4303,12 @@ export class ControllerWorker {
         });
         return;
       }
+      if (expiredMaintenance) {
+        // Cleanup owns continued supervision only after successor and refusal retirement.
+        await this.processRepositoryCleanup(claim, revision);
+        return;
+      }
       if (revision.repositoryCredentials !== undefined) {
-        const { namespaceId, agentId, id: revisionId } = revision;
-        if (
-          agent.activeRevisionId === revisionId &&
-          claim.idempotencyKey.startsWith(`agent_revision:${revisionId}:maintenance:`) &&
-          (await this.queue.repositoryExpiryState({ namespaceId, agentId, revisionId })) !==
-            undefined
-        ) {
-          // An expiry or retirement is durable even across a clock rollback. A maintenance
-          // observation must never reopen repository admission or re-prepare this revision.
-          await this.processRepositoryCleanup(claim, revision);
-          return;
-        }
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
@@ -4248,15 +4317,7 @@ export class ControllerWorker {
         revision.harnessAuth.method === "credential_source" &&
         claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
       ) {
-        const sourceId = revision.harnessAuth.sourceId;
-        const withdrawal = await this.state.read((view) =>
-          view.credentialSources.findCredentialWithdrawal(
-            revision.namespaceId,
-            revision.id,
-            sourceId,
-          ),
-        );
-        if (withdrawal !== undefined) {
+        if (await this.requiredModelCredentialWithdrawn(revision)) {
           await this.completeWithdrawnRevisionMaintenance(claim, revision);
           return;
         }
@@ -4671,6 +4732,23 @@ export class ControllerWorker {
     return completed;
   }
 
+  private async requiredModelCredentialWithdrawn(
+    revision: Readonly<AgentRevision>,
+  ): Promise<boolean> {
+    if (revision.harnessAuth.method !== "credential_source") {
+      return false;
+    }
+    const sourceId = revision.harnessAuth.sourceId;
+    return this.state.read(
+      async (view) =>
+        (await view.credentialSources.findCredentialWithdrawal(
+          revision.namespaceId,
+          revision.id,
+          sourceId,
+        )) !== undefined,
+    );
+  }
+
   private async authorizeRevision(
     claim: ClaimedWork,
     agent: Readonly<Agent>,
@@ -4685,8 +4763,20 @@ export class ControllerWorker {
     };
     const actor = state.identities.find((identity) => identity.id === claim.actorId);
     if (actor === undefined) {
-      const decision = await this.iamDecision(driver, authorization);
-      return { outcome: "permanent", code: "ACTOR_REVOKED", authorization, decision };
+      // A successful authoritative read already proved revocation. Preserve IAM evidence
+      // when available, but an unavailable decision cannot turn that fact into uncertainty.
+      let decision: AuthorizationDecision | undefined;
+      try {
+        decision = await this.iamDecision(driver, authorization);
+      } catch {
+        // No decision evidence is available; the State read remains authoritative.
+      }
+      return {
+        outcome: "permanent",
+        code: "ACTOR_REVOKED",
+        authorization,
+        ...(decision === undefined ? {} : { decision }),
+      };
     }
     const identity = state.identities.find(
       (candidate) =>
@@ -5265,16 +5355,26 @@ export class ControllerWorker {
                     namespaceId,
                     id,
                   );
+                  const reductions = await view.credentialSources.listCredentialPolicyReductions(
+                    namespaceId,
+                    id,
+                  );
                   if (
-                    revision.egressPlan?.policyReductionVersion &&
-                    withdrawals.some(
-                      (withdrawal) =>
-                        !withdrawal.policyReduction?.observed &&
-                        revision.egressPlan?.routes.some(
-                          (route) =>
-                            route.binding.source.source.id === withdrawal.credentialSourceId,
-                        ),
-                    )
+                    reductions.some((reduction) => !reduction.observed) ||
+                    (revision.egressPlan?.policyReductionVersion &&
+                      withdrawals.some(
+                        (withdrawal) =>
+                          revision.egressPlan?.routes.some(
+                            (route) =>
+                              route.binding.source.source.id === withdrawal.credentialSourceId,
+                          ) &&
+                          !reductions.some(
+                            (reduction) =>
+                              reduction.bindingId ===
+                                `policy:source:${withdrawal.credentialSourceId}` &&
+                              reduction.observed,
+                          ),
+                      ))
                   ) {
                     throw new DependencyUnavailableError(
                       "Credential policy reduction is not observed.",
@@ -5656,7 +5756,10 @@ export class ControllerWorker {
         }
         activated = resolved.revision;
         return;
-      } else if (resolved.decision !== undefined) {
+      } else if (
+        resolved.decision !== undefined ||
+        (resolved.code === "ACTOR_REVOKED" && resolved.authorization !== undefined)
+      ) {
         await this.appendRevisionDenial(unit, claim, resolved);
       }
 

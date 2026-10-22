@@ -53,9 +53,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "guides/README"
-            ]
+            "hidden": ["guides/README"]
           },
           {
             "tab": "Topics",
@@ -197,6 +195,10 @@
                   {
                     "page": "reference/credential-sources",
                     "label": "Credential Sources"
+                  },
+                  {
+                    "page": "guides/credential-proxy",
+                    "label": "Set Up Credential Proxy"
                   },
                   {
                     "page": "reference/credential-sources/withdrawal",
@@ -411,20 +413,8 @@
                         "label": "Native Git with a Prepared Credential"
                       },
                       {
-                        "page": "reference/repository-credentials/openshell-git",
-                        "label": "OpenShell Git"
-                      },
-                      {
                         "page": "reference/repository-credentials/protected-openshell-git",
                         "label": "Protected Git with OpenShell"
-                      },
-                      {
-                        "page": "reference/repository-credentials/openshell-git-refusals",
-                        "label": "OpenShell Git Refusals"
-                      },
-                      {
-                        "page": "reference/repository-credentials/openshell-git-restarts",
-                        "label": "OpenShell Git Route Restarts"
                       },
                       {
                         "page": "reference/public-github-reads",
@@ -460,7 +450,10 @@
             "hidden": [
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
-              "reference/repository-credentials/development-token"
+              "reference/repository-credentials/development-token",
+              "reference/repository-credentials/openshell-git",
+              "reference/repository-credentials/openshell-git-refusals",
+              "reference/repository-credentials/openshell-git-restarts"
             ]
           },
           {
@@ -674,6 +667,10 @@
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
                   }
                 ]
               }
@@ -751,9 +748,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "reference/postgres-auth-binding"
-            ]
+            "hidden": ["reference/postgres-auth-binding"]
           },
           {
             "tab": "Contribute",
@@ -815,6 +810,10 @@
                     "label": "Driver Development"
                   },
                   {
+                    "page": "contributing/credential-proxy-driver",
+                    "label": "Implement a Credential Proxy Driver"
+                  },
+                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -836,6 +835,10 @@
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-proxy",
+                        "label": "Credential Proxy"
                       },
                       {
                         "page": "reference/drivers/credential-refresh",

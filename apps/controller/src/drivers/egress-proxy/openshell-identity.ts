@@ -1,5 +1,6 @@
 import { createHash, createPublicKey, randomBytes, verify, type KeyObject } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { egressAssociationInstallation } from "@openclaw-enterprise/contracts";
 import type { EgressRef } from "@openclaw-enterprise/contracts";
 import type {
   AcceptedEgressAssociation,
@@ -212,11 +213,7 @@ export class OpenShellEgressIdentity implements EgressExchangeOwner {
     exchange.use = use;
     exchange.association = {
       execution: use.installation.plan.execution,
-      installation: {
-        sandboxId: use.installation.sandboxId,
-        ...use.installation.enforcement,
-        plan: { id: use.installation.plan.id, generation: use.installation.plan.generation },
-      },
+      installation: egressAssociationInstallation(use.installation),
       exchangeId: exchange.peer.exchangeId!,
       responseId: randomBytes(32).toString("hex"),
       custodyId: exchange.custodyId,

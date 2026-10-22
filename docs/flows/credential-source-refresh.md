@@ -253,9 +253,9 @@ returns `not_ready`, including when validity runs out during the read. The
 Resolver must authorize both access and the actual send.
 
 The optional PostgreSQL lifecycle joins the family transaction, encrypted custody,
-and retained attempts. The API and worker need the same dedicated 32-byte custody
-key across restarts. Only the worker prepares material. The Installation owns the
-HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
+and retained attempts. The worker retains the dedicated 32-byte custody
+key across restarts; the API does not receive it. Only the worker prepares material.
+The Installation owns the HTTPS issuer and its trust roots; a source cannot redirect the issuer. A cold or
 expired read cannot start an exchange, and uncertain issuance blocks another attempt.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`

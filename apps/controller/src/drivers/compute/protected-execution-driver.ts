@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+  assertExecutionAdmission,
   repositoryGitDeliveryProfile,
   repositoryGitAuthorization,
   validRepositoryGitRecipient,
@@ -45,11 +46,16 @@ export class ProtectedExecutionDriver {
     revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
     source?: SelectedDriverRegistration | "stored",
   ): boolean {
+    try {
+      assertExecutionAdmission(revision);
+    } catch {
+      return false;
+    }
     const plan = revision.egressPlan;
     return (
       plan !== undefined &&
       (source === "stored" ||
-        (source === this.owner && revision.executionAdmission.version >= 3)) &&
+        (source === this.owner && revision.executionAdmission.mode === "protected")) &&
       this.owner.ownsProxyPlan(plan) &&
       (plan.policyReductionVersion === undefined ||
         this.proxy.policyReduction?.version === plan.policyReductionVersion)
@@ -63,6 +69,9 @@ export class ProtectedExecutionDriver {
         this.proxy.policyReduction?.version !== context.plan.policyReductionVersion)
     ) {
       throw new DependencyUnavailableError("The protected Driver no longer owns this plan.");
+    }
+    if (context.plan.policyReductionVersion === 2 && this.proxy.policyReduction?.version === 2) {
+      await this.proxy.policyReduction.assertAvailable(context.signal);
     }
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (
@@ -161,7 +170,7 @@ export class ProtectedExecutionDriver {
       (context.plan.policyReductionVersion === undefined ||
         this.proxy.policyReduction?.version === context.plan.policyReductionVersion) &&
       (isDeepStrictEqual(installed.plan, context.plan) ||
-        (this.proxy.policyReduction?.version === 1 &&
+        (this.proxy.policyReduction?.version === context.plan.policyReductionVersion &&
           isReducedCredentialPlan(context.plan, installed.plan))) &&
       isDeepStrictEqual(installed.sender, this.proxy.sourceControl.sender) &&
       !!installed.sandboxId &&

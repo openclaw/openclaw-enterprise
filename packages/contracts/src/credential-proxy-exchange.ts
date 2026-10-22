@@ -96,6 +96,23 @@ export interface AcceptedEgressAssociation {
   readonly custodyId: string;
 }
 
+/** Generic exchange identity excludes the separately enforced repository Git recipient. */
+export function egressAssociationInstallation(
+  installation: EgressInstallation,
+): AcceptedEgressAssociation["installation"] {
+  return {
+    sandboxId: installation.sandboxId,
+    instanceId: installation.enforcement.instanceId,
+    configurationId: installation.enforcement.configurationId,
+    ...(installation.enforcement.peerKeyId === undefined
+      ? {}
+      : { peerKeyId: installation.enforcement.peerKeyId }),
+    policyHash: installation.enforcement.policyHash,
+    authorityScope: installation.enforcement.authorityScope,
+    plan: { id: installation.plan.id, generation: installation.plan.generation },
+  };
+}
+
 export interface AuthorizedSend {
   readonly association: AcceptedEgressAssociation;
   readonly requestDigest: string;

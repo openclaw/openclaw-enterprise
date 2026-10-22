@@ -46,6 +46,7 @@ export type {
   CredentialProxyDriver,
 } from "./credential-proxy.ts";
 export type * from "./credential-proxy-exchange.ts";
+export { egressAssociationInstallation } from "./credential-proxy-exchange.ts";
 export * from "./prepared-token.ts";
 export * from "./prepared-github-egress.ts";
 export * from "./credential-free-metadata.ts";
@@ -2444,6 +2445,7 @@ export {
 
 export type {
   ProtectedRepositoryGitAuthority,
+  RepositoryGitBinding,
   ProtectedRepositoryGitMaterial,
   ProtectedGitHubInstallationMaterial,
   GitHubInstallationSendDecision,

@@ -601,7 +601,6 @@ export const credentialWithdrawals = occSchema.table(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     lastReason: text("last_reason"),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
-    policyReduction: jsonb("policy_reduction").$type<CredentialPolicyReductionState>(),
   },
   (table): PgTableExtraConfigValue[] => [
     primaryKey({
@@ -622,16 +621,6 @@ export const credentialWithdrawals = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("cascade"),
-    check(
-      "credential_withdrawals_policy_reduction",
-      sql`${table.policyReduction} IS NULL OR COALESCE(
-      jsonb_typeof(${table.policyReduction}) = 'object'
-      AND ${table.policyReduction}->'request'->>'version' = '1'
-      AND ${table.policyReduction}->'request'->>'operationId' ~ '^[0-9a-f-]{36}$'
-      AND ${table.policyReduction} #>> '{request,expected,plan,execution,namespaceId}' = ${table.namespaceId}
-      AND ${table.policyReduction} #>> '{request,expected,plan,execution,revisionId}' = ${table.revisionId}
-      AND jsonb_typeof(${table.policyReduction} #> '{request,retained,routes}') = 'array', false)`,
-    ),
     check("credential_withdrawals_state_valid", sql`${table.state} IN ('pending', 'revoked')`),
     check(
       "credential_withdrawals_completion",
@@ -717,8 +706,12 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6')
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6'))
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
+                  THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
+                  ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
+                    (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
@@ -2118,6 +2111,9 @@ export const credentialDeliveries = occSchema.table(
   "credential_deliveries",
   {
     revisionId: text("revision_id").notNull(),
+    liveRevisionId: text("live_revision_id").references(() => agentRevisions.id, {
+      onDelete: "set null",
+    }),
     bindingId: text("binding_id").notNull(),
     namespaceId: text("namespace_id").notNull(),
     agentId: text("agent_id").notNull(),
@@ -2136,15 +2132,28 @@ export const credentialDeliveries = occSchema.table(
     preparationAttemptId: uuid("preparation_attempt_id"),
     targetMaterialVersion: uuid("target_material_version"),
     targetPreparationAttemptId: uuid("target_preparation_attempt_id"),
+    settlement: text("settlement").notNull(),
+    operationFence: bigint("operation_fence", { mode: "number" }).notNull().default(1),
     writePending: text("write_pending"),
     blocked: text("blocked"),
     retainedPolicyHash: text("retained_policy_hash"),
   },
   (t) => [
+    check(
+      "credential_deliveries_live_revision_check",
+      sql`${t.liveRevisionId} IS NULL OR ${t.liveRevisionId} = ${t.revisionId}`,
+    ),
+    check("credential_deliveries_operation_fence_check", sql`${t.operationFence} >= 1`),
+    check("credential_deliveries_settlement_check", sql`${t.settlement} IN ('snapshot','witness')`),
+    check(
+      "credential_deliveries_rotation_target_check",
+      sql`${t.writePending} IS DISTINCT FROM 'rotate' OR ${t.targetMaterialVersion} IS NOT NULL`,
+    ),
+    // Deferred in 0062 so the live-reference SET NULL runs before the owner check.
     foreignKey({
-      columns: [t.namespaceId, t.agentId, t.revisionId],
+      columns: [t.namespaceId, t.agentId, t.liveRevisionId],
       foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
-    }).onDelete("cascade"),
+    }),
     primaryKey({ columns: [t.revisionId, t.bindingId] }),
     index("credential_deliveries_namespace").on(t.namespaceId),
     unique("credential_deliveries_revision_id_target_key").on(t.revisionId, t.target),
@@ -2175,24 +2184,42 @@ export const credentialDeliveries = occSchema.table(
 export const credentialDeliveryReductions = occSchema.table(
   "credential_delivery_reductions",
   {
-    revisionId: text("revision_id")
-      .notNull()
-      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    revisionId: text("revision_id").notNull(),
     bindingId: text("binding_id").notNull(),
     fence: bigint("fence", { mode: "number" }).notNull(),
-    recipient: jsonb("recipient").notNull(),
-    materialVersion: uuid("material_version").notNull(),
-    retainedPolicyHash: text("retained_policy_hash").notNull(),
+    recipient: jsonb("recipient"),
+    materialVersion: uuid("material_version"),
+    retainedPolicyHash: text("retained_policy_hash"),
     requestId: uuid("request_id"),
     expectedVersion: text("expected_version"),
     observedGeneration: text("observed_generation"),
+    policyRequest: jsonb("policy_request").$type<CredentialPolicyReductionState["request"]>(),
+    policyObserved: jsonb("policy_observed").$type<EgressInstallation>(),
+    deliveryBindingId: text("delivery_binding_id").generatedAlwaysAs(
+      sql`CASE WHEN policy_request IS NULL THEN binding_id END`,
+    ),
   },
   (t) => [
     primaryKey({ columns: [t.revisionId, t.bindingId] }),
     foreignKey({
-      columns: [t.revisionId, t.bindingId],
+      columns: [t.revisionId, t.deliveryBindingId],
       foreignColumns: [credentialDeliveries.revisionId, credentialDeliveries.bindingId],
     }).onDelete("cascade"),
+    check(
+      "credential_delivery_reductions_policy_check",
+      sql`CASE WHEN ${t.policyRequest} IS NULL THEN
+      ${t.recipient} IS NOT NULL AND ${t.materialVersion} IS NOT NULL AND ${t.retainedPolicyHash} IS NOT NULL AND ${t.policyObserved} IS NULL
+    ELSE COALESCE(
+      ${t.recipient} IS NULL AND ${t.materialVersion} IS NULL AND ${t.retainedPolicyHash} IS NULL
+      AND ${t.policyRequest}->>'version' IN ('1','2')
+      AND ${t.policyRequest}->>'operationId' = ${t.requestId}::text
+      AND ${t.policyRequest} #>> '{expected,plan,execution,revisionId}' = ${t.revisionId}
+      AND ${t.policyRequest} #>> '{expected,plan,generation}' = ${t.expectedVersion}
+      AND jsonb_typeof(${t.policyRequest} #> '{retained,routes}') = 'array'
+      AND (${t.policyObserved} IS NULL OR (
+        ${t.policyObserved}->'plan' = ${t.policyRequest}->'retained'
+        AND ${t.policyObserved} #>> '{plan,generation}' = ${t.observedGeneration})), false) END`,
+    ),
     check("credential_delivery_reductions_binding_id_check", sql`${t.bindingId} <> ''`),
     check("credential_delivery_reductions_fence_check", sql`${t.fence} >= 1`),
     check(
@@ -2215,35 +2242,6 @@ export const credentialDeliveryReductions = occSchema.table(
     check(
       "credential_delivery_reductions_check1",
       sql`${t.observedGeneration} IS NULL OR ${t.requestId} IS NOT NULL`,
-    ),
-  ],
-);
-
-/** A verified protected Git recipient. Material identity and install uncertainty, never its value. */
-export const protectedRepositoryGitRecipients = occSchema.table(
-  "protected_repository_git_recipients",
-  {
-    revisionId: text("revision_id")
-      .primaryKey()
-      .references(() => agentRevisions.id, { onDelete: "cascade" }),
-    installation: jsonb("installation").notNull(),
-    fence: bigint("fence", { mode: "number" }).notNull().default(1),
-    state: text("state").notNull().default("observed"),
-    attemptId: uuid("attempt_id"),
-    materialVersion: uuid("material_version"),
-  },
-  (t) => [
-    foreignKey({
-      columns: [t.attemptId, t.materialVersion],
-      foreignColumns: [preparedGitHubAttempts.id, preparedGitHubAttempts.materialVersion],
-    }),
-    check(
-      "protected_repository_git_recipients_check",
-      sql`
-      fence >= 1 AND state IN ('observed', 'installing', 'installed')
-      AND (state = 'observed') = (attempt_id IS NULL)
-      AND (attempt_id IS NULL) = (material_version IS NULL)
-      AND (installation#>>'{plan,execution,revisionId}' = revision_id) IS TRUE`,
     ),
   ],
 );

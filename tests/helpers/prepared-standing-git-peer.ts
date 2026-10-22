@@ -165,7 +165,14 @@ export async function preparedStandingGitPeer(
       await assert.rejects(access(join(directory, name)), { code: "ENOENT" });
     }
     assert.equal(
-      (await pool.query("select count(*) n from occ.repository_broker_receipts")).rows[0].n,
+      (
+        await pool.query(
+          `SELECT count(*) n FROM occ.repository_broker_receipts b
+         JOIN occ.repository_session_attempts s USING (admission_id)
+         WHERE s.namespace_id=$1`,
+          [namespaceId],
+        )
+      ).rows[0].n,
       "0",
     );
   };

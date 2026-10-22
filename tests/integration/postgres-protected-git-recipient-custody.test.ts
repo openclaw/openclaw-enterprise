@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
+import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
+import { CredentialDeliveries } from "../../packages/occ/src/index.ts";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
@@ -65,6 +68,63 @@ test(
     );
     const pending = await mine.recipients.beginInstall(route, version);
     assert.ok(pending);
+    const deliveryKey = {
+      revisionId: route.revisionId,
+      bindingId: installation.plan.execution.executionId,
+    };
+    const deliveryReceipt = async () =>
+      (
+        await f.pool.query(
+          "SELECT operation_fence,fence,write_pending FROM occ.credential_deliveries WHERE revision_id=$1 AND binding_id=$2",
+          [deliveryKey.revisionId, deliveryKey.bindingId],
+        )
+      ).rows[0];
+    const originalOperation = await deliveryReceipt();
+    const client = await f.pool.connect();
+    try {
+      const deliveries = new CredentialDeliveries(client);
+      assert.equal(
+        await deliveries.record(deliveryKey, pending.fence, {
+          desired: {},
+          observed: installation,
+          material: version,
+        }),
+        false,
+        "a snapshot cannot impersonate independent recipient confirmation",
+      );
+      assert.equal(
+        await deliveries.cancelWriting(deliveryKey, pending.fence),
+        false,
+        "the snapshot cancellation path cannot release a registered installation",
+      );
+      await deliveries.adopt(deliveryKey, randomUUID());
+    } finally {
+      client.release();
+    }
+    const replacementLease = await deliveryReceipt();
+    assert.equal(replacementLease.operation_fence, originalOperation.operation_fence);
+    assert.notEqual(replacementLease.fence, originalOperation.fence);
+    assert.equal(
+      await mine.recipients.confirmInstall({ ...pending, materialVersion: randomUUID() }),
+      undefined,
+      "unrelated C cannot settle the original B operation",
+    );
+    assert.equal(
+      await mine.recipients.confirmInstall({
+        ...pending,
+        observed: {
+          ...installation,
+          sandboxId: "different-recipient",
+        },
+      }),
+      undefined,
+      "readback from another recipient cannot settle B",
+    );
+    assert.equal(
+      await mine.recipients.confirmInstall({ ...pending, fence: Number(replacementLease.fence) }),
+      undefined,
+      "the replacement lease is not the consumed operation identity",
+    );
 
     // We do not yet know whether installation succeeded. No owner may turn missing live evidence into retirement.
     assert.equal(await mine.recipients.observe(installation), undefined);
@@ -93,6 +153,8 @@ test(
     assert.equal(await notMine.recipients.confirmInstall(pending), undefined);
     const installedRoute = await mine.recipients.confirmInstall(pending);
     assert.ok(installedRoute);
+    assert.equal(installedRoute.fence, Number(replacementLease.fence));
+    assert.equal((await deliveryReceipt()).write_pending, null);
     const installed = { route: installedRoute, ...version };
     const denied = await notMine.readMaterial(installedRoute, t.signal);
     assert.deepEqual(
@@ -264,7 +326,11 @@ test(
     // Deliberately lose the installation confirmation. Only provider retirement can settle the token;
     // changing the Agent's binding and disposing its session cannot adopt or replay that installation.
     const { preparationAttemptId, materialVersion } = read;
-    assert.ok(await host.recipients.beginInstall(route, { preparationAttemptId, materialVersion }));
+    const pending = await host.recipients.beginInstall(route, {
+      preparationAttemptId,
+      materialVersion,
+    });
+    assert.ok(pending);
     assert.equal(await host.recipients.observe(installation), undefined);
     await f.state.transact(async (u) => {
       await u.agents.updateConfiguration(
@@ -292,6 +358,18 @@ test(
         });
       }
     });
+    // The delayed authenticated readback settles history after withdrawal, without
+    // changing the live Agent or authorizing another provider request.
+    const settled = await host.recipients.confirmInstall(pending);
+    assert.ok(settled);
+    assert.deepEqual(await host.githubInstallation!.readMaterial(settled, t.signal), {
+      absent: "withdrawn",
+    });
+    assert.equal(
+      await host.recipients.beginInstall(settled, { preparationAttemptId, materialVersion }),
+      undefined,
+    );
+    assert.deepEqual(providerWrites(), wideIssued);
     await f.admitReplacement(randomUUID());
     await f.owner.maintain();
     assert.deepEqual(
@@ -319,6 +397,155 @@ test(
         [Number(f.binding.grant.repositoryId)],
       ],
     );
+  },
+);
+
+test(
+  "OpenShell custody requires the current fence and the actually observed material generation",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t);
+    await disposeNativeSession(f);
+    const driver = {
+      id: "openshell-custody",
+      implementation: "openshell",
+      configurationId: "c".repeat(64),
+    };
+    const { installation, revisionId } = await admitProtectedSession(f, driver, f.binding);
+    const routes = new PostgresOpenShellGitRouteStore(f.pool);
+    await routes.open(
+      {
+        revisionId,
+        namespaceId: f.revision.namespaceId,
+        agentId: f.revision.agentId,
+        bindingId: installation.plan.execution.executionId,
+        workspace: "team",
+        sandbox: "git",
+      },
+      randomUUID(),
+    );
+    const observed = {
+      ...installation.enforcement.repositoryGitRecipient,
+      workspace: "team",
+      sandbox: "git",
+      sandboxId: installation.sandboxId,
+      executionId: revisionId,
+      provider: "oce-git-" + "a".repeat(32),
+      providerResourceVersion: "1",
+      profileVersion: "1",
+      credentialState: "bootstrap" as const,
+      providerEnvRevision: "1",
+      configRevision: "1",
+      policyHash: installation.enforcement.policyHash,
+      supervisorSessionId: "session",
+    };
+    const generation = {
+      providerId: observed.providerId,
+      resourceVersion: "1",
+      profileVersion: "1",
+      credentialState: "bootstrap" as const,
+      expiresAt: "",
+    };
+    assert.equal(
+      await routes.record(revisionId, 1, { generation, observed, material: undefined }),
+      true,
+    );
+    const eligible = async (
+      kind: "observed" | "installed",
+      fence: number,
+      observation: object,
+      material?: { preparationAttemptId: string; materialVersion: string },
+    ) => {
+      const args = [
+        revisionId,
+        fence,
+        JSON.stringify(observation),
+        ...(material ? [material.preparationAttemptId, material.materialVersion] : []),
+      ];
+      const { rows } = await f.pool.query(
+        `SELECT EXISTS (${openShellGitRecipientEvidence[kind]}) AS allowed`,
+        args,
+      );
+      return rows[0].allowed;
+    };
+    const owner = await f.startOwner({
+      controlSocket: undefined,
+      protectedGitDriver: driver,
+      protectedGitEvidence: openShellGitRecipientEvidence,
+    });
+    await owner.maintain();
+    const selectedRoute = { revisionId, fence: 1, observed };
+    const selected = await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute);
+    assert.ok(
+      selected && !("absent" in selected),
+      "the real prepared owner selects committed material",
+    );
+    const a = {
+      preparationAttemptId: selected.preparationAttemptId,
+      materialVersion: selected.materialVersion,
+    };
+    assert.equal(await routes.writing(revisionId, 1, "rotate", a), 2);
+    assert.deepEqual(
+      await owner.readOpenShellMaterial(revisionId, t.signal, selectedRoute),
+      { absent: "unprepared" },
+      "the real custody reader refuses the pre-reservation fence",
+    );
+    assert.deepEqual(
+      await owner.readOpenShellMaterial(revisionId, t.signal, { ...selectedRoute, fence: 2 }),
+      selected,
+      "the real custody reader preserves the material and recipient at the reservation fence",
+    );
+    const active = {
+      ...observed,
+      credentialState: "active" as const,
+      providerResourceVersion: "2",
+    };
+    const activeGeneration = {
+      ...generation,
+      credentialState: "active" as const,
+      resourceVersion: "2",
+      expiresAt: new Date(Date.now() + 600_000).toISOString(),
+    };
+    assert.equal(
+      await routes.record(revisionId, 2, {
+        generation: activeGeneration,
+        observed: active,
+        material: a,
+      }),
+      true,
+    );
+    assert.equal(await eligible("installed", 2, active, a), true);
+    const b = { preparationAttemptId: randomUUID(), materialVersion: randomUUID() };
+    assert.equal(await routes.writing(revisionId, 2, "rotate", b), 3);
+    // The write of B is acknowledged before its supervisor observation arrives. A is still
+    // the genuine observed recipient; it cannot attest installation of B's new generation.
+    const next = { ...activeGeneration, resourceVersion: "3" };
+    assert.equal(
+      await routes.record(revisionId, 3, { generation: next, observed: active, material: b }),
+      true,
+    );
+    assert.equal(await eligible("observed", 3, active), true);
+    assert.equal(
+      await eligible("installed", 3, active, b),
+      false,
+      "old provider generation cannot authorize current material",
+    );
+    const wrongProfile = { ...active, providerResourceVersion: "3", profileVersion: "2" };
+    assert.equal(
+      await routes.record(revisionId, 3, { generation: next, observed: wrongProfile, material: b }),
+      true,
+    );
+    assert.equal(
+      await eligible("installed", 3, wrongProfile, b),
+      false,
+      "old or different profile cannot authorize current material",
+    );
+    const current = { ...active, providerResourceVersion: "3" };
+    assert.equal(
+      await routes.record(revisionId, 3, { generation: next, observed: current, material: b }),
+      true,
+    );
+    assert.equal(await eligible("installed", 3, current, b), true);
   },
 );
 

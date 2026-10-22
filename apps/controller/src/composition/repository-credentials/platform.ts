@@ -1,3 +1,8 @@
+import type { RepositoryGitDeliveryResolver } from "../../drivers/repo/credentials/delivery.ts";
+import {
+  githubRepositoryAuthorityIdentity,
+  type githubRepositoryConfiguration,
+} from "../../drivers/repo/github/installation.ts";
 import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import type {
@@ -19,11 +24,14 @@ export async function composeRepositoryAccess(input: {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
   readonly protectedGit: boolean;
+  readonly configuration?: ReturnType<typeof githubRepositoryConfiguration>;
 }): Promise<
   Readonly<{
     repositoryPolicy: RepositoryPolicyDriver;
+    authorityIdentity: string;
     nativeRepositorySender?: NativeRepositorySender;
     repositoryRegistry: GitHubRepositoryRegistry;
+    resolveRepositoryDelivery: RepositoryGitDeliveryResolver;
     repositoryOwner: Readonly<{
       controlSocket?: string;
       driverId: string;
@@ -69,7 +77,14 @@ export async function composeRepositoryAccess(input: {
     sessionDurationSeconds: configuration.sessionDurationSeconds,
   });
   return Object.freeze({
+    authorityIdentity: githubRepositoryAuthorityIdentity(
+      selection,
+      definition,
+      registry,
+      input.configuration,
+    ),
     repositoryRegistry: registry,
+    resolveRepositoryDelivery: repositoryPolicy.resolveDelivery,
     repositoryOwner: Object.freeze({
       ...(!input.protectedGit && { controlSocket: configuration.controlSocket }),
       driverId: selection.id,

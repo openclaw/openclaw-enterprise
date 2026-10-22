@@ -276,8 +276,12 @@ ALTER TABLE occ.agent_revisions
             AND admitted_spec #> '{harness_auth,protectedExecutionVersion}'
               = admitted_spec #> '{execution_admission,version}'
             AND (
-                admitted_spec #>> '{execution_admission,version}' IN ('3','4','5','6')
-                AND ((admitted_spec #>> '{execution_admission,version}') IN ('4','5','6'))
+                admitted_spec #>> '{execution_admission,version}' IN ('3','4','5','6','7')
+                AND CASE WHEN admitted_spec #>> '{execution_admission,version}' = '7'
+                  THEN admitted_spec #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
+                  ELSE NOT (admitted_spec->'egress_plan' ? 'policyReductionVersion') OR
+                    (admitted_spec #>> '{execution_admission,version}' = '3' AND admitted_spec #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
+                AND ((admitted_spec #>> '{execution_admission,version}') IN ('4','5','6','7'))
                   = ((admitted_spec->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((admitted_spec->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(admitted_spec->'repository_credentials')='object'
@@ -457,16 +461,3 @@ CREATE TABLE occ.egress_send_receipts (
 REVOKE ALL ON occ.egress_send_receipts FROM PUBLIC, occ_app;
 --> statement-breakpoint
 GRANT SELECT, INSERT, UPDATE (authorized_dispatch, outcome, observation, settled, feedback) ON occ.egress_send_receipts TO occ_app;
---> statement-breakpoint
--- Generic policy reductions belong to their existing source withdrawal, separate
--- from the protected Git registered-installation and delivery witnesses.
-ALTER TABLE occ.credential_withdrawals ADD COLUMN policy_reduction jsonb,
-  ADD CONSTRAINT credential_withdrawals_policy_reduction CHECK (policy_reduction IS NULL OR COALESCE(
-    jsonb_typeof(policy_reduction) = 'object'
-    AND policy_reduction->'request'->>'version' = '1'
-    AND policy_reduction->'request'->>'operationId' ~ '^[0-9a-f-]{36}$'
-    AND policy_reduction #>> '{request,expected,plan,execution,namespaceId}' = namespace_id
-    AND policy_reduction #>> '{request,expected,plan,execution,revisionId}' = revision_id
-    AND jsonb_typeof(policy_reduction #> '{request,retained,routes}') = 'array', false));
---> statement-breakpoint
-GRANT UPDATE(policy_reduction) ON occ.credential_withdrawals TO occ_app;
