@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
@@ -28,6 +28,7 @@ import {
   spawnResult,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -1072,7 +1073,8 @@ assert.equal(args[0], "compose");
 assert.equal(args[1], "-f");
 assert.equal(args[3], "-p");
 assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-1) + "\\n");
+const commands = args.filter((_, index) => args[index - 1] === "-c");
+appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", ...commands].join("\\t") + "\\n");
 `,
       { mode: 0o700 },
     );
@@ -1109,11 +1111,12 @@ assert.equal(app.host, migrator.host);
 assert.equal(app.pathname, migrator.pathname);
 assert.equal(app.pathname, "/" + selected.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE);
 assert.match(app.pathname, /^\\/openclaw_ci_postgres_native_iam_policy_barrier_[a-f0-9]{12}$/);
+const databases = (state) => state.resources.filter((resource) => resource.kind === "postgres-database" && resource.laneTemplate === undefined);
 const prepared = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(prepared.resources.filter((resource) => resource.kind === "postgres-database").length, 1);
+assert.equal(databases(prepared).length, 1);
 await selected.cleanup();
 const settled = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(settled.resources.filter((resource) => resource.kind === "postgres-database").length, 0);
+assert.equal(databases(settled).length, 0);
 const other = await prepareFile({
   lane,
   file: "tests/integration/postgres-worker-agent-revision.test.mjs",
@@ -1124,7 +1127,8 @@ assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
 await other.cleanup();
 const finalState = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(finalState.resources.length, 1);
+// The server and its lane template, which lane cleanup drops.
+assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, laneTemplate]), [["compose-postgres", undefined], ["postgres-database", "ci"]]);
 `;
     const fakeEnv = {
       PATH: root,
@@ -1137,10 +1141,13 @@ assert.equal(finalState.resources.length, 1);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     const commandLog = (await readFile(logPath, "utf8")).trim().split("\n");
-    assert.equal(commandLog.length, 8);
+    // One migrated lane template, then a copy per file, each copy one exec.
+    assert.equal(commandLog.length, 7);
+    assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
     const dropCommands = commandLog.filter((line) => line.includes("DROP DATABASE"));
-    assert.equal(createCommands.length, 2);
+    assert.equal(createCommands.length, 3);
+    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
     assert.equal(dropCommands.length, 2);
     assert.ok(createCommands.every((line) => line.startsWith("docker-exec\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
@@ -1167,7 +1174,7 @@ assert.equal(finalState.resources.length, 1);
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 8);
+    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 7);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
@@ -1202,7 +1209,8 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 const args = process.argv.slice(2);
 assert.deepEqual(args.slice(5, 9), ["exec", "-T", "postgres", "psql"]);
-appendFileSync(process.env.CI_SYNTHETIC_LOG, "docker-exec\\t" + args.at(-3) + "\\t" + args.at(-1) + "\\n");
+const commands = args.filter((_, index) => args[index - 1] === "-c");
+appendFileSync(process.env.CI_SYNTHETIC_LOG, ["docker-exec", args[args.indexOf("-d") + 1], ...commands].join("\\t") + "\\n");
 `,
       { mode: 0o700 },
     );
@@ -1250,7 +1258,8 @@ assert.deepEqual(
 );
 await copy.cleanup();
 await template.cleanup();
-console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
+const laneTemplate = prepared.resources.find((resource) => resource.laneTemplate === "ci").name;
+console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
 `;
     const result = await runProgram(
       program,
@@ -1265,14 +1274,17 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
       20_000,
     );
     assert.equal(result.status, 0, result.stderr);
-    const [templateName, copyName] = result.stderr.trim().split(" ");
+    const [laneTemplateName, templateName, copyName] = result.stderr.trim().split(" ");
+    assert.match(laneTemplateName, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
     assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
-      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}"`,
-      `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      `migrate\t/${templateName}`,
-      // The copy keeps the template's schemas and migrations; only the database grant is new.
-      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
-      `docker-exec\t${copyName}\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
+      // The lane's one migration, which each file's database copies.
+      `docker-exec\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
+      `docker-exec\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `migrate\t/${laneTemplateName}`,
+      // A copy keeps the template's schemas and migrations; only the database grant is new,
+      // in the same exec.
+      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
+      `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
       `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
       `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${templateName}" WITH (FORCE)`,
     ]);
@@ -1322,7 +1334,16 @@ await template.cleanup();
       assert.equal(result.status, 0, result.stderr);
     }
     const settled = JSON.parse(await readFile(statePath, "utf8"));
-    assert.deepEqual(settled.resources, [server]);
+    // Both processes copied one lane template, which stays until lane cleanup.
+    assert.deepEqual(settled.resources[0], server);
+    assert.deepEqual(
+      settled.resources.slice(1).map(({ kind, laneTemplate, status }) => ({
+        kind,
+        laneTemplate,
+        status,
+      })),
+      [{ kind: "postgres-database", laneTemplate: "ci", status: "ready" }],
+    );
     assert.deepEqual((await readdir(root)).sort(), [
       "fake-corepack.mjs",
       "fake-docker.mjs",
@@ -1337,12 +1358,27 @@ await template.cleanup();
     const exited = spawnSync(process.execPath, ["-e", ""]);
     assert.equal(exited.status, 0);
     await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
+    // Places in the queue older than any live waiter's: the exited process's, and one past
+    // its deadline whose pid reads as alive (reused, here this process's).
+    const ticket = (clock, expiry, pid) =>
+      writeFile(
+        join(
+          root,
+          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
+        ),
+        `${pid} queued\n`,
+        { mode: 0o600 },
+      );
+    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
+    await ticket("2", "3", process.pid);
     // A nested call in the same async context reuses the held lock.
     assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran")),
+      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
+        timeoutMs: 10_000,
+      }),
       "ran",
     );
-    await assert.rejects(() => stat(lockPath), { code: "ENOENT" });
+    assert.deepEqual(await readdir(root), []);
 
     const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], {
       stdio: "ignore",
@@ -1360,12 +1396,87 @@ await template.cleanup();
           { timeoutMs: 300 },
         ),
       new RegExp(
-        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}\\)`,
+        `Timed out after 300 ms waiting for the CI state lock .* \\(held by pid ${holder.pid}, 0 waiting ahead\\)`,
       ),
     );
     assert.equal(ran, false);
     assert.equal(await readFile(lockPath, "utf8"), `${holder.pid} live\n`);
     assert.deepEqual((await readdir(root)).sort(), ["state.json.lock"]);
+  });
+
+  test("the CI state lock serves waiters in arrival order across processes", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const orderPath = join(root, "order");
+    const lock = new URL("../../scripts/ci/state-lock.mjs", import.meta.url).href;
+    // Each contender takes the lock `times` times in a row and records its name while
+    // holding it for 50 ms.
+    const contender = (name, times) =>
+      spawnResult(process.execPath, [
+        "--input-type=module",
+        "-e",
+        `import { appendFileSync } from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+const { withStateLock } = await import(${JSON.stringify(lock)});
+const [statePath, orderPath, name, times] = process.argv.slice(1);
+for (let index = 0; index < Number(times); index += 1) {
+  await withStateLock(statePath, async () => {
+    appendFileSync(orderPath, name + "\\n");
+    await delay(50);
+  });
+}`,
+        statePath,
+        orderPath,
+        name,
+        String(times),
+      ]);
+    // Each waiter holds a ticket next to the lock while it waits.
+    const waiting = (count) =>
+      waitUntil(
+        `${count} waiters to queue`,
+        async () =>
+          (await readdir(root)).filter((name) => name.endsWith(".ticket")).length >= count,
+        { timeoutMs: 20_000, intervalMs: 10 },
+      );
+    let release;
+    const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
+    await waitUntil("the test to hold the state lock", () => release, { intervalMs: 10 });
+    // The contenders queue one at a time, behind this process's hold. "first" asks again as
+    // soon as it releases: before tickets, its process re-took the lock at once, and a
+    // waiter that had backed off to 100 ms polls lost to newer ones (finding 2179).
+    const runs = [];
+    for (const [index, [name, times]] of [
+      ["first", 2],
+      ["second", 1],
+      ["third", 1],
+      ["fourth", 1],
+    ].entries()) {
+      runs.push(contender(name, times));
+      await waiting(index + 1);
+    }
+    // A second call from this process queues behind them too.
+    const local = withStateLock(statePath, () => appendFile(orderPath, "local\n"));
+    await waiting(5);
+    const released = Date.now();
+    release();
+    await holding;
+    for (const result of await Promise.all(runs)) {
+      assert.equal(result.status, 0, result.stderr);
+    }
+    await local;
+    const elapsed = Date.now() - released;
+    assert.deepEqual((await readFile(orderPath, "utf8")).trim().split("\n"), [
+      "first",
+      "second",
+      "third",
+      "fourth",
+      "local",
+      "first",
+    ]);
+    // Five 50 ms holds; each hand-off is a 5 ms poll by the next waiter.
+    t.diagnostic(`six waiters served in ${elapsed} ms`);
+    assert.ok(elapsed < 5_000, `six waiters took ${elapsed} ms`);
+    assert.deepEqual(await readdir(root), ["order"]);
   });
 
   test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {

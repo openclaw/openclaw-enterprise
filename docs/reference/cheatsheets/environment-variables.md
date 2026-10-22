@@ -26,6 +26,8 @@ console uses the current origin and has no separate environment settings.
 - `NODE_ENV` — Required mode: `development` or `production`; shared with the worker and bootstrap.
 - `OCC_HOST` — API bind address: one explicit Pod IP in production; loopback for host-process development.
 - `OCC_PORT` — API listener port; no process default.
+- `OCC_CONSOLE_THEME_DIRECTORY` — Host directory consumed by the [Compose theme override](../../guides/deploy/console-theme.md#podman-or-docker-compose); not read by the API.
+- `OCC_CONSOLE_THEME_DIR` — Optional absolute directory for the API's public [console theme bundle](../console/theming.md); applied at startup.
 - `OCC_CONFIG_PATH` — Absolute path to trusted Installation YAML; required in production and shared with the worker.
 - `OCC_AUTH_SECRET` — Production requires a high-entropy session-signing secret; development has a local-only fallback.
 - `OCC_AUTH_BASE_URL` — Authentication, cookie, and exact development browser origin; required in production; default in development: `http://127.0.0.1:3000`.

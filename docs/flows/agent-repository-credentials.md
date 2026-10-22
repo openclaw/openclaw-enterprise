@@ -18,7 +18,7 @@ See [service forwarding and retirement](repository-credentials.md) and
 
 - `apps/controller/src/index.ts:createFastifyApp` registers repository-option and
   Agent lifecycle routes. Discovery requires Agent-create or exact-Agent update.
-- `apps/controller/src/console/agents/repositories.mjs:createRepositoryFields`
+- `apps/controller/src/console/agents/repositories.mts:createRepositoryFields`
   renders discovery and inherited or custom access.
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.

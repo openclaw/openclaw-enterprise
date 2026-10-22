@@ -28,6 +28,10 @@ is refused before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
+Console presentation uses a separate API-only [theme bundle](console/theming.md),
+selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation
+or Agent configuration.
+
 ## Installation startup configuration
 
 Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production

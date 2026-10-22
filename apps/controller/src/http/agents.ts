@@ -65,6 +65,7 @@ function clientAgentProvisioning(
   namespaceId: string,
 ): Record<string, unknown> {
   return {
+    requestId: provisioning.requestId,
     workId: provisioning.workId,
     status: provisioning.status,
     phase: provisioning.phase,
@@ -356,6 +357,11 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       const agentId = params.agentId!;
       const images = await controller.getAgentRuntimeImages(context.actorId, namespaceId, agentId);
       reply.send({ data: images, meta: { requestId: request.id } });
+    },
+    async getAgentHarnessStatus({ controller, context, request, reply, params, namespaceId }) {
+      const agentId = params.agentId!;
+      const status = await controller.getAgentHarnessStatus(context.actorId, namespaceId, agentId);
+      reply.send({ data: status, meta: { requestId: request.id } });
     },
     async getAgentRuntimeCredentials({ controller, context, request, reply, params, namespaceId }) {
       const agentId = params.agentId!;

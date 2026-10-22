@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { scryptSync } from "node:crypto";
 import test from "node:test";
+import { composeProduction } from "../../apps/controller/src/composition/production.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   bootstrapProductionInstallation,
@@ -10,9 +12,11 @@ import {
   installationRoles,
   passwordSignIn,
   postgresSignInState,
+  productionSignInConfiguration,
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { testPasswordHasher } from "../helpers/password-hasher.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 const adminEmail = "password-default-admin@example.test";
@@ -346,6 +350,79 @@ test(
           assert.equal(refused.headers["set-cookie"], undefined);
         }
         assert.equal((await denials()).length, before + 2);
+      },
+    );
+
+    await t.test(
+      "production hashes with scrypt N=16384, r=16, p=1 and no configuration selects another hasher",
+      async (t) => {
+        // api-startup.mjs composes from its configuration alone. A hasher placed in that
+        // configuration, as a parsed setting would be, is ignored: only the code-only
+        // dependencies argument (which the server never passes) replaces scrypt.
+        const production = await composeProduction({
+          ...(await productionSignInConfiguration(t, {
+            databaseUrl,
+            settings: defaultInstallSettings,
+            secrets: { "occ-auth/secret": authSecret },
+          })),
+          passwordHasher: testPasswordHasher,
+        });
+        t.after(() => production.close());
+        const email = "password-default-scrypt@example.test";
+        const password = "password-default-scrypt-password";
+        const headers = await signedInHeaders(production, origin, {
+          email: adminEmail,
+          password: adminPassword,
+        });
+        const { reader: role } = await installationRoles(new PostgresPlatformState(pool), pool);
+        const created = await production.inject({
+          method: "POST",
+          url: "/api/auth/accounts",
+          headers,
+          payload: { email, password, roleId: role.id },
+        });
+        assert.equal(created.statusCode, 201, created.body);
+        const userId = created.json().data.id;
+        const adminId = (await currentSession(production, headers.cookie)).user.id;
+        // The initialization Job's administrator (scripts/bootstrap-installation.mjs) and an
+        // account the API created: both stored as Better Auth's `<salt>:<key>` scrypt hash.
+        for (const [id, secret] of [
+          [adminId, adminPassword],
+          [userId, password],
+        ]) {
+          const stored = await pool.query(
+            "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
+            [id],
+          );
+          const [salt, key, ...rest] = stored.rows[0].password.split(":");
+          assert.match(salt, /^[0-9a-f]{32}$/);
+          assert.match(key, /^[0-9a-f]{128}$/);
+          assert.deepEqual(rest, []);
+          const expected = scryptSync(secret.normalize("NFKC"), salt, 64, {
+            N: 16384,
+            r: 16,
+            p: 1,
+            maxmem: 64 * 1024 * 1024,
+          });
+          assert.equal(expected.toString("hex"), key, "scrypt N=16384, r=16, p=1, 64-byte key");
+        }
+        assert.equal(
+          (await passwordSignIn(production, origin, { email, password })).statusCode,
+          200,
+        );
+        // A fixture hash in the database never authenticates against the production hasher.
+        await pool.query(
+          "UPDATE occ.account SET password = $1 WHERE user_id = $2 AND provider_id = 'credential'",
+          [await testPasswordHasher.hash(password), userId],
+        );
+        const refused = await passwordSignIn(production, origin, { email, password });
+        assert.equal(refused.statusCode, 401, refused.body);
+        // The fixtures' app above hashed with their cheap hasher (password-hasher.mjs).
+        const fixtureHash = await pool.query(
+          "SELECT password FROM occ.account WHERE user_id = $1 AND provider_id = 'credential'",
+          [member.id],
+        );
+        assert.match(fixtureHash.rows[0].password, /^test-sha256:/);
       },
     );
   },

@@ -5,7 +5,7 @@ import {
   NAME_MAX_CHARACTERS,
   NAME_PATTERN,
   namespaceNameProblem,
-} from "../../apps/controller/src/console/namespaces.mjs";
+} from "../../apps/controller/src/console/namespaces.mts";
 import {
   NAME_MAX_CHARACTERS as API_NAME_MAX_CHARACTERS,
   PLAIN_TEXT_PATTERN,

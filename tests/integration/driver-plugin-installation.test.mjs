@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,9 +18,10 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
-const provisionPath = "/tmp/local-test";
 const computePackage = "@fixture/test-compute-driver";
 const configurationPackage = "@fixture/test-configuration-driver";
 const iamPackage = "@fixture/test-iam-driver";
@@ -41,7 +41,10 @@ function selectedIAM() {
   };
 }
 
-function selectedCompute() {
+// Each run provisions into its own temporary directory: a fixed path collides across
+// concurrent runs, even from different checkouts.
+async function selectedCompute(t) {
+  const provisionPath = join(await temporaryDirectory(t, "occ-installed-compute-"), "provisioned");
   return {
     id: "compute-installed-fixture",
     package: computePackage,
@@ -50,8 +53,7 @@ function selectedCompute() {
 }
 
 async function installedPackages(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installed-drivers-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installed-drivers-");
 
   const owner = join(directory, "owner");
   await writeFile(join(directory, "empty.npmrc"), "", "utf8");
@@ -248,16 +250,11 @@ async function authenticatedApplication(t, drivers) {
   };
 }
 
-async function request(fixture, method, url, payload) {
-  const response = await fixture.app.inject({
-    method,
-    url,
-    headers: {
-      cookie: fixture.config.cookie,
-      origin: fixture.config.authOrigin,
-      host: "127.0.0.1",
-    },
-    ...(payload === undefined ? {} : { payload }),
+async function request(fixture, method, url, body) {
+  const { cookie, authOrigin } = fixture.config;
+  const response = await injectJson(fixture.app, method, url, {
+    session: { cookie, origin: authOrigin },
+    body,
   });
   return { status: response.statusCode, ...response.json() };
 }
@@ -268,24 +265,10 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
   await t.test(
     "installed Compute, Configuration, and IAM Drivers operate through production admission",
     async (scenario) => {
-      let ownedArtifact = false;
-      try {
-        await stat(provisionPath);
-        assert.fail(`Refusing to overwrite existing ${provisionPath}.`);
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-      }
-      scenario.after(async () => {
-        if (ownedArtifact) {
-          await rm(provisionPath, { force: true });
-        }
-      });
-
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
-      configuration.drivers.compute = selectedCompute();
+      configuration.drivers.compute = await selectedCompute(scenario);
+      const { provisionPath } = configuration.drivers.compute.configuration;
       configuration.drivers.iam = selectedIAM();
       const drivers = await load(owner, configuration, "production");
       const cancellation = new AbortController();
@@ -335,7 +318,6 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         namespace.data.id,
         "ready",
       );
-      ownedArtifact = true;
       assert.equal(ready.status, "ready");
       const evidence = JSON.parse(await readFile(provisionPath, "utf8"));
       assert.deepEqual(evidence, {
@@ -394,9 +376,9 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
   await t.test(
     "production rejects an installed Compute package missing revision stages",
-    async () => {
+    async (scenario) => {
       const configuration = installation();
-      configuration.drivers.compute = selectedCompute();
+      configuration.drivers.compute = await selectedCompute(scenario);
       configuration.drivers.compute.configuration.revisionStages = false;
 
       await assert.rejects(load(owner, configuration, "production"), /activat|stage/i);
@@ -721,8 +703,7 @@ function escapeRegExp(text) {
 }
 
 async function onDiskConfigurationPackage(t, exports) {
-  const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
-  t.after(() => rm(owner, { recursive: true, force: true }));
+  const owner = await temporaryDirectory(t, "occ-driver-export-array-");
   const installed = join(owner, "node_modules", configurationPackage);
   await mkdir(dirname(installed), { recursive: true });
   await cp(join(fixtures, "test-configuration-driver"), installed, { recursive: true });

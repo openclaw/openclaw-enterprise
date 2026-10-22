@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { after, describe, test } from "node:test";
 
@@ -29,10 +27,10 @@ import {
   assertWriteAuthorizationDenial,
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function createFixture(t, options = {}) {
-  const root = await mkdtemp(join(tmpdir(), "occ-presets-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-presets-");
   const audit = options.auditSink ?? new InMemoryAuditSink();
   let policy;
   const state = new InMemoryPlatformState({
