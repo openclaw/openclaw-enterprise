@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -26,6 +27,52 @@ import {
 } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);
+
+test("console themes mount only on the API and restart it when the checksum changes", async () => {
+  const defaults = await resources((await renderProductionChart()).stdout);
+  const themed = await resources(
+    (
+      await renderProductionChart({
+        "api.consoleTheme.configMapName": "console-branding",
+        "api.consoleTheme.checksum": "revision-two",
+      })
+    ).stdout,
+  );
+  for (const objects of [defaults, themed]) {
+    for (const component of ["api", "worker"]) {
+      const deployment = objects.find(
+        (item) =>
+          item.kind === "Deployment" && item.metadata.name === `openclaw-enterprise-${component}`,
+      );
+      const enabled = objects === themed && component === "api";
+      const pod = deployment.spec.template;
+      const container = [...(pod.spec.initContainers ?? []), ...pod.spec.containers].find(
+        (item) => item.name === component,
+      );
+      assert.equal(
+        container.env.some((item) => item.name === "OCC_CONSOLE_THEME_DIR"),
+        enabled,
+      );
+      assert.equal(
+        pod.spec.volumes.some((item) => item.name === "console-theme"),
+        enabled,
+      );
+      assert.equal(
+        pod.metadata.annotations?.["openclaw.dev/console-theme-checksum"],
+        enabled ? "revision-two" : undefined,
+      );
+      if (enabled) {
+        assert.deepEqual(pod.spec.volumes.find((item) => item.name === "console-theme").configMap, {
+          name: "console-branding",
+        });
+        assert.deepEqual(
+          container.volumeMounts.find((item) => item.name === "console-theme"),
+          { name: "console-theme", mountPath: "/etc/openclaw/console-theme", readOnly: true },
+        );
+      }
+    }
+  }
+});
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -493,10 +540,25 @@ test(
     };
     // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
     // what controller startup refuses instead of installing a controller that cannot start.
-    for (const [gatewayPort, sandbox, refused] of [
-      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
-      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+    for (const [gatewayPort, sandbox, refused, message] of [
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        false,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        true,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT - 1,
+        true,
+        true,
+        `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
       [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
       [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
       [8080, true, false],
@@ -507,7 +569,17 @@ test(
         "gatewayRouting.tenantGatewayPort": String(gatewayPort),
       };
       if (refused) {
-        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        assert.throws(
+          () => compute(gatewayPort, sandbox),
+          (error) => {
+            assert.ok(error instanceof ConfigurationValidationError);
+            assert.deepEqual(error.error.details, [
+              { path: "/network/gatewayPort", code: "INVALID_VALUE", message },
+            ]);
+            return true;
+          },
+          row,
+        );
         await assert.rejects(
           render(chartValues),
           ({ code, stderr }) =>
@@ -862,7 +934,17 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: unquotedPath },
     }),
-    /drivers\.compute\.configuration does not match its Driver configuration schema at \/resources\/gateway\/limits\/cpu: must be string/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [
+        {
+          path: "/resources/gateway/limits/cpu",
+          code: "INVALID_TYPE",
+          message: "Configuration does not satisfy type.",
+        },
+      ]);
+      return true;
+    },
   );
   // Trusted Installation startup must reject a validly spelled request that
   // Kubernetes refuses against its smaller limit, before any cluster operation.
@@ -875,7 +957,16 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: impossiblePath },
     }),
-    /Gateway CPU request \(resources\.gateway\.requests\.cpu\) cannot exceed its limit/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.equal(error.error.details[0].path, "/resources/gateway/requests/cpu");
+      assert.equal(error.error.details[0].code, "INVALID_RANGE");
+      assert.match(
+        error.error.details[0].message,
+        /Gateway CPU request .* cannot exceed its limit/,
+      );
+      return true;
+    },
   );
   const values = loadYaml(await readFile(new URL("values.yaml", productionExamples), "utf8"));
   assert.equal(values.gatewayRouting.enabled, true);
@@ -970,12 +1061,19 @@ test(
           ? render(helmValues, { strings: { "gatewayRouting.hostname": hostname } })
           : render(helmValues);
       if (invalid.includes(hostname)) {
-        await assert.rejects(
-          load(),
-          hostname === "api.123"
-            ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
-            : /Gateway routing hostname must be a DNS hostname without a port or path/,
-        );
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/hostname");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            hostname === "api.123"
+              ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
+              : /Gateway routing hostname must be a DNS hostname without a port or path/,
+          );
+          assert.doesNotMatch(JSON.stringify(error.error.details), /Bad_Host/);
+          return true;
+        });
         await assert.rejects(
           renderHostname(),
           ({ stderr }) =>
@@ -1028,7 +1126,16 @@ test(
         });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
-        await assert.rejects(load(), /Sandbox domain must be a DNS hostname.*Agent label/);
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/sandbox/domain");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            /Sandbox domain must be a DNS hostname.*Agent label/,
+          );
+          return true;
+        });
         await assert.rejects(
           rendered(),
           /gatewayRouting\.sandbox\.domain must be a DNS hostname.*Agent label/,

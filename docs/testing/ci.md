@@ -26,8 +26,9 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
   a maintainer can [request full QA on a trusted pull request](#qa-matrix).
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
-Docs-only PRs run static checks in CI; recognized test-only PRs select affected
-lanes. Other changes run all ordinary lanes. `CI Required` currently blocks
+Docs-only PRs run static checks in CI. Recognized test-only PRs select affected
+lanes, including Checks and Conformance 2 to type-check TypeScript tests.
+Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
 <a id="ci-configuration"></a>
@@ -109,12 +110,13 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
-These process environment variables are optional. Keep the same directory for
-First Agent `images` and `run`; changing it does not isolate fixed-name containers.
+These process environment variables are optional. Keep the same directory and
+slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
 | Setting                                     | Default                                                       | Purpose                                                                            |
 | ------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `OCC_FIRST_AGENT_SMOKE_DIRECTORY`           | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`                | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
 | `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                                     | Per-file test deadline; hosted lane/job deadlines still apply.                     |
 | `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                                      | Per-file cleanup allowance.                                                        |
 | `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs                           | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
@@ -172,10 +174,19 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 
 ### QA matrix
 
+The explicit `sandbox-policy` selector exercises shared configuration discovery,
+preview, and the real OpenShell network-policy lifecycle. It requires a prepared
+OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
+The OpenShell advisory job covers the same workflow automatically.
+
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
+
+The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
+and checks its branding through sign-in and the Agent workflow. Other scenarios
+do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
@@ -203,13 +214,14 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario   | In advisory | Presets         | Checks                                                            |
-| ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
-| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
-| `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
-| `git-read` | No          | Codex           | Reject read-only push and dispose credentials.                    |
-| `calendar` | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.        |
-| `slack`    | No          | Codex           | Threaded reply and new root message.                              |
+| Scenario          | In advisory | Presets         | Checks                                                                                                      |
+| ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
+| `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
+| `git-full`        | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials.                                           |
+| `git-read`        | No          | Codex           | Reject read-only push and dispose credentials.                                                              |
+| `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
+| `slack`           | No          | Codex           | Threaded reply and new root message.                                                                        |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.

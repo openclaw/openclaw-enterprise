@@ -1,8 +1,16 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
-index 38fc452..52902aa 100644
+index 38fc452..2b0632e 100644
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
-@@ -115,196 +115,282 @@ test.each([false, true])(
+@@ -2,6 +2,7 @@ import path from "node:path";
+ import { afterEach, expect, test, vi } from "vitest";
+ import { WebSocket } from "ws";
+ import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
++import { awaitGateBeforeSettlement, withTestTimeout } from "../../test/helpers/promise.js";
+ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+ import { writeConfigFile } from "../config/config.js";
+ import type { GatewayAuthConfig } from "../config/types.gateway.js";
+@@ -115,196 +116,294 @@ test.each([false, true])(
    },
  );
  
@@ -215,6 +223,13 @@ index 38fc452..52902aa 100644
 -        setupCalls.push("prepareProjectIntent");
 -        return prepareProjectIntent(...args);
 +      const adminWs = await connect(admin, ["operator.admin"]);
++      // Measure the ordering of disconnect and placement, without charging the first RPC's
++      // response deadline for loading the lazy sessions.create handler in the test runner.
++      const [{ coreGatewayHandlers }, { prepareGatewayRequestHandler }] = await Promise.all([
++        import("./server-methods/core-handlers.js"),
++        import("./server-methods/lazy-core-handlers.js"),
++      ]);
++      await prepareGatewayRequestHandler(coreGatewayHandlers["sessions.create"]!);
 +      const commitConfigPatch = async (patch: Record<string, unknown>) => {
 +        const current = await rpcReq<{ hash: string }>(adminWs, "config.get", {});
 +        expect(current.ok, JSON.stringify(current.error)).toBe(true);
@@ -248,17 +263,22 @@ index 38fc452..52902aa 100644
 +        void created.catch(() => {});
 +        let phase = "waiting for requested placement";
 +        try {
-+          await Promise.race([
-+            committed.promise,
-+            created.then(() => {
-+              if (timing === "before acknowledgment") {
-+                throw new Error("sessions.create settled before its requested placement committed");
-+              }
-+            }),
-+          ]);
-+          if (timing === "after acknowledgment") {
++          if (timing === "before acknowledgment") {
++            await awaitGateBeforeSettlement(
++              committed.promise,
++              created,
++              "sessions.create settled before its requested placement committed",
++            );
++          } else {
 +            const accepted = await created;
 +            expect(accepted.ok, JSON.stringify(accepted.error)).toBe(true);
++            // The reply can arrive before we observe the pause. Bound that wait here so a
++            // missing notification still releases dispatch in finally, before fixture teardown.
++            await withTestTimeout(
++              committed.promise,
++              10_000,
++              "sessions.create succeeded but dispatch did not signal the requested placement pause",
++            );
 +            const published = await rpcReq<{ sessions: Array<{ key: string }> }>(
 +              adminWs,
 +              "sessions.list",
@@ -275,9 +295,9 @@ index 38fc452..52902aa 100644
 +          throw new Error(`${email}: ${phase}: ${String(error)}`, { cause: error });
 +        } finally {
 +          resume.resolve();
++          await dispatchSettled;
 +        }
 +        await settled.done.promise;
-+        await dispatchSettled;
 +        expect(setupCalls, dispatchErrors.join("; ")).toEqual(expectedSetupCalls);
 +        if (expectedSetupCalls.length > 0) {
 +          expect(dispatchErrors.at(-1)).toContain(

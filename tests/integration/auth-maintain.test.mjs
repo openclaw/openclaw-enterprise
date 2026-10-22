@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import {
@@ -27,6 +25,8 @@ import {
   outputSink,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -121,17 +121,16 @@ async function settled(work) {
   }
   const before = new Set(await backendPids());
   const result = await work();
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    const left = (await backendPids()).filter((pid) => !before.has(pid));
-    if (left.length === 0) {
-      return result;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`Backends ${left.join(", ")} were still connected 5 s after the step.`);
-    }
-    await delay(10);
-  }
+  let left = [];
+  await waitUntil(
+    () => `backends ${left.join(", ")} to leave after the step`,
+    async () => {
+      left = (await backendPids()).filter((pid) => !before.has(pid));
+      return left.length === 0;
+    },
+    { timeoutMs: 5_000, intervalMs: 10 },
+  );
+  return result;
 }
 
 // Most runs call authMaintain (what scripts/auth-maintain.mjs runs) in this process, with the
@@ -184,20 +183,6 @@ test("auth:maintain rejects undeclared commands before configuration", async () 
     }
   }
 });
-
-// Short-lived pools: every mutating command refuses while any other client is connected.
-// Pool.end() does not wait for its connections to close, so wait for each client's own end.
-async function withPool(url, work) {
-  const pool = new pg.Pool({ connectionString: url, max: 4 });
-  const closed = [];
-  pool.on("connect", (client) => closed.push(once(client, "end")));
-  try {
-    return await work(pool);
-  } finally {
-    await pool.end();
-    await Promise.all(closed);
-  }
-}
 
 function sessionRecord(userId) {
   return { id: randomUUID(), token: randomBytes(32).toString("hex"), userId };

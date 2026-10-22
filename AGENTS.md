@@ -388,8 +388,11 @@ Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credent
 
 ## Running integration tests
 
-Run all integration tests with `pnpm test:integration`, or target one case with
-`node --test tests/integration/<name>.test.mjs`. Real-runtime coverage uses the
+Write new integration tests as `*.test.ts` with types Node.js can erase. Register
+the file in the CI lane that runs it; the existing typecheck includes these tests.
+Keep existing JavaScript tests in place unless the change calls for migration.
+Run all integration tests with `pnpm test:integration`, or target one file with
+`node --test tests/integration/<name>.test.ts`. Real-runtime coverage uses the
 Docker Compose or Kubernetes integrations with explicitly selected runtime
 images and existing authorized model credentials. Follow the
 [testing guide](docs/testing/README.md) and
@@ -440,6 +443,8 @@ On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 
+Use [console-ui](.agents/skills/console-ui/SKILL.md) to build on the shared
+[Console components and styles](docs/contributing/console-ui.md).
 UI changes require reviewable visual evidence, not just passing checks.
 When adding or changing console pages, shared components, or Agent lifecycle
 controls:

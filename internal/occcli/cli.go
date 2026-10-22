@@ -743,7 +743,13 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printAgent(agent, false)
+			if err := app.printAgent(agent, false); err != nil {
+				return err
+			}
+			if app.output != "table" {
+				return nil
+			}
+			return app.printAgentHarness(client, namespace, args[0], agent)
 		},
 	}
 

@@ -15,6 +15,7 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import {
   agentPostRequests,
@@ -183,7 +184,7 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
     0,
   );
   // A 400 means the request was never admitted, so the form unlocks for a fix.
-  assert.equal(await configuration.isDisabled(), false);
+  await waitForEnabled(configuration);
 });
 
 test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
@@ -321,6 +322,67 @@ test("Credential Gateway creation registers the same model source for both dedic
       assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
     });
   }
+});
+
+test("Create checks the requested credential registration instead of binding a different source", async (t) => {
+  const { fixture, calls } = await modelSourceFixture(t);
+  const namespace = await fixture.createNamespace("Source response identity", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const path = `${root}/credential-sources`;
+  const otherSecret = await fixture.createSecret(namespace.id, "Other key", "other-test-value");
+  const other = await fixture.request("POST", path, {
+    body: { name: "Other model source", type: "openai", secrets: { api_key: otherSecret.ref } },
+  });
+  assert.equal(other.status, 201);
+  const { page, secret } = await openModelSourceForm(t, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  let registered;
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.fallback();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const { data, meta } = await response.json();
+    registered = data;
+    assert.equal(registered.secrets.api_key.id, secret.id);
+    assert.notEqual(registered.id, other.data.id);
+    // Only the response is replaced. A subsequent list can distinguish both real registrations.
+    await route.fulfill({ status: 201, json: { data: other.data, meta } });
+  });
+
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await create.click();
+  const check = page.getByRole("button", { name: "Check credential registration" });
+  await page
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "Credential Source registration could not be confirmed. Check credential registration",
+    })
+    .waitFor();
+  assert.equal(
+    agentProvisionPostRequests(requests, namespace.id).length,
+    0,
+    "do not provision with the other credential source",
+  );
+  assert.equal(await create.isDisabled(), true);
+  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  assert.equal(pathRequests(requests, "POST", path).length, 1);
+  assert.equal(pathRequests(requests, "POST", `${root}/iam/access-bindings`).length, 0);
+  await check.click();
+  await page.getByText("Credential Source is ready. Select Create Agent to continue.").waitFor();
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+  const sent = page.waitForRequest((request) => request.url().endsWith("/agents/provision"));
+  await create.click();
+  assert.deepEqual((await sent).postDataJSON().harnessAuth, {
+    method: "credential_source",
+    sourceId: registered.id,
+  });
+  assert.deepEqual(
+    calls.map(({ sourceId }) => sourceId),
+    [other.data.id, registered.id],
+  );
 });
 
 test("Credential registration recovers a ready source after a same-name retry conflicts", async (t) => {
@@ -584,7 +646,7 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   assert.equal(active.role, "alert");
   assert.equal(active.text, await refusal.textContent());
   // The form unlocks for a fix, and the refusal keeps focus.
-  assert.equal(await configuration.isDisabled(), false);
+  await waitForEnabled(configuration);
 });
 
 test("Dedicated Agent provisioning names a Namespace that is not ready", async (t) => {
@@ -1470,6 +1532,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
+  let clientRequestId;
   const agentId = "agt_00000000-0000-4000-8000-00000000b637";
   const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
   const job = (status, extra = {}) => ({
@@ -1482,13 +1545,17 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     ...extra,
   });
   const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    clientRequestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
-      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
-    }),
-  );
+      body: JSON.stringify({
+        data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
+        meta,
+      }),
+    });
+  });
   // Create Agent reads the handed-off deployment three times before the job fails.
   const reads = [
     job("running"),
@@ -1508,7 +1575,10 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+      body: JSON.stringify({
+        data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
+        meta,
+      }),
     }),
   );
   // The first deployment read names the quota; every later one is denied.
