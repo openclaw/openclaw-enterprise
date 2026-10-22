@@ -3,10 +3,12 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import {
+  createProviderSandboxDriver,
+  createRuntimeLogComputeDriver,
+} from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
@@ -1589,36 +1591,11 @@ test("a source picked while a refresh reads clears the kept lines at once", asyn
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" });
   const secret = `Zq9${randomUUID().replaceAll("-", "")}`;
-  const sandboxState = { lines: [], error: undefined };
-  const sandboxRequests = [];
-  const sandboxDriver = {
-    id: "console-sandbox",
-    capability: "sandbox",
-    implementation: "openshell",
-    facets: ["networking", "filesystem", "process"],
-    async provisionHarness(context) {
-      return {
-        namespaceName: context.namespace.name,
-        resourceName: `sb-${context.revision.id.slice(4, 12)}`,
-        agentId: context.revision.agentId,
-        revisionId: context.revision.id,
-      };
-    },
-    async cleanup() {},
-    async readSandboxLogs(context, request) {
-      sandboxRequests.push({ namespace: context.namespace.name, ...request });
-      if (sandboxState.error !== undefined) {
-        throw sandboxState.error;
-      }
-      return {
-        sandbox: `sb-${context.revision.id.slice(4, 12)}`,
-        observedAt: "2026-09-30T12:00:05.000Z",
-        // Native OCSF decoding belongs to the Driver; OCC sanitizes the shared records.
-        lines: sandboxState.lines.map(openShellLogDecision),
-        bufferTotal: sandboxState.lines.length,
-      };
-    },
-  };
+  const {
+    driver: sandboxDriver,
+    state: sandboxState,
+    logRequests: sandboxRequests,
+  } = createProviderSandboxDriver();
   const fixture = await createConsoleAppFixture(t, {
     computeDriver,
     sandboxDriver,

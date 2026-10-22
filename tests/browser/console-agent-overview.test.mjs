@@ -9,7 +9,10 @@ import {
   FIRST_ACTIVITY_WAIT_MS,
 } from "../../apps/controller/src/console/agents/detail.mjs";
 import { fileConsoleApp } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+import {
+  createProviderSandboxDriver,
+  createRuntimeLogComputeDriver,
+} from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   asksBeforeUnload,
@@ -282,6 +285,88 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
   assert.equal(await page.getByText("v1 deployment failed").count(), 0);
   assert.equal(await summary.getByText("May be offline").count(), 0);
+});
+
+// Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
+// Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
+// Live serving says so with the next step. Its note line is reserved from the first paint, so a
+// Sandbox read that lands after the page shows moves nothing. A healthy Sandbox carries no
+// warning, and a Sandbox the Driver cannot read is unknown, never lost.
+test("Live serving shows a lost Sandbox and its next step without moving the page", async (t) => {
+  const { driver: sandboxDriver, state } = createProviderSandboxDriver();
+  const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    sandboxDriver,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Lost Sandbox",
+    nativeValues("v1", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const liveServing = (page) =>
+    page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .locator(".stat")
+      .filter({ hasText: "Live serving" });
+  async function openOverview(viewport) {
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    // The fixture has no worker; the deployment that made v1 current succeeded.
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
+    // The Sandbox read lands after the page shows, as on a gateway that takes a moment.
+    await page.route(`${fixture.origin}/namespaces/**/harness-status`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await route.fallback().catch(() => {});
+    });
+    await page.addInitScript(recordLayoutShifts);
+    await trackSettledFetches(page);
+    // A full load, so no recent input excuses a shift.
+    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await expectDeploymentOutcome(page, "Completed");
+    return page;
+  }
+
+  // The node-restart case: OpenShell keeps the Sandbox record, stopped.
+  state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+  for (const viewport of consoleViewports) {
+    const page = await openOverview(viewport);
+    const badge = liveServing(page).locator(".badge");
+    await liveServing(page).getByText("Deploy a new version to replace it.").waitFor();
+    assert.equal(await badge.textContent(), "Sandbox lost");
+    assert.equal(await badge.getAttribute("data-tone"), "danger");
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await waitForIdleFetches(page);
+    await nextFrames(page);
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    // Only the Live serving fact itself may change; nothing below it moves.
+    const moved = shifts
+      .flatMap((entry) => entry.sources)
+      .filter((source) => !/stat-value|stat-help/.test(source.node));
+    assert.deepEqual(moved, [], `${viewport.width}x${viewport.height}`);
+  }
+
+  // A healthy Sandbox and an unreadable one leave Live serving unverified, with no warning.
+  for (const [harness, harnessError, note] of [
+    [{ state: "running" }, undefined, "Sandbox running."],
+    [undefined, new Error("gateway refused sandbox:read token-secret"), "Sandbox status unknown."],
+  ]) {
+    state.harness = harness;
+    state.harnessError = harnessError;
+    const page = await openOverview(consoleViewports[0]);
+    await liveServing(page).getByText(note, { exact: true }).waitFor();
+    const badge = liveServing(page).locator(".badge");
+    assert.equal(await badge.textContent(), "Not verified");
+    assert.equal(await badge.getAttribute("data-tone"), null);
+    assert.equal(await page.getByText("Sandbox lost").count(), 0);
+    assert.equal(await page.getByText("token-secret", { exact: false }).count(), 0);
+  }
 });
 
 // One readable version per history page: the first page lists the newest readable version.
