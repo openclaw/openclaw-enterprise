@@ -176,7 +176,7 @@ test("credential source boundary rejects new raw capabilities in the real source
       "credential owners cannot delegate to the anonymous listener",
       'import "../public-read/server.js";',
       /public GitHub reader and repository credential owners cannot load one another/,
-      "drivers/repo/github/credentials/descriptions.ts",
+      "drivers/repo/github/credentials/static-token.ts",
     ],
     [
       "the anonymous reader cannot read credential files",
@@ -296,35 +296,6 @@ test("credential source boundary rejects new raw capabilities in the real source
       "process execution sink",
       'process.execve("/usr/bin/git", ["git", "status"]);',
       /raw process capability execve/,
-    ],
-    [
-      "only credential configuration can import the metadata sender",
-      'import { createGitHubRepositoryDescriptions } from "../github/credentials/descriptions.ts";',
-      /raw sender drivers\/repo\/github\/credentials\/descriptions.ts/,
-    ],
-    [
-      "credential configuration cannot re-export the metadata sender",
-      "export { createGitHubRepositoryDescriptions };",
-      /raw I\/O binding cannot be re-exported/,
-      "composition/repository-credentials/config.ts",
-    ],
-    [
-      "the metadata owner cannot export raw HTTPS",
-      "export { httpsRequest as rawRequest };",
-      /raw I\/O binding cannot be re-exported/,
-      "drivers/repo/github/credentials/descriptions.ts",
-    ],
-    [
-      "the metadata owner cannot add an HTTP sender",
-      'import { request as rawRequest } from "node:http";',
-      /unreviewed runtime import from node:http/,
-      "drivers/repo/github/credentials/descriptions.ts",
-    ],
-    [
-      "the metadata owner cannot add another HTTPS primitive",
-      'import { get as rawGet } from "node:https";',
-      /unreviewed runtime import from node:https/,
-      "drivers/repo/github/credentials/descriptions.ts",
     ],
     [
       "raw upstream helper",

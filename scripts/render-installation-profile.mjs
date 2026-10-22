@@ -1202,6 +1202,8 @@ function buildInput(rawInput, diagnostics) {
     "repository",
     [
       "enabled",
+      "authority",
+      "preparedCustodySecretName",
       "image",
       "backendId",
       "registryConfigMapName",
@@ -1359,10 +1361,12 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
       ]),
     ...(repository.enabled
       ? [
-          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
-            `repository.${key}`,
-            repository[key],
-          ]),
+          ...[
+            "serviceConfigSecretName",
+            "appKeySecretName",
+            "preparedCustodySecretName",
+            "tlsSecretName",
+          ].map((key) => [`repository.${key}`, repository[key]]),
           ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
         ]
       : []),
@@ -2030,9 +2034,21 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   if (repositoryEnabled) {
+    if (repository.authority !== "prepared-git") {
+      diagnostics.errors.push(
+        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
+      );
+    }
     const repoDriverId = "repository-credentials";
     values.repositoryCredentials = {
       enabled: true,
+      authority: "prepared-git",
+      preparedCustodySecretName: asString(
+        repository,
+        ["repository", "preparedCustodySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       image: asString(repository, ["repository", "image"], diagnostics, {
         pattern: digestImage,
         validate: pullableImageReference,
@@ -2093,12 +2109,16 @@ function buildRendered(profile, parsed, diagnostics) {
         repo: repoDriverId,
       },
     });
-    installation.drivers.repo = {
+    installation.repository = {
       id: repoDriverId,
-      configuration: {
+      configuration: { sessionDurationSeconds: 86_400 },
+      nativeSender: {
         controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        sessionDurationSeconds: 86_400,
         publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+      },
+      preparedGitHub: {
+        custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+        privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
       },
     };
     installation.drivers.compute.configuration.network.repositoryCredentials = {

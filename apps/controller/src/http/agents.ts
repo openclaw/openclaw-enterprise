@@ -127,17 +127,11 @@ async function listRepositoryOptions({
   params,
   namespaceId,
 }: Parameters<ResourceHandler>[0]) {
-  const query = request.query as { descriptionRefs?: string };
-  const descriptionRefs = query.descriptionRefs?.split(",") ?? [];
-  if (new Set(descriptionRefs).size !== descriptionRefs.length) {
-    throw failure(400, "INVALID_REQUEST", "Repository description references must be unique.");
-  }
   const result = await controller
     .listRepositoryOptions(
       context.actorId,
       namespaceId,
       context.operation.operationId === "listAgentRepositoryOptions" ? params.agentId : undefined,
-      descriptionRefs,
     )
     .catch((error: unknown) => {
       if (error instanceof RepositoryOptionsUnavailableError) {
@@ -152,7 +146,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id, descriptionsPending: result.descriptionsPending },
+    meta: { requestId: request.id },
   });
 }
 

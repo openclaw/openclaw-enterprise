@@ -7,12 +7,11 @@ import type { Clock } from "../../drivers/repo/credentials/backend-contracts.ts"
 import type { LoadedConfiguration } from "./contracts.ts";
 import { record } from "../../drivers/repo/credentials/configuration.ts";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
-import { loadConfiguration } from "./config.ts";
+import { loadConfiguration, RetiredGitHubAuthorityError } from "./config.ts";
 import { runService } from "./service.ts";
 
 const inputLimits = {
   "config.json": 262144,
-  "private-key.pem": 65536,
   "tls.crt": 131072,
   "tls.key": 65536,
 } as const;
@@ -26,7 +25,7 @@ interface ProjectedInputs {
   readonly controlSocket: string;
   readonly expectedOrigin: string;
   readonly backendId: string;
-  readonly authority?: "github-app" | "prepared-git";
+  readonly authority: "prepared-git";
 }
 
 async function realDirectory(path: string): Promise<void> {
@@ -176,15 +175,11 @@ export async function prepareProjectedInputs(
 ): Promise<LoadedConfiguration> {
   const contents = new Map<string, Buffer>();
   try {
-    const prepared = options.authority === "prepared-git";
-    if (options.authority !== undefined && options.authority !== "github-app" && !prepared) {
-      throw new Error("invalid-projected-inputs");
+    if (options.authority !== "prepared-git") {
+      throw new RetiredGitHubAuthorityError();
     }
     const generation = await projectionGeneration(options.inputsDirectory);
     for (const [name, maximum] of Object.entries(inputLimits)) {
-      if (prepared && name === "private-key.pem") {
-        continue;
-      }
       contents.set(name, await readProjected(join(generation, name), maximum));
     }
     const registryGeneration = await projectionGeneration(dirname(options.registryFile));
@@ -195,6 +190,9 @@ export async function prepareProjectedInputs(
     const root = record(JSON.parse(contents.get("config.json")!.toString("utf8")));
     const gateway = record(root.gateway);
     const backend = record(root.backend);
+    if (backend.kind === "github-app" || backend.kind === "github-app-registry") {
+      throw new RetiredGitHubAuthorityError();
+    }
     if (gateway.publicOrigin === undefined) {
       gateway.publicOrigin = options.expectedOrigin;
     }
@@ -202,7 +200,7 @@ export async function prepareProjectedInputs(
       gateway.publicOrigin !== options.expectedOrigin ||
       gateway.listen !== "0.0.0.0:8443" ||
       gateway.controlSocket !== options.controlSocket ||
-      backend.kind !== (prepared ? "github-prepared-git-registry" : "github-app-registry") ||
+      backend.kind !== "github-prepared-git-registry" ||
       backend.backendId !== options.backendId
     ) {
       throw new Error("invalid-projected-inputs");
@@ -210,9 +208,6 @@ export async function prepareProjectedInputs(
     validateProjectedTlsHost(contents.get("tls.crt")!, options.expectedOrigin);
     gateway.tlsCertFile = join(options.privateDirectory, "tls.crt");
     gateway.tlsKeyFile = join(options.privateDirectory, "tls.key");
-    if (!prepared) {
-      backend.privateKeyFile = join(options.privateDirectory, "private-key.pem");
-    }
     backend.registryFile = join(options.privateDirectory, "registry.json");
     contents.get("config.json")!.fill(0);
     contents.set("config.json", Buffer.from(JSON.stringify(root)));
@@ -230,7 +225,11 @@ export async function prepareProjectedInputs(
       throw new Error("invalid-projected-inputs");
     }
     return loaded;
-  } catch {
+  } catch (error) {
+    if (error instanceof RetiredGitHubAuthorityError) {
+      throw error;
+    }
+    // eslint-disable-next-line preserve-caught-error -- Projection failures must not expose credentials or private file paths.
     throw new Error("invalid-projected-inputs");
   } finally {
     for (const value of contents.values()) {
@@ -242,11 +241,13 @@ export async function prepareProjectedInputs(
 async function main(args: readonly string[]): Promise<void> {
   const check = args.includes("--check-config");
   const values = check ? args.filter((arg) => arg !== "--check-config") : args;
+  if (values.length === 4 && values[0] === "--public-origin" && values[2] === "--backend-id") {
+    throw new RetiredGitHubAuthorityError();
+  }
   if (
     args.length !== values.length + (check ? 1 : 0) ||
-    (values.length !== 4 && values.length !== 6) ||
-    (values.length === 6 &&
-      (values[4] !== "--authority" || !["github-app", "prepared-git"].includes(values[5]!))) ||
+    values.length !== 6 ||
+    values[4] !== "--authority" ||
     values[0] !== "--public-origin" ||
     !values[1] ||
     values[2] !== "--backend-id" ||
@@ -263,7 +264,7 @@ async function main(args: readonly string[]): Promise<void> {
       controlSocket,
       expectedOrigin: values[1],
       backendId: values[3],
-      authority: values[5] === "prepared-git" ? "prepared-git" : "github-app",
+      authority: values[5] as "prepared-git",
     },
     clock,
   );
@@ -276,8 +277,12 @@ async function main(args: readonly string[]): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  void main(process.argv.slice(2)).catch(() => {
-    process.stderr.write("repository credential service failed\n");
+  void main(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(
+      error instanceof RetiredGitHubAuthorityError
+        ? `${error.message}\n`
+        : "repository credential service failed\n",
+    );
     process.exitCode = 1;
   });
 }

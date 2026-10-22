@@ -34,7 +34,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/client/native-git.ts";
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   cleanEnvironment,
@@ -731,42 +731,23 @@ async function loopbackBrokerTunnel(t, fixture) {
 }
 
 test(
-  "native push policy protects every destination and preserves common-directory hooks",
+  "development token push policy protects native destinations and preserves common-directory hooks",
   { timeout: 120000 },
   async (t) => {
     const origin = "https://localhost";
-    const fixture = await startRegistryCredentialServiceFixture(t, {
+    const fixture = await startCredentialServiceFixture(t, {
       gateway: { listen: "127.0.0.1:0", publicOrigin: origin },
-      repositories: [
-        {
-          repositoryRef: "guarded",
-          repositoryId: "73",
-          repository: "fixture/repository",
-          pushRefAllowlist: ["refs/heads/exact", "refs/heads/agent/*"],
-        },
-        {
-          repositoryRef: "denied",
-          repositoryId: "74",
-          repository: "fixture/other",
-          pushRefAllowlist: [],
-        },
-        { repositoryRef: "ordinary", repositoryId: "75", repository: "fixture/ordinary" },
-      ],
+      configuration: { pushRefAllowlist: ["refs/heads/exact", "refs/heads/agent/*"] },
     });
-    const material = await createNativeClientMaterial(
-      t,
-      fixture.repositories.map((entry) => ({
-        opened: entry.opened,
-        repositoryRef: entry.repositoryRef,
-        publicCa: fixture.tls.ca,
-      })),
-    );
+    const material = await createNativeClientMaterial(t, [
+      { opened: fixture.opened, repositoryRef: "guarded", publicCa: fixture.tls.ca },
+    ]);
     const work = await temporaryDirectory(t);
     const proxyOrigin = await loopbackBrokerTunnel(t, fixture);
     const env = gitEnvironment(material.root, { https_proxy: proxyOrigin });
     const invoke = (args, options = {}) =>
       run("/usr/bin/git", args, { env, cwd: work, ...options });
-    const guarded = fixture.byRef.get("guarded");
+    const guarded = fixture;
     const snapshot = async () =>
       (
         await run("/usr/bin/git", ["for-each-ref", "--format=%(refname) %(objectname)"], {
@@ -857,20 +838,6 @@ test(
       (await invoke(["-C", linked, "ls-remote", "origin", "refs/heads/agent/one"])).stdout,
       "",
     );
-    const denied = await invoke(
-      ["-C", linked, "push", "https://github.com/fixture/other.git", "HEAD:refs/heads/agent/one"],
-      { allowFailure: true },
-    );
-    assert.notEqual(denied.code, 0);
-    assert.match(denied.stderr, /repository-push-ref-not-allowed/);
-    await invoke([
-      "-C",
-      linked,
-      "push",
-      "https://github.com/fixture/ordinary.git",
-      "HEAD:refs/heads/ordinary",
-    ]);
-    assert.equal(await fixture.byRef.get("ordinary").git.ref("refs/heads/ordinary"), head);
     await writeFile(join(checkout, ".git/hooks/pre-push"), "#!/bin/sh\nexit 7\n", {
       mode: 0o755,
     });

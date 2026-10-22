@@ -114,18 +114,6 @@ import {
 
 const ErrorResponseRef = Type.Ref("ErrorResponse");
 const SecretResponseRef = Type.Ref("SecretResponse");
-const RepositoryOptionsQuery = Type.Object(
-  {
-    descriptionRefs: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-        maxLength: 2579,
-        description: "Up to 20 visible repository references to enrich with provider descriptions.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
 const CredentialSourceResponseRef = Type.Ref("CredentialSourceResponse");
 
 const readErrors = {
@@ -1267,7 +1255,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for Agent creation in one Namespace",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: NamespaceParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1291,7 +1279,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for updating one Agent",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: AgentParams,
       response: {
         200: RepositoryOptionListResponse,

@@ -68,7 +68,8 @@ composes session-bound backends. It delegates grant resolution to
 and client authentication to
 `apps/controller/src/drivers/repo/github/credentials/gateway-authentication.ts:createGatewayAuthentication`.
 A registry-selected factory retains the frozen repository identity and access profile.
-The process owns the App signing key separately from session installation tokens.
+The production native sender consumes READY material from the worker Token Service.
+It owns no App signing key and cannot issue installation tokens.
 `packages/contracts/src/repo.ts` owns public `RepoDriver`, grant identity and
 four-field status. Private contracts under
 `apps/controller/src/drivers/repo/credentials/` separate full status/admission/bearer
@@ -80,9 +81,9 @@ listeners own exchanges. The [Agent flow](agent-repository-credentials.md) owns
 platform session-control and local policy.
 
 Registry startup selects
-`apps/controller/src/drivers/repo/github/credentials/registry-factory.ts:createGitHubRegistryDriverFactory`
-from the same canonical authority loaded by API and worker. App and TLS private
-keys remain service-only. `startListeners` can reclaim only an owned,
+`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
+from the same canonical registry loaded by API and worker. The worker owns the
+App key; only the sender receives its TLS private key. `startListeners` can reclaim only an owned,
 private, refused stale Unix socket after checking that its identity is unchanged;
 a live or ambiguously owned socket fails startup.
 
@@ -221,26 +222,12 @@ deadline. Acceptance, reuse, dispatch and authentication honor the earlier deadl
 cleanup retains separate expiry and callback drainage. Wall-clock changes cannot
 shorten custody or restart use lifetime.
 
-`apps/controller/src/drivers/repo/github/credentials/driver/acquisition-response.ts:observeAcquisitionResponse`
-captures a uniquely identified root token before validating status, scope and
-usable lifetime. Invalid UTF-8, malformed JSON or a duplicate member name
-disqualifies the response as evidence: duplicate permission fields keep the token
-only for cleanup, and duplicate root token fields leave no revocation target to
-guess. Admission is rechecked synchronously before a credential is accepted;
-repository and permissions must match exactly and an optional
-`repository_selection` must be `selected`.
+Production native requests use
+`apps/controller/src/drivers/repo/github/credentials/warm-use.ts:authorizePreparedGitSend`.
+The worker validates the live grant and lends prepared material for that exchange.
+Missing or uncertain material does not cause request-time issuance. The explicit
+development token factory instead borrows its process-owned static token.
 
-Its credential transport,
-`apps/controller/src/drivers/repo/github/credentials/provider-transport.ts:createProviderTransport`,
-uses `apps/controller/src/drivers/repo/github/credentials/provider-transport/request.ts:sendProviderRequest`
-to dispatch and join the request close event under request deadlines and
-response-size limits. It latches dispatch, after rechecking admission, only when
-TCP connects, so DNS and connection-refused failures are definite and only later
-failures are uncertain. Opaque scope freezes installation, repository and profile;
-the adapter can issue that scope or revoke a token, never supply arbitrary
-targets, bodies or headers. After authentication preparation, a synchronous gate
-rechecks admission, registers cancellation and opens the exchange without an
-intervening await.
 The handler and sender independently capture their allowed upstream origins.
 `apps/controller/src/drivers/repo/credentials/transport/request-headers.ts:createUpstreamHeaders`
 validates adapter fields, rejects case-insensitive duplicates and reconstructs
@@ -308,8 +295,8 @@ broker writes `DISPOSED` to the worker's receipt journal before reporting it,
 and gives pending terminal writes a separate ten-second window before graceful exit. The Helm worker is a
 restartable init container so its receipt listener outlives broker shutdown.
 Only a committed observation survives restart. Uncommitted or uncertain
-provider inventory remains unknown. The process closes the shared App key after
-shutdown disposition.
+provider inventory remains unknown. The original issuer retains token cleanup;
+the sender closes its TLS and session material after shutdown disposition.
 
 Failed construction custody also participates in shutdown drainage. Its
 pending obligation contributes to `pendingAuxiliary` without inventing a

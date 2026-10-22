@@ -1,4 +1,4 @@
-import { element, button, setStatusTone, setText } from "../dom.mjs";
+import { element, button, setStatusTone } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
@@ -10,14 +10,9 @@ import {
 const MAX_SELECTED = 16;
 const PAGE_SIZE = 20;
 const RECENT_LIMIT = 32;
-const DESCRIPTION_REQUEST_DELAY = 250;
-const DESCRIPTION_REFRESH_DELAY = 2_000;
-const DESCRIPTION_REFRESH_MAX_DELAY = 30_000;
-const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
 // A description shows like a log line (visibleText escapes invisible and bidi characters), except
-// for the joiners and the England, Scotland and Wales flags the credential service keeps (group 1),
-// so emoji and Persian or Indic words display intact. Keep in step with hiddenCharacter in
-// apps/controller/src/drivers/repo/github/credentials/descriptions.ts.
+// for the joiners and the England, Scotland and Wales flags (group 1), so emoji and Persian
+// or Indic words display intact.
 const DESCRIPTION_CHARACTER =
   /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[^]/gu;
 
@@ -154,10 +149,6 @@ export function createRepositoryFields(context, onChange, initial = {}) {
   const initialAccess = JSON.stringify(accessIntent());
   let searchState;
   let loadGeneration = 0;
-  let descriptionGeneration = 0;
-  let descriptionKey;
-  let descriptionTimer;
-  let descriptionAbort;
   const status = element(
     "p",
     { className: "hint", role: "status" },
@@ -472,7 +463,6 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     );
     results.replaceChildren();
     if (state.discovery !== "ready" || !state.options.length) {
-      requestVisibleDescriptions([]);
       return;
     }
     results.append(
@@ -624,7 +614,6 @@ export function createRepositoryFields(context, onChange, initial = {}) {
         "16 repositories selected. Deselect one to select another.",
       ),
     );
-    requestVisibleDescriptions(searchState.dismissed ? [] : visible);
   }
   function renderCards() {
     announcements.querySelector("button")?.remove();
@@ -895,127 +884,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     retry.disabled = disabled || !isSettled();
     render();
   }
-  function updateDescriptions(options, pending, refs) {
-    const refreshed = new Map(options.map((entry) => [entry.repositoryRef, entry]));
-    for (const entry of state.options) {
-      if (!refs.has(entry.repositoryRef)) {
-        continue;
-      }
-      const next = refreshed.get(entry.repositoryRef);
-      if (!next || next.displayName !== entry.displayName) {
-        continue;
-      }
-      if (typeof next.description === "string") {
-        entry.description = next.description;
-      } else if (!pending) {
-        delete entry.description;
-      }
-    }
-    for (const input of results.querySelectorAll('input[type="checkbox"][data-repository-ref]')) {
-      if (!refs.has(input.dataset.repositoryRef)) {
-        continue;
-      }
-      const entry = option(input.dataset.repositoryRef);
-      const identity = input.closest(".repository-result")?.querySelector(".repository-identity");
-      if (!entry || !identity) {
-        continue;
-      }
-      let description = identity.querySelector(".repository-description");
-      if (typeof entry.description === "string" && entry.description.trim()) {
-        if (!description) {
-          description = element("span", { className: "repository-description" });
-          identity.querySelector("strong").after(description);
-        }
-        setText(description, descriptionText(entry.description));
-      } else {
-        description?.remove();
-      }
-    }
-  }
-  function refreshDescriptions(
-    generation,
-    visibleGeneration,
-    refs,
-    signal,
-    deadline = performance.now() + DESCRIPTION_REFRESH_TIMEOUT,
-    delay = DESCRIPTION_REQUEST_DELAY,
-  ) {
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) {
-      return;
-    }
-    descriptionTimer = setTimeout(
-      async () => {
-        if (
-          !context.isCurrent() ||
-          !section.isConnected ||
-          generation !== loadGeneration ||
-          visibleGeneration !== descriptionGeneration ||
-          performance.now() >= deadline
-        ) {
-          return;
-        }
-        try {
-          const { data, meta } = await context.request(
-            `${namespacePath(context.namespaceId)}/agents/${initial.agentId ? `${encodeURIComponent(initial.agentId)}/` : ""}repository-options?descriptionRefs=${[...refs].map(encodeURIComponent).join(",")}`,
-            { expectedStatus: 200, includeMeta: true, signal },
-          );
-          if (
-            !context.isCurrent() ||
-            !section.isConnected ||
-            generation !== loadGeneration ||
-            visibleGeneration !== descriptionGeneration
-          ) {
-            return;
-          }
-          if (!validOptions(data)) {
-            return;
-          }
-          const pending = meta?.descriptionsPending === true;
-          updateDescriptions(data, pending, refs);
-          if (pending) {
-            refreshDescriptions(
-              generation,
-              visibleGeneration,
-              refs,
-              signal,
-              deadline,
-              Math.min(
-                Math.max(delay * 2, DESCRIPTION_REFRESH_DELAY),
-                DESCRIPTION_REFRESH_MAX_DELAY,
-              ),
-            );
-          }
-        } catch (error) {
-          if (error.status === 401 && context.isCurrent()) {
-            context.onExpired();
-          }
-        }
-      },
-      Math.min(delay, remaining),
-    );
-  }
-  function requestVisibleDescriptions(visible) {
-    const refs = new Set(visible.map((entry) => entry.repositoryRef));
-    const key = JSON.stringify([...refs]);
-    if (descriptionKey === key) {
-      return;
-    }
-    descriptionKey = key;
-    descriptionGeneration += 1;
-    clearTimeout(descriptionTimer);
-    descriptionAbort?.abort();
-    if (refs.size) {
-      descriptionAbort = new AbortController();
-      refreshDescriptions(loadGeneration, descriptionGeneration, refs, descriptionAbort.signal);
-    }
-  }
   async function load(clearSelections = false) {
     const generation = ++loadGeneration;
-    descriptionKey = undefined;
-    descriptionGeneration += 1;
-    clearTimeout(descriptionTimer);
-    descriptionAbort?.abort();
     state.discovery = "loading";
     // A new catalog must not inherit filters or pages whose controls may disappear.
     resetSearch();

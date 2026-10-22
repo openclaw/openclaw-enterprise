@@ -1,8 +1,7 @@
 # Native Git with a prepared GitHub App credential
 
 Use this profile when a dedicated Codex Agent needs to clone a private repository
-and push one review branch. It is an explicit Installation choice, not an upgrade
-of an existing metadata-read grant. Qualify the exact deployment before using a
+and push one review branch. It is an explicit Installation choice. Existing metadata grants do not authorize it. Qualify the exact deployment before using a
 real provider credential.
 
 The first supported topology is the dedicated Codex Harness owned by Kubernetes
@@ -28,7 +27,8 @@ Reads cover the repository, not just the review branch. GitHub's `contents: writ
 permission is not branch-scoped: protect important refs at GitHub independently,
 without an App bypass. The Git-only profile exposes fetch and push, not GitHub REST or GraphQL.
 
-For bounded `metadata-read`, the [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
+A separately selected protected Credential Proxy can authorize a bounded
+`metadata-read` operation. Its [response policy](../../../apps/controller/src/drivers/repo/github/credentials/metadata-response.ts)
 requires HTTP 200 and the exact repository ID and full name. After stream end, the
 [transport](../../../apps/controller/src/drivers/repo/credentials/transport/upstream.ts)
 rejects actual trailers (a declaration alone is not one), enforces byte limits before and
@@ -54,6 +54,10 @@ not the person who assigned the task. Use a trusted team for the initial trial;
 do not treat that receipt as per-person task authorization.
 
 ## Install and check
+
+The removed `github-app` and `github-app-registry` startup modes fail closed.
+Stop admissions and drain accepted work on its original owner before switching.
+Do not transfer an App key, broaden an approval or replay an uncertain operation.
 
 Select `repositoryCredentials.authority: prepared-git` in the chart and
 `repository.preparedGitHub` in the Installation. Select the policy ID and session duration

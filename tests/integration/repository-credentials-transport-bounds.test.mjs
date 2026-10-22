@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { createHash } from "node:crypto";
 import { createServer, request } from "node:https";
 import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
@@ -18,23 +18,19 @@ import {
 } from "../fixtures/repository-credentials/service.mjs";
 import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import {
-  createGitHubServiceFactory,
+  createGitHubTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 
 const discovery = `/${fixtureRepository}.git/info/refs?service=git-upload-pack`;
-const push = `/${fixtureRepository}.git/git-receive-pack`;
+const upload = `/${fixtureRepository}.git/git-upload-pack`;
 const replyHeaders = { "content-type": "application/x-git-upload-pack-advertisement" };
-const pushReplyHeaders = { "content-type": "application/x-git-receive-pack-result" };
+const uploadReplyHeaders = { "content-type": "application/x-git-upload-pack-result" };
 const inputLimit = 4096;
 const responseLimit = 4096;
 const discoveryOnly = [{ method: "GET", path: discovery }];
-const pushOnly = [{ method: "POST", path: push }];
+const uploadOnly = [{ method: "POST", path: upload }];
 const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, complete: true });
-// One GitHub App key for every case: generating one blocks the shared event loop
-// for tens of milliseconds, which eats into a sibling's 150 ms header deadline.
-const appKeyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
-
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
 async function startTransport(t, onRequest, limits = {}) {
@@ -48,9 +44,12 @@ async function startTransport(t, onRequest, limits = {}) {
     exchangesPerSession: 1,
     exchangeMs: 10000,
     firstHeaderMs: 5000,
+    gitFetchExchangeMs: limits.exchangeMs ?? 10000,
+    gitFetchFirstHeaderMs: limits.firstHeaderMs ?? 5000,
+    gitFetchStallMs: limits.stallMs ?? 5000,
     ...limits,
   });
-  const github = await startGitHubFixture(resources, { clock, tls, keyPair: appKeyPair });
+  const github = await startGitHubFixture(resources, { clock, tls });
   const received = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});
@@ -63,10 +62,12 @@ async function startTransport(t, onRequest, limits = {}) {
   });
   const origin = await listen(resources, upstream);
   const trustedOrigins = new Set([origin]);
-  const factory = await createGitHubServiceFactory(resources, {
+  const token = `gho_${"t".repeat(36)}`;
+  github.acceptStatic(token);
+  const factory = await createGitHubTokenServiceFactory(resources, {
     config,
     clock,
-    privateKey: github.privateKey,
+    token,
     trustedEndpoints: { apiOrigin: github.origin, gitOrigin: origin, ca: tls.ca },
   });
   const { service, listeners } = await startServiceListeners(resources, {
@@ -148,12 +149,12 @@ function startRequest(
   return { outgoing, result, digest: () => hash.digest("hex") };
 }
 
-function startPush(fixture, headers, options) {
+function startUpload(fixture, headers, options) {
   return startRequest(fixture, {
     ...options,
     method: "POST",
-    path: push,
-    headers: { "content-type": "application/x-git-receive-pack-request", ...headers },
+    path: upload,
+    headers: { "content-type": "application/x-git-upload-pack-request", ...headers },
   });
 }
 
@@ -394,19 +395,19 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       // One total slot is still free: this refusal belongs to the session bound.
       assertRefused(await readDiscovery(fixture, { opened: first }));
       assert.equal(fixture.service.status(first.session.sessionId).activeUses, 1);
-      assert.equal(fixture.github.issuesOfTokens.length, 1);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 1);
 
       // An independent session can occupy the other slot while the first stays live.
       heldClients[1].outgoing.end();
       await eventually(() => delivered[1] === 4);
       assert.equal(fixture.service.status(second.session.sessionId).activeUses, 1);
-      assert.equal(fixture.github.issuesOfTokens.length, 2);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 2);
 
       assertRefused(await readDiscovery(fixture, { opened: third }));
       assert.equal(fixture.service.status(third.session.sessionId).activeUses, 0);
-      assert.equal(fixture.github.issuesOfTokens.length, 2);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 2);
 
       // Denial cannot cancel either admitted stream or replace its credential.
@@ -427,7 +428,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         assert.deepEqual(await readDiscovery(fixture, { opened }), completed());
         await released(fixture, opened);
       }
-      assert.equal(fixture.github.issuesOfTokens.length, 3);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
       assert.equal(fixture.received.length, 4);
       assert.equal(fixture.service.status(second.session.sessionId).activeUses, 1);
       heldResponses[1].end();
@@ -473,7 +474,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       await released(fixture);
       assert.deepEqual(await readDiscovery(fixture), completed());
       assert.equal(fixture.received.length, 2);
-      assert.equal(fixture.github.issuesOfTokens.length, 1);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
     },
   );
 
@@ -506,7 +507,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       expected: {
         status: 200,
         upstreamRequests: 1,
-        issuedCredentials: 1,
+        issuedCredentials: 0,
         receivedBytes: inputLimit,
       },
     },
@@ -522,11 +523,11 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         t,
         (incoming, outgoing) => {
           incoming.on("data", (chunk) => (receivedBytes += chunk.length));
-          incoming.once("end", () => outgoing.writeHead(200, pushReplyHeaders).end("0000"));
+          incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
         },
-        { gitPushInputBytes: inputLimit },
+        { gitFetchInputBytes: inputLimit },
       );
-      const client = startPush(fixture, { "content-length": scenario.bytes });
+      const client = startUpload(fixture, { "content-length": scenario.bytes });
       client.outgoing.end(Buffer.alloc(scenario.bytes, 42));
       const result = await client.result;
       assert.equal(result.kind, "completed");
@@ -547,7 +548,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           incoming.resume();
           incoming.once("end", () => outgoing.writeHead(200, replyHeaders).end("0000"));
         },
-        { gitPushInputBytes: inputLimit, stallMs: 1000 },
+        { gitFetchInputBytes: inputLimit, stallMs: 1000 },
       );
       // The declared size is refused before any body byte is read. This raw client keeps
       // sending regardless, so only the gateway's linger bound can end the connection.
@@ -557,10 +558,10 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       ).toString("base64");
       client.socket.write(
         [
-          `POST ${push} HTTP/1.1`,
+          `POST ${upload} HTTP/1.1`,
           `host: ${new URL(fixture.config.gateway.publicOrigin).host}`,
           `authorization: Basic ${authorization}`,
-          "content-type: application/x-git-receive-pack-request",
+          "content-type: application/x-git-upload-pack-request",
           `content-length: ${1 << 30}`,
           "",
           "",
@@ -611,17 +612,17 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         });
         incoming.once("end", () =>
           outgoing
-            .writeHead(200, incoming.method === "POST" ? pushReplyHeaders : replyHeaders)
+            .writeHead(200, incoming.method === "POST" ? uploadReplyHeaders : replyHeaders)
             .end("0000"),
         );
       },
-      { gitPushInputBytes: inputLimit },
+      { gitFetchInputBytes: inputLimit },
     );
     // Stored deflate keeps decoded bytes within the limit while gzip overhead
     // exceeds the independent wire allowance. No Content-Length precheck can help.
     const encoded = gzipSync(Buffer.alloc(inputLimit, 42), { level: 0 });
     assert.ok(encoded.length > inputLimit);
-    const client = startPush(fixture, {
+    const client = startUpload(fixture, {
       "content-encoding": "gzip",
       "transfer-encoding": "chunked",
     });
@@ -635,8 +636,8 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         fixture.service.status(fixture.opened.session.sessionId).activeUses === 0,
     );
     assert.ok(receivedBytes < inputLimit);
-    assert.deepEqual(fixture.received, pushOnly);
-    assert.equal(fixture.github.issuesOfTokens.length, 1);
+    assert.deepEqual(fixture.received, uploadOnly);
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.deepEqual(await readDiscovery(fixture), completed());
     assert.equal(fixture.received.filter((entry) => entry.method === "POST").length, 1);
   });
@@ -671,11 +672,11 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       });
       await released(fixture);
       assert.deepEqual(fixture.received, discoveryOnly);
-      assert.equal(fixture.github.issuesOfTokens.length, 1);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
       // Reusing the sole slot proves failure settled I/O and credential ownership.
       assert.deepEqual(await readDiscovery(fixture), completed());
       assert.equal(fixture.received.length, 2);
-      assert.equal(fixture.github.issuesOfTokens.length, 1);
+      assert.equal(fixture.github.issuesOfTokens.length, 0);
     },
   );
 
@@ -761,19 +762,19 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
     "upstream response timing follows completed upload",
     async (t) => {
       const progressing = t.test(
-        "a progressing push may outlast the first-header budget",
+        "a progressing upload may outlast the first-header budget",
         async (t) => {
           let receivedBytes = 0;
           const fixture = await startTransport(
             t,
             (incoming, outgoing) => {
               incoming.on("data", (chunk) => (receivedBytes += chunk.length));
-              incoming.once("end", () => outgoing.writeHead(200, pushReplyHeaders).end("0000"));
+              incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
             },
             { exchangeMs: 3000, headerMs: 1000, firstHeaderMs: 200, stallMs: 1000 },
           );
           const chunk = Buffer.alloc(64, 42);
-          const client = startPush(fixture, { "content-length": 8 * chunk.length });
+          const client = startUpload(fixture, { "content-length": 8 * chunk.length });
           client.outgoing.write(chunk);
           await eventually(() => receivedBytes === chunk.length);
           // Keep the upload progressing beyond the response-header budget while
@@ -785,7 +786,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           client.outgoing.end();
           assert.deepEqual(await client.result, completed());
           assert.equal(receivedBytes, 8 * chunk.length);
-          assert.deepEqual(fixture.received, pushOnly);
+          assert.deepEqual(fixture.received, uploadOnly);
           await released(fixture);
         },
       );
@@ -796,7 +797,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           t,
           (incoming, outgoing) => {
             incoming.resume();
-            if (incoming.url === push) {
+            if (incoming.url === upload) {
               incoming.once("end", () => (inputFinishedAt = performance.now()));
             } else {
               incoming.once("end", () => outgoing.writeHead(200, replyHeaders).end("0000"));
@@ -804,7 +805,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           },
           { exchangeMs: 5000, firstHeaderMs: 200, stallMs: 2000 },
         );
-        const client = startPush(fixture, { "content-length": 4 });
+        const client = startUpload(fixture, { "content-length": 4 });
         client.outgoing.end("0000");
         await eventually(() => inputFinishedAt !== undefined);
         assert.equal((await client.result).kind, "closed");
@@ -812,7 +813,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         assert.ok(performance.now() - inputFinishedAt < 1500);
         await released(fixture);
         assert.equal((await readDiscovery(fixture)).status, 200);
-        assert.deepEqual(fixture.received, [...pushOnly, ...discoveryOnly]);
+        assert.deepEqual(fixture.received, [...uploadOnly, ...discoveryOnly]);
       });
 
       const early = t.test("early final headers cannot restart the header deadline", async (t) => {
@@ -821,7 +822,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           t,
           (incoming, outgoing) => {
             incoming.resume();
-            outgoing.writeHead(200, pushReplyHeaders);
+            outgoing.writeHead(200, uploadReplyHeaders);
             outgoing.write("0000");
             incoming.once("end", () => {
               let writes = 0;
@@ -837,7 +838,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           },
           { exchangeMs: 3000, headerMs: 1000, firstHeaderMs: 150, stallMs: 1000 },
         );
-        const client = startPush(
+        const client = startUpload(
           fixture,
           { "content-length": 8 },
           { onResponse: () => (receivedHeaders = true) },
@@ -846,7 +847,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         await eventually(() => receivedHeaders);
         client.outgoing.end("0000");
         assert.deepEqual(await client.result, completed(28));
-        assert.deepEqual(fixture.received, pushOnly);
+        assert.deepEqual(fixture.received, uploadOnly);
       });
 
       await Promise.all([progressing, missing, early]);
@@ -860,16 +861,20 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       let upstreamRequest;
       let receivedBytes = 0;
       const hash = createHash("sha256");
-      const fixture = await startTransport(t, (incoming, outgoing) => {
-        upstreamRequest = incoming;
-        incoming.pause();
-        incoming.on("data", (chunk) => {
-          receivedBytes += chunk.length;
-          hash.update(chunk);
-        });
-        incoming.once("end", () => outgoing.writeHead(200, pushReplyHeaders).end("0000"));
-      });
-      const client = startPush(fixture, { "content-length": streamBytes });
+      const fixture = await startTransport(
+        t,
+        (incoming, outgoing) => {
+          upstreamRequest = incoming;
+          incoming.pause();
+          incoming.on("data", (chunk) => {
+            receivedBytes += chunk.length;
+            hash.update(chunk);
+          });
+          incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
+        },
+        { gitFetchInputBytes: streamBytes },
+      );
+      const client = startUpload(fixture, { "content-length": streamBytes });
       const producer = writePayload(client.outgoing);
       await eventually(() => upstreamRequest !== undefined);
       const pausedBytes = await assertProducerBlocked(producer);
@@ -882,7 +887,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       assert.equal(producer.producedBytes(), streamBytes);
       assert.equal(receivedBytes, streamBytes);
       assert.equal(hash.digest("hex"), payloadDigest);
-      assert.deepEqual(fixture.received, pushOnly);
+      assert.deepEqual(fixture.received, uploadOnly);
     },
   );
 
@@ -966,15 +971,15 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
         assert.deepEqual(status.cleanup, {
           active: 0,
           pending: 0,
-          revoked: 1,
-          expired: 0,
+          revoked: 0,
+          expired: 1,
           uncertain: 0,
           auxiliaryPending: false,
         });
-        assert.equal(fixture.github.tokenState()[0].revoked, true);
+        assert.equal(fixture.github.tokenState()[0].revoked, false);
         assert.equal((await readDiscovery(fixture)).status, 401);
         assert.equal(fixture.received.length, 1);
-        assert.equal(fixture.github.issuesOfTokens.length, 1);
+        assert.equal(fixture.github.issuesOfTokens.length, 0);
         // A new session uses the sole exchange slot after the cancelled I/O settles.
         fixture.opened = fixture.service.open({ durationSeconds: 300, profile: "git-write" });
         assert.deepEqual(await readDiscovery(fixture), completed());

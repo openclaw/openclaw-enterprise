@@ -207,7 +207,12 @@ try {
   if (codexSeccompProfile !== null) {
     assert.match(codexSeccompProfile, /^openclaw\/codex-[\w.-]+-[0-9a-f]{64}\.json$/);
   }
-  assert.ok(config.drivers.repo.preparedGitHub && !config.drivers.sandbox);
+  assert.ok(
+    config.repository?.preparedGitHub &&
+      !config.drivers.repo &&
+      config.repository.nativeSender &&
+      !config.drivers.sandbox,
+  );
   assert.equal(helm.repositoryCredentials.authority, "prepared-git");
   assert.equal(images.gateway, images.agent);
   imageDigests = {

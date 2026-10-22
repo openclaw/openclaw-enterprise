@@ -4,9 +4,14 @@ Enable the optional repository credential service alongside the single OCC
 worker. Complete the [production installation prerequisites](../deploy/production-installation.md)
 and use its operator shell, `KUBECONFIG_FILE`, `CONTEXT`, `OCC_INPUT_DIRECTORY`
 and `openclaw-system` namespace. Run these commands from the repository root.
-Use Kubernetes Compute-owned embedded OpenClaw or dedicated Codex with compatible
+Use Kubernetes Compute-owned dedicated Codex with compatible
 [Harness authentication](../../reference/agents.md#harness-authentication) and no
 Sandbox Driver.
+
+Before replacing an old signing gateway, stop admissions and let accepted work drain
+on that owner. Preserve unresolved cleanup there. Do not transfer keys, widen
+approvals, or replay uncertain issuance or PR creation. With no outstanding work,
+configure the prepared path directly.
 
 ## Prepare the registry and protected inputs
 
@@ -17,7 +22,7 @@ server-assigned OCC Namespace IDs. Installations always use a GitHub App; the
 is standalone and development-only. One App installation can serve several
 repository entries; each Agent binding still admits a separate single-repository
 session. The example below uses Backend ID `repository-backend`, registry
-maximum duration `86400`, and all three profiles.
+maximum duration `86400`, `git-write`, and one exact branch ref.
 
 Choose the Namespace first with `occ namespace list` on an existing installation.
 For a fresh installation, initially leave this optional capability disabled,
@@ -30,7 +35,8 @@ Place these operator inputs in a private directory such as `/secure/occ/reposito
 | -------------------- | ---------------------------------------------------------------- |
 | `registry.json`      | Nonsecret canonical registry with exact Namespace/profile policy |
 | `config.json`        | Service configuration below                                      |
-| `private-key.pem`    | Existing RSA private key for the registry's GitHub App           |
+| `private-key.pem`    | Worker-only RSA key for the registry's GitHub App                |
+| `custody.key`        | Worker-only random 32-byte custody key                           |
 | `tls.crt`, `tls.key` | Gateway certificate chain and matching private key               |
 | `ca.crt`             | Public PEM CA trust for that certificate, without private keys   |
 
@@ -52,10 +58,10 @@ Write `config.json` with the same Backend ID and duration policy as the registry
   "sessionPolicy": {
     "maximumDurationSeconds": 86400,
     "defaultProfile": "git-write",
-    "allowedProfiles": ["git-read", "git-write", "git-full"]
+    "allowedProfiles": ["git-write"]
   },
   "backend": {
-    "kind": "github-app-registry",
+    "kind": "github-prepared-git-registry",
     "backendId": "repository-backend"
   }
 }
@@ -63,7 +69,7 @@ Write `config.json` with the same Backend ID and duration policy as the registry
 
 This is the Kubernetes projection input. The sidecar supplies the broker origin
 from Helm's repository credential hostname helper, then supplies protected
-registry, App-key and TLS file paths after copying its selected projection into
+registry and TLS file paths after copying its selected projection into
 private owned files. It rejects an explicit `gateway.publicOrigin` that differs
 from the Helm-derived origin and rejects a serving certificate that does not
 cover that host. For direct standalone startup, use the
@@ -97,6 +103,9 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   create secret generic occ-repository-app \
   --from-file=private-key.pem=/secure/occ/repositories/private-key.pem
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  create secret generic occ-repository-custody \
+  --from-file=custody.key=/secure/occ/repositories/custody.key
 ```
 
 These commands create new operator-owned inputs and intentionally fail on
@@ -108,8 +117,10 @@ Helm values, Agent configuration and command arguments.
 Add the [GitHub Backend and Driver fragment](../../reference/backends.md#github-repository-credentials)
 to the existing Installation YAML. Set its Backend ID to `repository-backend`
 and `sessionDurationSeconds` to `86400`. Select the optional capability through
-`drivers.repo` and the matching Backend `drivers.repo` member; keep the configured
-Driver ID unchanged. Keep the shown registry, control socket
+`repository.nativeSender` and `repository.preparedGitHub`, with the matching
+Backend `drivers.repo` policy member. The worker alone mounts the App key and
+32-byte custody key. Protected Git instead selects an installed Credential Proxy
+and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
 Add this peer under the existing
@@ -147,6 +158,8 @@ placeholders before rendering:
 ```yaml
 repositoryCredentials:
   enabled: true
+  authority: prepared-git
+  preparedCustodySecretName: occ-repository-custody
   image: "<credential-service-image>@sha256:<digest>"
   serviceName: git
   hostname: "" # Empty selects git.<release-namespace>.svc.<clusterDomain>.
@@ -171,8 +184,7 @@ adds worker-Pod egress on port 443 and ingress from tenant embedded gateways and
 dedicated Agent Pods on port 8443. Compute grants corresponding egress only to
 the repository consumer; see the
 [network selectors](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Existing model/network
-rules still apply. For repository-bound dedicated Codex or embedded OpenClaw
-using `occ/codex-plugin`, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
+rules still apply. For repository-bound dedicated Codex, Compute allows the exact broker hostname and sets stock Codex `allow_local_binding = true` and
 `mode = "full"`. This permits local binding, disables Codex's additional
 private-address guard, and permits all HTTP methods at otherwise allowed
 destinations. Explicit denies, TLS verification, and broker authorization remain

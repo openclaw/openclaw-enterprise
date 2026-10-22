@@ -1,6 +1,6 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-21"
+updated: "2026-10-22"
 last_updated_session: authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f
 ---
 
@@ -8,8 +8,8 @@ last_updated_session: authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f
 
 ## Overview
 
-The Console lists approved repositories; deployment freezes grants. Native sessions reach
-embedded OpenClaw or dedicated Codex without a Sandbox Driver. The opt-in
+The Console lists approved repositories; deployment freezes grants. Prepared native sessions reach
+Compute-owned dedicated Codex without a Sandbox Driver. The opt-in
 [OpenShell path](../reference/repository-credentials/openshell-git.md) gives the sandbox a
 placeholder: the worker delivers prepared material to the provider and checks each signed
 request against the live grant without returning a token.
@@ -32,7 +32,6 @@ For access across session expiry, see [standing repository approval](../guides/r
 ```mermaid
 graph TD
   Console["<b>Console create form</b><br/>Load safe Namespace choices"] --> Options["<b>Repo Driver projection</b><br/>Refs, names, allowed profiles"]
-  Options -->|Visible refs| Metadata["<b>Credential service</b><br/>Optional descriptions"]
   Options --> API["<b>Agent API</b><br/>Recheck and save refs"]
   Options -->|Unverified authorization or discovery error| CreateBlocked["<b>Create blocked</b><br/>Retry before any write"]
   API -->|Known zero-binding rejection| OrdinaryRetry["<b>Ordinary retry</b><br/>Reuse Configuration directly"]
@@ -89,7 +88,7 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class API,Version,Attempt,Queue,FormLocked,Receipt,Terminal state
-  class Console,Options,Metadata,Worker,Service,New,Retained,Compute,Pod,Command,Gateway,Close,Done,Delete,Finalize operation
+  class Console,Options,Worker,Service,New,Retained,Compute,Pod,Command,Gateway,Close,Done,Delete,Finalize operation
   class Recover,Repair,Refuse,Wait,ViewStop,CreateBlocked,OrdinaryRetry,Reselect,PushRefs,PushDenied,Capability,Blocked condition
 ```
 
@@ -106,13 +105,8 @@ Classified optional discovery failures map to `503 REPOSITORY_OPTIONS_UNAVAILABL
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments;
 `repositorySettings` resolves inheritance intent through RepositoryPolicyDriver and the
 database checks concrete bindings. Only fresh, empty drafts permit the classified
-outage. For up to 20 visible refs,
-`apps/controller/src/drivers/repo/github/credentials/descriptions.ts:createGitHubRepositoryDescriptions`
-fetches descriptions with repository-scoped, metadata-only tokens, sharing the
-provider queue and cleanup lifecycle. It bounds descriptions by Unicode code point; the Unix
-client and OCC apply the same 512-character limit. Controls and invisible or bidi characters
-become spaces, and the picker escapes any that arrive. Joiners inside words and emoji, and
-the England, Scotland and Wales flags, stay. Missing metadata never blocks selection.
+outage. GitHub choices come from the approved registry; the native sender does not issue
+metadata credentials or enrich choices with provider descriptions.
 
 The form saves Configuration first and preserves it after known Agent rejections.
 Retries reuse it; repository retries require successful reload and nonempty
@@ -122,7 +116,7 @@ Unknown outcomes require stored Agent and Configuration reads.
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
 uses `resolveRepositoryBindings` after existing authorization. Inputs contain distinct opaque references and optional profiles, never provider tokens
 or caller-selected grant identities; selections keep request order. The concrete
-`apps/controller/src/drivers/repo/github/driver.ts:GitHubRepositoryPolicy.resolve`
+`apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
 uses local registry policy, defaults omitted legacy profiles to `git-write`, and
 makes no control-socket or GitHub calls.
 
@@ -168,7 +162,7 @@ owners and stores identifiers and phases, never bearers or client files.
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
 sends the bound request over the private socket. The service independently
 resolves and compares the grant through
-`apps/controller/src/drivers/repo/github/credentials/registry-factory.ts:createGitHubRegistryDriverFactory`.
+`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`.
 The client validates each status before projection. `DISPOSED` permits historical
 revoked or expired counts, but no active, pending or uncertain obligations.
 

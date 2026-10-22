@@ -260,49 +260,6 @@ spec:
           port: 443
 {{- end }}
 
-{{- if and .Values.repositoryCredentials.enabled (eq .Values.repositoryCredentials.authority "github-app") }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-repository-credentials-ingress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: worker
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchExpressions:
-              - key: openclaw.dev/namespace
-                operator: Exists
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/workload-role: gateway
-            matchExpressions:
-              - key: openclaw.dev/agent
-                operator: Exists
-        - namespaceSelector:
-            matchExpressions:
-              - key: openclaw.dev/namespace
-                operator: Exists
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/workload-role: agent
-            matchExpressions:
-              - key: openclaw.dev/agent
-                operator: Exists
-              - key: openclaw.dev/revision
-                operator: Exists
-      ports:
-        - protocol: TCP
-          port: 8443
-{{- end }}
 
 {{- if include "openclaw.repositoryCredentials.gitEnabled" . }}
 ---

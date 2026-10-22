@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createServer } from "node:http";
-import { join } from "node:path";
 import test from "node:test";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -30,7 +28,6 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
 
 const driverId = "repository-credentials";
 const backendId = "repository-provider";
@@ -320,20 +317,8 @@ test("Repository options expose only Namespace-approved display choices behind A
     /provider|backend|installation|repositoryId|grant|duration|token|key|credential/i,
   );
 
-  // Metadata is advisory: an unavailable service must leave authorized choices usable.
-  const unavailableMetadata = await f.request("GET", `${path}?descriptionRefs=project`);
-  assert.equal(unavailableMetadata.status, 200, JSON.stringify(unavailableMetadata));
-  assert.deepEqual(unavailableMetadata.data, options.data);
-  assert.equal(unavailableMetadata.meta.descriptionsPending, false);
-  for (const query of [
-    "descriptionRefs=project,project",
-    "descriptionRefs=project,invalid%2Fref",
-    `descriptionRefs=${Array.from({ length: 21 }, (_, index) => `repo-${index}`).join(",")}`,
-    "descriptionRefs=project&extra=value",
-  ]) {
-    const malformed = await f.request("GET", `${path}?${query}`);
-    assert.equal(malformed.status, 400, JSON.stringify(malformed));
-  }
+  const removedQuery = await f.request("GET", `${path}?descriptionRefs=project`);
+  assert.equal(removedQuery.status, 400, JSON.stringify(removedQuery));
 
   f.iamState.restrictions.push({
     id: "deny-repository-options",
@@ -372,83 +357,21 @@ test("Repository options expose only Namespace-approved display choices behind A
   assert.equal(conflict.error.code, "RESOURCE_CONFLICT");
 });
 
-test("Denied Agent discovery cannot start repository metadata lookups", async (t) => {
+test("Exact-Agent repository choices require Agent update authorization", async (t) => {
   const f = await fixture(t);
-  const directory = await socketDirectory(t, "repository-options-auth-");
-  const socket = join(directory, "control.sock");
-  let lookups = 0;
-  let description = "a".repeat(187) + "😀".repeat(163);
-  // The independent socket peer observes actual metadata requests; IAM and Driver policy are real.
-  const server = createServer((request, response) => {
-    lookups++;
-    request.resume();
-    request.once("end", () => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          providerInstanceId: f.registry.providerInstanceId,
-          appId: f.registry.appId,
-          githubInstallationId: f.registry.githubInstallationId,
-          descriptions: [{ repositoryRef: "project", repositoryId: "789", description }],
-          pending: false,
-        }),
-      );
-    });
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(socket, resolve);
-  });
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-
-  class ObservedRepositoryDriver extends GitHubRepositoryPolicy {
-    constructor(backend, registry, options) {
-      super(
-        {
-          ...backend,
-          client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
-        },
-        registry,
-        options,
-      );
-    }
-  }
-  const observed = await f.compose(f.registry, ObservedRepositoryDriver);
   const agent = await f.createAgent();
-  const createPath = `${f.collection}/repository-options?descriptionRefs=project`;
-  const updatePath = `${f.collection}/${agent.id}/repository-options?descriptionRefs=project`;
-  for (const path of [createPath, updatePath]) {
-    const allowed = await observed.request("GET", path);
-    assert.equal(allowed.status, 200, JSON.stringify(allowed));
-    assert.equal(allowed.data[0].description, description);
-  }
-  assert.equal(lookups, 2);
-  // Both the Unix client and OCC use the API schema's Unicode character bound.
-  description = "😀".repeat(512);
-  const longest = await observed.request("GET", createPath);
-  assert.equal(longest.status, 200, JSON.stringify(longest));
-  assert.equal(longest.data[0].description, description);
-  description += "😀";
-  const oversized = await observed.request("GET", createPath);
-  assert.equal(oversized.status, 200, JSON.stringify(oversized));
-  assert.equal(Object.hasOwn(oversized.data[0], "description"), false);
-  const authorizedLookups = lookups;
-
-  for (const action of ["create", "update"]) {
-    f.iamState.restrictions.push({
-      id: `deny-metadata-${action}`,
-      namespaceId: f.namespace.id,
-      resourceKind: "agent",
-      action,
-      effect: "deny",
-    });
-  }
-  for (const path of [createPath, updatePath]) {
-    const denied = await observed.request("GET", path);
-    assert.equal(denied.status, 403, JSON.stringify(denied));
-    assert.equal(denied.error.code, "FORBIDDEN");
-  }
-  assert.equal(lookups, authorizedLookups);
+  const path = `${f.collection}/${agent.id}/repository-options`;
+  assert.equal((await f.request("GET", path)).status, 200);
+  f.iamState.restrictions.push({
+    id: "deny-repository-options-update",
+    namespaceId: f.namespace.id,
+    resourceKind: "agent",
+    action: "update",
+    effect: "deny",
+  });
+  const denied = await f.request("GET", path);
+  assert.equal(denied.status, 403, JSON.stringify(denied));
+  assert.equal(denied.error.code, "FORBIDDEN");
 });
 
 test("Repository options preserve an empty successful discovery", async (t) => {

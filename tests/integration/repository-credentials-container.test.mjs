@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { runInFixtureContainer } from "../fixtures/repository-credentials/container.mjs";
-import { qualifyLongSession } from "../fixtures/repository-credentials/long-session.mjs";
 import { repositoryRoot } from "../fixtures/repository-credentials/runtime.mjs";
 import {
   cleanEnvironment,
@@ -10,16 +9,10 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
 
-test("emitted service and client artifacts qualify the same-session thirteen-hour workflow", async (t) => {
-  if (
-    await runInFixtureContainer(t, "tests/integration/repository-credentials-container.test.mjs", {
-      packaged: true,
-    })
-  ) {
-    return;
-  }
-  await t.test("git-full", (scenario) => qualifyLongSession(scenario, { profile: "git-full" }));
-  await t.test("git-write", (scenario) => qualifyLongSession(scenario, { profile: "git-write" }));
+test("emitted native service and client enforce development token routing without issuance", async (t) => {
+  await runInFixtureContainer(t, "tests/integration/repository-credentials-github-token.test.mjs", {
+    packaged: true,
+  });
 });
 
 // Each host case launches its own selected artifact workflow or inspects host mounts.

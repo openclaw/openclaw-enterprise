@@ -9,7 +9,6 @@ import {
 } from "../../packages/contracts/src/index.ts";
 import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
-import { validateGitHubAppRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry-factory.ts";
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { normalizedRepositoryAccess } from "../../packages/occ/src/state/repository-credential-state.ts";
 
@@ -150,10 +149,7 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
     }),
     undefined,
   );
-  assert.throws(
-    () => validateGitHubAppRepositoryRegistry(config(policy, { repositories: [] })),
-    /invalid-configuration/,
-  );
+
   assert.equal("open" in repo, false);
 });
 

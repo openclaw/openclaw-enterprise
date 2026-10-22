@@ -563,7 +563,7 @@ test(
     context.after(() => receiptServer.close());
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
     const owner = await fixture.agent("repository-capability");
     const selection = {
@@ -596,9 +596,9 @@ test(
     await waitFor("worker readiness after compatible broker selection", async () =>
       healthy > 0 ? true : undefined,
     );
-    const open = driver.open.bind(driver);
+    const open = sender.open.bind(sender);
     let lostSessionId;
-    driver.open = async (input, signal) => {
+    sender.open = async (input, signal) => {
       const result = await open(input, signal);
       if (lostSessionId === undefined && result.kind === "created") {
         lostSessionId = result.session.sessionId;

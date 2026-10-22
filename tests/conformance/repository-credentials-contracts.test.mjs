@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { verify } from "node:crypto";
 import { request } from "node:https";
 import { access } from "node:fs/promises";
 import { createGitHubPlanningFixture } from "../fixtures/repository-credentials/planning.mjs";
@@ -17,7 +16,7 @@ import { createLoopbackServiceConfiguration } from "../fixtures/repository-crede
 import { startGitHubFixture } from "../fixtures/repository-credentials/github.mjs";
 import { startGitSmartHttpFixture } from "../fixtures/repository-credentials/git.mjs";
 import {
-  createGitHubServiceFactory,
+  createGitHubTokenServiceFactory,
   startServiceListeners,
   writeSessionClientConfiguration,
 } from "../fixtures/repository-credentials/service-resources.mjs";
@@ -27,7 +26,7 @@ import {
   pullResponse,
 } from "../fixtures/repository-credentials/builders.mjs";
 
-test("GitHub driver admits exact REST methods, conservative GraphQL writes and configured Git routes", async (t) => {
+test("development token Driver admits exact REST methods, read-only GraphQL and configured Git routes", async (t) => {
   const { factory, bind } = await createGitHubPlanningFixture(t);
   const routes = [
     ["/repos/fixture/repository", ["GET"]],
@@ -90,7 +89,7 @@ test("GitHub driver admits exact REST methods, conservative GraphQL writes and c
     });
   }
   for (const profile of ["git-read", "git-write"]) {
-    for (const request of [head("GET", "/repos/fixture/repository"), head("POST", "/graphql")]) {
+    for (const request of [head("GET", "/repos/fixture/repository")]) {
       await t.test(`${profile} admits ${request.method} ${request.rawTarget}`, () => {
         const plan = bind(profile).plan(request);
         assert.equal(plan.kind, undefined);
@@ -503,8 +502,8 @@ test("response policy rejects a literal comma inside an otherwise admitted Link 
   );
 });
 
-test("gateway authentication is separate from upstream signing and rejects foreign attempt/result/plan objects", async (t) => {
-  const { factory, key, publicKey, bind } = await createGitHubPlanningFixture(t);
+test("gateway authentication rejects foreign attempt, result and plan objects", async (t) => {
+  const { factory, bind } = await createGitHubPlanningFixture(t);
   const bound = bind();
   const bearer = "a".repeat(43);
   assert.equal(
@@ -525,14 +524,6 @@ test("gateway authentication is separate from upstream signing and rejects forei
     ).kind,
     "denied",
   );
-  await key.withJwt(async (jwt) => {
-    const [h, p, s] = jwt.split(".");
-    assert.equal(
-      verify("sha256", Buffer.from(`${h}.${p}`), publicKey, Buffer.from(s, "base64url")),
-      true,
-    );
-    assert.equal(JSON.parse(Buffer.from(p, "base64url")).iss, "12345");
-  });
   await assert.rejects(
     bound.driver.acquire(
       { id: "copy", action: "acquire", authority: bound.authority },
@@ -551,17 +542,12 @@ test("gateway authentication is separate from upstream signing and rejects forei
     }),
     /invalid-credential/,
   );
-  key.close();
-  await assert.rejects(
-    key.withJwt(async () => {}),
-    /authority-unavailable/,
-  );
 });
 
-test("partial fixture cleanup retains the startup failure and releases keys and files", async () => {
+test("partial fixture cleanup retains the startup failure and releases owned material and files", async () => {
   const resources = createResourceScope();
   const directory = await temporaryDirectory(resources);
-  const { key } = await createGitHubPlanningFixture(resources);
+  const { owner } = await createGitHubPlanningFixture(resources);
   const startupFailure = new Error("startup failed");
   const cleanupFailure = new Error("cleanup failed");
   resources.after(() => {
@@ -576,7 +562,7 @@ test("partial fixture cleanup retains the startup failure and releases keys and 
   });
   await assert.rejects(access(directory), { code: "ENOENT" });
   await assert.rejects(
-    key.withJwt(async () => {}),
+    owner.withToken(async () => {}),
     /authority-unavailable/,
   );
 });
@@ -604,7 +590,7 @@ test("a cleanup deadline is a failure and does not prevent remaining resource re
 });
 
 test(
-  "service resource factories revoke acquired credentials before closing local upstreams",
+  "service resource factories dispose development sessions before closing local upstreams",
   { timeout: 15000 },
   async (t) => {
     const resources = createTestResourceScope(t);
@@ -613,10 +599,12 @@ test(
     const config = await createLoopbackServiceConfiguration(resources);
     const github = await startGitHubFixture(resources, { clock, tls });
     const git = await startGitSmartHttpFixture(resources, { authorize: github.authorize, tls });
-    const factory = await createGitHubServiceFactory(resources, {
+    const token = `gho_${"t".repeat(36)}`;
+    github.acceptStatic(token);
+    const factory = await createGitHubTokenServiceFactory(resources, {
       config,
       clock,
-      privateKey: github.privateKey,
+      token,
       trustedEndpoints: { apiOrigin: github.origin, gitOrigin: git.origin, ca: tls.ca },
     });
     const { service, listeners } = await startServiceListeners(resources, {
@@ -657,10 +645,10 @@ test(
     });
     assert.equal(response.status, 200);
     assert.equal(JSON.parse(response.body).full_name, "fixture/repository");
-    assert.equal(github.issuesOfTokens.length, 1);
+    assert.equal(github.issuesOfTokens.length, 0);
     await resources.close();
     assert.equal(service.status(opened.session.sessionId).state, "DISPOSED");
-    assert.equal(github.tokenState()[0].revoked, true);
+    assert.equal(github.tokenState()[0].revoked, false);
     assert.deepEqual(github.errors, []);
     await assert.rejects(access(clientDirectory), { code: "ENOENT" });
     await assert.rejects(access(config.gateway.controlSocket), { code: "ENOENT" });

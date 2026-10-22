@@ -1125,10 +1125,7 @@ export const BackendListResponse = Type.Object(
 export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
-    meta: Type.Object(
-      { ...Meta.properties, descriptionsPending: Type.Boolean() },
-      { additionalProperties: false },
-    ),
+    meta: Meta,
   },
   { additionalProperties: false },
 );

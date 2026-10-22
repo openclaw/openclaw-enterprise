@@ -20,7 +20,6 @@ const matrixLanes = [
   "k3d-observability",
   "logging-collector",
   "repository-credentials-container",
-  "repository-credentials-platform",
   "keycloak-oidc",
 ];
 

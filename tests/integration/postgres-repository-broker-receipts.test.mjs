@@ -172,7 +172,7 @@ test(
     });
     const binding = policy.resolve({
       namespaceId,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-full" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     }).bindings[0];
     const deadlineWallMs = fixture.clock.wallNow() + 3_600_000;
     const { revision } = await seedSessionRevision(
@@ -507,7 +507,6 @@ test(
       await t.test(mode, async (context) => {
         const namespaceId = `ns_${randomUUID()}`;
         const fixture = await startServiceProcessFixture(context, {
-          bound: true,
           shutdownGraceMs: 100,
           namespaceId,
           // A free slot lets the later admission open and then meet the lost journal.
@@ -561,7 +560,7 @@ test(
         await control.checkAdmissionReady(AbortSignal.timeout(2000));
         const opened = await fixture.open(admissionId, false, true);
         assert.equal(opened.session.state, "OPEN");
-        assert.equal((await fixture.request(opened)).status, 200);
+        assert.deepEqual(fixture.github.tokenState(), []);
 
         if (mode === "abrupt-death") {
           // Forced death loses the original broker's in-memory cleanup outcome.
@@ -576,7 +575,7 @@ test(
           assert.deepEqual(await fixture.status(opened.session.sessionId), {
             error: "unavailable",
           });
-          assert.equal(fixture.github.tokenState()[0].revoked, false);
+          assert.deepEqual(fixture.github.tokenState(), []);
           return;
         }
 
@@ -590,7 +589,7 @@ test(
           assert.deepEqual(await fixture.open(fixture.admissionId(), false, true), {
             error: "unavailable",
           });
-          assert.equal(fixture.github.tokenState().length, 1);
+          assert.deepEqual(fixture.github.tokenState(), []);
           await fixture.shutdown(1);
           const receipt = await state.read((view) =>
             view.repositorySessions.findBrokerReceipt(admissionId),

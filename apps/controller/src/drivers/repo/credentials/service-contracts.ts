@@ -84,7 +84,6 @@ export interface ServiceLimits {
   readonly credentialMarginMs: number;
   readonly accessTokenBytes: number;
   readonly renewalBytesPerSession: number;
-  readonly privateKeyBytes: number;
 }
 export interface ServiceConfig {
   readonly gateway: Readonly<{ publicOrigin: string; listen: string; controlSocket: string }>;
@@ -100,11 +99,7 @@ export interface SafeConfigurationSummary {
   readonly gatewayOrigin: string;
   readonly profiles: readonly string[];
   readonly maximumDurationSeconds: number;
-  readonly authority:
-    | "github-app"
-    | "github-app-registry"
-    | "github-prepared-git-registry"
-    | "github-token-development";
+  readonly authority: "github-prepared-git-registry" | "github-token-development";
   /** Token authority only: the class derived from the token prefix, never its value. */
   readonly tokenClass?: string;
 }
@@ -118,24 +113,5 @@ export interface SessionControl {
   close(sessionId: string): SessionStatus;
 }
 export interface CredentialService extends SessionControl {
-  shutdown(graceMs: number): Promise<ShutdownSummary>;
-}
-
-/** Optional, non-authoritative display data from a repository Backend. */
-export interface RepositoryDescriptions {
-  list(
-    namespaceId: string,
-    repositoryRefs: readonly string[],
-  ): Readonly<{
-    providerInstanceId: string;
-    appId: string;
-    githubInstallationId: string;
-    descriptions: readonly Readonly<{
-      repositoryRef: string;
-      repositoryId: string;
-      description: string;
-    }>[];
-    pending: boolean;
-  }>;
   shutdown(graceMs: number): Promise<ShutdownSummary>;
 }

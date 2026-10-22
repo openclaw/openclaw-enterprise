@@ -17,7 +17,6 @@
     "tests/integration/cli-release.test.mjs",
     "tests/integration/container-resume.test.mjs",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
-    "tests/integration/repository-credentials-descriptions.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/container-release.test.mjs",
@@ -73,7 +72,6 @@
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
-    "tests/integration/repository-credentials-descriptions-uncertain.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
@@ -98,7 +96,6 @@
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
-    "tests/conformance/repository-material-expiry-probe.test.mjs",
     "tests/integration/container-promote.test.mjs",
     "tests/conformance/controller-stop-yields.test.mjs",
     "tests/integration/dev-up-model-provider.test.mjs",
@@ -374,12 +371,6 @@
       "path": "tests/integration/repository-credentials-control.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-descriptions.test.mjs"
-    },
-    {
-      "path": "tests/integration/repository-credentials-descriptions-uncertain.test.mjs"
-    },
-    {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
     },
     {
@@ -390,23 +381,13 @@
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.mjs",
-      "expectedTests": [
-        "TEST-001: SIGKILL after confirmed GitHub issuance loses session inventory",
-        "TEST-002: lost GitHub issuance response stays charged while service survives",
-        "TEST-002: SIGKILL before GitHub issuance response loses local reservation",
-        "a lost revocation response is not proof of disposal across broker loss",
-        "captured GitHub authority expires by elapsed time when revocation is unconfirmed",
-        "a broker restart cannot accept bound admissions without durable fencing"
-      ]
+      "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
       "path": "tests/conformance/repository-client-environment.test.mjs"
-    },
-    {
-      "path": "tests/conformance/repository-material-expiry-probe.test.mjs"
     },
     {
       "path": "tests/conformance/repository-material-store.test.mjs",

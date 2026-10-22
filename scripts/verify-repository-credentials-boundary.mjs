@@ -38,10 +38,6 @@ const reviewedImports = {
   "drivers/repo/github/credentials/provider-transport/request.ts": {
     "node:https": ["request"],
   },
-  // The registry-backed metadata owner sends one authorized, metadata-only GET.
-  "drivers/repo/github/credentials/descriptions.ts": {
-    "node:https": ["request"],
-  },
   // Separate tokenless listener and fixed-origin anonymous GET; this owner and
   // the credential owners cannot import one another, in either direction.
   "drivers/repo/github/public-read/server.ts": {
@@ -89,7 +85,6 @@ const reviewedImports = {
     "node:fs/promises": ["lstat", "open"],
   },
   "composition/repository-credentials/config.ts": {
-    "node:crypto": ["createPrivateKey"],
     "node:tls": ["createSecureContext"],
   },
   "composition/repository-credentials/protected-file.ts": {
@@ -237,9 +232,6 @@ const capabilityConsumers = {
   },
   "drivers/repo/credentials/transport/agent.ts": {
     "drivers/repo/credentials/server.ts": ["createAgentHandler"],
-  },
-  "drivers/repo/github/credentials/descriptions.ts": {
-    "composition/repository-credentials/config.ts": ["createGitHubRepositoryDescriptions"],
   },
   "drivers/repo/github/credentials/provider-transport/request.ts": {
     "drivers/repo/github/credentials/provider-transport.ts": ["sendProviderRequest"],

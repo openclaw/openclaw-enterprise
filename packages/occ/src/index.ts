@@ -2379,7 +2379,6 @@ export class OpenClawController {
     principalId: string,
     namespaceId: string,
     agentId?: string,
-    descriptionRefs: readonly string[] = [],
   ): Promise<Readonly<RepositoryOptions>> {
     this.namespaceIdentity(namespaceId);
     if (agentId !== undefined) {
@@ -2432,7 +2431,7 @@ export class OpenClawController {
     }
     let result: RepositoryOptions;
     try {
-      result = await driver.listOptions({ namespaceId: namespace.id, descriptionRefs });
+      result = await driver.listOptions({ namespaceId: namespace.id });
     } catch {
       throw new DependencyUnavailableError(
         "The selected repository credential Driver could not list repository options.",
@@ -2441,7 +2440,6 @@ export class OpenClawController {
     const selected = this.selections.get("repo");
     if (
       !result ||
-      typeof result.descriptionsPending !== "boolean" ||
       !Array.isArray(result.options) ||
       result.options.length > 1000 ||
       !result.options.every(validRepositoryOption) ||

@@ -406,8 +406,6 @@
     {
       "path": "tests/integration/postgres-standing-session-worker.test.ts",
       "expectedTests": [
-        "stopping the registered execution denies a new provider issuance while cleanup is paused",
-        "registered worker renews the same standing execution across both expired horizons and removal immediately fences use",
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority"
       ]
     },

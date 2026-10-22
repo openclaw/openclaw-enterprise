@@ -50,7 +50,6 @@ export interface RepositoryOption {
 
 export interface RepositoryOptions {
   readonly options: readonly RepositoryOption[];
-  readonly descriptionsPending: boolean;
 }
 
 export interface AdmittedRepositoryBinding extends RepositoryBindingSelection {
@@ -112,10 +111,7 @@ export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApproval
 
 export interface RepositoryPolicyDriver extends Driver {
   readonly capability: "repo";
-  listOptions(input: {
-    readonly namespaceId: string;
-    readonly descriptionRefs?: readonly string[];
-  }): Promise<RepositoryOptions>;
+  listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions>;
   standingApprovalScope?(input: {
     readonly namespaceId: string;
     readonly binding: AdmittedRepositoryBinding;

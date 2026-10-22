@@ -65,7 +65,7 @@ export function repositoryBoundary({ count = 1, deadlineWallMs = Date.now() + 12
     capability: "repo",
     maintenanceIntervalMs: 3_600_000,
     async listOptions() {
-      return { options: [], descriptionsPending: false };
+      return { options: [] };
     },
     resolve() {
       return { bindings, sessionDurationSeconds: 60 };

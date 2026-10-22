@@ -162,13 +162,6 @@ spec:
                   items:
                     - key: {{ $.Values.repositoryCredentials.serviceConfigKey | quote }}
                       path: config.json
-              {{- if eq $.Values.repositoryCredentials.authority "github-app" }}
-              - secret:
-                  name: {{ $.Values.repositoryCredentials.appKeySecretName | quote }}
-                  items:
-                    - key: {{ $.Values.repositoryCredentials.appKeyKey | quote }}
-                      path: private-key.pem
-              {{- end }}
               - secret:
                   name: {{ $.Values.repositoryCredentials.tlsSecretName | quote }}
                   items:

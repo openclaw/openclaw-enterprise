@@ -6,8 +6,8 @@ GitHub tokens. Protected Agents receive neither; native Agents receive session f
 See the [operator guide](../guides/repository-credentials.md) and
 [native prepared Git](repository-credentials/prepared-native-git.md).
 
-Kubernetes supports embedded OpenClaw (`api_key`) or dedicated Codex (API key or
-ChatGPT service account), without a Sandbox Driver. Unsupported Sandbox
+Prepared native Git requires dedicated Codex (API key or ChatGPT service account)
+without a Sandbox Driver. Unsupported Sandbox
 combinations reject repository-bearing versions. Helm's `Recreate` strategy prevents overlapping
 worker/credential-service owners.
 
@@ -125,32 +125,18 @@ the [installation procedure](../guides/deploy/production-installation.md).
 `GET /namespaces/:namespaceId/agents/repository-options` requires Agent `create`;
 the exact-Agent editing route requires `update`. Both return approved
 `repositoryRef`, `displayName`, `allowedProfiles` and optional `description`.
-Descriptions allow 512 Unicode code points.
-`descriptionRefs` accepts up to 20 unique, comma-separated refs;
-`meta.descriptionsPending` signals background work, and missing descriptions never
-block selection. Authorized discovery failure yields
+GitHub choices come from the approved registry without provider descriptions or
+background metadata requests. Authorized discovery failure yields
 `503 REPOSITORY_OPTIONS_UNAVAILABLE`; no approvals yields `[]`; a closed Namespace
 yields 409. Only success or that outage permits a fresh ordinary draft; editing
 requires success. Writes reauthorize and resolve.
 
-The service rechecks approval and fetches metadata with repository-scoped
-Metadata-read tokens, verifying GitHub's numeric repository ID;
-the Driver checks provider, App, installation and repository IDs. Lookups share
-provider capacity and token cleanup with sessions and are cached for five minutes.
-Descriptions never grant access.
-
 ### Profiles
 
-The Console offers **Read-only** (`git-read`) and **Contributor** (`git-full`);
-**Customize access** can disable issue management (`git-write`). Push and PR
-access stay bundled; all profiles include GitHub API access. Direct bindings
-default to `git-write`. Every session selects one repository. Missing App
-permissions fail without widening the grant.
-
-The [access-level reference](repository-credentials/access-levels.md) owns exact
-permissions, `repositoryAccess` inheritance, supported commands, the GraphQL
-boundary and [merge risk](repository-credentials/access-levels.md#api-and-branch-boundaries):
-writable levels can merge subject to GitHub rules.
+The prepared native sender accepts `git-write` with one exact ref. The registry
+selects Git-only access or Git plus draft creation on an approved base. It does
+not expose general REST, GraphQL, issue management, or arbitrary PR operations.
+See [prepared native Git](repository-credentials/prepared-native-git.md).
 
 ### Standalone service inputs
 
@@ -161,51 +147,31 @@ Every ancestor directory must have one of those owners and reject group/other
 writes; only a root-owned sticky ancestor such as `/tmp` above the immediate
 parent is exempt. Symlinks and file replacement during loading are rejected. The
 [configuration flow](../flows/repository-credential-configuration.md) owns
-validation and key ownership. Standalone single-repository example:
+validation and TLS ownership.
 
-```json
-{
-  "gateway": {
-    "publicOrigin": "https://credentials.example.internal",
-    "listen": "0.0.0.0:8443",
-    "tlsCertFile": "/run/repository-credentials/tls.crt",
-    "tlsKeyFile": "/run/repository-credentials/tls.key",
-    "controlSocket": "/run/repository-control/control.sock"
-  },
-  "sessionPolicy": {
-    "maximumDurationSeconds": 172800,
-    "defaultProfile": "git-write",
-    "allowedProfiles": ["git-read", "git-write", "git-full"]
-  },
-  "backend": {
-    "kind": "github-app",
-    "providerInstanceId": "github-production",
-    "configVersion": "1",
-    "appId": "123456",
-    "installationId": "789012",
-    "repositoryId": "345678",
-    "repository": "example/project",
-    "privateKeyFile": "/run/repository-credentials/app.pem"
-  }
-}
-```
+Production native delivery selects `backend.kind: "github-prepared-git-registry"`
+with `backendId` and `registryFile`. The registry must authorize `git-write`, one
+exact branch ref, and `git-only` or `git-and-draft-pr` transport. The latter also
+requires an approved PR base. The sender consumes READY material through the
+worker's private socket; it cannot read an App key, sign a JWT, or issue a token.
+The worker Token Service owns issuance and token cleanup.
 
-Identifiers are examples; production upstream origins are fixed to
-`github.com` and `api.github.com`. Registry mode instead uses backend fields
-`kind: "github-app-registry"`, `backendId`, `registryFile` and `privateKeyFile`;
-all repository policy comes from that registry, and unbound admission is refused.
-For local development only, `kind: "github-token"` uses a host GitHub token
-instead of an App; it requires a process flag and never reaches Kubernetes. See
-the [development token authority](repository-credentials/development-token.md).
+`github-app` and `github-app-registry` fail startup with transition guidance.
+Stop new admissions and drain accepted work on its original owner before switching.
+Do not move an App key into a replacement sender, widen an approval, or replay an
+uncertain issuance or PR creation. Unresolved work stays with its original owner;
+a new installation or revision does not settle it. With no outstanding work,
+configure prepared delivery directly.
 
-Kubernetes copies selected projection generations into service-owned
-private files before protected-path validation. API and worker receive
-registry/public CA inputs; only the service receives App and TLS private keys.
+Kubernetes projects only configuration, registry and TLS into the native sender.
+The worker alone mounts the App key and custody key. Select native delivery with
+`repository.nativeSender`; protected Git uses the installed Credential Proxy and
+needs neither a native sender nor an Installation `drivers.repo` selection.
+See [sender selection](drivers/selection.md#select-a-protected-sender).
 
-The privileged GitHub transport captures installation, repository and permission
-profile at construction. Its operations issue scoped tokens and revoke owned
-tokens; callers cannot supply HTTP requests. Extending them changes a credential
-boundary and requires security review.
+The explicit development-only `github-token` profile remains available with both
+its configuration opt-in and `--development-authority`. See
+[development token authority](repository-credentials/development-token.md).
 
 The service image must trust GitHub's HTTPS certificate chain. For a private CA,
 supply a readable bundle and `NODE_EXTRA_CA_CERTS`; keep certificate and hostname

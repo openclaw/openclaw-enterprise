@@ -16,7 +16,6 @@ import {
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
 } from "./credentials/registry.ts";
-import type { RepositoryCredentialControlClient } from "../../../backends/repository-credentials/control-client.ts";
 
 /** Repository selection and approval policy, independent of credential transport. */
 export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
@@ -51,9 +50,8 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
   readonly id: string;
   readonly #registry: GitHubRepositoryRegistry;
   readonly #duration: number;
-  readonly #metadata: Pick<RepositoryCredentialControlClient, "descriptions"> | undefined;
   constructor(
-    backend: Backend<Pick<RepositoryCredentialControlClient, "descriptions"> | undefined>,
+    backend: Backend<unknown>,
     registry: GitHubRepositoryRegistry,
     options: { readonly sessionDurationSeconds: number },
   ) {
@@ -71,14 +69,9 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       throw new Error("Repository credential session duration exceeds the registry policy.");
     }
     this.#duration = options.sessionDurationSeconds;
-    this.#metadata = backend.client;
   }
-  async listOptions(input: {
-    readonly namespaceId: string;
-    readonly descriptionRefs?: readonly string[];
-  }): Promise<RepositoryOptions> {
+  async listOptions(input: { readonly namespaceId: string }): Promise<RepositoryOptions> {
     const options: RepositoryOption[] = [];
-    const approved = new Map<string, string>();
     this.#registry.repositories.forEach((repository) => {
       const policy = repository.namespaces.find(
         (candidate) => candidate.namespaceId === input.namespaceId,
@@ -93,7 +86,6 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
           allowedProfiles: Object.freeze([...policy.profiles]),
         }),
       );
-      approved.set(repository.repositoryRef, repository.repositoryId);
     });
     const installation = this.#registry.installationAccess;
     if (installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)) {
@@ -105,49 +97,7 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
         }),
       );
     }
-    const descriptionRefs = (input.descriptionRefs ?? []).filter((ref) => approved.has(ref));
-    if (descriptionRefs.length === 0 || !this.#metadata) {
-      return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
-    }
-    try {
-      // Descriptions are optional: the approved registry remains usable if metadata is unavailable.
-      const metadata = await this.#metadata.descriptions(
-        input.namespaceId,
-        descriptionRefs,
-        AbortSignal.timeout(2_000),
-      );
-      if (
-        metadata.providerInstanceId !== this.#registry.providerInstanceId ||
-        metadata.appId !== this.#registry.appId ||
-        metadata.githubInstallationId !== this.#registry.githubInstallationId
-      ) {
-        throw new Error("unexpected-repository-provider");
-      }
-      const requested = new Set(descriptionRefs);
-      const descriptions = new Map(
-        metadata.descriptions
-          .filter(
-            (entry) =>
-              requested.has(entry.repositoryRef) &&
-              approved.get(entry.repositoryRef) === entry.repositoryId,
-          )
-          .map((entry) => [entry.repositoryRef, entry.description]),
-      );
-      return Object.freeze({
-        options: Object.freeze(
-          options.map((option) => {
-            const description = descriptions.get(option.repositoryRef);
-            return Object.freeze({
-              ...option,
-              ...(description === undefined ? {} : { description }),
-            });
-          }),
-        ),
-        descriptionsPending: metadata.pending,
-      });
-    } catch {
-      return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
-    }
+    return Object.freeze({ options: Object.freeze(options) });
   }
 
   standingApprovalScope(input: {

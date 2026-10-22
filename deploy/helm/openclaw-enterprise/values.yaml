@@ -162,8 +162,8 @@ repositoryCredentials:
   # independently installed sender. Empty leaves selection to enabled or openshellGit.enabled.
   # See docs/reference/drivers/selection.md#supply-protected-git-credentials-with-helm.
   delivery: ""
-  # prepared-git gives the worker the App key and custody. Only a native broker needs its socket.
-  authority: github-app
+  # prepared-git gives the worker the App key and custody. Only the explicitly selected native sender needs its socket.
+  authority: prepared-git
   image: ""
   # Internal HTTPS Service name. Fresh installs default to git. Upgrades must
   # set this explicitly to the current Service name until repository sessions

@@ -41,6 +41,8 @@ const slackProxyValues = {
   "slackProxy.enabled": "true",
 };
 const repositoryCredentialValues = {
+  "repositoryCredentials.authority": "prepared-git",
+  "repositoryCredentials.preparedCustodySecretName": "repository-custody",
   "repositoryCredentials.enabled": "true",
   "repositoryCredentials.image": `registry.example.invalid/repository-credentials@sha256:${"b".repeat(64)}`,
   "repositoryCredentials.backendId": "github-primary",
@@ -1317,6 +1319,8 @@ test("production settings coexist in fresh and upgrade chart renders", tooling, 
       "https://git.openclaw-system.svc.cluster.local",
       "--backend-id",
       "github-primary",
+      "--authority",
+      "prepared-git",
     ]);
     const proxyPolicy = objects.find(
       ({ kind, metadata }) =>
@@ -1586,7 +1590,7 @@ test(
 );
 
 test(
-  "repository credential Helm packaging keeps private inputs in its service",
+  "repository credential Helm packaging keeps App keys in the worker and TLS in the sender",
   tooling,
   async () => {
     const { stdout } = await render(repositoryCredentialValues);
@@ -1727,12 +1731,6 @@ test(
       },
       {
         secret: {
-          name: "repository-app-key",
-          items: [{ key: "private-key.pem", path: "private-key.pem" }],
-        },
-      },
-      {
-        secret: {
           name: "repository-tls",
           items: [
             { key: "tls.crt", path: "tls.crt" },
@@ -1755,6 +1753,8 @@ test(
       "https://git.openclaw-system.svc.cluster.local",
       "--backend-id",
       "github-primary",
+      "--authority",
+      "prepared-git",
     ]);
     assert.deepEqual(service.readinessProbe.exec.command, [
       "node",
@@ -1768,7 +1768,7 @@ test(
     assert.deepEqual(endpoint.spec.ports, [
       { name: "https", port: 443, targetPort: 8443, protocol: "TCP" },
     ]);
-    const ingress = named("NetworkPolicy", "openclaw-enterprise-repository-credentials-ingress");
+    const ingress = named("NetworkPolicy", "openclaw-enterprise-prepared-repository-ingress");
     assert.deepEqual(ingress.spec.podSelector.matchLabels, endpoint.spec.selector);
     const egress = named("NetworkPolicy", "openclaw-enterprise-repository-provider-egress");
     assert.deepEqual(egress.spec.podSelector.matchLabels, endpoint.spec.selector);
@@ -1866,7 +1866,7 @@ test(
     );
     await assert.rejects(
       render({ ...repositoryCredentialValues, "repositoryCredentials.authority": "unknown" }),
-      /authority must be github-app or prepared-git/,
+      /signing gateway retired/,
     );
   },
 );
@@ -1934,6 +1934,8 @@ test(
         expectedOrigin,
         "--backend-id",
         "github-primary",
+        "--authority",
+        "prepared-git",
       ]);
     }
   },
@@ -2188,6 +2190,8 @@ esac
                       `https://${hostname}`,
                       "--backend-id",
                       "github-primary",
+                      "--authority",
+                      "prepared-git",
                     ],
                   },
                 ],

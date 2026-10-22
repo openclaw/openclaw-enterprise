@@ -14,8 +14,6 @@ export type {
 } from "./prepared-contracts.ts";
 export { classifyGitHubToken, createGitHubStaticTokenOwner } from "./static-token.ts";
 export type {
-  GitHubAuthority,
-  GitHubConfiguration,
   GitHubFactoryOptions,
   GitHubKeyOwner,
   GitHubStaticTokenOwner,

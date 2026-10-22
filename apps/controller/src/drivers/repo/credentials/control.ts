@@ -8,7 +8,6 @@ import type {
   ServiceConfig,
   SessionStatus,
   RepositoryCredentialBoundSessionInput,
-  RepositoryDescriptions,
 } from "./service-contracts.ts";
 import { inspectRequestHead } from "./transport/request.ts";
 import { RepositoryReceiptClient } from "./receipt-client.ts";
@@ -501,7 +500,6 @@ export async function handleControl(
   config: ServiceConfig,
   clock: Clock,
   admissions: ReturnType<typeof createControlAdmission>,
-  repositoryDescriptions?: RepositoryDescriptions,
 ): Promise<void> {
   const inspected = inspectRequestHead(request, {
     authority: "localhost",
@@ -525,14 +523,12 @@ export async function handleControl(
     return;
   }
   const open = head.method === "POST" && head.rawTarget === "/v1/sessions";
-  const descriptions = head.method === "POST" && head.rawTarget === "/v1/repository-descriptions";
   const health = head.method === "GET" && head.rawTarget === "/healthz";
   const capabilities = head.method === "GET" && head.rawTarget === "/v1/capabilities";
   const status = /^\/v1\/sessions\/([A-Za-z0-9_-]{1,128})$/.exec(head.rawTarget);
   const close = /^\/v1\/sessions\/([A-Za-z0-9_-]{1,128})\/close$/.exec(head.rawTarget);
   if (
     !open &&
-    !descriptions &&
     !health &&
     !capabilities &&
     !(head.method === "GET" && status) &&
@@ -553,7 +549,7 @@ export async function handleControl(
       }
       chunks.push(Buffer.from(chunk));
     }
-    if (open || descriptions) {
+    if (open) {
       if (head.headers["content-type"] !== "application/json") {
         reply(response, 400, { error: "invalid-request" });
         return;
@@ -563,29 +559,6 @@ export async function handleControl(
         body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
       } catch {
         reply(response, 400, { error: "invalid-request" });
-        return;
-      }
-      if (descriptions) {
-        if (
-          !repositoryDescriptions ||
-          !body ||
-          typeof body !== "object" ||
-          Array.isArray(body) ||
-          Object.keys(body).length !== 2 ||
-          typeof (body as Record<string, unknown>).namespaceId !== "string" ||
-          !Array.isArray((body as Record<string, unknown>).repositoryRefs)
-        ) {
-          reply(response, 400, { error: "invalid-request" });
-          return;
-        }
-        reply(
-          response,
-          200,
-          repositoryDescriptions.list(
-            (body as { namespaceId: string }).namespaceId,
-            (body as { repositoryRefs: string[] }).repositoryRefs,
-          ),
-        );
         return;
       }
       const input = snapshotSessionInput(body);

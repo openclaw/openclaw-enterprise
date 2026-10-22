@@ -1,7 +1,6 @@
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -106,7 +105,7 @@ revisionTest(
     // the strict registry parser rejects backendId/grant as caller input.
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
     // Bound admissions require the worker-owned receipt transport and its real
     // PostgreSQL state; without it the broker correctly refuses the session.
@@ -129,13 +128,13 @@ revisionTest(
         },
       },
     });
-    const open = driver.open.bind(driver);
-    const close = driver.close.bind(driver);
+    const open = sender.open.bind(sender);
+    const close = sender.close.bind(sender);
     let lostSessionId;
     const closures = [];
     // Lose only the first response. The real service owns CLOSED -> DISPOSED,
     // and the real worker must wait before delivering replacement material.
-    driver.open = async (input, signal) => {
+    sender.open = async (input, signal) => {
       const result = await open(input, signal);
       if (lostSessionId === undefined && result.kind === "created") {
         lostSessionId = result.session.sessionId;
@@ -143,7 +142,7 @@ revisionTest(
       }
       return result;
     };
-    driver.close = async (sessionId, signal) => {
+    sender.close = async (sessionId, signal) => {
       const status = await close(sessionId, signal);
       closures.push(status?.state);
       return status;
@@ -200,7 +199,7 @@ revisionTest(
     assert.equal(material[0].repositoryRef, "repo-a");
     assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
     assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
-    const status = await driver.status(material[0].sessionId, new AbortController().signal);
+    const status = await sender.status(material[0].sessionId, new AbortController().signal);
     assert.equal(status.state, "OPEN");
     assert.deepEqual(status.binding, resolution.bindings[0].grant);
     const attempts = await repositoryAttempts(fixture, candidate);
@@ -243,133 +242,6 @@ revisionTest(
       driver: candidate.repositoryCredentials.driver,
       binding: resolution.bindings[0],
     });
-
-    // A provider retirement response can be lost after the remote effect. Only
-    // the service's eventual DISPOSED observation settles retained cleanup.
-    const { owner: pendingOwner, candidate: pendingRevision } = await fixture.admitInitialRevision(
-      "repository-pending-deletion",
-      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
-    );
-    await fixture.work(pendingRevision, "succeeded");
-    const pendingMaterial = material.at(-1);
-    const responseStatus = await new Promise((resolve, reject) => {
-      const outgoing = httpsRequest(
-        {
-          hostname: "127.0.0.1",
-          port: credentials.listeners.address.port,
-          path: "/fixture/repository.git/info/refs?service=git-upload-pack",
-          method: "GET",
-          ca: credentials.tls.ca,
-          agent: false,
-          headers: {
-            host: "credentials.example.test",
-            authorization: `Basic ${Buffer.from(`gateway-session:${pendingMaterial.files.bearer}`).toString("base64")}`,
-          },
-        },
-        (incoming) => {
-          incoming.resume();
-          incoming.once("end", () => resolve(incoming.statusCode));
-          incoming.once("error", reject);
-        },
-      );
-      outgoing.once("error", reject);
-      outgoing.end();
-    });
-    assert.equal(responseStatus, 200);
-    const provider = credentials.repositories[0].github;
-    assert.equal(provider.issuesOfTokens.length, 1);
-    provider.disconnectAfterMutation("DELETE", "/installation/token");
-    await fixture.requestDeletion(pendingOwner);
-    await waitFor(
-      "Agent deletion to complete while repository cleanup remains pending",
-      async () =>
-        retired.includes(pendingRevision.id) &&
-        (await fixture.currentAgent(pendingOwner)) === undefined
-          ? true
-          : undefined,
-    );
-    await waitFor("independent cleanup to close the deleted Agent's broker session", async () => {
-      const status = await driver.status(pendingMaterial.sessionId, new AbortController().signal);
-      return status?.state === "CLOSED" ? true : undefined;
-    });
-    const [pendingAttempt] = await repositoryAttempts(fixture, pendingRevision);
-    assert.equal(pendingAttempt.phase, "closing");
-    assert.equal(pendingAttempt.liveRevisionId, null);
-    // Unsettled provider authority must retain durable cleanup without using
-    // the foreground readiness cadence and repeatedly occupying the worker.
-    const deferredCleanup = await waitFor("pending cleanup to release its claim", async () => {
-      const result = await fixture.observerPool.query(
-        `SELECT idempotency_key, state, claim_token, lease_expires_at,
-           EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
-         FROM occ.controller_work WHERE idempotency_key LIKE $1 AND state = 'queued'`,
-        [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
-      );
-      return events.some(
-        (event) =>
-          event.workId === result.rows[0]?.idempotency_key &&
-          event.code === "REPOSITORY_CLEANUP_PENDING",
-      )
-        ? result.rows[0]
-        : undefined;
-    });
-    assert.ok(Number(deferredCleanup.delay_ms) >= driver.maintenanceIntervalMs - 1_000);
-    assert.equal(deferredCleanup.claim_token, null);
-    assert.equal(deferredCleanup.lease_expires_at, null);
-    const { candidate: nextRevision } = await fixture.admitInitialRevision(
-      "repository-cleanup-neighbor",
-      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
-    );
-    await fixture.work(nextRevision, "succeeded");
-    const scheduled = await fixture.observerPool.query(
-      "SELECT state, available_at > clock_timestamp() AS deferred FROM occ.controller_work WHERE idempotency_key = $1",
-      [deferredCleanup.idempotency_key],
-    );
-    assert.deepEqual(scheduled.rows, [{ state: "queued", deferred: true }]);
-    assert.equal(
-      (
-        await fixture.state.read((view) =>
-          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
-        )
-      ).phase,
-      "closing",
-    );
-    assert.equal(
-      (
-        await fixture.observerPool.query(
-          "SELECT count(*)::integer AS count FROM occ.controller_work WHERE idempotency_key LIKE $1",
-          [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
-        )
-      ).rows[0].count,
-      1,
-    );
-    await clock.advance(3_600_001);
-    // Advance this exact retry after provider expiry instead of waiting for
-    // the real 30-second interval. The worker still claims and settles it.
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
-      [deferredCleanup.idempotency_key],
-    );
-    const settled = await waitFor(
-      "settled provider cleanup to dispose retained evidence",
-      async () => {
-        const attempt = await fixture.state.read((view) =>
-          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
-        );
-        return attempt?.phase === "disposed" ? attempt : undefined;
-      },
-    );
-    assert.equal(settled.phase, "disposed");
-    assert.equal(settled.liveRevisionId, null);
-    assert.equal(settled.deadlineWallMs, pendingAttempt.deadlineWallMs);
-    assert.deepEqual(settled.cleanupContext, pendingAttempt.cleanupContext);
-    assert.equal(provider.issuesOfTokens.length, 1, "deletion must never mint a replacement token");
-    assert.equal(
-      provider.trace.filter(
-        ({ method, target }) => method === "DELETE" && target === "/installation/token",
-      ).length,
-      1,
-      "uncertain provider retirement must not be replayed",
-    );
   },
   // First in its file, so it also absorbs the file's cold start (finding 1171):
   // about 12.5 s typically, 31.7 s once on a slow runner.

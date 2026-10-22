@@ -31,7 +31,7 @@ test(
     const temporary = await mkdtemp(join(tmpdir(), "credential-package-"));
     t.after(() => rm(temporary, { recursive: true, force: true }));
     const sockets = await socketDirectory(t, "credential-package-", {
-      longest: "token-control.sock",
+      longest: "prepared-git-use.sock",
     });
     const build = join(temporary, "build");
     await mkdir(join(build, "scripts"), { recursive: true });
@@ -72,6 +72,22 @@ test(
     assert.ok(emitted.every((path) => !path.endsWith(".ts") && !path.endsWith(".map")));
     assert.ok(!emitted.includes("index.js"));
     assert.ok(!emitted.includes("worker.js"));
+    for (const module of [
+      "material",
+      "provider-transport",
+      "prepared-owner",
+      "prepared-lifecycle",
+      "registry-factory",
+      "descriptions",
+      "token-source/app",
+      "driver/acquisition",
+      "driver/retirement",
+    ]) {
+      assert.ok(
+        !emitted.includes(`drivers/repo/github/credentials/${module}.js`),
+        `native package includes issuer module ${module}`,
+      );
+    }
     assert.deepEqual((await readdir(join(build, ".build/repository-credentials"))).sort(), [
       "client",
       "service",
@@ -132,6 +148,34 @@ test(
     t.after(serviceReservation.release);
     const developmentReservation = await reservePort();
     t.after(developmentReservation.release);
+    const registryFile = join(temporary, "registry.json");
+    await writeFile(
+      registryFile,
+      JSON.stringify({
+        version: 1,
+        backendId: "github-fixture",
+        providerInstanceId: "fixture",
+        appId: "123",
+        githubInstallationId: "456",
+        maximumDurationSeconds: 172800,
+        repositories: [
+          {
+            repositoryRef: "project",
+            repositoryId: "789",
+            repository: "example/project",
+            namespaces: [
+              {
+                namespaceId: "fixture",
+                profiles: ["git-write"],
+                transport: "git-only",
+                pushRefAllowlist: ["refs/heads/agent-work"],
+              },
+            ],
+          },
+        ],
+      }),
+      { mode: 0o600 },
+    );
     const configuration = join(temporary, "service.json");
     await writeFile(
       configuration,
@@ -149,14 +193,9 @@ test(
           allowedProfiles: ["git-read", "git-write", "git-full"],
         },
         backend: {
-          kind: "github-app",
-          providerInstanceId: "fixture",
-          configVersion: "1",
-          appId: "123",
-          installationId: "456",
-          repositoryId: "789",
-          repository: "example/project",
-          privateKeyFile: key,
+          kind: "github-prepared-git-registry",
+          backendId: "github-fixture",
+          registryFile,
         },
       }),
       { mode: 0o600 },
@@ -178,12 +217,12 @@ test(
     const tokenFile = join(temporary, "token");
     await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });
     const tokenConfiguration = join(temporary, "token-service.json");
-    const appConfiguration = JSON.parse(await readFile(configuration, "utf8"));
+    const preparedConfiguration = JSON.parse(await readFile(configuration, "utf8"));
     await writeFile(
       tokenConfiguration,
       JSON.stringify({
         gateway: {
-          ...appConfiguration.gateway,
+          ...preparedConfiguration.gateway,
           listen: `127.0.0.1:${developmentReservation.port}`,
           controlSocket: join(sockets, "token-control.sock"),
         },
@@ -294,6 +333,16 @@ test(
       JSON.parse(await readFile(join(client, "package.json"), "utf8")).dependencies ?? {},
       {},
     );
+    // Detached operator admission is development-only. Prepared native admission
+    // requires the real worker receipt owner and is covered by the PostgreSQL suite.
+    await writeFile(
+      configuration,
+      JSON.stringify({
+        ...JSON.parse(await readFile(tokenConfiguration, "utf8")),
+        gateway: preparedConfiguration.gateway,
+      }),
+      { mode: 0o600 },
+    );
     const service = spawn(
       process.execPath,
       [
@@ -301,6 +350,7 @@ test(
         join(runtime, "dist/repository-credentials.js"),
         "--config",
         configuration,
+        "--development-authority",
       ],
       {
         cwd: runtime,
