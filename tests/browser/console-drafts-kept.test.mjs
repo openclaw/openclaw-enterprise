@@ -6,6 +6,7 @@ import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  asksBeforeUnload,
   detailUrl,
   holdRequests,
   login,
@@ -15,6 +16,7 @@ import {
   repositoryCheckbox,
   selectSecret,
   settlePageRequests,
+  waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -39,13 +41,6 @@ const standardCodexPreset = JSON.parse(
 const createConsoleAppFixture = (t) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
 
-// Whether a reload or tab close would ask first: the console cancels beforeunload.
-const asksBeforeUnload = (page) =>
-  page.evaluate(() => {
-    const event = new Event("beforeunload", { cancelable: true });
-    globalThis.dispatchEvent(event);
-    return event.defaultPrevented;
-  });
 const sidebarLink = (page, name) =>
   page
     .getByRole("navigation", { name: "Main navigation" })
@@ -406,7 +401,8 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
 });
 
 // Each write that holds the page names itself beside its control when the sidebar, Back or
-// ← Agents is refused; they refused in silence before (findings 1962, 1965).
+// ← Agents is refused; they refused in silence before (findings 1962, 1965). A reload or tab
+// close asks first while it runs (finding 2125).
 for (const pending of [
   {
     kind: "a deploy",
@@ -492,6 +488,7 @@ for (const pending of [
       await page.waitForURL(pageUrl);
     };
     try {
+      assert.equal(await asksBeforeUnload(page), true);
       await refusedWithReason(() => sidebarLink(page, "Agents").click());
       // Back to the Agents list, past the tab change where one was made.
       await refusedWithReason(() =>
@@ -556,8 +553,60 @@ for (const pending of [
     }
     // The note goes with the hold.
     await reason.waitFor({ state: "detached" });
+    // The save's reread may still be settling the form; then a reload asks no more.
+    await waitForCondition(
+      async () => !(await asksBeforeUnload(page)),
+      "a reload still asks after the write",
+    );
   });
 }
+
+// A plugin save keeps its editor locked until the tab rebuilds. After Delete there is no tab to
+// rebuild, so the settled save held ← Agents, the sidebar and a reload for good (finding 2125).
+test("a plugin save that settles after Delete lets the page go", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Plugin save delete", { ready: true });
+  const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  // The controller applies the save; its answer waits until after Delete.
+  const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
+    method: "PATCH",
+    once: true,
+    afterServer: true,
+  });
+  await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+  await page
+    .getByLabel("Plugin selections JSON")
+    .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+  await page.getByRole("button", { name: "Save plugin selections" }).click();
+  await held.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Plugin Delete Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  const reason = page.getByText(
+    "Wait for plugin selections to finish saving before leaving this tab.",
+    { exact: true },
+  );
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await reason.waitFor();
+  assert.equal(await asksBeforeUnload(page), true);
+
+  held.release();
+  await reason.waitFor({ state: "detached" });
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await heading(page, "Agents").waitFor();
+});
 
 test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -846,13 +895,16 @@ async function fillProvisionedAgent(page, fixture, namespace, name) {
 // Admits one provisioning job and answers its status reads with `read`.
 async function routeProvisioningJob(page, namespace, read) {
   const url = `/namespaces/${namespace.id}/agents/provision/work_1`;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  let requestId;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    requestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
         data: {
           provisioning: {
+            requestId,
             workId: "work_1",
             status: "queued",
             phase: "accepted",
@@ -863,9 +915,9 @@ async function routeProvisioningJob(page, namespace, read) {
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000202" },
       }),
-    }),
-  );
-  await page.route(`**${url}`, (route) => route.fulfill(read(url)));
+    });
+  });
+  await page.route(`**${url}`, (route) => route.fulfill(read(url, requestId)));
 }
 
 test("an uncertain Create outcome keeps no draft", async (t) => {
@@ -916,11 +968,12 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await routeInstallationProvisioning(page, fixture);
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
   // kept draft would create the Agent again.
-  await routeProvisioningJob(page, namespace, (url) => ({
+  await routeProvisioningJob(page, namespace, (url, requestId) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
       data: {
+        requestId,
         workId: "work_1",
         status: "failed",
         phase: "handoff",

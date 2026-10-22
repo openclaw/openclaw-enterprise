@@ -34,9 +34,14 @@ spec:
     metadata:
       labels:
         {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 8 }}
-      {{- with $.Values.controlPlane.installationChecksum }}
+      {{- if or $.Values.controlPlane.installationChecksum (and (eq $component "api") $.Values.api.consoleTheme.configMapName $.Values.api.consoleTheme.checksum) }}
       annotations:
+        {{- with $.Values.controlPlane.installationChecksum }}
         openclaw.dev/installation-checksum: {{ . | quote }}
+        {{- end }}
+        {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName $.Values.api.consoleTheme.checksum }}
+        openclaw.dev/console-theme-checksum: {{ $.Values.api.consoleTheme.checksum | quote }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-{{ $component }}
@@ -53,6 +58,11 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+        - name: console-theme
+          configMap:
+            name: {{ $.Values.api.consoleTheme.configMapName | quote }}
+        {{- end }}
         {{- if $oidcCa }}
         - name: oidc-ca
           secret:
@@ -260,6 +270,10 @@ spec:
           env:
             - name: NODE_ENV
               value: production
+            {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+            - name: OCC_CONSOLE_THEME_DIR
+              value: /etc/openclaw/console-theme
+            {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: OCC_METRICS_ENABLED
               value: "true"
@@ -395,6 +409,11 @@ spec:
             {{- if $oidcCa }}
             - name: api-extra-ca
               mountPath: /etc/openclaw/api-extra-ca
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+            - name: console-theme
+              mountPath: /etc/openclaw/console-theme
               readOnly: true
             {{- end }}
             {{- if $.Values.executionCluster.enabled }}

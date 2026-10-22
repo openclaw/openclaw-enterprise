@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
@@ -35,11 +34,9 @@ import {
   imageTestOptions,
   runDocker,
   waitForDockerLog,
-  commandOutput,
   temporaryGatewayConfiguration,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
-  failureTail,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
@@ -48,8 +45,7 @@ import {
 const syntheticCodexApiKey = "sk-openclaw-runtime-image-smoke-synthetic";
 
 test("runtime image seccomp option requires the CI-prepared profile record", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-seccomp-profile-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-seccomp-profile-");
   const contents = Buffer.from(`${JSON.stringify({ defaultAction: "SCMP_ACT_ERRNO" })}\n`);
   const digest = createHash("sha256").update(contents).digest("hex");
   const profile = join(directory, `codex-0.163.0-alpha.2-${digest}.json`);
@@ -266,8 +262,7 @@ process.exit(material.status ?? 1);
 }
 
 async function createRuntimeBrokerTlsMaterial(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-broker-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-broker-tls-");
   await execute("openssl", [
     "req",
     "-x509",
@@ -323,10 +318,6 @@ async function createRuntimeRepositoryMaterial(t, fixture) {
   }));
   await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
   return material.root;
-}
-
-function sanitizeSyntheticCredential(output) {
-  return output.replaceAll(syntheticCodexApiKey, "[REDACTED_SYNTHETIC_KEY]");
 }
 
 function assertNoPackagingFailure(output) {
@@ -711,7 +702,10 @@ test(
     const probe = String.raw`
 set -eu
 printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout ${20 * imageSmokeTimeoutMultiplier}s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
-  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stderr >&2
+  status=$?
+  # 124: timeout stopped codex login. Its output may be empty, so name the status.
+  echo "codex login exited $status" >&2
+  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stdout /tmp/codex-login.stderr >&2
   exit 1
 }
 node - <<'NODE'
@@ -768,10 +762,8 @@ NODE
         "-c",
         probe,
       ],
-      { timeout: 30_000 * imageSmokeTimeoutMultiplier },
-    ).catch((error) => {
-      throw new Error(failureTail(sanitizeSyntheticCredential(commandOutput(error))));
-    });
+      { timeout: 30_000 * imageSmokeTimeoutMultiplier, redact: [syntheticCodexApiKey] },
+    );
 
     const result = JSON.parse(stdout);
     assert.equal(result.uid, 1000);

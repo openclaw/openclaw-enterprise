@@ -11,6 +11,7 @@ Find the developer skill for your task and check how it is maintained.
 | Design review                   | [design-review](../../.agents/skills/design-review/SKILL.md)                     |
 | RFC or implementation plan      | [spec](../../.agents/skills/spec/SKILL.md)                                       |
 | Development and PR readiness    | [local-dev](../../.agents/skills/local-dev/SKILL.md)                             |
+| Console pages and components    | [console-ui](../../.agents/skills/console-ui/SKILL.md)                           |
 | Documentation                   | [technical-writing](../../.agents/skills/technical-writing/SKILL.md)             |
 | Test quality                    | [test-audit](../../.agents/skills/test-audit/SKILL.md)                           |
 | Test selection and CI diagnosis | [enterprise-testing](../../.agents/skills/enterprise-testing/SKILL.md)           |
@@ -37,7 +38,7 @@ installation; the other skills are checked into `.agents/skills`.
 - `technical-writing` adapts Docy's core, developer-docs, concise-instructions,
   and spec references, inspected 2026-09-16. It leaves repository policy in
   `AGENTS.md`. Update its skill and specification reference together.
-- `design-review` and `mermaid-diagrams` are maintained here. Check their linked
+- `console-ui`, `design-review`, and `mermaid-diagrams` are maintained here. Check their linked
   guidance and validate changed workflows with an example of one supported task.
 
 The three adapted skills below use `openclaw/openclaw` commit

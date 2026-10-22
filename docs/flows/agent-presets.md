@@ -26,7 +26,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
-- [Console selector](../../apps/controller/src/console/agents/presets.mjs):
+- [Console selector](../../apps/controller/src/console/agents/presets.mts):
   `createPresetFields` requires a selected Namespace and an authenticated user.
   Saving also needs the existing Configuration, Agent, and credential grants.
 
@@ -146,14 +146,15 @@ path records mutations and denials without template or variable contents.
 
 ### 3. Read and render the selected copy
 
-`apps/controller/src/console/agents/presets.mjs:createPresetFields`
+`apps/controller/src/console/agents/presets.mts:createPresetFields`
 
-Lists Namespace-visible summaries, then reads the selection once with
-`revalidate: false` for an independent draft. **Start with default Preset**
-reads `default-codex`.
-Templates without variables apply immediately; otherwise the chooser and shortcut origin remain. Missing defaults or failed reads never open a hardcoded starter; other readable
-Presets stay selectable. **Start without Preset** skips Preset reads; it cannot
-bypass denial. Creation authorization applies.
+[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
+lists Namespace-readable summaries and reads the selection once with
+`revalidate: false`. **Start with default Preset** reads `default-codex`.
+Variable-free templates apply immediately; otherwise chooser and shortcut origin remain.
+Missing defaults or failed reads never open hardcoded starters; readable Presets remain selectable. **Start without Preset** opens
+the form without a Preset read, not as a fallback for denial.
+Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -194,7 +195,7 @@ page exit clears captures, not a failed `/namespaces` read. A known Create refus
 the capture and its saved resources, unless repository policy refused it or an Agent,
 provisioning job or credential registration exists.
 
-`agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
+`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced
 primary is retired. Temporary clearing retains fallback entries and transport.
 The saved Configuration goes through the existing configured-Harness resolver;
@@ -202,9 +203,9 @@ model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent`
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
-[The creation form](../../apps/controller/src/console/agents/create.mjs) copies
+[The creation form](../../apps/controller/src/console/agents/create.mts) copies
 rendered settings into editable fields and checks their form representation.
 A method-only Preset authentication default selects API key or Service Accounts
 without binding a Secret. The shared Secret picker requires a same-Namespace
@@ -265,7 +266,7 @@ or an immutable saved version.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
-  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.mjs)
+  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
   exercises the real selection form. Coverage names are not proof of a live model response.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)
   covers source builds with cold dependency caches behind an enforcing HTTPS

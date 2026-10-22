@@ -8,6 +8,7 @@ import { clientAddressConfiguration, humanLoginConfiguration } from "./auth/inde
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { isAbsolute } from "node:path";
+import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
@@ -24,6 +25,9 @@ const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
+  if (error instanceof ConsoleThemeError) {
+    return "CONSOLE_THEME_INVALID";
+  }
   if (error instanceof PresetFileError) {
     return "PRESET_FILE_INVALID";
   }
@@ -315,6 +319,7 @@ export async function startApi(env) {
     phaseStartedAt = now;
   };
   const settings = configuration(env);
+  const consoleTheme = await loadConsoleTheme(env.OCC_CONSOLE_THEME_DIR);
   const metricsSettings = metricsConfiguration(env, settings.mode, settings.port);
   const metrics = metricsSettings === undefined ? undefined : createOccMetrics("api");
   const startupConfiguration = await loadStartupConfigurationSnapshot({
@@ -328,6 +333,7 @@ export async function startApi(env) {
   }
   const compositionSettings = {
     ...settings,
+    ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
     metrics,

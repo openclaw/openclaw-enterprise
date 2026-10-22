@@ -2412,8 +2412,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(providerCreate[1].credentials, {});
   assert.deepEqual(providerCreate[1].credentialExpirationTimes, {});
   const runtimeProfile = gatewayClient.profiles.get("oce-codex-runtime").profile;
-  // OpenShell v0.1.4 hashes protobuf maps without canonical ordering. Keeping
-  // ownership and content identity in one entry prevents startup revision churn.
+  // One annotation identifies the owner and the managed content.
   assert.deepEqual(Object.keys(runtimeProfile.annotations), ["openclaw.dev/managed-by"]);
   assert.match(
     runtimeProfile.annotations["openclaw.dev/managed-by"],
@@ -4589,7 +4588,7 @@ test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer
   const grpc = controllerRequire("@grpc/grpc-js");
   const loader = controllerRequire("@grpc/proto-loader");
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
     { keepCase: true, enums: String },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;

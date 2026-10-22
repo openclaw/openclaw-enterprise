@@ -14,8 +14,8 @@ runtime prerequisites, and limits.
 4. Choose **Share Agent** and read each reported step. Roles must exist in the Agent’s saved `gateway.roles` Configuration; an unavailable catalog disables new assignments. You can share before deployment or while stopped.
 
 While the share runs, the page stays open until it finishes, usually within
-seconds; each request has a 15-second timeout. Tabs still switch. Signing out or an expired
-session still leaves.
+seconds; each request has a 15-second timeout; tabs still switch. Reloading or closing the tab
+asks first. Signing out or an expired session still leaves.
 
 The person gains Namespace discovery, Agent read and OpenClaw entry with the
 selected role. Their native profile is personal when configured roles are

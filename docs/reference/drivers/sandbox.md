@@ -71,6 +71,17 @@ restart). A first start is plain `starting`. Diagnostics report a restarting
 Harness as a failed `sandbox` check. Only Sandboxes created before that policy
 existed report `HARNESS_EXITED`.
 
+### Harness Sandbox status
+
+`GET /namespaces/:namespaceId/agents/:agentId/harness-status` requires Agent
+`read`. For a running Agent whose selected version has a dedicated Harness
+Sandbox, OCC calls `observeHarness` on each request and answers `observed` with
+that `revisionId` and its `harness` state. Otherwise it answers `unobserved`.
+`lost` means that the Sandbox does not serve the version, for example after a
+node restart stopped it. OCC does not restart it: deploy a new version. A record
+that OCC cannot read is `unknown`, never `lost`. `occ agent get` and the
+Console's **Live serving** show this status; Agent lists do not.
+
 ### Containment facets
 
 | Facet        | What the Driver enforces                                                           |

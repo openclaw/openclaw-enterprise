@@ -11,7 +11,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-async function createPolicyApp(t, recordOperations = false) {
+async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
@@ -59,6 +59,30 @@ async function createPolicyApp(t, recordOperations = false) {
       },
     },
   );
+  let definition = OpenShellSandboxDriver;
+  if (laxDriver) {
+    // A package Driver may declare a looser contribution and skip its own recheck. OCC still
+    // owns the stored grant shape and the ceiling, so its shared rules must hold regardless.
+    sandboxDriver.admitNetworkPolicy = (additions, version, defaults) => ({
+      driverId: sandboxDriver.id,
+      implementation: sandboxDriver.implementation,
+      version,
+      defaults: defaults ?? {},
+      additions,
+    });
+    definition = {
+      configurationSchema: OpenShellSandboxDriver.configurationSchema,
+      validateConfiguration: (input) => OpenShellSandboxDriver.validateConfiguration(input),
+      configurationContributions: [
+        {
+          scope: "agent",
+          key: "sandbox-network-policy",
+          configurationSchema: { type: "object", properties: { additions: { type: "array" } } },
+          validateConfiguration: () => [],
+        },
+      ],
+    };
+  }
   const fixture = await createPostgresAgentApp(t, {
     label: "sandbox-policy",
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
@@ -71,7 +95,7 @@ async function createPolicyApp(t, recordOperations = false) {
           capability: "sandbox",
           driverId: sandboxDriver.id,
           implementation: sandboxDriver.implementation,
-          definition: OpenShellSandboxDriver,
+          definition,
         },
       ],
     },
@@ -397,6 +421,46 @@ test(
         await worker.stop();
       }
     }
+  },
+);
+
+test(
+  "a looser Driver contribution cannot widen the shared grant rules or the ceiling",
+  requiresPostgres,
+  async (t) => {
+    const { inject, deployAgent, grant } = await createPolicyApp(t, false, { laxDriver: true });
+    const { namespace, agent } = await deployAgent("Lax policy Driver");
+    const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await inject("PATCH", `${base}/editing`, { enabled: true })).statusCode, 200);
+    // The shared rules refuse an empty port list before ceiling coverage is considered.
+    const empty = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, host: "outside.example.net", ports: [] }],
+    });
+    assert.equal(empty.statusCode, 200, empty.body);
+    assert.deepEqual(empty.json().data.error.details, [
+      {
+        path: "/additions/0/ports",
+        code: "INVALID_VALUE",
+        message: "Configuration does not satisfy minItems.",
+      },
+    ]);
+    // A reversed range on a delegated executable and host is refused, not stored.
+    const reversed = await inject("PUT", base, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 65535, to: 1 }] }],
+    });
+    assert.equal(reversed.statusCode, 409, reversed.body);
+    assert.deepEqual(reversed.json().error.details, [
+      {
+        path: "/additions/0/ports/0/to",
+        code: "INVALID_RANGE",
+        message: "The end port must be at least the start port.",
+      },
+    ]);
+    const saved = (await inject("GET", base)).json().data.policy;
+    assert.equal(saved.version, 1);
+    assert.deepEqual(saved.additions, []);
   },
 );
 

@@ -46,6 +46,7 @@ import {
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 // Session opens need an admission id; a fresh one per call unless the test names it.
 const control = (socketPath, method, path, value, extra = {}) =>
@@ -565,14 +566,11 @@ test(
       outgoing.once("error", () => resolve("closed"));
       outgoing.end();
     });
-    const deadline = Date.now() + 2000;
-    while (
-      !factory.events.some((event) => event.kind === "authentication") &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    assert.ok(factory.events.some((event) => event.kind === "authentication"));
+    await waitUntil(
+      "the authentication event",
+      () => factory.events.some((event) => event.kind === "authentication"),
+      { timeoutMs: 2000, intervalMs: 5 },
+    );
     service.close(opened.session.sessionId);
     resume();
     assert.ok([503, "closed"].includes(await result));
@@ -1198,10 +1196,11 @@ test(
     outcome = "lost";
     assert.deepEqual(await send(lost, lostId), { status: 503, body: { error: "unavailable" } });
     outcome = undefined;
-    for (let i = 0; i < 300 && (await receipt(lostId)).state !== "disposed"; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    assert.equal((await receipt(lostId)).state, "disposed");
+    await waitUntil(
+      "the lost session's receipt to be disposed",
+      async () => (await receipt(lostId)).state === "disposed",
+      { timeoutMs: 5000, intervalMs: 10 },
+    );
     const recovered = await send({ ...lost, recoverOnly: true }, lostId);
     assert.equal(recovered.status, 200);
     assert.equal(recovered.body.state, "DISPOSED");

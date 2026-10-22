@@ -17,9 +17,9 @@ See the [parent flow](../platform-console.md) and the
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
+- `apps/controller/src/console/agents/access.mts:renderAgentAccess` renders the
   sharing panel on Agent detail's Access tab.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it when
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
   that tab first opens.
 - Assumptions: a signed-in Installation administrator, an existing Principal ID,
   and the Namespace IAM policy endpoints.
@@ -47,7 +47,7 @@ graph TD
 
 ### 1. Mount the panel and read policy
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 The Access tab mounts sharing independently of version/configuration reads and
 native admission. Agent detail leaves the tab out when the console's observability
@@ -68,7 +68,7 @@ the catalog changes. Catalog failure leaves unrelated drafts and live logs intac
 
 ### 2. Serialize Role and binding writes
 
-`apps/controller/src/console/agents/access.mjs:matchesRole`
+`apps/controller/src/console/agents/access.mts:matchesRole`
 
 Submission rereads policy, finds or creates an immutable Role by exact Namespace
 and permissions, then binds Namespace read to the exact Namespace. Only after
@@ -82,26 +82,29 @@ configuration evidence, not a historical receipt, and never triggers a write.
 
 ### 3. Change the selected runtime role
 
-`apps/controller/src/console/agents/access.mjs:writeRuntimeRole`
+`apps/controller/src/console/agents/access.mts:writeRuntimeRole`
 `packages/occ/src/index.ts:updateIAMRuntimeRole`
 
 The selector PATCHes `runtimeRole` and `runtimeRoleConfiguration` (the reviewed Configuration ID and generation). OCC holds policy-management authority, then checks the saved Configuration under the same Namespace lock used by Configuration and Agent updates. A changed ID or generation rejects the write with `409` before mutating the assignment; a missing role returns `400`. The assignment and audit commit in the existing transaction. Only `runtimeRole` is persisted on the binding. The binding identity, OCE Role and exact resource remain unchanged. An uncertain response blocks further writes until explicit readback. Runtime and proxy admission resolve the new role on subsequent requests.
 
 ### 4. Hold the page while writes run
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 Each request belongs to the page and stops when the page goes. So while sharing, role changes or
 removal run, the panel's `onWriting` callback has Agent detail hold version and
 page changes, as it does for a draft's writes. The held changes are the Versions
 rail, Create new version, version links, ← Agents, the sidebar, the Namespace
 selector, Back and Forward, the header's Refresh, and the page's own reloads. The
-page shows "This page stays open until sharing finishes." Tabs still switch. The
-hold ends when the last request settles. Each request has the client’s 15-second timeout. Session expiry and sign-out still leave.
+page shows "This page stays open until sharing finishes." Tabs still switch. After
+Delete replaces the page with its deletion row, a write still in flight holds the
+page and its note shows above that row. The page's `setWriteInFlight` check, which
+also covers a draft's writes, makes `beforeunload` in `console.mjs` ask before a
+reload or tab close. The hold ends when the last request settles. Each request has a 15-second timeout. Session expiry and sign-out still leave.
 
 ### 5. Remove one explicit binding
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
 Removal rereads current IAM policy without loading the role catalog and addresses only the selected Agent binding. The request client's existing
 success envelope handling also accepts the API's empty `204` deletion response.

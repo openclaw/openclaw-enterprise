@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,
@@ -21,19 +20,18 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 function descriptions(socketPath, payload) {
   return controlRequest(socketPath, "POST", "/v1/repository-descriptions", payload);
 }
 
-async function waitForRevocation(github) {
-  const deadline = Date.now() + 5000;
-  while (!github.tokenState().every((token) => token.revoked)) {
-    if (Date.now() >= deadline) {
-      throw new Error("provider token was not revoked");
-    }
-    await delay(10);
-  }
+function waitForRevocation(github) {
+  return waitUntil(
+    "the provider token to be revoked",
+    () => github.tokenState().every((token) => token.revoked),
+    { timeoutMs: 5000, intervalMs: 10 },
+  );
 }
 
 // Each lookup retires its token through a short-lived service whose shutdown
@@ -43,12 +41,24 @@ async function waitForRevocation(github) {
 // No other timer on that clock outlives a lookup, so none pending means it finished.
 async function waitForRetiredLookup(github, clock) {
   await waitForRevocation(github);
-  const deadline = Date.now() + 5000;
-  while (clock.pendingTimers() !== 0) {
-    if (Date.now() >= deadline) {
-      throw new Error("metadata lookup shutdown did not finish");
-    }
-    await delay(10);
+  await waitUntil("the metadata lookup shutdown to finish", () => clock.pendingTimers() === 0, {
+    timeoutMs: 5000,
+    intervalMs: 10,
+  });
+}
+
+// Waits until the provider fixture has received `GET target`. On a timeout it first releases
+// the response the test holds, so the service can still shut down.
+async function waitForProviderRead(github, target, description, release) {
+  try {
+    await waitUntil(
+      description,
+      () => github.trace.some((entry) => entry.method === "GET" && entry.target === target),
+      { timeoutMs: 5000 },
+    );
+  } catch (error) {
+    release();
+    throw error;
   }
 }
 
@@ -60,17 +70,16 @@ function within(promise, message) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
-async function settled(socketPath, payload) {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    const response = await descriptions(socketPath, payload);
-    assert.equal(response.status, 200);
-    if (!response.body.pending) {
-      return response.body;
-    }
-    await delay(20);
-  }
-  throw new Error("metadata lookup did not settle");
+function settled(socketPath, payload) {
+  return waitFor(
+    "the metadata lookup to settle",
+    async () => {
+      const response = await descriptions(socketPath, payload);
+      assert.equal(response.status, 200);
+      return response.body.pending ? undefined : response.body;
+    },
+    5000,
+  );
 }
 
 // Starts a registry whose repositories (repo-a, repo-b, ...) carry `texts` as their GitHub
@@ -484,30 +493,21 @@ test("a newly visible page takes priority over older queued descriptions", async
     repositoryRefs: ["repo-a", "repo-b"],
   });
   const first = fixture.byRef.get("repo-a").github;
-  const deadline = Date.now() + 5000;
-  while (
-    !first.trace.some(
-      (entry) => entry.method === "GET" && entry.target === "/repos/fixture/repository",
-    )
-  ) {
-    if (Date.now() >= deadline) {
-      release();
-      throw new Error("first metadata read did not start");
-    }
-    await delay(20);
-  }
+  await waitForProviderRead(
+    first,
+    "/repos/fixture/repository",
+    "the first metadata read to start",
+    release,
+  );
   await descriptions(socket, { namespaceId: fixture.namespaceId, repositoryRefs: ["repo-c"] });
   release();
   const third = fixture.byRef.get("repo-c").github;
-  while (
-    !third.trace.some((entry) => entry.method === "GET" && entry.target === "/repos/fixture/third")
-  ) {
-    if (Date.now() >= deadline) {
-      releaseCurrent();
-      throw new Error("current metadata read did not start");
-    }
-    await delay(20);
-  }
+  await waitForProviderRead(
+    third,
+    "/repos/fixture/third",
+    "the current metadata read to start",
+    releaseCurrent,
+  );
   assert.equal(fixture.byRef.get("repo-b").github.issuesOfTokens.length, 0);
   releaseCurrent();
   const current = await settled(socket, {
@@ -540,15 +540,13 @@ test("metadata issuance is rate-limited across a visible page", { timeout: 30000
     repositoryRefs: repositories.map((repository) => repository.repositoryRef),
   };
   await descriptions(socket, payload);
-  const deadline = Date.now() + 10000;
-  while (
-    fixture.repositories.reduce((sum, entry) => sum + entry.github.issuesOfTokens.length, 0) < 15
-  ) {
-    if (Date.now() >= deadline) {
-      throw new Error("first metadata rate window did not complete");
-    }
-    await delay(20);
-  }
+  await waitUntil(
+    "the first metadata rate window to complete",
+    () =>
+      fixture.repositories.reduce((sum, entry) => sum + entry.github.issuesOfTokens.length, 0) >=
+      15,
+    { timeoutMs: 10000 },
+  );
   for (const entry of fixture.repositories.slice(0, 15)) {
     await waitForRevocation(entry.github);
   }
@@ -585,18 +583,12 @@ test("a stalled provider header respects the configured timeout and leaves the p
   const payload = { namespaceId: fixture.namespaceId, repositoryRefs: ["repo-a"] };
   await descriptions(socket, payload);
   const github = fixture.byRef.get("repo-a").github;
-  const deadline = Date.now() + 5000;
-  while (
-    !github.trace.some(
-      (entry) => entry.method === "GET" && entry.target === "/repos/fixture/repository",
-    )
-  ) {
-    if (Date.now() >= deadline) {
-      release();
-      throw new Error("metadata read did not reach the provider");
-    }
-    await delay(20);
-  }
+  await waitForProviderRead(
+    github,
+    "/repos/fixture/repository",
+    "the metadata read to reach the provider",
+    release,
+  );
   await fixture.clock.advance(1001);
   const response = await settled(socket, payload);
   assert.deepEqual(response.descriptions, []);

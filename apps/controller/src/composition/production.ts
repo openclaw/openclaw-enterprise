@@ -18,10 +18,12 @@ import {
   type GitHubLoginConfiguration,
   type GoogleSignInConfiguration,
   type OidcSignInConfiguration,
+  type PasswordHasher,
   type PasswordSlowLaneFloors,
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
+import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -42,6 +44,7 @@ import {
 } from "./workspace-files.ts";
 
 export interface ProductionConfig {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("../metrics/index.ts").OccMetrics;
   readonly mode: "production";
   readonly host: string;
@@ -74,7 +77,19 @@ export interface ProductionConfig {
 export type ProductionStartupPhase =
   "database" | "authentication" | "identity" | "computePreflight" | "controller" | "routes";
 
-export async function composeProduction(config: ProductionConfig) {
+/**
+ * Code-only dependencies, kept out of `ProductionConfig` so that no setting can supply them:
+ * api-startup.mjs passes none. Tests pass a cheap `passwordHasher`; without one the
+ * controller hashes with `scryptPasswordHasher`.
+ */
+export interface CompositionDependencies {
+  readonly passwordHasher?: PasswordHasher;
+}
+
+export async function composeProduction(
+  config: ProductionConfig,
+  dependencies: CompositionDependencies = {},
+) {
   if (config.mode !== "production") {
     throw new Error("Production OCC composition requires explicit production mode.");
   }
@@ -154,6 +169,9 @@ export async function composeProduction(config: ProductionConfig) {
       ...(config.passwordSlowLaneFloors === undefined
         ? {}
         : { passwordSlowLaneFloors: config.passwordSlowLaneFloors }),
+      ...(dependencies.passwordHasher === undefined
+        ? {}
+        : { passwordHasher: dependencies.passwordHasher }),
       ...(config.logger === undefined
         ? {}
         : { onOperationalEvent: (event) => emitOccLogEvent(config.logger!, event) }),
@@ -335,6 +353,7 @@ export async function composeProduction(config: ProductionConfig) {
 
     phaseCompleted("controller");
     const app = createFastifyApp({
+      ...(config.consoleTheme === undefined ? {} : { consoleTheme: config.consoleTheme }),
       ...(config.metrics === undefined ? {} : { metrics: config.metrics }),
       controller,
       iamDriver,
