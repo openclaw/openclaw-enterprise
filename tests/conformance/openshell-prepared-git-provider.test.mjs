@@ -418,7 +418,7 @@ function installedStatus(binding) {
   };
 }
 
-test("prepared Git keeps bootstrap, rotation, restart and installed state distinct", async (t) => {
+test("prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state", async (t) => {
   const { state, binding } = await wire(t);
   const bootstrap = await binding.bootstrap(signal());
   assert.equal(bootstrap.credentialState, "bootstrap");
