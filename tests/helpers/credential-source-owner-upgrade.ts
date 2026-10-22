@@ -99,6 +99,7 @@ export async function assertCredentialSchemaPrivileges(app: pg.Client) {
     ["protected_repository_git_recipients", "fence,state,attempt_id,material_version"],
   ] as const;
   for (const [table, mutable] of tables) {
+    // The migration security test leaves a hostile pg_temp.text domain on this connection.
     const result = await app.query(
       `SELECT pg_get_userbyid(c.relowner) = 'occ_migrator' AS owned,
          has_table_privilege(current_user,c.oid,'SELECT') AS readable,
@@ -106,10 +107,10 @@ export async function assertCredentialSchemaPrivileges(app: pg.Client) {
          has_table_privilege(current_user,c.oid,'UPDATE') AS update_all,
          has_table_privilege(current_user,c.oid,'DELETE') AS deletable,
          has_table_privilege(current_user,c.oid,'TRUNCATE') AS truncatable,
-         array_agg(a.attname::text ORDER BY a.attname)
+         array_agg(a.attname::pg_catalog.text ORDER BY a.attname)
            FILTER (WHERE has_column_privilege(current_user,c.oid,a.attnum,'UPDATE')) AS mutable
-       FROM pg_class c JOIN pg_attribute a ON a.attrelid=c.oid
-       WHERE c.oid=$1::regclass AND a.attnum>0 AND NOT a.attisdropped
+       FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid
+       WHERE c.oid=$1::pg_catalog.regclass AND a.attnum>0 AND NOT a.attisdropped
        GROUP BY c.oid,c.relowner`,
       [`occ.${table}`],
     );
