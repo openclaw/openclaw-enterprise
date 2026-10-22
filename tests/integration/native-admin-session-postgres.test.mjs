@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { createConnection } from "node:net";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -24,7 +25,6 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
-import { selfSigned } from "../helpers/certificates.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
@@ -108,12 +108,36 @@ function nativeComputeDriver(upstreamPort) {
 async function startNativeHttpsUpstream(t) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-pg-upstream-"));
   t.after(async () => rm(directory, { recursive: true, force: true }));
-  const { key, cert } = await selfSigned(directory, { days: 2 });
+  const keyPath = join(directory, "tls.key");
+  const certPath = join(directory, "tls.crt");
+  const generated = spawnSync(
+    "openssl",
+    [
+      "req",
+      "-x509",
+      "-newkey",
+      "rsa:2048",
+      "-nodes",
+      "-days",
+      "2",
+      "-keyout",
+      keyPath,
+      "-out",
+      certPath,
+      "-subj",
+      "/CN=localhost",
+      "-addext",
+      "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
 
   const requests = [];
   const upgrades = [];
   const upgradedSockets = new Set();
-  const server = createServer({ key, cert }, async (request, response) => {
+  const cert = await readFile(certPath, "utf8");
+  const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
     requests.push({
       method: request.method,
       url: request.url,

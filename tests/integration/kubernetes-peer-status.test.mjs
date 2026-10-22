@@ -1,24 +1,24 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer as httpsServer } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { selfSigned } from "../helpers/certificates.mjs";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 const execute = promisify(execFile);
 
 test("real peer-status HTTPS transport authenticates its revision and verifies server trust", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "oce-peer-status-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const { key, cert, certPath: certificate } = await selfSigned(directory);
+  const { keyPath: privateKey, certPath: certificate } = await selfSigned(directory);
 
   // The generated status server binds this port on all interfaces. Hold it there until the
   // server answers on it, so no other socket takes it first.
@@ -64,30 +64,33 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
 
   // TLS termination forwards the untouched Authorization header to the actual
   // generated Harness status server. No fixture implements its authentication.
-  const proxy = httpsServer({ key, cert }, (incoming, outgoing) => {
-    if (incoming.url === "/redirect") {
-      outgoing.writeHead(302, { location: "/status" });
-      outgoing.end();
-      return;
-    }
-    const upstream = request(
-      {
-        host: "127.0.0.1",
-        port,
-        path: "/openclaw/plugin-runtime/remote-status",
-        headers: incoming.headers,
-      },
-      (response) => {
-        outgoing.writeHead(response.statusCode, response.headers);
-        response.pipe(outgoing);
-      },
-    );
-    upstream.on("error", () => {
-      outgoing.writeHead(502);
-      outgoing.end();
-    });
-    incoming.pipe(upstream);
-  });
+  const proxy = httpsServer(
+    { key: await readFile(privateKey), cert: await readFile(certificate) },
+    (incoming, outgoing) => {
+      if (incoming.url === "/redirect") {
+        outgoing.writeHead(302, { location: "/status" });
+        outgoing.end();
+        return;
+      }
+      const upstream = request(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/openclaw/plugin-runtime/remote-status",
+          headers: incoming.headers,
+        },
+        (response) => {
+          outgoing.writeHead(response.statusCode, response.headers);
+          response.pipe(outgoing);
+        },
+      );
+      upstream.on("error", () => {
+        outgoing.writeHead(502);
+        outgoing.end();
+      });
+      incoming.pipe(upstream);
+    },
+  );
   proxy.listen(0, "127.0.0.1");
   await once(proxy, "listening");
   t.after(() => new Promise((resolve) => proxy.close(resolve)));
