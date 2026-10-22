@@ -196,7 +196,7 @@ page exit clears captures, not a failed `/namespaces` read. A known Create refus
 the capture and its saved resources, unless repository policy refused it or an Agent,
 provisioning job or credential registration exists.
 
-`agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
+`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced
 primary is retired. Temporary clearing retains fallback entries and transport.
 The saved Configuration goes through the existing configured-Harness resolver;
@@ -204,9 +204,9 @@ model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent`
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
-[The creation form](../../apps/controller/src/console/agents/create.mjs) copies
+[The creation form](../../apps/controller/src/console/agents/create.mts) copies
 rendered settings into editable fields and checks their form representation.
 A method-only Preset authentication default selects API key or Service Accounts
 without binding a Secret. The shared Secret picker requires a same-Namespace

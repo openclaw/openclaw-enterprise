@@ -94,6 +94,7 @@ export const CreatePresetMultilineApplied = story("createPresetMultilineApplied"
 export const CreateDedicatedOpenclaw = story("createDedicatedOpenclaw");
 export const CreateDedicatedCodexCredentialSource = story("createDedicatedCodexCredentialSource");
 export const CreateCredentialRegistrationUnknown = story("createCredentialRegistrationUnknown");
+export const CreateCredentialRegistrationMismatch = story("createCredentialRegistrationMismatch");
 export const CreateCredentialRegistrationCleanup = story("createCredentialRegistrationCleanup");
 export const CreateEmbedded = { ...story("createEmbedded"), name: "Embedded OpenClaw" };
 export const CreateOpenclawWithoutNativeWorkers = {

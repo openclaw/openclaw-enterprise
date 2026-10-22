@@ -324,6 +324,67 @@ test("Credential Gateway creation registers the same model source for both dedic
   }
 });
 
+test("Create checks the requested credential registration instead of binding a different source", async (t) => {
+  const { fixture, calls } = await modelSourceFixture(t);
+  const namespace = await fixture.createNamespace("Source response identity", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const path = `${root}/credential-sources`;
+  const otherSecret = await fixture.createSecret(namespace.id, "Other key", "other-test-value");
+  const other = await fixture.request("POST", path, {
+    body: { name: "Other model source", type: "openai", secrets: { api_key: otherSecret.ref } },
+  });
+  assert.equal(other.status, 201);
+  const { page, secret } = await openModelSourceForm(t, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  let registered;
+  await page.route(`**${path}`, async (route) => {
+    if (route.request().method() !== "POST") {
+      return route.fallback();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const { data, meta } = await response.json();
+    registered = data;
+    assert.equal(registered.secrets.api_key.id, secret.id);
+    assert.notEqual(registered.id, other.data.id);
+    // Only the response is replaced. A subsequent list can distinguish both real registrations.
+    await route.fulfill({ status: 201, json: { data: other.data, meta } });
+  });
+
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  await create.click();
+  const check = page.getByRole("button", { name: "Check credential registration" });
+  await page
+    .getByRole("alert")
+    .filter({
+      hasText:
+        "Credential Source registration could not be confirmed. Check credential registration",
+    })
+    .waitFor();
+  assert.equal(
+    agentProvisionPostRequests(requests, namespace.id).length,
+    0,
+    "do not provision with the other credential source",
+  );
+  assert.equal(await create.isDisabled(), true);
+  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  assert.equal(pathRequests(requests, "POST", path).length, 1);
+  assert.equal(pathRequests(requests, "POST", `${root}/iam/access-bindings`).length, 0);
+  await check.click();
+  await page.getByText("Credential Source is ready. Select Create Agent to continue.").waitFor();
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+  const sent = page.waitForRequest((request) => request.url().endsWith("/agents/provision"));
+  await create.click();
+  assert.deepEqual((await sent).postDataJSON().harnessAuth, {
+    method: "credential_source",
+    sourceId: registered.id,
+  });
+  assert.deepEqual(
+    calls.map(({ sourceId }) => sourceId),
+    [other.data.id, registered.id],
+  );
+});
+
 test("Credential registration recovers a ready source after a same-name retry conflicts", async (t) => {
   const { fixture, calls } = await modelSourceFixture(t);
   const namespace = await fixture.createNamespace("Delayed source registration", { ready: true });

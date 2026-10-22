@@ -2596,6 +2596,20 @@ export const scenarios = {
       "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
     ],
   },
+  createCredentialRegistrationMismatch: {
+    group: "Pages/Create Agent",
+    name: "Registration response identifies a different source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "different-source",
+    actions: dedicatedOpenclawForm,
+    description:
+      "The simulated registration succeeds, but its response identifies another source in the same Namespace.",
+    steps: [
+      "Select Create Agent. The form asks you to check registration and does not start provisioning.",
+      "Select Check credential registration. The form finds the requested source and lets you continue without registering it again.",
+    ],
+  },
   createCredentialRegistrationCleanup: {
     group: "Pages/Create Agent",
     name: "Remove failed model credential registration",

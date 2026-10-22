@@ -1919,6 +1919,46 @@ test("Agent creation accepts a manual model outside the static list and saves th
   );
 });
 
+test("Agent creation recognizes its saved Configuration when JSON serializes negative zero as zero", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Configuration wire values", { ready: true });
+  const root = `/namespaces/${namespace.id}`;
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await page.getByLabel("Agent name").fill("Model temperature");
+  await enterManualModel(page, "test-model-temperature-key", "gpt-4.1");
+  await openAdvancedSettings(page);
+  const editor = page.getByLabel("Configuration JSON");
+  const values = JSON.parse(await editor.inputValue());
+  const model = values.agents.defaults.model;
+  values.agents.defaults.models[model].params = { temperature: "zero" };
+  // The input contains -0. The browser serializes that JSON number as 0 on the wire.
+  await editor.fill(JSON.stringify(values).replace('"temperature":"zero"', '"temperature":-0'));
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + root + "/configurations" &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await saved;
+  assert.equal(response.status(), 201);
+  const { data } = await response.json();
+  assert.equal(data.values.agents.defaults.models[model].params.temperature, 0);
+  const details = page.getByRole("button", { name: "Create new version", exact: true });
+  await details.or(page.getByRole("alert").filter({ hasText: "Outcome unknown" })).waitFor();
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+  assert.equal(
+    agentPostRequests(requests, namespace.id).length,
+    1,
+    "the matching saved Configuration was recognized",
+  );
+  await details.waitFor();
+});
+
 test("Agent creation names the Configuration field that holds an inline model credential without showing it", async (t) => {
   const fixture = await createConsoleAppFixture(t, {
     filesystemConfiguration: true,
@@ -2393,6 +2433,91 @@ test("Agent creation retries a denied credential grant without duplicating its s
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(agentPostRequests(requests, namespace.id).length, 1);
 });
+
+for (const swapped of ["Agent", "service principal"]) {
+  test(`Agent creation does not grant a model Secret to a different ${swapped} in the response`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Agent response identity", { ready: true });
+    const other = await fixture.createAgent(namespace.id, "Another Agent", nativeValues("other"));
+    const agents = `/namespaces/${namespace.id}/agents`;
+    const bindings = `/namespaces/${namespace.id}/iam/access-bindings`;
+    const { page } = await newPage(t, fixture);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    let created: AgentWire | undefined;
+    await page.route(`**${agents}`, async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.continue();
+      }
+      // Commit the requested Agent. Substitute a different real Agent, or only its service principal.
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      const { data, meta } = await response.json();
+      assert.equal(data.name, "New Agent");
+      assert.notEqual(data.configurationId, other.configurationId);
+      assert.notEqual(data.servicePrincipalId, other.servicePrincipalId);
+      created = data as AgentWire;
+      const swappedData =
+        swapped === "Agent" ? other : { ...data, servicePrincipalId: other.servicePrincipalId };
+      await route.fulfill({ status: 201, json: { data: swappedData, meta } });
+    });
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await page.getByLabel("Agent name").fill("New Agent");
+    const secret = await enterManualModel(page, "test-create-response-key");
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    const warning = page.getByRole("alert").filter({
+      hasText: swapped === "Agent" ? "Outcome unknown" : "service principal could not be confirmed",
+    });
+    // If creation incorrectly continues to Agent details, inspect the actual grant before failing.
+    await warning
+      .or(page.getByRole("button", { name: "Create new version", exact: true }))
+      .waitFor();
+    const saved = await fixture.request("GET", bindings);
+    assert.equal(saved.status, 200);
+    const grants: IAMAccessBindingWire[] = saved.data;
+    assert.equal(
+      grants.some(
+        (binding) =>
+          binding.subjectId === other.servicePrincipalId &&
+          "resourceId" in binding &&
+          binding.resourceId === secret.id,
+      ),
+      false,
+      "the unrelated Agent must not get access to this model Secret",
+    );
+    assert.equal(pathRequests(requests, "POST", bindings).length, 0);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+    await warning.waitFor();
+    if (swapped === "Agent") {
+      assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
+      return;
+    }
+
+    assert.ok(created);
+    const agent = created;
+    const path = `${agents}/${agent.id}`;
+    assert.equal(pathRequests(requests, "GET", path).length, 1);
+    const reread = page.waitForResponse((response) => response.url() === fixture.origin + path);
+    await page.getByRole("button", { name: "Retry credential access" }).click();
+    assert.equal((await reread).status(), 200);
+    await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
+    const result = await fixture.request("GET", bindings);
+    assert.equal(result.status, 200);
+    const recovered: IAMAccessBindingWire[] = result.data;
+    assert.deepEqual(
+      recovered.map((binding) => [
+        binding.subjectId,
+        "resourceId" in binding && binding.resourceId,
+      ]),
+      [[agent.servicePrincipalId, secret.id]],
+      "the explicit retry grants only the saved Agent access to the selected Secret",
+    );
+    assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+    assert.equal(pathRequests(requests, "POST", bindings).length, 1);
+  });
+}
 
 for (const collection of ["secrets", "configurations", "agents"]) {
   test(`Agent creation blocks duplicate writes after losing the committed ${collection} response`, async (t) => {

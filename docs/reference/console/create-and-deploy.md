@@ -153,11 +153,15 @@ Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
 If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
+The same action is safe if the Console saved the Agent but could not confirm its service
+principal. It checks the saved Agent before granting access, without creating another Agent.
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.
-Uncertain responses block another attempt: check displayed IDs and the Agents list;
-give the request ID to your operator if the outcome remains unknown.
+If a create response is missing or identifies a different resource, the write may still
+have succeeded. Check the displayed IDs and the Agents list before starting again.
+For an uncertain Credential Source, select **Check credential registration** to look up
+that registration without creating another. Give your operator the request ID if the outcome is unclear.
 
 If the Console cannot confirm a ChatGPT OAuth sign-in started, it blocks another
 start in that form. Without the session reference it cannot poll or cancel the

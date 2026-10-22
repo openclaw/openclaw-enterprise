@@ -53,7 +53,11 @@ export function secretMetadataPath(namespaceId: string, secretId: string) {
 }
 
 // Carry only the public identity, even if a response unexpectedly contains a value.
-function secretMetadata(value: unknown, namespaceId: string | undefined): SecretMetadata | null {
+export function secretMetadata(
+  value: unknown,
+  namespaceId: string | undefined,
+  expectedName?: string,
+): SecretMetadata | null {
   const data = responseFields(value);
   const { id, name } = data;
   const ref = secretSource(data.ref);
@@ -63,7 +67,8 @@ function secretMetadata(value: unknown, namespaceId: string | undefined): Secret
     ref.namespaceId !== namespaceId ||
     data.namespaceId !== namespaceId ||
     typeof name !== "string" ||
-    !name
+    !name ||
+    (expectedName !== undefined && name !== expectedName)
   ) {
     return null;
   }
@@ -605,8 +610,8 @@ export function createSecretReferenceField({
         if (!dialog.open || !isCurrent()) {
           return;
         }
-        const createdSecret = secretMetadata(result, namespaceId);
-        if (createdSecret?.name !== secretName) {
+        const createdSecret = secretMetadata(result, namespaceId, secretName);
+        if (!createdSecret) {
           throw new Error("The create response did not identify the requested Secret.");
         }
         await bindSecret(createdSecret);

@@ -167,7 +167,7 @@
     },
     {
       "rule": "unresolved-local-import",
-      "from": "apps/controller/src/console/agents/create.mjs",
+      "from": "apps/controller/src/console/agents/create.mts",
       "to": "apps/controller/src/console/default-codex-preset.mjs",
       "specifier": "../default-codex-preset.mjs",
       "kind": "import",
@@ -179,7 +179,7 @@
     },
     {
       "rule": "unresolved-local-import",
-      "from": "apps/controller/src/console/agents/create.mjs",
+      "from": "apps/controller/src/console/agents/create.mts",
       "to": "apps/controller/src/console/workspace-defaults.mjs",
       "specifier": "../workspace-defaults.mjs",
       "kind": "import",

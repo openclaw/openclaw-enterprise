@@ -16,7 +16,7 @@ user-visible behavior.
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/create.mjs:renderCreateAgent` renders the
+- `apps/controller/src/console/agents/create.mts:renderCreateAgent` renders the
   form (`renderAgentForm`) and submits it.
 - `apps/controller/src/console/agents/plugin-fields.mjs:createPluginFields` and
   `agents/repositories.mts:createRepositoryFields` supply the plugin and repository fields.
@@ -57,7 +57,7 @@ Credential, provider, and Harness changes clear results and invalidate pending r
 
 ### 2. Choose a model and starter Configuration
 
-`create.mjs:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
+`create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
 `resetModelChoices` restores the current provider's list, including Configuration
@@ -73,7 +73,7 @@ Compute supplies gateway authentication; Presets replace the starter unchanged.
 
 ### 3. Load repository options
 
-`createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
+`agents/repositories.mts:createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
 then requests optional descriptions for visible refs. [Repository admission](../agent-repository-credentials.md) resolves the
 submitted `repositoryAccess`. Retained drafts keep selections through failed
 discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
@@ -87,17 +87,24 @@ access, and Secret references to [provisioning](../agent-provisioning.md), even 
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version.
 
-Ordinary drafts first check values and plugins with
-`POST /namespaces/:namespaceId/agents/validate`, then post
-`{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
+`create.mts:renderAgentForm` checks draft values and plugins with
+`POST /namespaces/:namespaceId/agents/validate`, then posts
+`{kind: "agent", values, secretBindings}` to `.../configurations` and submits its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
+Console checks the returned Secret name and Namespace, the Configuration values and bindings
+it sent, and the Agent name, Namespace and Configuration. Before granting credential access it
+reads that Agent and confirms its service principal matches the create response. A mismatch
+stops the grant; **Retry credential access** reads the saved Agent again without recreating it.
+An unrecognized success leaves the outcome unknown and blocks another create.
+For an uncertain Credential Source registration, **Check credential registration** reads
+the source for this request and confirms its type and Secret references before continuing.
 Success opens `revision=draft`.
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](../workspace-files.md).
 
 ### 5. Grant Secret access and edit authentication
 
-`create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
+`create.mts:grantConfigurationSecretAccess` grants exact Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Grants are Installation administration: a session
 whose `/observability` probe was refused sends no IAM request and names the administrator
@@ -131,4 +138,5 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

@@ -1933,6 +1933,69 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
   );
 });
 
+for (const collection of ["secrets", "configurations"]) {
+  test(`password Preset does not adopt a different ${collection} create response`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Preset creation receipts", { ready: true });
+    const root = `/namespaces/${namespace.id}`;
+    const other =
+      collection === "secrets"
+        ? await fixture.createSecret(namespace.id, "Other model credential", "other-test-value")
+        : await fixture.createConfiguration(namespace.id, nativeValues("other"));
+    const artifact = JSON.parse(
+      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+    );
+    const preset = await fixture.request("POST", `${root}/presets`, { body: artifact });
+    assert.equal(preset.status, 201);
+    const { page } = await newPage(t, fixture);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const path = `${root}/${collection}`;
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "POST") {
+        return route.fallback();
+      }
+      // The requested write commits. Return a genuine record from this same Namespace in its place.
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      const { data, meta } = await response.json();
+      assert.notEqual(data.id, other.id);
+      assert.equal(data.namespaceId, other.namespaceId);
+      await route.fulfill({ status: 201, json: { data: other, meta } });
+    });
+
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Name", { exact: true }).fill("Requested model");
+    await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+    await page.getByLabel("Model Secret", { exact: true }).fill("test-preset-value");
+    await page.getByRole("button", { name: "Use Preset" }).click();
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await create.click();
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /Outcome unknown/ })
+      .waitFor();
+    const bindings = `${root}/iam/access-bindings`;
+    assert.equal(
+      pathRequests(requests, "POST", bindings).length,
+      0,
+      "do not grant a Secret after an unconfirmed create",
+    );
+    assert.equal(agentPostRequests(requests, namespace.id).length, 0);
+    assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+    assert.equal(await create.isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
+    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+    assert.equal(pathRequests(requests, "POST", `${root}/secrets`).length, 1);
+    assert.equal(
+      configurationPostRequests(requests, namespace.id).length,
+      collection === "secrets" ? 0 : 1,
+    );
+  });
+}
+
 test("password Preset can reuse an existing Secret and retry an uncertain grant without duplicate writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

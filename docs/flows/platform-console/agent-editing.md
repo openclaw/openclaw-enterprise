@@ -278,7 +278,7 @@ response. The editor never repeats the write automatically. See the
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
-`apps/controller/src/console/agents/create.mjs` submits `initialWorkspaceFiles`
+`apps/controller/src/console/agents/create.mts` submits `initialWorkspaceFiles`
 and `workspaceDefaultsId`. OCC stages these privately for Compute's initialization
 before execution; no gateway is needed. The [workspace setup flow](../workspace-files.md)
 owns initialization, retries, and cleanup. Live editing requires deployment.
