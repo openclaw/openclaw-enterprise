@@ -152,16 +152,20 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 		if !ok || len(profiles) == 0 {
 			return nil, fmt.Errorf("repository profiles must be explicitly approved")
 		}
-		// The worker prepares every repository credential; it refuses any other policy at startup.
+		// The worker and broker prepare only one exact writable branch per grant and
+		// refuse any other policy at startup, after the cluster effects.
 		refs, _ := policy["pushRefAllowlist"].([]any)
 		var ref string
 		if len(refs) == 1 {
 			ref, _ = refs[0].(string)
 		}
 		base, _ := policy["pullRequestBase"].(string)
-		transportOK := policy["transport"] == "git-only" || (policy["transport"] == "git-and-draft-pr" && base != "")
-		if !transportOK || !reflect.DeepEqual(profiles, []any{"git-write"}) || !strings.HasPrefix(ref, "refs/heads/") || len(ref) <= len("refs/heads/") {
-			return nil, fmt.Errorf("prepared repository access requires transport git-only or git-and-draft-pr, profiles [\"git-write\"] and exactly one pushRefAllowlist branch per repository")
+		_, hasBase := policy["pullRequestBase"]
+		transportOK := (policy["transport"] == "git-only" && !hasBase) ||
+			(policy["transport"] == "git-and-draft-pr" && base != "" && ref != "refs/heads/"+base)
+		if !transportOK || !reflect.DeepEqual(profiles, []any{"git-write"}) || !strings.HasPrefix(ref, "refs/heads/") ||
+			len(ref) <= len("refs/heads/") || strings.Contains(ref, "*") {
+			return nil, fmt.Errorf("prepared repository access requires profiles [\"git-write\"], exactly one exact pushRefAllowlist branch, and transport git-only or git-and-draft-pr with a different pullRequestBase")
 		}
 		if origin != "" && (!strings.HasPrefix(ref, "refs/heads/review/") || len(ref) <= len("refs/heads/review/") ||
 			(policy["transport"] == "git-and-draft-pr" && base != "main")) {

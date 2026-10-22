@@ -23,9 +23,9 @@ Create an absolute private directory outside the checkout. Place these files in 
 For example, copy `deploy/examples/repository-credentials/registry.json`, replace
 its example identities, and set the literal Namespace placeholder. Each policy
 needs `profiles: ["git-write"]`, `transport: git-only` (or `git-and-draft-pr` with
-`pullRequestBase`) and exactly one `pushRefAllowlist` branch; the launcher refuses
-any other grant before it starts. An unlisted repository receives no grant. Do not
-add a second Namespace policy.
+a `pullRequestBase`) and exactly one `pushRefAllowlist` branch without a wildcard.
+The launcher refuses other grant shapes before it changes the cluster. An unlisted
+repository receives no grant. Do not add a second Namespace policy.
 Use the current operator-approved addresses actually reached after network translation.
 Cover the addresses that both `github.com` and `api.github.com` can resolve to;
 GitHub rotates DNS answers, so one successful lookup or API request does not

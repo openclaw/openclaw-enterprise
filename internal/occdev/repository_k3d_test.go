@@ -115,29 +115,36 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err != nil {
 		t.Fatalf("approved input rejected: %v", err)
 	}
-	policy := registry["repositories"].([]any)[0].(map[string]any)["namespaces"].([]any)[0].(map[string]any)
-	// The worker prepares every credential and refuses other grants at startup: refuse them first.
+	var policy map[string]any
+	reset := func() {
+		registry = preparedRepositoryRegistry()
+		policy = registry["repositories"].([]any)[0].(map[string]any)["namespaces"].([]any)[0].(map[string]any)
+	}
+	// The worker and broker refuse other grants only at startup, after the
+	// cluster effects: the launcher refuses them first.
 	for _, change := range []func(){
 		func() { delete(policy, "transport") },
 		func() { policy["profiles"] = []any{"git-read"} },
 		func() { policy["pushRefAllowlist"] = []any{"refs/heads/a", "refs/heads/b"} },
+		func() { policy["pushRefAllowlist"] = []any{"refs/heads/review/*"} },
+		func() { policy["pullRequestBase"] = "main" },
 		func() { policy["transport"] = "git-and-draft-pr" },
+		func() { policy["transport"], policy["pullRequestBase"] = "git-and-draft-pr", "review/skipper" },
 	} {
-		registry = preparedRepositoryRegistry()
-		policy = registry["repositories"].([]any)[0].(map[string]any)["namespaces"].([]any)[0].(map[string]any)
+		reset()
 		change()
 		writeRegistry()
 		if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil || !strings.Contains(err.Error(), "prepared repository access requires") {
 			t.Fatalf("an unprepared grant %v was not refused before effects: %v", policy, err)
 		}
 	}
-	policy["pullRequestBase"] = "develop"
+	reset()
+	policy["transport"], policy["pullRequestBase"] = "git-and-draft-pr", "develop"
 	writeRegistry()
 	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err != nil {
 		t.Fatalf("a draft PR grant was rejected: %v", err)
 	}
-	registry = preparedRepositoryRegistry()
-	policy = registry["repositories"].([]any)[0].(map[string]any)["namespaces"].([]any)[0].(map[string]any)
+	reset()
 	// Provider egress must name specific authorized destinations, not a broad range.
 	if err := os.WriteFile(filepath.Join(directory, "upstream-cidrs.json"), []byte(`["192.0.2.0/24"]`), 0600); err != nil {
 		t.Fatal(err)
@@ -163,12 +170,25 @@ func TestDevelopmentRepositoryInputsRejectUnapprovedNamespacePolicy(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	policy["pushRefAllowlist"] = []any{"refs/heads/skipper"}
-	writeRegistry()
-	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil {
-		t.Fatal("a qualification grant outside review refs was accepted")
+	// Qualification also needs a review ref and, for a draft, the main base.
+	for _, change := range []func(){
+		func() { policy["pushRefAllowlist"] = []any{"refs/heads/skipper"} },
+		func() { policy["transport"], policy["pullRequestBase"] = "git-and-draft-pr", "develop" },
+	} {
+		reset()
+		change()
+		writeRegistry()
+		if _, err := runner.loadDevelopmentRepositoryInputs("none"); err == nil || !strings.Contains(err.Error(), "prepared Git qualification requires") {
+			t.Fatalf("qualification grant %v was not refused: %v", policy, err)
+		}
 	}
-	policy["pushRefAllowlist"] = []any{"refs/heads/review/skipper"}
+	reset()
+	policy["transport"], policy["pullRequestBase"] = "git-and-draft-pr", "main"
+	writeRegistry()
+	if _, err := runner.loadDevelopmentRepositoryInputs("none"); err != nil {
+		t.Fatalf("a qualification draft PR grant was rejected: %v", err)
+	}
+	reset()
 	writeRegistry()
 	if _, err := runner.loadDevelopmentRepositoryInputs("openshell"); err == nil {
 		t.Fatal("must not select OpenShell for Compute-owned qualification")
@@ -234,8 +254,9 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 		t.Fatalf("repository wiring failed: %v\n%s", err, strings.Join(commands(), "\n"))
 	}
 	// Run the real startup paths on the generated files first: the Installation
-	// loader (API and worker) and the repository service's projected-input
-	// loader. Each refuses a retired selection with its own error.
+	// loader shared by the API and worker, and the repository service's
+	// projected-input loader. Each refuses a retired selection with its own
+	// error. The worker's prepared Git owner needs PostgreSQL; it is not run here.
 	if nodeErr != nil {
 		t.Log("node not found; skipping the real startup parse of the generated files")
 	} else {
@@ -243,6 +264,10 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 	}
 	if !strings.Contains(strings.Join(commands(), "\n"), "create secret generic occ-repository-custody") {
 		t.Fatal("the worker custody key Secret was not created")
+	}
+	// The worker refuses a custody key that is not exactly 32 bytes.
+	if info, err := os.Stat(filepath.Join(state.directory, "repository-custody.key")); err != nil || info.Size() != 32 || info.Mode().Perm() != 0600 {
+		t.Fatalf("the worker custody key must be 32 private bytes: %v %v", info, err)
 	}
 	if helmErr != nil {
 		t.Log("helm not found (set OCC_HELM_BIN); skipping the chart render")
@@ -265,7 +290,7 @@ func parseGeneratedRepositoryStartup(t *testing.T, realNode string, state *devel
 	}
 	// The broker derives its prepared-material socket beside the control socket,
 	// and a Unix socket path must stay short.
-	sockets, err := os.MkdirTemp("", "occ-rc-")
+	sockets, err := os.MkdirTemp("/tmp", "rc-")
 	if err != nil {
 		t.Fatal(err)
 	}
