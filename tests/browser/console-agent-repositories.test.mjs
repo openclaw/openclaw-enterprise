@@ -20,6 +20,7 @@ import {
   repositoryCheckbox,
   statusTone,
   waitForCondition,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import {
   agentPostRequests,
@@ -730,8 +731,8 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
       { exact: true },
     )
     .waitFor();
-  assert.equal(await save.isEnabled(), true);
-  assert.equal(await cancel.isEnabled(), true);
+  await waitForEnabled(save);
+  await waitForEnabled(cancel);
   assert.equal(await page.locator("#repository-default-issues").isChecked(), true);
   fixture.policy.restrictions.pop();
 
@@ -774,8 +775,8 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await reload.waitFor({ state: "hidden" });
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
-  assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
+  await waitForEnabled(cancel);
+  await waitForEnabled(page.getByRole("tab", { name: "Channels", exact: true }));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
 });
 

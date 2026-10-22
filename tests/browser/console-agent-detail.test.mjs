@@ -28,6 +28,7 @@ import {
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForInputValue,
   waitForSettledFetches,
   statusTone,
@@ -2118,7 +2119,7 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
       hasText: "Access denied. You do not have permission to manage this Secret binding.",
     })
     .waitFor();
-  assert.equal(await dialog.getByLabel("Name", { exact: true }).isDisabled(), false);
+  await waitForEnabled(dialog.getByLabel("Name", { exact: true }));
   assert.equal(
     await dialog.getByLabel("Value", { exact: true }).inputValue(),
     "synthetic-duplicate-value",
@@ -2195,10 +2196,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
-  assert.equal(
-    await page.getByRole("button", { name: "Retry credential access" }).isDisabled(),
-    false,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -2942,7 +2940,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
     .locator(".agent-toolbar-actions")
     .getByRole("button", { name: "Open version draft" });
   await openDraft.waitFor();
-  assert.equal(await openDraft.isEnabled(), true);
+  await waitForEnabled(openDraft);
   // The answer denies operate and delete, so the page has no danger zone at all (UX spec 3.9):
   // a reader is not offered Stop or Delete, disabled or not.
   await waitForDangerZoneRows(page, { stop: false, delete: false });

@@ -11,6 +11,7 @@ import {
   login,
   newPage,
   settledView,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
@@ -290,8 +291,8 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     .getByRole("alert")
     .filter({ hasText: "Too many requests. Wait before trying again." })
     .waitFor();
-  assert.equal(await name.isEnabled(), true);
-  assert.equal(await submit.isEnabled(), true);
+  await waitForEnabled(name);
+  await waitForEnabled(submit);
   await submit.click();
   await dialog
     .getByRole("alert")
@@ -402,7 +403,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   // the next refusal also leaves focus on it.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.locator(settledView).locator(".state-panel").waitFor();
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await page.locator("#namespace-create-refused").count(), 0);
   await opener.click();
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
@@ -555,7 +556,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await page.getByText(REFUSED).count(), 0);
 
   // The refused administrator signs in again: a page built afresh still shows the refusal, and

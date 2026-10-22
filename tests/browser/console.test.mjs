@@ -20,6 +20,7 @@ import {
   settledFetches,
   settlePageRequests,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -2062,10 +2063,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
       { exact: true },
     )
     .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Create Namespace", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Switch Namespace", exact: true }).count(),

@@ -20,6 +20,7 @@ import {
   setSlackSelection,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForInputValue,
   secretOptionLabel,
@@ -350,8 +351,8 @@ test("saving and reloading the authentication source update the Agent page in pl
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
   await saveAuthentication.waitFor();
-  assert.equal(await saveAuthentication.isDisabled(), false);
-  assert.equal(await reload.isDisabled(), false);
+  await waitForEnabled(saveAuthentication);
+  await waitForEnabled(reload);
 });
 
 // Refresh sharing, the Configuration editor's Cancel and the Create Agent shortcuts replaced or
@@ -579,8 +580,8 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
     .getByText("Contributor · no issue management · Agent default", { exact: true })
     .waitFor();
   assert.equal(await save.isDisabled(), true);
-  assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
+  await waitForEnabled(cancel);
+  await waitForEnabled(page.getByRole("tab", { name: "Channels", exact: true }));
   assert.equal(pathRequests(place.requests, "PATCH", agentPath).length, 1);
 });
 
@@ -1593,7 +1594,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   );
   release();
   await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
-  assert.equal(await plugins.isEnabled(), true);
+  await waitForEnabled(plugins);
 });
 
 // Save Configuration collapses the ~400 px editor to its summary when the save lands, about

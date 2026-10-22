@@ -338,6 +338,18 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
   );
 }
 
+// A control becomes enabled when the page state behind it settles, which can be a task or more
+// after the text a test waits for (finding 2116). A test that expects a control to be usable
+// waits through this; one isEnabled() read can see the earlier state. A check that a control is
+// disabled at a given moment still reads isDisabled() once.
+export async function waitForEnabled(locator, timeoutMs = 10_000) {
+  await waitForCondition(
+    () => locator.isEnabled(),
+    `${locator} stayed disabled for ${timeoutMs} ms`,
+    timeoutMs,
+  );
+}
+
 // Ordering sentinel for "this action sends no request" checks. After one macrotask turn, the
 // page fetches a static asset and this waits for the response. Chromium reports requests in
 // the order the page starts them, so any request started before the sentinel (synchronously,

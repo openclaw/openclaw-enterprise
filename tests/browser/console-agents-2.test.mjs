@@ -26,6 +26,7 @@ import {
   takeLayoutShifts,
   trackSettledFetches,
   waitForCondition,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -2022,8 +2023,8 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const name = page.getByLabel("Agent name");
   const create = page.getByRole("button", { name: "Create Agent" });
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
-  assert.equal(await name.isDisabled(), false);
-  assert.equal(await create.isDisabled(), false);
+  await waitForEnabled(name);
+  await waitForEnabled(create);
 
   // A new name saves through the same Configuration.
   await name.fill("Free Agent");

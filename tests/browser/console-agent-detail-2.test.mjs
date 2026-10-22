@@ -32,6 +32,7 @@ import {
   settlePageRequests,
   trackSettledFetches,
   waitForCondition,
+  waitForEnabled,
   waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
@@ -1281,7 +1282,7 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
     await login(page, fixture, url);
     const edit = page.getByRole("button", { name: "Edit Slack", exact: true });
     await edit.waitFor();
-    assert.equal(await edit.isEnabled(), true);
+    await waitForEnabled(edit);
     await edit.click();
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
     if (enterpriseOrgInstall) {
@@ -3459,7 +3460,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     message: "The requested workspace file was not found.",
   });
   await form.getByText("USER.md is missing. Save to create it.", { exact: true }).waitFor();
-  assert.equal(await editor.isEnabled(), true);
+  await waitForEnabled(editor);
   assert.equal(await editor.inputValue(), "", "explicit Reload discards the uncertain draft");
   assert.equal(writeRequests().length, 1, "readback never automatically repeats a write");
   await editor.fill("# Deliberate replacement create\n");
@@ -4168,7 +4169,7 @@ test("Console can repeat Stop without treating the selected version as cleanup c
   await page
     .getByText("No version is selected. Deploy a new version to start this Agent.")
     .waitFor();
-  assert.equal(await repeat.isEnabled(), true);
+  await waitForEnabled(repeat);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   await repeat.click();
   const noSelectionResult = page.waitForResponse(

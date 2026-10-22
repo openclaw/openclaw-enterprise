@@ -16,6 +16,7 @@ import {
   nonAuthWriteRequests,
   secretOptionLabel,
   selectSecret,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -118,7 +119,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
       hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
     })
     .waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
@@ -141,7 +142,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     .getByRole("alert")
     .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
     .waitFor();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await page.unroute(deployUrl);
 
   const deployResponse = page.waitForResponse(
@@ -263,7 +264,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
   ]) {
     answer = { status, error };
     const label = JSON.stringify(answer);
-    await deploy.and(page.locator(":enabled")).waitFor();
+    await waitForEnabled(deploy);
     await deploy.click();
     const alert = page.getByRole("alert").filter({ hasText: text });
     await alert.waitFor();
@@ -482,7 +483,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;
   await page.reload();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await deploy.click();
   await page.getByText(/Outcome unknown/).waitFor();
   assert.equal(await deploy.isDisabled(), true);

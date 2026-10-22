@@ -29,6 +29,7 @@ import {
   selectSecret,
   settlePageRequests,
   repositoryCheckbox,
+  waitForEnabled,
   waitForInputValue,
   statusTone,
 } from "./console-agents-browser-helpers.mjs";
@@ -585,7 +586,7 @@ test("Dedicated repository Agent keeps its bindings through Slack save and the c
     .getByText("Complete these in Credentials before deploying: Slack Secret bindings.")
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  assert.equal(await page.getByLabel("Slack app token").isEnabled(), true);
+  await waitForEnabled(page.getByLabel("Slack app token"));
   assert.equal(
     pathRequests(
       requests,
@@ -787,7 +788,7 @@ test("Agent creation blocks selective Agent-create IAM unavailability even when 
   fixture.controller.selectDriver("iam", originalIAM.id);
   await page.getByRole("button", { name: "Retry repository choices", exact: true }).click();
   await page.getByText("Select repositories for this Agent.", { exact: false }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
 });
 
 for (const failure of [
@@ -849,7 +850,7 @@ for (const failure of [
     await page.unroute(path, failDiscovery);
     await page.getByRole("button", { name: "Retry repository choices", exact: true }).click();
     await page.getByText(/No approved repositories are available/).waitFor();
-    assert.equal(await page.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
+    await waitForEnabled(page.getByRole("button", { name: "Create Agent" }));
     const createdResponse = page.waitForResponse(
       (response) =>
         response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -964,7 +965,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
     await page.getByRole("button", { name: "Remove example/application" }).isDisabled(),
     true,
   );
-  assert.equal(await page.getByRole("button", { name: "Start a new draft" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Start a new draft" }));
 
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page
@@ -1067,7 +1068,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
 
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page.getByText(/Repository choices reloaded/).waitFor();
-  assert.equal(await repositoryCheckbox(page, "example/application").isEnabled(), true);
+  await waitForEnabled(repositoryCheckbox(page, "example/application"));
   assert.equal(await page.locator(".repository-card").count(), 0);
   // Refreshing policy permits editing; it must not turn this saved attempt into an ordinary Agent.
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
