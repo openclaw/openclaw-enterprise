@@ -10,7 +10,7 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";

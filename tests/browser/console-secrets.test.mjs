@@ -7,6 +7,7 @@ import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,
   consoleStorage,
+  expectWriteAsksBeforeUnload,
   fileBrowser,
   holdRequests,
   login,
@@ -442,4 +443,37 @@ test("pending Secret creation blocks navigation and replay, then session loss cl
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await page.locator("[data-secret-value]").count(), 0);
   assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
+});
+
+// The dialog holds in-app navigation while its write is in flight; a reload or tab close asks
+// first too, and stops asking once the answer comes, refused or saved (finding 2181).
+test("a reload asks first only while a Secret write is in flight", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Reload writes", { ready: true });
+  await fixture.createSecret(namespace.id, "Taken name", "synthetic-taken-value");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const create = dialog(page, "Create Secret");
+  const submit = () => create.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const url = `${fixture.origin}${secretPath(namespace)}`;
+  await create.getByLabel("Secret name").fill("Taken name");
+  await create.getByLabel("Value", { exact: true }).fill("synthetic-refused-value");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    settled: () => create.getByText(/choose a unique name/).waitFor(),
+  });
+  await create.getByLabel("Secret name").fill("Reload credential");
+  await create.getByLabel("Value", { exact: true }).fill("synthetic-saved-value");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    // The heading changes before the list is read again; Close is enabled once the write ends.
+    settled: () =>
+      dialog(page, "Secret created")
+        .getByRole("button", { name: "Close", disabled: false })
+        .waitFor(),
+  });
 });

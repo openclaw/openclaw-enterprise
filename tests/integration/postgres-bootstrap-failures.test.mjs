@@ -8,7 +8,7 @@ import { join, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";

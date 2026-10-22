@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "./password-hasher.mjs";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";

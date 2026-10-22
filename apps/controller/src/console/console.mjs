@@ -1869,6 +1869,19 @@ async function loadPage({
           writeInFlight = check;
         }
       },
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
+      holdWhileWriting({ writing, held, released }) {
+        agentContext.setLeaveGuard(() => {
+          if (!writing()) {
+            released?.();
+            return false;
+          }
+          held();
+          return true;
+        });
+        agentContext.setWriteInFlight(writing);
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
