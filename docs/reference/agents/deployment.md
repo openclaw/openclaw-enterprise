@@ -277,6 +277,17 @@ Agent. Each returned Agent revision requires its own authorized read; substituti
 parent does not grant access to another Agent's history. Public response shapes
 are defined by the [API reference](../api.md).
 
+## Harness Sandbox status
+
+`GET /namespaces/:namespaceId/agents/:agentId/harness-status` requires Agent
+`read`. For a running Agent whose selected version has a dedicated Harness
+Sandbox, OCC reads the [Sandbox Driver's record](../drivers/sandbox.md) on each
+request and answers `observed` with that `revisionId` and its `harness` state.
+Otherwise it answers `unobserved`. `lost` means that the Sandbox does not serve
+the version, for example after a node restart stopped it. OCC does not restart
+it: deploy a new version. A record that OCC cannot read is `unknown`, never `lost`.
+`occ agent get` and the Console's **Live serving** show this status; Agent lists do not.
+
 ## Stop and resume
 
 In the console, open the Agent, select **Stop Agent**, and confirm. Use

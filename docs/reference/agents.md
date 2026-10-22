@@ -80,16 +80,6 @@ results are excluded. `progress.nextAttemptAt` is the earliest queued
 eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
-### Harness Sandbox status
-
-`GET /namespaces/:namespaceId/agents/:agentId/harness-status` requires Agent
-`read`. For a running Agent whose selected version has a dedicated Harness
-Sandbox, OCC reads the [Sandbox Driver's record](drivers/sandbox.md) on each
-request and answers `observed` with that `revisionId` and its `harness` state.
-Otherwise it answers `unobserved`. `lost` means that the Sandbox does not serve
-the version, for example after a node restart stopped it. OCC does not restart
-it: deploy a new version. A record that OCC cannot read is `unknown`, never `lost`.
-
 Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
 Deployment failure remains terminal. Terminal preparation errors retain
 `error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
