@@ -121,8 +121,8 @@ test(
       if ("repositoryCredentials.enabled" in values) {
         expected.push("repository-registry", "repository-public-ca");
       }
-      // Loading the Installation reads preparedGitHub.issuerCaPath (finding 2205). The custody
-      // key is read only after startup, so the hook never mounts it.
+      // Loading the Installation reads preparedGitHub.issuerCaPath (finding 2205). The worker
+      // reads the custody key only after it opens the database, so the hook never mounts it.
       if ("preparedGitHub.issuerCaConfigMapName" in values) {
         expected.push("prepared-github-issuer-ca");
       }
@@ -140,6 +140,7 @@ test(
           api.volumes.find(({ name }) => name === mount.name),
         );
       }
+      assert.ok(!hook.volumes.some(({ name }) => name === "prepared-github-custody"));
       assert.equal(hook.automountServiceAccountToken, false);
     }
   },
