@@ -1215,7 +1215,7 @@ const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
   "operator.talk",
   "operator.talk.secrets",
 ]);
-// Gateways read proxy headers as Latin-1 byte strings, so only printable ASCII matches reliably.
+// Gateways decode proxy headers as Latin-1, so only printable ASCII is unambiguous.
 const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
@@ -13168,7 +13168,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           (user) =>
             typeof user !== "string" ||
             user.trim() !== user ||
-            !PRINTABLE_ASCII_IDENTITY.test(user),
+            !PRINTABLE_ASCII_IDENTITY.test(user) ||
+            // The Gateway looks grants up by plain property access.
+            Object.hasOwn(Object.prototype, user),
         ) ||
         new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
           allowUsers.length)

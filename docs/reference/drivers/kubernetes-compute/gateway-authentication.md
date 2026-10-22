@@ -6,7 +6,7 @@ or set them to those exact values. Omission defaults `allowUsers` to
 `["occ-workspace-files"]` and its `identityScopes` grant to `["operator.admin"]`.
 Human policies must retain the machine identity and its exact `["operator.admin"]` grant.
 Empty allowlists and nonstring, blank, untrimmed or non-printable-ASCII identities
-fail closed. So do duplicates and case variants of `occ-workspace-files` or of an
+fail closed, as do JavaScript object property names such as `constructor`. So do duplicates and case variants of `occ-workspace-files` or of an
 email-style identity: OpenClaw matches `identityScopes` case-insensitively for
 identities containing `@`, so such variants would share one grant.
 
@@ -66,8 +66,9 @@ as an issuer-qualified OIDC subject. Reserve `occ-workspace-files` for OCC:
 the human ingress must never emit that identity.
 
 The ingress must also set `x-openclaw-scopes` on every request, HTTP and WebSocket
-upgrade, to that person's granted scopes, replacing any client value; an empty
-value grants none. Stripping the header is not enough. Native HTTP APIs, such as
+upgrade, to that person's granted scopes, replacing any client value. To grant none,
+send a value that is not a scope, such as `none`: many proxies drop empty
+headers. Stripping the header is not enough. Native HTTP APIs, such as
 `/tools/invoke` and `/sessions/<key>/kill`, ignore `identityScopes`: without the
 header, OpenClaw gives a trusted-proxy request its default operator scopes,
 including `operator.admin`, narrowed only by native role ceilings. On WebSocket
@@ -100,9 +101,16 @@ Omitting them uses OpenClaw's defaults: `operator.read`, `operator.write`,
 `operator.approvals` and `operator.questions`. Explicit read/write device scopes
 can likewise widen a narrower identity grant. Set device scopes explicitly for
 the least-privileged admitted human; per-identity grants cannot subtract them, but
-the ingress's per-person `x-openclaw-scopes` cap can. Admitting humans does not
-narrow devices already paired with admin grants, for example under earlier
-machine-only admin auto-approval: review and revoke those pairings first.
+the ingress's per-person `x-openclaw-scopes` cap can. A paired device keeps its grant under any
+admitted identity that presents its key, and narrowing a person's grant does not
+narrow their devices. Admitting humans does not narrow devices already paired
+with admin grants, for example under earlier machine-only admin auto-approval:
+review and revoke those pairings first.
+
+When native configuration is writable, any `operator.admin` holder, human or
+machine, can change `allowUsers`, `identityScopes` and device auto-approval in
+the running Gateway, bypassing these checks until the Pod is replaced. Grant
+human admin only to people trusted to decide who else gets access.
 
 ## Listener and proxy trust
 

@@ -5895,6 +5895,8 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       ["occ-workspace-files", "oidc:member\u0000-01"],
       ["occ-workspace-files", "oidc:member\t01"],
       ["occ-workspace-files", 42],
+      ["occ-workspace-files", "constructor"],
+      ["occ-workspace-files", "__proto__"],
     ]) {
       // Machine-only grants keep the identityScopes checks from refusing first.
       assert.throws(
