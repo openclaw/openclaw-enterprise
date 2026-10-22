@@ -3415,6 +3415,15 @@ export const scenarios = {
     description:
       "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
   },
+  createOAuthStartUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in start unconfirmed (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
+    actions: oauthForm,
+    description:
+      "Choose Sign in with OAuth. The simulated response is interrupted after its headers, so the Console cannot tell whether sign-in started. Switch authentication methods and return: a second sign-in stays unavailable.",
+  },
   createOAuthError: {
     group: "Pages/Create Agent",
     name: "ChatGPT login exchange failed (Experimental)",
