@@ -1458,6 +1458,137 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   overflow-wrap: anywhere;
 }
+/* Connections (RFC-0023): the Agent's connected accounts, beside native administration. */
+.agent-connections {
+  padding: clamp(var(--space-4), 2vw, var(--space-6));
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+.agent-connections h2 {
+  margin: 0 0 var(--space-2);
+  color: var(--text-strong);
+  letter-spacing: var(--tracking-tight);
+}
+.agent-connections > p {
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+.agent-connections > p:empty,
+.agent-connections-outcome:empty,
+.agent-connections-list:empty,
+.agent-connections-available:empty {
+  display: none;
+}
+.agent-connections-outcome {
+  margin-top: var(--space-3);
+}
+.agent-connections-list,
+.connection-templates-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.agent-connection,
+.connection-template {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.agent-connection p,
+.connection-template p {
+  margin: 0;
+}
+.agent-connection-heading,
+.connection-template-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.agent-connection-actions,
+.agent-connections-available,
+.connection-template-actions,
+.connection-template-grant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.agent-connections-available {
+  margin-top: var(--space-4);
+}
+.agent-connection-consent {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: var(--space-4) 0;
+  overflow-wrap: anywhere;
+}
+.agent-connection-consent dt {
+  color: var(--color-text-muted);
+}
+.agent-connection-consent dd {
+  margin: 0;
+}
+.agent-connection-consent ul,
+.connection-template-grants {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.connection-choice-fields {
+  margin-block: var(--space-5);
+}
+.connection-choice-fields[hidden] {
+  display: none;
+}
+.connection-choices {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.connection-choice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.connection-template-facts dd code + code {
+  margin-left: var(--space-2);
+}
+.connection-template-grant select,
+.connection-template-grant input {
+  min-height: var(--control-h);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.connection-templates > .button {
+  justify-self: start;
+  margin-top: var(--space-4);
+}
+.connection-template-form {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+}
+.connection-template-dialog {
+  width: min(40rem, calc(100vw - 2 * var(--space-4)));
+}
+@media (max-width: 760px) {
+  .agent-connection-consent {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 /* The overview: the stat card (facts + the page's one disclosure), then the deployment card. */
 .agent-overview-status {
   display: grid;

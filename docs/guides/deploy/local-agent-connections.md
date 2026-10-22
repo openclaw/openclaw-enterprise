@@ -83,9 +83,13 @@ with these local differences:
 ## Connect and check
 
 Continue the [Gmail guide](google-gmail-connection.md#create-the-connection-template)
-with `OCC_URL=http://127.0.0.1:3000`, the loopback API, for either console. Locally, you can create and share the
-template with the CLI and the service key file that startup prints, instead of
-an administrator session:
+in the console that startup prints. Sign in as the administrator to create the
+template, and as the person who connects to connect and deploy. A connected Agent
+refuses deployment by anyone else, including the service key.
+
+Locally, you can also create and share the template with the CLI and the service
+key file that startup prints, using the template fields from the
+[reference](../../reference/connection-templates.md#connection-templates):
 
 ```bash
 export OCC_URL=http://127.0.0.1:3000
@@ -93,11 +97,6 @@ export OCC_SERVICE_KEY_FILE=<service key file>
 ./bin/occ connection-template create --file "$PRIVATE_DIR/template.json"
 ./bin/occ connection-template bind <templateId> --namespace <namespaceId>
 ```
-
-Sign in to the console that startup prints as the person who connects, and
-start the connection from that tab. After the callback, that person must deploy
-the Agent: a connected Agent refuses deployment by anyone else, including the
-service key.
 
 The OpenShell gateway logs `provider credential refresh completed` with
 `credential_key=GOG_ACCESS_TOKEN` after the first token is issued.

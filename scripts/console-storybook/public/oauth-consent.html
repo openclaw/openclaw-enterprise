@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simulated consent</title>
+    <style>
+      body {
+        max-width: 28rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        font: 15px/1.5 system-ui;
+        color: #202124;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        margin-right: 0.5rem;
+        font: inherit;
+        cursor: pointer;
+      }
+      code {
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Simulated provider consent</h1>
+    <p>
+      This page stands in for the provider’s consent screen. No provider, code exchange, or token is
+      involved. Approve or deny reports the outcome the way the console page that the OCC callback
+      redirects to does.
+    </p>
+    <p>OpenClaw Enterprise wants access to <strong id="name"></strong>:</p>
+    <ul id="scopes"></ul>
+    <button id="deny" type="button">Deny</button>
+    <button id="approve" type="button">Approve</button>
+    <p id="result" role="status"></p>
+    <script type="module">
+      const query = new URL(location.href).searchParams;
+      document.querySelector("#name").textContent = query.get("name");
+      for (const scope of (query.get("scopes") ?? "").split(" ").filter(Boolean)) {
+        const item = document.createElement("li");
+        const code = document.createElement("code");
+        code.textContent = scope;
+        item.append(code);
+        document.querySelector("#scopes").append(item);
+      }
+      function report(outcome, reason) {
+        const channel = new BroadcastChannel("oce-agent-connections");
+        const id = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          channel.close();
+          document.querySelector("#result").textContent =
+            "No console tab claimed this outcome. The same-tab redirect needs the real OCC callback.";
+        }, 400);
+        channel.onmessage = (event) => {
+          if (event.data?.type === "claimed" && event.data.id === id) {
+            clearTimeout(timer);
+            channel.close();
+            window.close();
+          }
+        };
+        channel.postMessage({
+          type: "outcome",
+          id,
+          outcome,
+          reason,
+          agentId: outcome === "connected" ? query.get("agent") : null,
+          namespaceId: outcome === "connected" ? query.get("namespace") : null,
+          // Fixture only: names the pending connection for the simulated API.
+          source: query.get("source"),
+        });
+      }
+      document.querySelector("#approve").addEventListener("click", () => report("connected", null));
+      document
+        .querySelector("#deny")
+        .addEventListener("click", () => report("failed", "consent_denied"));
+    </script>
+  </body>
+</html>

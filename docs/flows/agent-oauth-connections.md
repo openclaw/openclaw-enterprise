@@ -1,7 +1,7 @@
 ---
 created: "2026-10-20"
-updated: "2026-10-20"
-last_updated_session: "claude-code/session_01HzmRt1DGB79VEnEWHt7PRy"
+updated: "2026-10-22"
+last_updated_session: "claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679"
 ---
 
 # Agent OAuth connection lifecycle Flow
@@ -25,6 +25,8 @@ removes it. Deployment and attachment continue in the
 - Source: `packages/occ/src/index.ts:startAgentConnection`
 - Source: `packages/occ/src/index.ts:completeAgentConnection`
 - Source: `apps/controller/src/http/connections.ts:createConnectionCallback`
+- Console caller: `apps/controller/src/console/agents/connections.mjs:renderAgentConnections`
+  and `apps/controller/src/console/connection-outcome.mjs:receiveConnectionOutcome`
 - Assumptions: a `ready` Namespace and active Agent; a connection template with a
   registered client; selected OpenShell Credential Gateway (with `toolBinaries`)
   and Credential Refresh Driver (with `clientWorkspace`); Backend `operatorTls`; a
@@ -135,7 +137,29 @@ From here `personalAgentOwner` returns the owner. Deploy
 admin (`getAuthorizedActiveAgentRevision`), Namespace access bindings,
 Configuration saves, and `authorizeAgentCredentialSources` enforce it.
 
-### 6. Disconnect
+### 6. Return the outcome to the console
+
+`apps/controller/src/console/agents/connections.mjs:renderAgentConnections`,
+`apps/controller/src/console/connection-outcome.mjs:receiveConnectionOutcome`
+
+The Agent page's **Connect** opens a blank named popup inside the click, so
+popup blockers allow it, then sends the start request and points the popup at
+`authorizationUrl`. When the browser returns no popup, the page records the Agent
+and any reconnect target in session storage and opens `authorizationUrl` in the
+same tab.
+
+The callback's `303` loads the console in whichever window holds the consent.
+Before routing, `receiveConnectionOutcome` removes `connection` and `reason` from
+the URL and offers the outcome on the `oce-agent-connections` BroadcastChannel.
+A provider's opener policy can sever `window.opener`, so the channel is the only
+path back. A tab waiting on a popup claims the outcome; the popup then closes.
+Without a claim, the page uses the session-storage record to return a failure,
+whose redirect names no Agent, to the Agent that started it. The Agent page
+rereads connections and offers **Deploy new version**. A reconnect then
+disconnects the replaced source. Returning focus to the starting tab also rereads,
+so a missed message still shows the new connection.
+
+### 7. Disconnect
 
 `packages/occ/src/index.ts:disconnectAgentConnection`
 
@@ -162,7 +186,8 @@ deletion.
   (`status.refresh`).
 - `tests/integration/postgres-agent-connections.test.mjs` (keycloak-oidc lane)
   proves the HTTP, PostgreSQL, IAM, and real Keycloak authorization-code + PKCE
-  path with an OpenShell transport double. It does not prove OpenShell refresh,
+  path with an OpenShell transport double, and drives the same path from the
+  console's Settings and Agent page in headless Chromium. It does not prove OpenShell refresh,
   operator-TLS readback against a real gateway, or substitution in a Sandbox.
 
 ## Related docs
@@ -172,6 +197,7 @@ deletion.
 - [Credential source refresh](credential-source-refresh.md)
 - [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md#configure-the-driver)
 - [Connect Google Gmail](../guides/deploy/google-gmail-connection.md)
+- [Connect accounts in the console](../guides/console/agent-connections.md)
 
 ## Manual Notes
 
@@ -179,4 +205,5 @@ deletion.
 
 ## Changelog
 
+- 2026-10-22 03:30: Add the console's popup, same-tab redirect, and outcome hand-off (claude-code/0aaa76e4-8457-4cdb-b732-780b69e59679 - 4bde49d9d)
 - 2026-10-20 21:44: Document the RFC-0023 connection lifecycle (claude-code/session_01HzmRt1DGB79VEnEWHt7PRy - 0400c9f6729f6ce5efd91040f2802a21dfc1d90e)

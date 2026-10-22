@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { chromium } from "playwright";
 
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
@@ -11,8 +12,10 @@ import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/d
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import { chromiumTrustArg, startHttpsIngress } from "../helpers/console-app.mjs";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { tlsPeerCertificate } from "../helpers/tls-peer-certificate.mjs";
 
 // RFC-0023 connections through the production Fastify app, PostgreSQL State, Native IAM, and
 // the real OpenShell Credential Gateway and Refresh Drivers, against a real Keycloak issuer.
@@ -32,6 +35,20 @@ const requiresKeycloak = {
     (issuer && secretsFile && tokenOrigin
       ? false
       : "Prepare the keycloak-oidc lane for OCC_TEST_KEYCLOAK_ISSUER, OCC_TEST_KEYCLOAK_SECRETS_FILE and OCC_TEST_KEYCLOAK_TOKEN_ORIGIN (docs/testing/ci.md)."),
+};
+
+// The console test serves the app behind the lane's HTTPS console origin, which the browser
+// and Keycloak's registered redirect URI both use.
+const consolePort = Number(process.env.OCC_TEST_KEYCLOAK_CONSOLE_PORT);
+const requiresConsole = {
+  skip:
+    requiresKeycloak.skip ||
+    (Number.isInteger(consolePort) &&
+    process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT &&
+    process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY &&
+    process.env.OCC_TEST_KEYCLOAK_CA_CERT
+      ? false
+      : "Prepare the keycloak-oidc lane's console origin (OCC_TEST_KEYCLOAK_CONSOLE_PORT, _CERT, _KEY and OCC_TEST_KEYCLOAK_CA_CERT; docs/testing/ci.md)."),
 };
 
 const publicOrigin = "https://occ-connections.test";
@@ -68,7 +85,7 @@ async function keycloakAdmin(secrets, method, path, body) {
 }
 
 /** A confidential standard-flow client with S256 PKCE and OCC's exact callback URI. */
-async function createConnectionClient(secrets, realm, clientId) {
+async function createConnectionClient(secrets, realm, clientId, callback = redirectUri) {
   const secret = `client-secret-${randomUUID()}`;
   await keycloakAdmin(secrets, "POST", `/realms/${realm}/clients`, {
     clientId,
@@ -77,7 +94,7 @@ async function createConnectionClient(secrets, realm, clientId) {
     secret,
     standardFlowEnabled: true,
     directAccessGrantsEnabled: false,
-    redirectUris: [redirectUri],
+    redirectUris: [callback],
     attributes: { "pkce.code.challenge.method": "S256" },
   });
   return secret;
@@ -175,6 +192,48 @@ function recordingOpenShell() {
   return { client, providers, refresh };
 }
 
+/**
+ * Selects the real OpenShell Credential Gateway and Refresh Drivers over the recording
+ * transport. Agents must be deployed first: with a gateway, OCC refuses the fixture's API-key
+ * Harness binding.
+ */
+function selectConnectionDrivers(fixture) {
+  // Only the Kubernetes Compute Driver places Credential Gateway sources; like it, this
+  // placement names the Namespace's Sandbox view with a short Kubernetes namespace label,
+  // which OpenShell operator mode uses as the Workspace name.
+  fixture.computeDriver.resolveSandboxNamespace = async (namespace) => ({
+    ...namespace,
+    name: `oce-${namespace.id.slice(3, 11)}`,
+  });
+  const openShell = recordingOpenShell();
+  const backend = createOpenShellBackend(
+    {
+      id: "openshell-test",
+      type: "openshell",
+      configuration: { endpoint: "http://127.0.0.1:1" },
+      drivers: {
+        credential_gateway: "openshell-credentials",
+        sandbox: "openshell-sandbox",
+        credential_refresh: "openshell-refresh",
+      },
+    },
+    { gatewayClient: openShell.client },
+  );
+  const gateway = new OpenShellCredentialGatewayDriver(
+    { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
+    { id: "openshell-credentials", backend },
+  );
+  const refresh = new OpenShellCredentialRefreshDriver(
+    { clientWorkspace },
+    { id: "openshell-refresh", backend },
+  );
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  fixture.controller.registerDriver(refresh);
+  fixture.controller.selectDriver("credential_refresh", refresh.id);
+  return openShell;
+}
+
 test(
   "a person connects their Keycloak account to their personal Agent and nobody else can use it",
   requiresKeycloak,
@@ -193,7 +252,7 @@ test(
         provisionAuthAccount: (...input) => provision(...input),
       },
     });
-    const { app, controller, state, pool, inject } = fixture;
+    const { app, state, pool, inject } = fixture;
     const installation = await state.loadInstallation();
     const humanAuthentication = new PostgresHumanAuthentication(
       state,
@@ -214,39 +273,7 @@ test(
     const { namespace, agent } = await fixture.deployAgent("connections");
     const other = await fixture.deployAgent("connections other");
 
-    // Only the Kubernetes Compute Driver places Credential Gateway sources; like it, this
-    // placement names the Namespace's Sandbox view with a short Kubernetes namespace label,
-    // which OpenShell operator mode uses as the Workspace name.
-    fixture.computeDriver.resolveSandboxNamespace = async (namespace) => ({
-      ...namespace,
-      name: `oce-${namespace.id.slice(3, 11)}`,
-    });
-    const openShell = recordingOpenShell();
-    const backend = createOpenShellBackend(
-      {
-        id: "openshell-test",
-        type: "openshell",
-        configuration: { endpoint: "http://127.0.0.1:1" },
-        drivers: {
-          credential_gateway: "openshell-credentials",
-          sandbox: "openshell-sandbox",
-          credential_refresh: "openshell-refresh",
-        },
-      },
-      { gatewayClient: openShell.client },
-    );
-    const gateway = new OpenShellCredentialGatewayDriver(
-      { binaries: ["/app/bin/codex"], toolBinaries: ["/usr/local/bin/gog"] },
-      { id: "openshell-credentials", backend },
-    );
-    const refresh = new OpenShellCredentialRefreshDriver(
-      { clientWorkspace },
-      { id: "openshell-refresh", backend },
-    );
-    controller.registerDriver(gateway);
-    controller.selectDriver("credential_gateway", gateway.id);
-    controller.registerDriver(refresh);
-    controller.selectDriver("credential_refresh", refresh.id);
+    const openShell = selectConnectionDrivers(fixture);
 
     // Bob and Carol are ordinary people with no Installation grant.
     const people = {};
@@ -446,9 +473,12 @@ test(
     const stolen = await carol.request("GET", callbackPath);
     assert.equal(stolen.statusCode, 303, stolen.body);
     assert.match(stolen.headers.location, /connection=failed&reason=unknown_session/);
+    // Scoped to this run's people, so a rerun on the same database reads only its own events.
     const refusedAudit = await pool.query(
       `SELECT actor_id, details FROM occ.audit_events
-       WHERE action = 'openclaw.agents.connections.complete' AND outcome = 'failure'`,
+       WHERE action = 'openclaw.agents.connections.complete' AND outcome = 'failure'
+         AND actor_id = ANY($1)`,
+      [[bob.principalId, carol.principalId]],
     );
     assert.deepEqual(
       refusedAudit.rows.map((row) => [row.actor_id, row.details?.__occAuditMetadata?.reasonCode]),
@@ -602,5 +632,191 @@ test(
     ]) {
       assert.equal(recorded.includes(value), false);
     }
+  },
+);
+
+test(
+  "the owner connects and disconnects their Keycloak account from the console",
+  requiresConsole,
+  async (t) => {
+    const secrets = JSON.parse(await readFile(secretsFile, "utf8"));
+    const consoleOrigin = `https://127.0.0.1:${consolePort}`;
+    const consoleCallback = `${consoleOrigin}/oauth/callback`;
+    // As in the API test, the clock moves past the gateway's registration fence instead of
+    // sleeping before the source can be deleted.
+    let skewMs = 0;
+    const fixture = await createPostgresAgentApp(t, {
+      controllerOptions: { now: () => new Date(Date.now() + skewMs) },
+      label: `connections-console-${randomUUID().slice(0, 8)}`,
+      authSecret: "openclaw-connections-test-auth-secret-minimum-32-bytes",
+      authOrigin: consoleOrigin,
+      appOptions: { publicOrigin: consoleOrigin },
+    });
+    const { app, inject } = fixture;
+    const { namespace, agent } = await fixture.deployAgent("console connections");
+    selectConnectionDrivers(fixture);
+
+    const clientId = `oce-console-${randomUUID().slice(0, 8)}`;
+    const clientSecret = await createConnectionClient(secrets, "oce", clientId, consoleCallback);
+    t.after(async () => {
+      const clients = await keycloakAdmin(
+        secrets,
+        "GET",
+        `/realms/oce/clients?clientId=${clientId}`,
+      );
+      for (const client of clients ?? []) {
+        await keycloakAdmin(secrets, "DELETE", `/realms/oce/clients/${client.id}`).catch(() => {});
+      }
+    });
+
+    // The production app behind the lane's HTTPS origin, as an ingress would serve it.
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const tls = {
+      key: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_KEY),
+      cert: await readFile(process.env.OCC_TEST_KEYCLOAK_CONSOLE_CERT),
+    };
+    const ingress = await startHttpsIngress({
+      port: consolePort,
+      upstreamPort: app.server.address().port,
+      tls,
+    });
+    t.after(ingress.close);
+    const keycloakLeaf = await tlsPeerCertificate({
+      host: "127.0.0.1",
+      port: 443,
+      servername: new URL(issuer).hostname,
+      ca: await readFile(process.env.OCC_TEST_KEYCLOAK_CA_CERT),
+    });
+    const browser = await chromium.launch({
+      headless: true,
+      // Trusts exactly the console origin and Keycloak leaves.
+      args: [chromiumTrustArg([tls.cert, keycloakLeaf])],
+      ...(process.env.OCC_TEST_BROWSER_EXECUTABLE
+        ? { executablePath: process.env.OCC_TEST_BROWSER_EXECUTABLE }
+        : {}),
+    });
+    t.after(() => browser.close());
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const pageErrors = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    // The Installation administrator signs in with the bootstrap password.
+    await page.goto(`${consoleOrigin}/console/`);
+    await page.getByLabel("Email", { exact: true }).fill("postgres-admin@openclaw.local");
+    await page.getByLabel("Password").fill("postgres-development-password");
+    const signedIn = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/auth/sign-in/email",
+    );
+    await page.getByRole("button", { name: "Sign in" }).click();
+    assert.equal((await signedIn).status(), 200);
+
+    // Settings: create the template from the form. The client secret goes only to the API.
+    await page.goto(`${consoleOrigin}/console/settings?namespace=${namespace.id}`);
+    const templates = page.getByRole("region", { name: "Connection templates", exact: true });
+    // The database is shared with the API test, so this template has its own name.
+    const name = `Keycloak ${clientId}`;
+    await templates.getByRole("button", { name: "New connection template" }).click();
+    const editor = page.getByRole("dialog", { name: "New connection template" });
+    const realm = `${new URL(issuer).origin}/realms/oce`;
+    for (const [label, value] of [
+      ["Name", name],
+      ["Issuer", realm],
+      ["Authorization URL", `${realm}/protocol/openid-connect/auth`],
+      ["Token URL", `${tokenOrigin}/realms/oce/protocol/openid-connect/token`],
+      ["Client ID", clientId],
+      ["Client secret", clientSecret],
+      ["Scopes", "openid"],
+      ["Endpoint host", "api.connections.test"],
+      ["Endpoint path", "/**"],
+      ["Variable", "CONNECTION_TOKEN"],
+    ]) {
+      await editor.getByLabel(label, { exact: true }).fill(value);
+    }
+    await editor.getByRole("button", { name: "Create template" }).click();
+    await editor.waitFor({ state: "detached" });
+    const row = templates.getByRole("listitem").filter({ hasText: name });
+    await row.getByText(consoleCallback).waitFor();
+
+    // Grant use to the Agent's Namespace from the template's row.
+    await row.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
+    await row.getByRole("button", { name: "Grant use" }).click();
+    await row.getByRole("button", { name: /^Remove use for / }).waitFor();
+    const template = (await inject("GET", "/connection-templates"))
+      .json()
+      .data.find((item) => item.displayName === name);
+    assert.ok(template, "the console created the template");
+    assert.equal(template.redirectUri, consoleCallback);
+    assert.deepEqual(template.current.scopes, ["openid"]);
+    assert.equal("clientSecret" in template.current, false, "the secret is write-only");
+    const grants = (await inject("GET", "/iam/access-bindings"))
+      .json()
+      .data.filter((binding) => binding.resourceId === template.id);
+    assert.deepEqual(
+      grants.map(({ subjectKind, subjectId, resourceId }) => ({
+        subjectKind,
+        subjectId,
+        resourceId,
+      })),
+      [{ subjectKind: "namespace", subjectId: namespace.id, resourceId: template.id }],
+    );
+
+    // The Agent's Connections section: consent warning, then Keycloak's real login form in
+    // the popup. The callback lands on the console in the popup, which hands the outcome to
+    // this tab and closes; no code or state reaches this tab.
+    await page.goto(`${consoleOrigin}/console/agents/${agent.id}?namespace=${namespace.id}`);
+    const connections = page.getByRole("region", { name: "Connections", exact: true });
+    await connections.getByRole("button", { name: `Connect ${name}` }).click();
+    const consent = page.getByRole("dialog", { name: `Connect ${name}` });
+    await consent.getByText("openid", { exact: true }).waitFor();
+    const popupOpened = page.waitForEvent("popup");
+    await consent.getByRole("button", { name: /^Continue to / }).click();
+    const popup = await popupOpened;
+    const popupClosed = popup.waitForEvent("close");
+    await popup.locator("#username").fill("alice");
+    await popup.locator("#password").fill(secrets.users.alice.password);
+    await popup.locator("#kc-login").click();
+    await popupClosed;
+    await connections.getByText(`${name} is connected.`, { exact: false }).waitFor();
+    const connectedRow = connections.getByRole("listitem").filter({ hasText: name });
+    await connectedRow.getByText("Connected", { exact: true }).waitFor();
+    const opener = new URL(page.url());
+    assert.equal(opener.searchParams.has("code"), false);
+    assert.equal(opener.searchParams.has("state"), false);
+    assert.equal(opener.searchParams.has("connection"), false);
+
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const connected = (await inject("GET", `${path}/connections`)).json().data;
+    assert.equal(connected.length, 1, "the console's consent created one connection");
+    const [{ credentialSourceId }] = connected;
+    assert.equal(connected[0].connectionTemplateId, template.id);
+    const saved = (await inject("GET", path)).json().data;
+    assert.ok(
+      saved.credentialSources.some((source) => source.sourceId === credentialSourceId),
+      "the connected source is saved on the Agent",
+    );
+
+    // Disconnect: the source is too new to delete (the gateway's registration fence), so the
+    // row stays as Disconnecting and the Agent stays personal until it is deleted.
+    await connectedRow.getByRole("button", { name: "Disconnect" }).click();
+    await page
+      .getByRole("dialog", { name: `Disconnect ${name}?` })
+      .getByRole("button", { name: "Disconnect" })
+      .click();
+    await connectedRow.getByText("Disconnecting", { exact: true }).waitFor();
+    const removed = (await inject("GET", path)).json().data;
+    assert.equal(
+      (removed.credentialSources ?? []).some((source) => source.sourceId === credentialSourceId),
+      false,
+      "the source left the Agent",
+    );
+    assert.equal((await inject("GET", `${path}/connections`)).json().data.length, 1);
+
+    // After the fence, Finish disconnecting deletes the source and the connection.
+    skewMs = 71_000;
+    await connectedRow.getByRole("button", { name: "Finish disconnecting" }).click();
+    await connections.getByText(`${name} is disconnected`, { exact: false }).waitFor();
+    assert.deepEqual((await inject("GET", `${path}/connections`)).json().data, []);
+    assert.deepEqual(pageErrors, [], "the console raised no page errors");
   },
 );

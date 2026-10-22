@@ -19,6 +19,7 @@ import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
+import { createConnectionChoices } from "./connections.mjs";
 import { renderChannels } from "../channels.mjs";
 import {
   GENERIC_CONFLICT,
@@ -1551,6 +1552,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // The collapsed Runtime details still name the selected execution mode.
   const runtimeModeSummary = element("span", { className: "muted" });
   let repositories;
+  const connectionChoices = createConnectionChoices(context, namespaceId, () => {
+    feedback.textContent = "";
+  });
+  // Agent details opens the first chosen account's consent warning once the Agent exists.
+  const withConnections = (target) =>
+    connectionChoices.selected().length
+      ? `${target}&connect=${connectionChoices.selected().join(",")}`
+      : target;
   const form = element(
     "form",
     { id: formId, className: "agent-form agent-card", novalidate: "" },
@@ -1581,6 +1590,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       { ...agent, ...(draft.repositoryAccess ? { repositoryAccess: draft.repositoryAccess } : {}) },
     )).section,
     pluginFields.section,
+    connectionChoices.section,
     element(
       "details",
       { className: "launch-advanced" },
@@ -2002,6 +2012,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     updatePluginDiscovery();
     pluginFields.setDisabled(planLocked);
+    connectionChoices.setDisabled(planLocked);
     channelEditor.toggleAttribute("inert", planLocked || saved);
     channelEditor.setAttribute("aria-busy", pending ? "true" : "false");
     const usesPat = (binding?.method ?? authMethod.value) === "codex_pat";
@@ -2475,7 +2486,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       provisioningAttempt = null;
       repositories.recordSuccessfulSave();
-      context.navigate(`agents/${agentId}?revision=${revisionId}&tab=configuration`);
+      context.navigate(
+        withConnections(`agents/${agentId}?revision=${revisionId}&tab=configuration`),
+      );
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -2671,6 +2684,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (nativeProvider.value === "anthropic" && mode.value !== "embedded") {
       feedback.textContent =
         "Anthropic requires Embedded execution. Update the execution mode or choose OpenAI.";
+      return;
+    }
+    if (connectionChoices.selected().length && hasEnabledChannel(values)) {
+      feedback.textContent =
+        "Connected accounts make this a personal Agent, which cannot use channels. Disable configured channels or clear Connections before creating the Agent.";
       return;
     }
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
@@ -2894,7 +2912,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {
-        context.navigate(`agents/${savedAgent.id}?revision=draft`);
+        context.navigate(withConnections(`agents/${savedAgent.id}?revision=draft`));
       }
     } catch (error) {
       if (!context.isCurrent()) {

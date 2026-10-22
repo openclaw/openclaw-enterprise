@@ -52,6 +52,8 @@ async function ensureBootstrap(t, { label, authSecret }) {
  * @param options.authSecret the session signing secret (at least 32 characters).
  * @param options.createAuditSink receives the PostgreSQL audit sink and returns the sink the
  *   app writes to (default: that sink).
+ * @param options.authOrigin the sign-in origin a browser uses (default `http://127.0.0.1`), such
+ *   as an HTTPS ingress in front of the app.
  * @param options.appOptions extra Fastify app options, such as `agentRuntimeLogs`. They are
  *   spread last, so they may also replace a default above.
  * @returns `{ pool, state, controller, computeDriver, app, principal, inject, deployAgent }`.
@@ -69,6 +71,7 @@ export async function createPostgresAgentApp(
     appOptions,
     controllerOptions,
     sandboxDriver,
+    authOrigin = origin,
   },
 ) {
   await ensureBootstrap(t, { label, authSecret });
@@ -80,7 +83,7 @@ export async function createPostgresAgentApp(
   const auth = await createPostgresControllerAuth({
     mode: "development",
     installationId: installation.id,
-    baseURL: origin,
+    baseURL: authOrigin,
     secret: authSecret,
     pool,
   });
@@ -124,7 +127,7 @@ export async function createPostgresAgentApp(
   assert.equal(signIn.statusCode, 200, signIn.body);
   const setCookie = signIn.headers["set-cookie"];
   const session = {
-    origin,
+    origin: authOrigin,
     cookie: cookieHeaderFromSetCookie(Array.isArray(setCookie) ? setCookie : [setCookie]),
   };
   const inject = (method, url, body) =>

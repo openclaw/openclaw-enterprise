@@ -113,6 +113,9 @@ lists the ones the caller may connect in a Namespace.
 
 ## Connect an account
 
+The console runs these steps from the Agent page; see
+[Connect your account to a personal Agent](../guides/console/agent-connections.md).
+
 1. The person signs in to OCC and
    [starts a connection](api.md#post-namespacesnamespaceidagentsagentidconnections)
    with a connection template ID. Only a human session can start one. OCC checks
@@ -202,7 +205,6 @@ replays a code.
 
 ## Limits
 
-- The console has no connection controls yet; use the HTTP API.
 - Presets cannot reference connection templates yet, and OCC does not hold back
   deployment for missing connections.
 - The credential is released to every `toolBinaries` entry and every HTTP method

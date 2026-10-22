@@ -127,6 +127,10 @@
                     "label": "Share Agents"
                   },
                   {
+                    "page": "guides/console/agent-connections",
+                    "label": "Connect Accounts"
+                  },
+                  {
                     "page": "reference/console/create-and-deploy",
                     "label": "Create and Deploy in the Console"
                   },

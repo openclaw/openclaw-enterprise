@@ -211,6 +211,13 @@ export function installFixture(scenario, evidence) {
     // Simulates returning from a Google callback started in this tab.
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
   }
+  if (scenario.connectionRedirect) {
+    // Simulates returning from a provider's consent page opened in this tab.
+    sessionStorage.setItem(
+      "oce.agentConnection.redirect",
+      JSON.stringify({ ...scenario.connectionRedirect, at: Date.now() }),
+    );
+  }
   let serial = 100;
   const nextId = (prefix) =>
     `${prefix}_00000000-0000-4000-8000-${String(serial++).padStart(12, "0")}`;
@@ -230,6 +237,55 @@ export function installFixture(scenario, evidence) {
   const stagedWorkspaceFiles = new Map();
   const roles = [];
   const bindings = [];
+  // Connection templates and connected accounts (RFC-0023). The consent page is a fixture that
+  // reports like the callback's landing page; provider consent and the code exchange need the
+  // real backend.
+  const connectionTemplates = structuredClone(scenario.connectionTemplates ?? []);
+  const installationBindings = structuredClone(scenario.connectionTemplateBindings ?? []);
+  const agentConnections = structuredClone(scenario.agentConnections ?? []);
+  const pendingConnections = new Map();
+  const connectionWithdrawals = new Map(
+    Object.entries(structuredClone(scenario.connectionWithdrawals ?? {})),
+  );
+  const connectionSource = (id, status) => ({
+    id,
+    namespaceId,
+    name: `Connection ${id.slice(-6)}`,
+    type: "oauth2-refresh-token",
+    config: {},
+    secrets: {},
+    state: "ready",
+    ref: { kind: "credential_source", namespaceId, id },
+    status: status ?? { state: "ready", refresh: { state: "ready" } },
+  });
+  if (typeof BroadcastChannel === "function") {
+    // Registered before the console's channel, so the state is current when it rereads.
+    new BroadcastChannel("oce-agent-connections").addEventListener("message", (event) => {
+      const pending = pendingConnections.get(event.data?.source);
+      if (event.data?.type !== "outcome" || !pending) {
+        return;
+      }
+      pendingConnections.delete(event.data.source);
+      if (event.data.outcome !== "connected") {
+        return;
+      }
+      const owner = agents.get(pending.agentId);
+      owner.credentialSources = [
+        ...(owner.credentialSources ?? []),
+        { sourceId: event.data.source },
+      ];
+      credentialSources.set(event.data.source, connectionSource(event.data.source));
+      agentConnections.push({
+        namespaceId,
+        credentialSourceId: event.data.source,
+        agentId: pending.agentId,
+        ownerPrincipalId: "storybook-operator",
+        connectionTemplateId: pending.template.id,
+        connectionTemplateVersion: pending.template.current.version,
+        createdAt,
+      });
+    });
+  }
   const deleted = new Set();
   const clearRevisionOnRead = new Set();
   const session = {
@@ -365,6 +421,15 @@ export function installFixture(scenario, evidence) {
 
   agents.set(agent.id, agent);
   credentials.set(agent.id, { transportConfigured: scenario.transport !== false });
+  for (const connection of agentConnections) {
+    credentialSources.set(
+      connection.credentialSourceId,
+      connectionSource(
+        connection.credentialSourceId,
+        scenario.connectionSourceStatus?.[connection.credentialSourceId],
+      ),
+    );
+  }
   function snapshot(owner, id, revision) {
     const configuration = configs.get(owner.configurationId);
     const model = configuration.values.agents?.defaults?.model;
@@ -836,6 +901,106 @@ export function installFixture(scenario, evidence) {
     if (path === "/backends" && method === "GET") {
       return response(backends);
     }
+    const templateResponse = (template) => ({
+      ...template,
+      redirectUri: "https://console.example.test/oauth/callback",
+    });
+    if (path === "/connection-templates") {
+      if (method === "GET") {
+        return response(connectionTemplates.map(templateResponse));
+      }
+      if (method === "POST") {
+        const { displayName, clientSecret: _secret, endpoint, ...rest } = body;
+        const created = {
+          id: nextId("ctp"),
+          displayName,
+          current: {
+            version: 1,
+            clientRegistrationId: "ccr_storybook",
+            authorizationParameters: {},
+            ...rest,
+            endpoint: { port: 443, path: "/**", ...endpoint },
+            createdAt,
+          },
+          createdAt,
+        };
+        connectionTemplates.push(created);
+        return response(templateResponse(created), 201);
+      }
+    }
+    const templateMatch = path.match(/^\/connection-templates\/([^/]+)(\/rotate-client-secret)?$/);
+    if (templateMatch) {
+      const index = connectionTemplates.findIndex((item) => item.id === templateMatch[1]);
+      if (index < 0) {
+        return error(404);
+      }
+      const template = connectionTemplates[index];
+      if (templateMatch[2] && method === "POST") {
+        return response(templateResponse(template));
+      }
+      if (method === "PATCH") {
+        const { displayName, clientSecret: _secret, endpoint, ...rest } = body;
+        template.displayName = displayName ?? template.displayName;
+        if (endpoint || Object.keys(rest).length) {
+          template.current = {
+            ...template.current,
+            ...rest,
+            ...(endpoint ? { endpoint: { port: 443, path: "/**", ...endpoint } } : {}),
+            version: template.current.version + 1,
+          };
+        }
+        return response(templateResponse(template));
+      }
+      if (method === "DELETE") {
+        if (agentConnections.some((item) => item.connectionTemplateId === template.id)) {
+          return error(409, "RESOURCE_CONFLICT");
+        }
+        connectionTemplates.splice(index, 1);
+        return new Response(null, { status: 204 });
+      }
+    }
+    if (path === "/iam/roles" && method === "GET") {
+      return response([
+        // The administrator Role also holds `use`; only the template Role can bind a template.
+        {
+          id: "role_installation_administrator",
+          name: "Installation administrator",
+          permissions: [
+            { action: "administer", resourceKind: "installation" },
+            { action: "use", resourceKind: "connection_template" },
+          ],
+        },
+        {
+          id: "role_connection_template_user",
+          name: "Connection template user",
+          permissions: [{ action: "use", resourceKind: "connection_template" }],
+        },
+      ]);
+    }
+    if (path === "/iam/access-bindings") {
+      if (method === "GET") {
+        return response(installationBindings);
+      }
+      if (method === "POST") {
+        if (body.roleId !== "role_connection_template_user") {
+          return error(
+            400,
+            "VALIDATION_FAILED",
+            "The IAM AccessBinding Role must be an Installation Role for this resource kind.",
+          );
+        }
+        const created = { id: nextId("iab"), ...body };
+        installationBindings.push(created);
+        return response(created, 201);
+      }
+    }
+    if (path.startsWith("/iam/access-bindings/") && method === "DELETE") {
+      const index = installationBindings.findIndex((item) => item.id === path.split("/")[3]);
+      if (index >= 0) {
+        installationBindings.splice(index, 1);
+      }
+      return new Response(null, { status: 204 });
+    }
     if (path === "/observability" && method === "GET") {
       return scenario.observabilityDenied
         ? error(403)
@@ -1020,6 +1185,11 @@ export function installFixture(scenario, evidence) {
           ...(nextCursor ? { nextCursor } : {}),
           complete: !nextCursor,
         });
+      }
+      if (resource === "connection-templates" && method === "GET") {
+        return scenario.connectionTemplatesDenied
+          ? error(403)
+          : response(connectionTemplates.map((template) => ({ ...template })));
       }
       if (resource === "credential-sources") {
         if (method === "GET") {
@@ -1504,6 +1674,70 @@ export function installFixture(scenario, evidence) {
           const entry = scenario.pluginDiscovery.details[body.pluginId];
           return entry ? response(entry) : error(503, "PLUGIN_DISCOVERY_UNAVAILABLE");
         }
+        if (suffix === "/connections" && method === "GET") {
+          return scenario.connectionsDenied
+            ? error(403)
+            : response(agentConnections.filter((item) => item.agentId === id));
+        }
+        if (suffix === "/connections" && method === "POST") {
+          if (scenario.connectionStartRefusal) {
+            const refusal = scenario.connectionStartRefusal;
+            return error(refusal.status, refusal.code, refusal.message);
+          }
+          const template = connectionTemplates.find(
+            (item) => item.id === body.connectionTemplateId,
+          );
+          const source = nextId("csr");
+          pendingConnections.set(source, { agentId: id, template });
+          const consent = new URL("/storybook-fixtures/oauth-consent.html", location.origin);
+          consent.search = new URLSearchParams({
+            agent: id,
+            namespace: namespaceId,
+            source,
+            name: template.displayName,
+            scopes: template.current.scopes.join(" "),
+          }).toString();
+          return response(
+            {
+              credentialSourceId: source,
+              authorizationUrl: `${consent.pathname}${consent.search}`,
+              expiresAt: new Date(Date.now() + 600_000).toISOString(),
+            },
+            201,
+          );
+        }
+        if (suffix.startsWith("/connections/") && method === "DELETE") {
+          const sourceId = suffix.split("/")[2];
+          const index = agentConnections.findIndex((item) => item.credentialSourceId === sourceId);
+          if (index < 0) {
+            return error(404);
+          }
+          saved.credentialSources = (saved.credentialSources ?? []).filter(
+            (item) => item.sourceId !== sourceId,
+          );
+          const active = revisions.get(saved.activeRevisionId);
+          const held = active?.credentialSources?.some((item) => item.sourceId === sourceId);
+          if (held && scenario.withdrawalStaysPending) {
+            connectionWithdrawals.set(sourceId, {
+              namespaceId,
+              agentId: id,
+              revisionId: saved.activeRevisionId,
+              credentialSourceId: sourceId,
+              state: "pending",
+              requestedBy: "storybook-operator",
+              requestedAt: createdAt,
+              withdrawalInProgress: true,
+            });
+            return response({ withdrawalRequested: true, deleted: false });
+          }
+          agentConnections.splice(index, 1);
+          credentialSources.delete(sourceId);
+          return response({ withdrawalRequested: Boolean(held), deleted: true });
+        }
+        if (suffix.startsWith("/credential-sources/") && suffix.endsWith("/withdrawal")) {
+          const withdrawal = connectionWithdrawals.get(suffix.split("/")[2]);
+          return withdrawal ? response(withdrawal) : error(404);
+        }
         if (suffix === "") {
           if (method === "GET") {
             if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
@@ -1626,9 +1860,18 @@ export function installFixture(scenario, evidence) {
           );
         }
         if (suffix.startsWith("/revisions/") && method === "GET") {
-          return revisions.has(suffix.split("/")[2])
-            ? response(revisions.get(suffix.split("/")[2]))
-            : error(404);
+          const found = revisions.get(suffix.split("/")[2]);
+          if (found && scenario.connectionsNotDeployed) {
+            // The account was connected after this version deployed.
+            const connected = new Set(agentConnections.map((item) => item.credentialSourceId));
+            return response({
+              ...found,
+              credentialSources: (found.credentialSources ?? []).filter(
+                (item) => !connected.has(item.sourceId),
+              ),
+            });
+          }
+          return found ? response(found) : error(404);
         }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
           const revisionId = suffix.split("/")[2];

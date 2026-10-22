@@ -194,6 +194,13 @@ durable configuration. See [native admin access](../../reference/agent-native-ad
 for permissions and stopped, unavailable, or unsupported states. Installation
 administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
+## Connections
+
+When an Installation administrator has shared a connection template with you,
+**Connections** below the Agent heading connects your own account, such as Gmail,
+and makes the Agent personal. See
+[Connect your account to a personal Agent](agent-connections.md).
+
 ## Stop and resume
 
 **Stop Agent**, in the **Danger zone** card at the end of the page, opens a confirmation explaining that shutdown interrupts running

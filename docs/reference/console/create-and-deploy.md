@@ -69,6 +69,11 @@ block direct Secret-backed model and environment projection.
    omitted files use OpenClaw defaults. Keep or edit each file, or clear its field
    for an empty file. The browser submits LF newlines. See
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
+   **Connections** appears when you may use a
+   [connection template](../connection-templates.md) in this Namespace. A selected
+   account is not connected yet: after creation, Agent details opens its consent
+   warning. Create Agent refuses a selection while the Configuration enables a
+   channel, because a connected Agent is personal.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
    Provisioning waits for deployment activation or failure, naming the deployment's current wait

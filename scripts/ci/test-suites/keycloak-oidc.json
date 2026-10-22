@@ -30,7 +30,8 @@
     {
       "path": "tests/integration/postgres-agent-connections.test.mjs",
       "expectedTests": [
-        "a person connects their Keycloak account to their personal Agent and nobody else can use it"
+        "a person connects their Keycloak account to their personal Agent and nobody else can use it",
+        "the owner connects and disconnects their Keycloak account from the console"
       ]
     }
   ]

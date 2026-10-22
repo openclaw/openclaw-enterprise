@@ -412,7 +412,231 @@ const shareExistingPerson = [
 ];
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
+// Connections (RFC-0023): a Gmail connection template and one connected account.
+const gmailTemplateId = "ctp_00000000-0000-4000-8000-000000000001";
+const gmailSourceId = "csr_00000000-0000-4000-8000-000000000050";
+const gmailTemplate = (version = 1) => ({
+  id: gmailTemplateId,
+  displayName: "Gmail",
+  current: {
+    version,
+    issuer: "https://accounts.google.com",
+    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    clientId: "000000000000-demo.apps.googleusercontent.com",
+    clientRegistrationId: "ccr_00000000-0000-4000-8000-000000000001",
+    scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+    authorizationParameters: { access_type: "offline", prompt: "consent" },
+    endpoint: { host: "gmail.googleapis.com", port: 443, path: "/**" },
+    envVar: "GOG_ACCESS_TOKEN",
+    createdAt: "2026-09-01T12:00:00.000Z",
+  },
+  createdAt: "2026-09-01T12:00:00.000Z",
+});
+const gmailConnection = (version = 1) => ({
+  namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+  credentialSourceId: gmailSourceId,
+  agentId: "agt_00000000-0000-4000-8000-000000000001",
+  ownerPrincipalId: "storybook-operator",
+  connectionTemplateId: gmailTemplateId,
+  connectionTemplateVersion: version,
+  createdAt: "2026-09-02T09:30:00.000Z",
+});
+const connected = {
+  path: revision,
+  deployed: true,
+  connectionTemplates: [gmailTemplate()],
+  agentConnections: [gmailConnection()],
+  credentialSources: [{ sourceId: gmailSourceId }],
+};
+
 export const scenarios = {
+  connectionsEmpty: {
+    group: "Components/Connections",
+    name: "Empty",
+    path: revision,
+    deployed: true,
+    connectionTemplates: [gmailTemplate()],
+    description:
+      "A deployed Agent whose owner may use the Gmail template. The Connections section explains the personal-Agent rule and offers Connect Gmail.",
+    steps: [
+      "Check the intro: only the owner can deploy or use the Agent while it holds an account.",
+      "Choose Connect Gmail. The consent warning names the provider, the approved scope, and the one endpoint tools can call.",
+    ],
+  },
+  connectionsConsent: {
+    group: "Components/Connections",
+    name: "Consent warning and popup",
+    path: revision,
+    deployed: true,
+    connectionTemplates: [gmailTemplate()],
+    actions: [click("Connect Gmail")],
+    description:
+      "The consent warning before the provider's page. Continue opens a simulated consent popup; Approve reports back the way the OCC callback's landing page does.",
+    steps: [
+      "Choose Continue to accounts.google.com. A popup opens on the simulated consent page and the dialog waits.",
+      "Choose Approve. The popup closes; the section shows Connected with a Deploy new version link, and the row says the account is not in the running version yet.",
+      "Reset the story, repeat, and choose Deny. The section shows Not connected with the consent-denied sentence.",
+    ],
+    gap: "The provider page, the callback's code exchange, and the token mint are simulated; they need the real backend.",
+  },
+  connectionsStarting: {
+    group: "Components/Connections",
+    name: "Starting",
+    path: revision,
+    deployed: true,
+    connectionTemplates: [gmailTemplate()],
+    rules: [{ suffix: "/connections", method: "POST", hold: true }],
+    actions: [click("Connect Gmail"), click("Continue to accounts.google.com")],
+    description:
+      "The start request is pending: the dialog says it is opening the provider and Continue stays disabled.",
+  },
+  connectionsConnected: {
+    group: "Components/Connections",
+    name: "Connected",
+    ...connected,
+    description:
+      "A connected Gmail account that the running version holds. OpenShell keeps it signed in, so only Disconnect is offered.",
+  },
+  connectionsNotDeployed: {
+    group: "Components/Connections",
+    name: "Connected, not deployed",
+    ...connected,
+    connectionsNotDeployed: true,
+    description:
+      "The account is saved on the Agent but the running version predates it. The row links to Deploy new version.",
+  },
+  connectionsReconnectToApply: {
+    group: "Components/Connections",
+    name: "Reconnect to apply changes",
+    ...connected,
+    connectionTemplates: [gmailTemplate(2)],
+    description:
+      "An administrator created template version 2. The connection keeps version 1 as approved and offers Reconnect to apply changes.",
+    steps: [
+      "Choose Reconnect to apply changes. The consent warning says the new connection replaces the current one.",
+    ],
+  },
+  connectionsReauthorize: {
+    group: "Components/Connections",
+    name: "Reconnect required",
+    ...connected,
+    connectionSourceStatus: {
+      [gmailSourceId]: {
+        state: "failed",
+        refresh: { state: "failed", recoveryAction: "reauthorize" },
+      },
+    },
+    description:
+      "The provider revoked the grant: the Credential Refresh Driver reports reauthorize, and the row asks the owner to reconnect and deploy.",
+  },
+  connectionsWithdrawalPending: {
+    group: "Components/Connections",
+    name: "Withdrawal pending",
+    ...connected,
+    credentialSources: [],
+    connectionWithdrawals: {
+      [gmailSourceId]: {
+        namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+        agentId: "agt_00000000-0000-4000-8000-000000000001",
+        revisionId: "rev_00000000-0000-4000-8000-000000000001",
+        credentialSourceId: gmailSourceId,
+        state: "pending",
+        requestedBy: "storybook-operator",
+        requestedAt: "2026-09-02T10:00:00.000Z",
+        withdrawalInProgress: true,
+      },
+    },
+    description:
+      "Disconnected from the Agent while the running version still holds the account. The Agent stays personal and Finish disconnecting waits for withdrawal.",
+  },
+  connectionsDisconnect: {
+    group: "Components/Connections",
+    name: "Disconnect",
+    ...connected,
+    withdrawalStaysPending: true,
+    actions: [click("Disconnect")],
+    description:
+      "The Disconnect confirmation explains that a running version keeps the account until withdrawal is confirmed.",
+    steps: [
+      "Choose Disconnect in the dialog. The section reports that OCC is withdrawing the account, and the row shows Disconnecting.",
+    ],
+  },
+  connectionsFailedLanding: {
+    group: "Components/Connections",
+    name: "Failed after redirect",
+    path: "/console/?connection=failed&reason=consent_denied",
+    deployed: true,
+    connectionTemplates: [gmailTemplate()],
+    connectionRedirect: {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000001",
+      agentId: "agt_00000000-0000-4000-8000-000000000001",
+    },
+    description:
+      "Popups were blocked, so consent ran in this tab. The callback's failure redirect carries no Agent; the console returns to the Agent that started it and shows the reason.",
+  },
+  connectionsRefused: {
+    group: "Components/Connections",
+    name: "Start refused",
+    path: revision,
+    deployed: true,
+    connectionTemplates: [gmailTemplate()],
+    connectionStartRefusal: {
+      status: 409,
+      code: "RESOURCE_STATE_CONFLICT",
+      message: "A personal Agent cannot be shared; remove other people's access first.",
+    },
+    actions: [click("Connect Gmail"), click("Continue to accounts.google.com")],
+    description:
+      "OCC refuses to start because someone else can use the Agent. The dialog keeps the API's sentence and offers Continue again.",
+  },
+  connectionsTemplateUseDenied: {
+    group: "Components/Connections",
+    name: "Template use denied",
+    ...connected,
+    connectionTemplatesDenied: true,
+    description:
+      "The owner lost use of the template. The connection stays visible with its template ID and Disconnect, without Reconnect.",
+  },
+  createWithConnections: {
+    group: "Pages/Create Agent",
+    name: "Connections",
+    path: create,
+    connectionTemplates: [gmailTemplate()],
+    actions: [...form],
+    description:
+      "Create Agent lists the templates the person may use. A chosen account is connected on the new Agent's page, which opens its consent warning.",
+  },
+  settingsConnectionTemplates: {
+    group: "Pages/Settings",
+    name: "Connection templates",
+    path: "/console/settings",
+    connectionTemplates: [gmailTemplate()],
+    connectionTemplateBindings: [
+      {
+        id: "iab_00000000-0000-4000-8000-000000000001",
+        subjectKind: "namespace",
+        subjectId: "ns_00000000-0000-4000-8000-000000000001",
+        roleId: "role_connection_template_user",
+        resourceKind: "connection_template",
+        resourceId: gmailTemplateId,
+      },
+    ],
+    description:
+      "An Installation administrator's Settings page lists connection templates with the redirect URI to register and who may connect.",
+    steps: [
+      "Grant use to a person by principal ID, then remove it.",
+      "Choose Edit and change the scopes: saving creates version 2.",
+    ],
+  },
+  settingsConnectionTemplateCreate: {
+    group: "Pages/Settings",
+    name: "New connection template",
+    path: "/console/settings",
+    actions: [click("New connection template"), click("Fill in the Gmail example")],
+    description:
+      "The template form filled from the Gmail example. The client secret is write-only and leaves the page once saved.",
+  },
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",

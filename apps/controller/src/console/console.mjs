@@ -14,6 +14,14 @@ import { createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
+import { receiveConnectionOutcome } from "./connection-outcome.mjs";
+import { renderConnectionTemplates } from "./connection-templates.mjs";
+
+// A provider's consent callback can land here; settle its outcome before this page is routed.
+if (!(await receiveConnectionOutcome())) {
+  // This window was a consent popup and its opener took the outcome; it is closing.
+  await new Promise(() => {});
+}
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -1762,7 +1770,20 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(settingsView());
+      const settings = settingsView();
+      // Installation administrators also manage the connection template catalog here. Others
+      // would only be refused, and the API audits each refusal.
+      if (installationAdmin === true) {
+        settings.append(
+          renderConnectionTemplates({
+            request: viewRequest,
+            namespaces,
+            isCurrent: () => lifetime.isCurrent(viewState.active),
+            onExpired: () => showExpiredLogin(),
+          }),
+        );
+      }
+      shell.view.append(settings);
       markMountedRoute(current);
       return;
     }

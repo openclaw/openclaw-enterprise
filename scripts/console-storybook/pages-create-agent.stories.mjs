@@ -300,3 +300,7 @@ export const ExistingFallbackPrimary = {
   ...story("createModelFallbackSelection"),
   name: "Choose an existing fallback as primary",
 };
+export const CreateWithConnections = {
+  ...story("createWithConnections"),
+  name: "Connections",
+};

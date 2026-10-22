@@ -8,3 +8,11 @@ export const SettingsNameIsEmail = {
   name: "Account without a display name",
 };
 export const SignOutFailure = { ...story("settingsSignOutFailure"), name: "Sign-out unconfirmed" };
+export const SettingsConnectionTemplates = {
+  ...story("settingsConnectionTemplates"),
+  name: "Connection templates",
+};
+export const SettingsConnectionTemplateCreate = {
+  ...story("settingsConnectionTemplateCreate"),
+  name: "New connection template",
+};

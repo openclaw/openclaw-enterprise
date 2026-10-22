@@ -6,7 +6,9 @@ refresh token stays in OpenShell; the Agent receives only a placeholder in
 `GOG_ACCESS_TOKEN`. The [connection template reference](../../reference/connection-templates.md)
 defines the behavior and limits.
 
-The console has no connection controls yet, so these steps use the HTTP API.
+These steps use the console; the
+[HTTP API](../../reference/connection-templates.md#connect-an-account) and the
+`occ connection-template` commands offer the same template actions.
 
 ## Before you start
 
@@ -22,10 +24,7 @@ The console has no connection controls yet, so these steps use the HTTP API.
   With the production chart, enable
   [token endpoint egress](../../reference/connection-templates.md#token-endpoint-egress)
   for the API.
-- An Installation administrator session cookie in `OCC_SESSION_COOKIE_JAR`, with
-  `OCC_URL` and `OCC_ORIGIN` set; see
-  [sign in as an administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator).
-- `jq`, and a private directory for the client secret. Do not print secrets.
+- An Installation administrator account for the console.
 
 ## Create the Google OAuth client
 
@@ -36,76 +35,39 @@ The console has no connection controls yet, so these steps use the HTTP API.
    scope that a public app must pass Google verification for.
 3. Create an OAuth client of type **Web application**. Add the callback URI
    `<public origin>/oauth/callback` exactly as an authorized redirect URI.
-4. Save the client ID, and save the client secret in a private file, such as
-   `$PRIVATE_DIR/google-client-secret`.
+4. Keep the client ID and client secret available for the next step. Do not
+   paste the secret into chat, tickets, or shell history.
 
 ## Create the connection template
 
-Build the request from the private file so the secret never appears on the
-command line:
+1. Sign in to the console as an Installation administrator and open
+   **Settings**.
+2. Under **Connection templates**, choose **New connection template**, then
+   **Fill in the Gmail example**.
+3. Enter the Google **Client ID** and **Client secret**, and choose
+   **Create template**.
+4. Confirm that the template's **Redirect URI** matches the URI you registered
+   with Google.
 
-```bash
-(umask 077; tr -d '\n' < "$PRIVATE_DIR/google-client-secret" | jq -Rs \
-  --arg clientId "$GOOGLE_CLIENT_ID" '{
-    displayName: "Google Gmail (read-only)",
-    issuer: "https://accounts.google.com",
-    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
-    clientId: $clientId,
-    clientSecret: .,
-    scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-    authorizationParameters: { access_type: "offline", prompt: "consent" },
-    endpoint: { host: "gmail.googleapis.com", port: 443, path: "/**" },
-    envVar: "GOG_ACCESS_TOKEN"
-  }' > "$PRIVATE_DIR/template.json")
-curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" -H 'Content-Type: application/json' \
-  --data-binary @"$PRIVATE_DIR/template.json" "$OCC_URL/connection-templates" | jq .data
-rm "$PRIVATE_DIR/template.json"
-```
-
-Expected result: `201` with the template `id` and `redirectUri`. Confirm that
-`redirectUri` matches the URI you registered with Google. Without
-`access_type=offline` and `prompt=consent`, Google returns no refresh token and
-the callback fails with `no_refresh_token`.
+The example sets `access_type=offline` and `prompt=consent`. Without them, Google
+returns no refresh token and the callback fails with `no_refresh_token`.
 
 ## Let people connect it
 
-Grant `use` to everyone connecting Agents in one Namespace:
+Under the template, choose **Namespace** and the Namespace whose Agents may
+connect, then **Grant use**. To grant one person, choose
+**Person (principal ID)** and enter their principal ID.
 
-```bash
-jq -n --arg ns "$OCC_NAMESPACE" --arg template "$TEMPLATE_ID" '{
-  subjectKind: "namespace", subjectId: $ns, roleId: "role_connection_template_user",
-  resourceKind: "connection_template", resourceId: $template
-}' | curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
-  -H "Origin: $OCC_ORIGIN" -H 'Content-Type: application/json' \
-  --data-binary @- "$OCC_URL/iam/access-bindings"
-```
-
-Use `subjectKind: "identity"` with a person's `principalId` to grant one person
-instead. The person also needs exact `read` and `update` on their Agent, plus
-`deploy` and `administer` to deploy and chat with it; see
+The person also needs exact `read` and `update` on their Agent, plus `deploy`
+and `administer` to deploy and chat with it; see
 [Share an Agent](../console/agent-sharing.md). Grant these only to the Agent's
 owner: a connected Agent cannot have other people's grants.
 
 ## Connect an account
 
-The person connects from a browser tab signed in to the OCE console, because the
-callback must arrive in that session. In the tab's developer console, run:
-
-```js
-await fetch("/namespaces/<namespaceId>/agents/<agentId>/connections", {
-  method: "POST",
-  credentials: "include",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({ connectionTemplateId: "<templateId>" }),
-}).then((response) => response.json());
-```
-
-Open the returned `data.authorizationUrl` in the same browser within ten minutes,
-choose the Google account, and approve read-only Gmail access. Google redirects
-to OCC, which redirects to the Agent's console page with `connection=connected`.
-Then deploy a new version of the Agent.
+The person follows [Connect an account](../console/agent-connections.md#connect-an-account)
+in their own console session: **Connect Gmail** on the Agent, approve read-only
+Gmail access for the chosen Google account, then **Deploy new version**.
 
 ## Check the result
 
@@ -115,15 +77,16 @@ the variable: OpenShell refuses model requests that carry the placeholder.
 
 ## Troubleshoot
 
-- **`connection=failed&reason=client_refused`:** the client ID or secret is wrong,
-  or the redirect URI does not match. Check the Google client, or
-  [rotate the secret](../../reference/connection-templates.md#client-registrations).
-- **`reason=unknown_session`:** the link opened in a browser without the session
-  that started the connection. Start again from the signed-in tab.
-- **The source later reports `reauthorize`:** Google revoked or expired the grant,
-  such as a seven-day Testing-mode token. Disconnect and connect again.
+- **The provider refused this Installation's OAuth client:** the client ID or
+  secret is wrong, or the redirect URI does not match. Check the Google client, or
+  choose **Rotate client secret** on the template.
+- **The consent response did not match a connection you started:** the consent
+  page opened in a browser without the session that started the connection.
+  Start again from the signed-in tab.
+- **The Agent shows Reconnect required:** Google revoked or expired the grant,
+  such as a seven-day Testing-mode token. Choose **Reconnect**, then deploy.
 - **Other reasons:** see
   [callback failures](../../reference/connection-templates.md#callback-failures).
 
-To remove access, [disconnect](../../reference/connection-templates.md#disconnect)
-the connection. Revoking the app in the Google account also stops refresh.
+To remove access, [disconnect](../console/agent-connections.md#reconnect-or-disconnect)
+the account. Revoking the app in the Google account also stops refresh.
