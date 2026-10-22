@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";
-import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  type GitHubRepositoryCredentialBackendDefinition,
+} from "@openclaw-enterprise/contracts";
 import {
   closed,
   nonempty,
@@ -35,7 +38,7 @@ export function githubRepositoryConfiguration(input: unknown, mode: "development
       controlSocket: nonempty(native.controlSocket, "repository.nativeSender.controlSocket"),
       publicCaPath: nonempty(native.publicCaPath, "repository.nativeSender.publicCaPath"),
     };
-    GitHubNativeRepositorySender.validateConfiguration({
+    requireConfiguration(GitHubNativeRepositorySender, {
       ...object(selection.configuration, "repository.configuration"),
       ...nativeSender,
     });
