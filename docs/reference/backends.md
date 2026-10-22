@@ -194,8 +194,9 @@ OpenShell Backend is supported. Composition builds one gateway client object
 and injects it into all members. It caches ordinary and credential-export
 clients separately per resolved endpoint. The API and worker each construct it,
 so mount their required credential files there, never in the Harness or Agent
-Gateway. Restart these processes after rotating an operator certificate to replace
-cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+Gateway; the production chart mounts the TLS files with
+[`backend.openshell.tls`](#openshell-gateway-tls-files). Restart these
+processes after rotating an operator certificate to replace cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
 
 ## Driver and client contract
 
@@ -283,7 +284,7 @@ stop workloads; exact upstream cleanup still needs the original configuration.
 
 ## Production packaging and verification
 
-Helm uses this packaging object separately from the Installation array:
+Helm packages the ChatGPT Backend with this object, separately from the Installation array:
 
 ```yaml
 backend:
@@ -324,6 +325,31 @@ boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
 [service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
 verification requirements.
+
+### OpenShell gateway TLS files
+
+The production chart mounts the OpenShell Backend's TLS files from one
+operator-created Secret:
+
+```yaml
+backend:
+  openshell:
+    tls:
+      secretName: occ-openshell-tls
+      mountPath: /etc/openclaw/openshell-tls
+```
+
+When `secretName` is set, the chart mounts every key of that Secret read-only,
+with file mode `0440`, into the API and worker containers at `mountPath`. No
+other Pod receives it. Store the gateway CA as `ca.crt`. When the Backend sets
+`operatorTls`, also store `operator.crt` and `operator.key`. The Installation
+must name the mounted files, for example
+`rootCertificatePath: /etc/openclaw/openshell-tls/ca.crt`; the chart does not
+read the Installation and cannot check the paths.
+
+The Secret holds the gateway-wide operator key, so it must be a dedicated
+Secret. `mountPath` must be absolute and differ from the other API and worker
+mounts. The default empty `secretName` mounts nothing.
 
 ## Deferred behavior
 

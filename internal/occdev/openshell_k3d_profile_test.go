@@ -476,16 +476,24 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 		name          string
 		sandboxDriver string
 		browserPort   int
+		browserDomain string
+		connections   string
 		origin        string
+		cookieDomain  string
 	}{
-		{"OpenShell loopback HTTP", "openshell", 0, "http://127.0.0.1:3100"},
-		{"HTTPS without Sandbox", "none", 8444, "https://console.occ-dev-owned.oce.localhost:8444"},
+		{"OpenShell loopback HTTP", "openshell", 0, "", "", "http://127.0.0.1:3100", ""},
+		{"HTTPS without Sandbox", "none", 8444, "", "", "https://console.occ-dev-owned.oce.localhost:8444", "occ-dev-owned.oce.localhost"},
+		// A registrable domain gives OpenShell the HTTPS console and native admin, and an
+		// OAuth callback URI that Google accepts for Web clients.
+		{"OpenShell connections under a browser domain", "openshell", 8443, "localtest.me", "openshell", "https://console.occ-dev-owned.localtest.me:8443", "occ-dev-owned.localtest.me"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := kubernetesOnlyOpenShellState(t)
 			state.SandboxDriver = test.sandboxDriver
 			state.APIPort = 3100
 			state.BrowserPort = test.browserPort
+			state.BrowserDomain = test.browserDomain
+			state.Connections = test.connections
 			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -533,7 +541,7 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 				}
 			} else {
 				if !reflect.DeepEqual(values["agentNativeAdmin"], jsonValue(t, map[string]any{
-					"enabled": true, "domain": "agents.occ-dev-owned.oce.localhost", "sharedCookieDomain": "occ-dev-owned.oce.localhost",
+					"enabled": true, "domain": "agents." + test.cookieDomain, "sharedCookieDomain": test.cookieDomain,
 				})) {
 					t.Fatalf("HTTPS Console must retain native administration: %#v", values["agentNativeAdmin"])
 				}

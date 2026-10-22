@@ -27,6 +27,7 @@ const devUp = join(repository, "scripts", "dev-up");
 const devDown = join(repository, "scripts", "dev-down");
 const selected = process.env.OCC_TEST_DEV_UP_OPENSHELL_REAL === "1";
 const composeSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL === "1";
+const connectionsSelected = process.env.OCC_TEST_DEV_UP_OPENSHELL_CONNECTIONS_REAL === "1";
 
 async function startDevelopment(environment) {
   try {
@@ -907,6 +908,254 @@ test(
     const workspace = await gateway.getWorkspace(namespace, AbortSignal.timeout(10_000));
     assert.equal(workspace?.name, namespace);
     assert.equal(workspace?.labels["app.kubernetes.io/managed-by"], "openclaw-enterprise");
+
+    await stopProcess(forward);
+    await execute(devDown, [], {
+      cwd: repository,
+      env: environment,
+      timeout: 300_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    assert.equal(existsSync(stateDirectory), false);
+  },
+);
+
+test(
+  "dev-up prepares OpenShell operator TLS, the client Workspace, and gog for Agent connections",
+  {
+    skip: connectionsSelected
+      ? false
+      : "Set OCC_TEST_DEV_UP_OPENSHELL_CONNECTIONS_REAL=1 to run the real connections profile.",
+    timeout: 1_500_000,
+  },
+  async (t) => {
+    await access(occ);
+    const root = await mkdtemp(join(await realpath(tmpdir()), "oce-dev-up-connections-real-"));
+    const stateDirectory = join(root, "state");
+    const suffix = randomUUID().slice(0, 8);
+    const cluster = `occ-dev-connections-${suffix}`;
+    const apiPort = await availablePort();
+    const kubernetesPort = await availablePort();
+    const engine = process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE ?? "docker";
+    const environment = {
+      ...process.env,
+      OPENCLAW_DEV_PORT: String(apiPort),
+      OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_CONTROL_PLANE: "kubernetes",
+      OCC_DEVELOPMENT_SANDBOX_DRIVER: "openshell",
+      OCC_DEVELOPMENT_CONNECTIONS: "openshell",
+      OCC_DEVELOPMENT_CONTAINER_ENGINE: engine,
+      OCC_DEVELOPMENT_STATE_DIRECTORY: stateDirectory,
+      OCC_DEVELOPMENT_KUBERNETES_CLUSTER: cluster,
+      OCC_DEVELOPMENT_KUBERNETES_API_PORT: String(kubernetesPort),
+      OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT:
+        process.env.OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT ?? "1",
+      OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "600",
+    };
+    delete environment.OCC_DEVELOPMENT_OPENSHELL_HELM_CHART;
+    delete environment.OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART;
+    delete environment.OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST;
+    t.after(async () => {
+      if (!existsSync(stateDirectory)) {
+        await rm(root, { recursive: true, force: true });
+        return;
+      }
+      try {
+        await execute(devDown, [], {
+          cwd: repository,
+          env: environment,
+          timeout: 300_000,
+          maxBuffer: 8 * 1024 * 1024,
+        });
+      } catch (error) {
+        throw new Error(
+          `Connections development cleanup failed; recovery state preserved at ${stateDirectory}.`,
+          { cause: error },
+        );
+      }
+      await rm(root, { recursive: true, force: true });
+    });
+
+    const result = await startDevelopment(environment);
+    assert.match(result.stdout, /Agent OAuth connections: enabled/);
+    assert.ok(
+      result.stdout.includes(`Callback URI: http://127.0.0.1:${apiPort}/oauth/callback`),
+      "startup must print the loopback callback that a Google Desktop client accepts",
+    );
+    const state = JSON.parse(await readFile(join(stateDirectory, "state.json"), "utf8"));
+    assert.equal(state.connections, "openshell");
+    const kubectl = [
+      "--kubeconfig",
+      join(stateDirectory, "kubeconfig"),
+      "--context",
+      `k3d-${cluster}`,
+    ];
+    const getJson = async (...args) =>
+      JSON.parse(
+        (
+          await execute("kubectl", [...kubectl, ...args, "-o", "json"], {
+            cwd: repository,
+            env: environment,
+            maxBuffer: 4 * 1024 * 1024,
+          })
+        ).stdout,
+      );
+
+    // The chart mounts the operator certificate only where OCC talks to OpenShell,
+    // and opens API egress for the callback's code exchange.
+    for (const component of ["api", "worker"]) {
+      const deployment = await getJson(
+        "get",
+        "deployment",
+        `openclaw-enterprise-${component}`,
+        "--namespace",
+        "oce-system",
+      );
+      const pod = deployment.spec.template.spec;
+      assert.equal(
+        pod.volumes.find(({ name }) => name === "openshell-tls")?.secret?.secretName,
+        "openclaw-openshell-tls",
+      );
+      assert.equal(
+        pod.containers[0].volumeMounts.find(({ name }) => name === "openshell-tls")?.mountPath,
+        "/etc/openclaw/openshell-tls",
+      );
+    }
+    await getJson(
+      "get",
+      "networkpolicy",
+      "openclaw-enterprise-api-connection-token-egress",
+      "--namespace",
+      "oce-system",
+    );
+
+    // Agent Gateways reach sandboxes over the HTTPS gateway, and gog is the only
+    // tool binary that receives connection credentials.
+    const runtime = await execute(
+      engine,
+      [
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        "openclaw-enterprise-runtime:connections",
+        "-c",
+        'printf "%s\\n" "$NODE_USE_SYSTEM_CA"; /usr/local/bin/gog --version; ls /usr/local/share/ca-certificates',
+      ],
+      { cwd: repository, env: environment, maxBuffer: 4 * 1024 * 1024 },
+    );
+    assert.match(runtime.stdout, /^1$/m);
+    assert.match(runtime.stdout, /^v0\.36\.0 /m);
+    assert.match(runtime.stdout, /occ-development-openshell-ca\.crt/);
+
+    const gatewayPort = await availablePort();
+    const forward = spawn(
+      "kubectl",
+      [
+        ...kubectl,
+        "port-forward",
+        "--namespace",
+        "oce-system",
+        "service/openshell-gateway",
+        `${gatewayPort}:8080`,
+      ],
+      { cwd: repository, env: environment, stdio: ["ignore", "ignore", "pipe"] },
+    );
+    let forwardError = "";
+    forward.stderr.on("data", (chunk) => {
+      forwardError = `${forwardError}${chunk.toString()}`.slice(-4096);
+    });
+    t.after(() => stopProcess(forward));
+    await waitForPort(forward, gatewayPort, () => forwardError);
+    // The certificate names localhost, so this verifies the gateway's TLS chain.
+    const endpoint = `https://localhost:${gatewayPort}`;
+    const rootCertificatePath = join(stateDirectory, "openshell-ca.crt");
+    const operator = new GrpcOpenShellGatewayClient({
+      endpoint,
+      rootCertificatePath,
+      auth: {
+        mode: "mutualTls",
+        certificatePath: join(stateDirectory, "openshell-operator.crt"),
+        privateKeyPath: join(stateDirectory, "openshell-operator.key"),
+      },
+    });
+    t.after(() => operator.close());
+    const plain = new GrpcOpenShellGatewayClient({
+      endpoint,
+      rootCertificatePath,
+      auth: { mode: "unauthenticated" },
+    });
+    t.after(() => plain.close());
+    const clientWorkspace = await operator.getWorkspace(
+      "oce-oauth-clients",
+      AbortSignal.timeout(10_000),
+    );
+    assert.ok(
+      clientWorkspace?.phase === "WORKSPACE_PHASE_ACTIVE" || clientWorkspace?.phase === 1,
+      "startup must leave the client Workspace active",
+    );
+
+    // Creating a template registers its client secret in the client Workspace
+    // through the configured Credential Refresh Driver.
+    const clientSecret = randomUUID();
+    const templatePath = join(root, "template.json");
+    await writeFile(
+      templatePath,
+      JSON.stringify({
+        displayName: "Gmail (read-only)",
+        issuer: "https://accounts.google.com",
+        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+        tokenUrl: "https://oauth2.googleapis.com/token",
+        clientId: `${suffix}.apps.googleusercontent.com`,
+        clientSecret,
+        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+        authorizationParameters: { access_type: "offline", prompt: "consent" },
+        endpoint: { host: "gmail.googleapis.com", port: 443, path: "/**" },
+        envVar: "GOG_ACCESS_TOKEN",
+      }),
+      { mode: 0o600 },
+    );
+    const template = JSON.parse(
+      (
+        await execute(
+          occ,
+          ["connection-template", "create", "--file", templatePath, "--output", "json"],
+          {
+            cwd: repository,
+            env: {
+              ...environment,
+              OCC_URL: `http://127.0.0.1:${apiPort}`,
+              OCC_SERVICE_KEY_FILE: join(stateDirectory, "initial-admin-service-key.json"),
+            },
+            maxBuffer: 4 * 1024 * 1024,
+          },
+        )
+      ).stdout,
+    );
+    assert.equal(template.redirectUri, `http://127.0.0.1:${apiPort}/oauth/callback`);
+    const registrationId = template.current.clientRegistrationId;
+    const provider = (
+      await operator.listProviders("oce-oauth-clients", AbortSignal.timeout(10_000))
+    ).find(({ labels }) => labels["openclaw.dev/client-registration-id"] === registrationId);
+    assert.ok(provider, "the client secret must live in the client Workspace");
+    const stored = await operator.getProviderCredential(
+      "oce-oauth-clients",
+      provider.name,
+      "OCE_CLIENT_SECRET",
+      AbortSignal.timeout(10_000),
+    );
+    assert.equal(stored.value === clientSecret, true, "the stored client secret must match");
+    // Only the operator certificate may read credentials back out of OpenShell;
+    // the gateway answers PERMISSION_DENIED (gRPC status 7) without it.
+    await assert.rejects(
+      plain.getProviderCredential(
+        "oce-oauth-clients",
+        provider.name,
+        "OCE_CLIENT_SECRET",
+        AbortSignal.timeout(10_000),
+      ),
+      { message: /GetProviderCredentials failed with gRPC status 7\./ },
+    );
 
     await stopProcess(forward);
     await execute(devDown, [], {

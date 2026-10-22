@@ -292,7 +292,6 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	values := []string{
 		"--set-string=fullnameOverride=" + openShellGatewayService,
 		"--set=pkiInitJob.enabled=false",
-		"--set=server.disableTls=true",
 		"--set=server.auth.allowUnauthenticatedUsers=true",
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
 		"--set-string=sandboxServiceAccount.name=openshell-sandbox",
@@ -306,6 +305,11 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 		"--set=gateway.image.pullPolicy=Never",
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
+	}
+	if state.Connections != "" {
+		values = append(values, openShellGatewayTLSValues()...)
+	} else {
+		values = append(values, "--set=server.disableTls=true")
 	}
 	if state.DeploymentMode == "k3d" {
 		values = append(values, "--set=service.type=ClusterIP")

@@ -227,6 +227,13 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 			return "", err
 		}
 	}
+	if s.Connections != "" {
+		derived, err := r.buildDevelopmentConnectionRuntime(ctx, s, image)
+		if err != nil {
+			return "", err
+		}
+		image = derived
+	}
 	return r.importDevelopmentImage(ctx, s, image)
 }
 
@@ -403,7 +410,12 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
 			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
 		}
-		config["backend"] = []any{openShellBackendConfiguration(s)}
+		backend := openShellBackendConfiguration(s)
+		if s.Connections != "" {
+			developmentConnectionBackend(backend)
+			developmentConnectionDrivers(config["drivers"].(map[string]any))
+		}
+		config["backend"] = []any{backend}
 	}
 	data, err := yaml.Marshal(config)
 	if err != nil {

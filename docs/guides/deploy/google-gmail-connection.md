@@ -19,6 +19,9 @@ The console has no connection controls yet, so these steps use the HTTP API.
   binary receives the credential, so list only what you need.
 - The OCC public origin set. The callback URI is `<public origin>/oauth/callback`.
 - The OCC API and the OpenShell gateway Pod can reach `oauth2.googleapis.com`.
+  With the production chart, enable
+  [token endpoint egress](../../reference/connection-templates.md#token-endpoint-egress)
+  for the API.
 - An Installation administrator session cookie in `OCC_SESSION_COOKIE_JAR`, with
   `OCC_URL` and `OCC_ORIGIN` set; see
   [sign in as an administrator](../../reference/authentication/service-api-keys.md#sign-in-as-a-human-administrator).

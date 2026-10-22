@@ -167,6 +167,13 @@ spec:
                 path: ca.crt
         {{- end }}
         {{- end }}
+        {{- with $.Values.backend.openshell.tls.secretName }}
+        # Whole Secret: operator.crt and operator.key are present only with operatorTls.
+        - name: openshell-tls
+          secret:
+            secretName: {{ . | quote }}
+            defaultMode: 288 # 0440: root and the Pod filesystem group only.
+        {{- end }}
         {{- if eq $component "api" }}
         {{- if $.Values.backend.chatgpt.enabled }}
         {{- $chatgpt := $.Values.backend.chatgpt }}
@@ -434,6 +441,11 @@ spec:
               mountPath: /etc/openclaw/gateway-ca
               readOnly: true
             {{- end }}
+            {{- end }}
+            {{- if $.Values.backend.openshell.tls.secretName }}
+            - name: openshell-tls
+              mountPath: {{ $.Values.backend.openshell.tls.mountPath | quote }}
+              readOnly: true
             {{- end }}
             {{- if eq $component "api" }}
             {{- if $.Values.backend.chatgpt.enabled }}

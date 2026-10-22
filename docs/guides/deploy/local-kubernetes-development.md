@@ -160,6 +160,10 @@ set
 
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 
+To test [Agent OAuth connections](../../reference/connection-templates.md), also
+set `OCC_DEVELOPMENT_CONNECTIONS=openshell` with the Kubernetes control plane; see
+[Test Agent OAuth connections locally](local-agent-connections.md).
+
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
 engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
 for cleanup; otherwise startup defaults to Compose with Docker Compute.

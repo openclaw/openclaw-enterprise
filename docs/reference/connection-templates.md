@@ -18,13 +18,25 @@ To set up Gmail, follow
 - The OpenShell Credential Refresh Driver with `clientWorkspace`, and
   `operatorTls` on the OpenShell Backend; see
   [browser connections](drivers/openshell-credential-gateway.md#configure-the-driver).
+  The production chart mounts the TLS files with
+  [`backend.openshell.tls`](backends.md#openshell-gateway-tls-files).
 - A Secret Driver that can read stored values.
 - Network access from the OCC API, as well as the OpenShell gateway Pod, to the
-  token endpoint: the code exchange runs in the API.
+  token endpoint: the code exchange runs in the API. In the production chart,
+  enable [token endpoint egress](#token-endpoint-egress).
 - A configured public origin. The callback URI is `<public origin>/oauth/callback`;
   OCC answers `503` to a connect request without one.
 
 Without the Drivers, template and connect operations return `501`.
+
+### Token endpoint egress
+
+The production chart's default-deny NetworkPolicy blocks the API's token
+request. Set `agentConnections.tokenEgress.enabled: true` to add the API-only
+policy `openclaw-enterprise-api-connection-token-egress`. Empty `egressCidrs`
+allows each TCP port in `ports` (default `[443]`) to any IPv4 address except
+link-local `169.254.0.0/16`. List the token hosts' IPv4 CIDRs to narrow it, and
+add a port only when a `tokenUrl` names one. The gateway Pod needs its own egress.
 
 ## Connection templates
 

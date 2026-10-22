@@ -3260,6 +3260,156 @@ test(
   },
 );
 
+test(
+  "OpenShell TLS files mount read-only into the API and worker from a dedicated Secret",
+  tooling,
+  async () => {
+    const pods = async (overrides) => {
+      const objects = await resources((await render(overrides)).stdout);
+      return Object.fromEntries(
+        objects
+          .filter(({ kind }) => kind === "Deployment" || kind === "Job")
+          .map((object) => [
+            object.metadata.labels["app.kubernetes.io/component"],
+            object.spec.template.spec,
+          ]),
+      );
+    };
+    const tlsVolume = (pod) => pod.volumes.find(({ name }) => name === "openshell-tls");
+    const tlsMount = (pod) =>
+      pod.containers[0].volumeMounts.find(({ name }) => name === "openshell-tls");
+
+    // Without a Secret name the chart mounts nothing, so non-OpenShell Installations are unchanged.
+    for (const pod of Object.values(await pods())) {
+      assert.equal(tlsVolume(pod), undefined);
+    }
+
+    // Both controller processes construct the OpenShell gateway client, so both read the
+    // CA and operator certificate. The key stays group-readable only; migrations never see it.
+    for (const [mountPath, overrides] of [
+      ["/etc/openclaw/openshell-tls", {}],
+      ["/etc/openshell", { "backend.openshell.tls.mountPath": "/etc/openshell" }],
+    ]) {
+      const rendered = await pods({
+        "backend.openshell.tls.secretName": "occ-openshell-tls",
+        ...overrides,
+      });
+      for (const component of ["api", "worker"]) {
+        assert.deepEqual(tlsVolume(rendered[component]).secret, {
+          secretName: "occ-openshell-tls",
+          defaultMode: 0o440,
+        });
+        assert.deepEqual(tlsMount(rendered[component]), {
+          name: "openshell-tls",
+          mountPath,
+          readOnly: true,
+        });
+      }
+      assert.equal(tlsVolume(rendered.initialization), undefined);
+    }
+
+    for (const [overrides, refusal] of [
+      [
+        { "backend.openshell.tls.secretName": "OpenShell_TLS" },
+        /backend\.openshell\.tls\.secretName must be a Kubernetes resource name/,
+      ],
+      // The Secret holds the gateway-wide operator key; sharing it would mount other credentials.
+      [
+        { "backend.openshell.tls.secretName": "occ-installation-startup" },
+        /backend\.openshell\.tls\.secretName must name a dedicated Secret; occ-installation-startup is also installation\.secretName/,
+      ],
+      [
+        {
+          "backend.openshell.tls.secretName": "occ-openshell-tls",
+          "backend.openshell.tls.mountPath": "etc/openshell",
+        },
+        /backend\.openshell\.tls\.mountPath must be an absolute path/,
+      ],
+      [
+        {
+          "backend.openshell.tls.secretName": "occ-openshell-tls",
+          "backend.openshell.tls.mountPath": "/etc/openclaw/installation/",
+        },
+        /backend\.openshell\.tls\.mountPath must be distinct from other active mounts/,
+      ],
+    ]) {
+      await assert.rejects(render(overrides), refusal);
+    }
+  },
+);
+
+test(
+  "connection token egress admits only the API to the configured token endpoints",
+  tooling,
+  async () => {
+    const tokenPolicy = async (overrides) =>
+      (await resources((await render(overrides)).stdout)).find(
+        ({ kind, metadata }) =>
+          kind === "NetworkPolicy" &&
+          metadata.name === "openclaw-enterprise-api-connection-token-egress",
+      );
+
+    // Default-deny keeps the browser callback's code exchange closed until the operator opts in.
+    assert.equal(await tokenPolicy(), undefined);
+
+    const defaults = await tokenPolicy({ "agentConnections.tokenEgress.enabled": "true" });
+    assert.deepEqual(defaults.spec.podSelector.matchLabels, {
+      "app.kubernetes.io/name": "openclaw-enterprise",
+      "app.kubernetes.io/instance": "oce",
+      "app.kubernetes.io/component": "api",
+    });
+    assert.deepEqual(defaults.spec.policyTypes, ["Egress"]);
+    // Empty CIDRs still exclude link-local cloud metadata addresses.
+    assert.deepEqual(defaults.spec.egress, [
+      {
+        to: [{ ipBlock: { cidr: "0.0.0.0/0", except: ["169.254.0.0/16"] } }],
+        ports: [{ protocol: "TCP", port: 443 }],
+      },
+    ]);
+
+    const narrowed = await tokenPolicy({
+      "agentConnections.tokenEgress.enabled": "true",
+      "agentConnections.tokenEgress.egressCidrs[0]": "198.51.100.0/24",
+      "agentConnections.tokenEgress.egressCidrs[1]": "203.0.113.7/32",
+      "agentConnections.tokenEgress.ports[0]": "443",
+      "agentConnections.tokenEgress.ports[1]": "8443",
+    });
+    assert.deepEqual(narrowed.spec.egress, [
+      {
+        to: [{ ipBlock: { cidr: "198.51.100.0/24" } }, { ipBlock: { cidr: "203.0.113.7/32" } }],
+        ports: [
+          { protocol: "TCP", port: 443 },
+          { protocol: "TCP", port: 8443 },
+        ],
+      },
+    ]);
+
+    for (const [overrides, refusal] of [
+      [
+        { "agentConnections.tokenEgress.ports[0]": "0" },
+        /agentConnections\.tokenEgress\.ports must contain integer TCP ports from 1 to 65535/,
+      ],
+      [
+        { "agentConnections.tokenEgress.ports[0]": "65536" },
+        /agentConnections\.tokenEgress\.ports must contain integer TCP ports from 1 to 65535/,
+      ],
+      [
+        { "agentConnections.tokenEgress.ports": "null" },
+        /agentConnections\.tokenEgress\.ports must list at least one TCP port/,
+      ],
+      [
+        { "agentConnections.tokenEgress.egressCidrs[0]": "0.0.0.0/0" },
+        /agentConnections\.tokenEgress\.egressCidrs requires explicit IPv4 CIDRs/,
+      ],
+    ]) {
+      await assert.rejects(
+        render({ "agentConnections.tokenEgress.enabled": "true", ...overrides }),
+        refusal,
+      );
+    }
+  },
+);
+
 const signInEnv = /^OCC_AUTH_(GITHUB_|GOOGLE_|TRUSTED_PROXY_CIDRS|CLIENT_IP_HEADER)/;
 
 async function signInObjects(overrides) {

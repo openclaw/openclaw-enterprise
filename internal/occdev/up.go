@@ -47,6 +47,12 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if _, err := developmentSignIn(r.env); err != nil {
 		return err
 	}
+	if _, err := developmentConnections(r.env); err != nil {
+		return err
+	}
+	if _, err := developmentBrowserDomain(r.env); err != nil {
+		return err
+	}
 	if controlPlane == "kubernetes" {
 		return upK3d(ctx, opts, sandboxDriver, networkPolicies, ceiling)
 	}

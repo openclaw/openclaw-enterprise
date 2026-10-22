@@ -869,6 +869,10 @@
                     "label": "Kubernetes"
                   },
                   {
+                    "page": "guides/deploy/local-agent-connections",
+                    "label": "Local OAuth Connections"
+                  },
+                  {
                     "page": "testing/developer-skills",
                     "label": "Tools"
                   },
@@ -964,6 +968,7 @@
               "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
               "flows/docker-compose-development/keycloak",
+              "flows/docker-compose-development/agent-connections",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/audit-ledger",

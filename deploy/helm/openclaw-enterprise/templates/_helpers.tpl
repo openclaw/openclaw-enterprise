@@ -426,12 +426,44 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
 {{- end -}}
+{{- if .Values.backend.openshell.tls.secretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts (toString .Values.backend.openshell.tls.mountPath) -}}
+{{- end -}}
 {{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments, trailing slashes and image symlinks. Compare destinations without changing the emitted operator path. */ -}}
 {{- $caDestination := include "openclaw.runtimeMountDestination" .Values.database.caMountPath -}}
 {{- range $mount := $reservedCaMounts -}}
 {{- if eq $caDestination (include "openclaw.runtimeMountDestination" $mount) -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* The OpenShell Backend reads its gateway CA and operator certificate from files in the API and worker. database.caMountPath is compared above. */ -}}
+{{- $openshellTls := .Values.backend.openshell.tls -}}
+{{- if $openshellTls.secretName -}}
+{{- $tlsMountPath := toString $openshellTls.mountPath -}}
+{{- if not (hasPrefix "/" $tlsMountPath) -}}{{- fail "backend.openshell.tls.mountPath must be an absolute path" -}}{{- end -}}
+{{- $controllerMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" "/var/run/secrets/kubernetes.io/serviceaccount" -}}
+{{- if .Values.executionCluster.enabled -}}{{- $controllerMounts = append $controllerMounts "/etc/openclaw/execution" -}}{{- end -}}
+{{- if .Values.repositoryCredentials.enabled -}}{{- $controllerMounts = concat $controllerMounts (list "/etc/openclaw/repository-registry" "/etc/openclaw/repository-ca" "/run/openclaw/repository-control") -}}{{- end -}}
+{{- if .Values.gatewayRouting.enabled -}}{{- $controllerMounts = concat $controllerMounts (list "/etc/openclaw/gateway-api-key" "/etc/openclaw/gateway-ca") -}}{{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}{{- $controllerMounts = append $controllerMounts "/etc/openclaw/chatgpt" -}}{{- end -}}
+{{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}{{- $controllerMounts = append $controllerMounts "/etc/openclaw/api-extra-ca" -}}{{- end -}}
+{{- $tlsDestination := include "openclaw.runtimeMountDestination" $tlsMountPath -}}
+{{- range $mount := $controllerMounts -}}
+{{- if eq $tlsDestination (include "openclaw.runtimeMountDestination" $mount) -}}
+{{- fail "backend.openshell.tls.mountPath must be distinct from other active mounts in the API and worker" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $tokenEgress := .Values.agentConnections.tokenEgress -}}
+{{- if and $tokenEgress $tokenEgress.enabled -}}
+{{- if not (or (kindIs "invalid" $tokenEgress.egressCidrs) (kindIs "slice" $tokenEgress.egressCidrs)) -}}{{- fail "agentConnections.tokenEgress.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for egress to any non-link-local address" -}}{{- end -}}
+{{- range $cidr := $tokenEgress.egressCidrs -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "agentConnections.tokenEgress.egressCidrs" "cidr" $cidr) -}}
+{{- end -}}
+{{- if or (not (kindIs "slice" $tokenEgress.ports)) (eq (len $tokenEgress.ports) 0) -}}{{- fail "agentConnections.tokenEgress.ports must list at least one TCP port" -}}{{- end -}}
+{{- range $port := $tokenEgress.ports -}}
+{{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString $port))) (gt (int $port) 65535) -}}{{- fail "agentConnections.tokenEgress.ports must contain integer TCP ports from 1 to 65535" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.executionCluster.enabled -}}
@@ -622,6 +654,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $roles = concat $roles (list (list "installation.secretName" .Values.installation.secretName) (list "database.secretName" .Values.database.secretName) (list "auth.secretName" .Values.auth.secretName)) -}}
 {{- if $routing.enabled -}}{{- $roles = append $roles (list "gatewayRouting.tlsSecretName" (include "openclaw.gatewayRouting.tlsSecretName" .)) -}}{{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}{{- $roles = append $roles (list "backend.chatgpt.secretName" .Values.backend.chatgpt.secretName) -}}{{- end -}}
+{{- $roles = append $roles (list "backend.openshell.tls.secretName" .Values.backend.openshell.tls.secretName) -}}
 {{- $roles = append $roles (list "database.caSecretName" .Values.database.caSecretName "ca") -}}
 {{- if $routing.enabled -}}
 {{- if $routing.sandbox.enabled -}}{{- $roles = append $roles (list "gatewayRouting.sandbox.tlsSecretName" $routing.sandbox.tlsSecretName) -}}{{- end -}}

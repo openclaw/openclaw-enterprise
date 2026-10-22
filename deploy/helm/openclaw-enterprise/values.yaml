@@ -149,6 +149,23 @@ backend:
     # IPv4 /32 destination seen by the pod network for api.chatgpt.com:443.
     # This permits network egress; it does not configure a forward proxy.
     providerCidr: ""
+  openshell:
+    tls:
+      # Operator-created dedicated Secret, mounted read-only into the API and worker.
+      # ca.crt is required; operator.crt and operator.key are required when the
+      # Backend sets operatorTls. Installation paths must point under mountPath.
+      secretName: ""
+      mountPath: /etc/openclaw/openshell-tls
+
+# API Pod egress for connection template token URLs: the browser callback
+# exchanges the authorization code in the API.
+agentConnections:
+  tokenEgress:
+    enabled: false
+    # Empty allows the listed ports to any address except link-local
+    # 169.254.0.0/16; list the token hosts' IPv4 ranges to narrow it.
+    egressCidrs: []
+    ports: [443]
 
 repositoryCredentials:
   enabled: false

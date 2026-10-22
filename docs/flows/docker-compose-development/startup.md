@@ -378,6 +378,7 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 - [Return to the parent flow](../docker-compose-development.md).
 - [OpenShell Sandbox provisioning](../openshell-sandbox-provisioning.md).
 - [Local Kubernetes development](../../guides/deploy/local-kubernetes-development.md).
+- [Connections profile](agent-connections.md).
 
 ## Manual Notes
 

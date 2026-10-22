@@ -259,6 +259,31 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+{{- if and .Values.agentConnections.tokenEgress .Values.agentConnections.tokenEgress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-api-connection-token-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+      app.kubernetes.io/component: api
+  policyTypes: [Egress]
+  egress:
+    # The browser connection callback posts the authorization code to the connection
+    # template's token URL from the API. Empty egressCidrs permits the listed ports to any
+    # address except link-local (cloud metadata) 169.254.0.0/16.
+    - to:
+        {{- include "openclaw.networkPolicy.signInEgressPeers" .Values.agentConnections.tokenEgress.egressCidrs | nindent 8 }}
+      ports:
+        {{- range $port := .Values.agentConnections.tokenEgress.ports }}
+        - protocol: TCP
+          port: {{ int $port }}
+        {{- end }}
+{{- end }}
 
 {{- if .Values.repositoryCredentials.enabled }}
 ---

@@ -111,6 +111,8 @@ for supported engines, images, and security restrictions.
 - `OPENCLAW_DEV_PORT` — Published API port on host loopback; default: `3000`.
 - `OCC_DEVELOPMENT_BROWSER_PORT` — Published HTTPS browser port on host loopback; default: `8443`.
 - `OCC_DEVELOPMENT_SIGN_IN` — Unset or `keycloak`; Kubernetes-only profile without OpenShell runs a development Keycloak on host `127.0.0.1:443` and signs the administrator in through it as `alice`, with recovery-only passwords. See [Sign in through Keycloak](../../guides/deploy/local-kubernetes-development.md#sign-in-through-keycloak).
+- `OCC_DEVELOPMENT_BROWSER_DOMAIN` — Unset or a DNS domain resolving to loopback, such as `localtest.me`; Kubernetes control plane replaces `oce.localhost` in console and native admin hosts, and gives OpenShell the HTTPS console and native admin. See [Choose the console origin](../../guides/deploy/local-agent-connections.md#choose-the-console-origin).
+- `OCC_DEVELOPMENT_CONNECTIONS` — Unset or `openshell`; Kubernetes-only OpenShell profile adds what Agent OAuth connections need: HTTPS and operator TLS to the OpenShell gateway, a client Workspace, API token egress, and `gog`. See [Test Agent OAuth connections locally](../../guides/deploy/local-agent-connections.md).
 - `OCC_DEVELOPMENT_TRUSTED_BRIDGE_CIDR` — Compose bridge allowed to reach the development API.
 - `OCC_DEVELOPMENT_TRUSTED_FORWARDER_CIDR` — Single private forwarding IP; supplied automatically for rootful macOS Podman.
 - `OCC_DEVELOPMENT_CONFIGURATION_ROOT` — Absolute path to the development filesystem Configuration Driver's root.
