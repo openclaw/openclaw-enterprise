@@ -404,6 +404,9 @@ export function renderAgentSandboxPolicy(
     }
     let rejected = false;
     mutation = true;
+    // A read started before this write cannot establish what the write changed.
+    policyReadSequence += 1;
+    clearTimeout(policyTimer);
     feedback.textContent = "";
     feedback.className = "";
     feedback.setAttribute("role", "status");
@@ -431,6 +434,7 @@ export function renderAgentSandboxPolicy(
     } finally {
       mutation = false;
       if (current()) {
+        schedulePendingPolicyRead(2000);
         renderPolicy();
         renderSuggestions();
         renderLogs();
@@ -446,7 +450,7 @@ export function renderAgentSandboxPolicy(
     policyPanel.replaceChildren(
       element("h2", {}, "Agent network policy"),
       feedback,
-      button("Refresh policy", () => void loadPolicy()),
+      button("Refresh policy", () => void loadPolicy(), { disabled: mutation }),
     );
     if (!view) {
       policyPanel.append(element("p", { role: "status" }, "Loading Agent policy…"));
@@ -786,11 +790,18 @@ export function renderAgentSandboxPolicy(
     })) as Policy;
     view.policy = applied;
     feedback.textContent = `Policy v${applied.version} saved. Application to the current revision is pending. Enforcement is confirmed only after the provider loads this policy.`;
-    setTimeout(() => {
+  }
+
+  function schedulePendingPolicyRead(delay = 3000) {
+    clearTimeout(policyTimer);
+    if (mutation || unknownOutcome || view?.policy.application?.state !== "pending") {
+      return;
+    }
+    policyTimer = setTimeout(() => {
       if (current()) {
         void loadPolicy();
       }
-    }, 2000);
+    }, delay);
   }
 
   async function loadPolicy() {
@@ -845,17 +856,8 @@ export function renderAgentSandboxPolicy(
           : [button("Retry policy read", () => void loadPolicy())]),
       );
     } finally {
-      if (
-        current() &&
-        sequence === policyReadSequence &&
-        !readFailed &&
-        view?.policy.application?.state === "pending"
-      ) {
-        policyTimer = setTimeout(() => {
-          if (current() && !mutation) {
-            void loadPolicy();
-          }
-        }, 3000);
+      if (current() && sequence === policyReadSequence && !readFailed) {
+        schedulePendingPolicyRead();
       }
     }
   }

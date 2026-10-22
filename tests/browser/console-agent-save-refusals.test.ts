@@ -10,9 +10,11 @@ import {
   apiRequests,
   detailUrl,
   fileBrowser,
+  holdRequests,
   login,
   nativeValues,
   newPage,
+  nextFrames,
   pathRequests,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
@@ -426,6 +428,7 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
     await login(page, fixture, url.href);
     await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
+    const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
     // The operator removes the grant. Let the controller validate or commit that removal, then
     // deliver an incomplete preview, or a well-formed save response still listing the old grant.
@@ -438,6 +441,9 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       const { data, meta } = await response.json();
       const actual = preview ? data.data : data;
       assert.deepEqual(actual.additions, []);
+      if (!preview) {
+        assert.equal(await refresh.isDisabled(), true, "cannot start a refresh during the save");
+      }
       const changed = preview ? { success: true, data: {} } : { ...actual, additions: [grant] };
       await route.fulfill({ response, json: { data: changed, meta } });
     });
@@ -452,19 +458,37 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {
+      // A refresh started before Save can still be delivering the previous version when Save
+      // finishes. Only the operator's subsequent refresh can resolve the uncertain outcome.
+      const policyUrl = fixture.origin + base;
+      const stale = await holdRequests(t, page, policyUrl, {
+        once: true,
+        method: "GET",
+        afterServer: true,
+      });
+      await refresh.click();
+      await stale.requested;
       await page.getByRole("button", { name: "Save and apply to current revision" }).click();
-      await page
+      const alert = page
         .getByRole("alert")
-        .filter({ hasText: "could not confirm the saved rules" })
-        .waitFor();
-      assert.equal(pathRequests(requests, "PUT", base).length, 1);
+        .filter({ hasText: "could not confirm the saved rules" });
+      await alert.waitFor();
+
+      const delivered = page.waitForResponse(policyUrl);
+      stale.release();
+      const response = await delivered;
+      assert.equal(response.status(), 200);
+      assert.equal((await response.json()).data.policy.version, 2);
+      await nextFrames(page);
+      assert.equal(await alert.isVisible(), true, "a pre-save policy read cannot resolve the save");
       assert.equal(await review.count(), 0);
       assert.equal(
         await page.getByRole("button", { name: "Apply saved policy to current revision" }).count(),
         0,
       );
-      await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+      await refresh.click();
       await page.getByText(/Policy v3 reloaded/).waitFor();
+      assert.equal(pathRequests(requests, "PUT", base).length, 1);
     }
 
     const { policy } = (await fixture.request("GET", base)).data;

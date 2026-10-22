@@ -138,7 +138,8 @@ the latest read, including a response discarded after a draft edit.
 An unreadable preview retains the draft for another review. Save and apply checks
 that the save response names this policy, Agent, Namespace, next version, and
 the rules shown in review before requesting application to the selected revision.
-An unconfirmed save locks changes until a successful policy refresh.
+Starting a write invalidates earlier policy reads and pauses polling. After an
+unconfirmed save, only an explicit refresh started after the outcome can reopen editing.
 Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
 fails after saving, the alert identifies the saved version rather than implying
