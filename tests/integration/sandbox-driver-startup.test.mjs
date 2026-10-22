@@ -1,16 +1,9 @@
-import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
-import { once } from "node:events";
-import { createServer as createHttpsServer } from "node:https";
 import { fileURLToPath } from "node:url";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
-import {
-  invoke as invokeMiddleware,
-  token as supervisorToken,
-} from "../helpers/openshell-online-wire.mjs";
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -4700,21 +4693,18 @@ test("installation refuses OpenShell repository credentials before reading sessi
     configuration: { registryPath: "/absent/repositories.json" },
     drivers: { repo: id },
   });
-  configuration.drivers.repo = {
+  configuration.repository = {
     id,
-    configuration: {
-      controlSocket: "/absent/control.sock",
-      publicCaPath: "/absent/ca.pem",
-      sessionDurationSeconds: 600,
-    },
+    configuration: { sessionDurationSeconds: 600 },
     preparedGitHub: {
       custodyKeyPath: "/absent/custody",
       privateKeyPath: "/absent/app-key.pem",
     },
   };
-  await assert.rejects(loadInstallationFile(t, configuration), {
-    code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
-  });
+  await assert.rejects(
+    loadInstallationFile(t, configuration),
+    /repository requires explicitly selected protected Git delivery/,
+  );
 });
 
 test("OpenShell refuses repository provision and enrollment before any gateway or release call", async () => {
@@ -5303,7 +5293,7 @@ for (const kind of ["Role", "RoleBinding"]) {
 // Production configuration and Sandbox provisioning, with controlled gateway observations.
 // This proves the join and fail-closed lifecycle, not an installed stock supervisor or GitHub.
 test(
-  "configured OpenShell Git boots without material and authorizes only the observed live generation",
+  "configured protected OpenShell Git admits only the selected execution and network policy",
   { timeout: 30000 },
   async (t) => {
     const tls = await harnessTlsFixture(t);
@@ -5363,18 +5353,14 @@ test(
       configuration: { registryPath },
       drivers: { repo: "repository-credentials" },
     });
-    configuration.drivers.repo = {
-      ...fragment.drivers.repo,
+    configuration.repository = {
+      ...fragment.repository,
       id: "repository-credentials",
-      configuration: {
-        controlSocket: join(tls.directory, "control.sock"),
-        publicCaPath: tls.rootCertificatePath,
-        sessionDurationSeconds: 600,
-      },
+      configuration: { sessionDurationSeconds: 600 },
     };
     const port = await availablePort();
-    configuration.drivers.repo.openShell.authority = {
-      ...fragment.drivers.repo.openShell.authority,
+    configuration.repository.openShell.authority = {
+      ...fragment.repository.openShell.authority,
       host: "127.0.0.1",
       port,
       certificatePath: join(tls.directory, "server.pem"),
@@ -5426,15 +5412,6 @@ test(
       });
       return provider;
     };
-    let writes = 0;
-    gateway.updateProviderCredentialsConditionally = async (request, version) => {
-      const previous = gateway.providers.get(request.name);
-      assert.equal(previous.resourceVersion, version);
-      writes++;
-      const updated = { ...previous, resourceVersion: String(Number(version) + 1) };
-      gateway.providers.set(request.name, updated);
-      return updated;
-    };
     const specCodec = controllerRequire("@grpc/proto-loader").loadSync(
       fileURLToPath(
         new URL(
@@ -5460,17 +5437,15 @@ test(
     gateway.getSandbox = async ({ name }) => sandboxes.get(name);
     gateway.getService = async (_workspace, sandbox, service) =>
       harnessService(sandbox, service, sandboxes.get(sandbox)?.serviceUrls[""]);
-    let installedVersion = "1";
-    let supervisor = "supervisor-one";
     gateway.getSandboxProviderStatus = async (workspace, sandbox, provider) => {
       const now = new Date().toISOString();
       const desired = {
         sandboxId: "sandbox-id",
         sandbox,
         providerId: provider + "-id",
-        providerResourceVersion: installedVersion,
+        providerResourceVersion: "1",
         attachmentEpoch: "epoch-one",
-        providerEnvRevision: installedVersion,
+        providerEnvRevision: "1",
         configRevision: "1",
         policyHash: "policy-one",
       };
@@ -5482,7 +5457,7 @@ test(
         receipt: { workspace, provider, desired },
         observed: {
           ...desired,
-          sessionId: supervisor,
+          sessionId: "supervisor-one",
           sequence: "1",
           credentialsInstalled: true,
           policyActive: true,
@@ -5492,21 +5467,12 @@ test(
         },
       };
     };
-    const drivers = await loadInstallationFile(t, configuration, {
-      createOpenShellBackend: () => backendFor(gateway),
-    });
     // Select the same stock driver through both typed capabilities. No broker configuration,
     // generic exchange service, issuer call or second Git lifecycle is needed to load it.
-    const selected = structuredClone(configuration);
-    const gitId = selected.drivers.sandbox.id;
-    selected.backend[0].drivers.credential_proxy = gitId;
-    selected.drivers.credential_proxy = { id: gitId, configuration: {} };
-    selected.repository = {
-      ...selected.drivers.repo,
-      configuration: { sessionDurationSeconds: 600 },
-    };
-    delete selected.drivers.repo;
-    const protectedGit = await loadInstallationFile(t, selected, {
+    const gitId = configuration.drivers.sandbox.id;
+    configuration.backend[0].drivers.credential_proxy = gitId;
+    configuration.drivers.credential_proxy = { id: gitId, configuration: {} };
+    const protectedGit = await loadInstallationFile(t, configuration, {
       createOpenShellBackend: () => backendFor(gateway),
     });
     const owner = protectedGit.protectedDriver;
@@ -5518,22 +5484,19 @@ test(
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
     await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git");
 
-    const runtime = drivers.sandboxDriver.openShellGit;
-    t.after(() => runtime.close());
-    assert.ok(runtime);
-    drivers.computeDriver.validateRepositoryCredentials(
+    protectedGit.computeDriver.validateRepositoryCredentials(
       { id: "codex", mode: "dedicated" },
-      drivers.sandboxDriver.id,
+      protectedGit.sandboxDriver.id,
     );
     assert.throws(
       () =>
-        drivers.computeDriver.validateRepositoryCredentials(
+        protectedGit.computeDriver.validateRepositoryCredentials(
           { id: "openclaw", mode: "embedded" },
-          drivers.sandboxDriver.id,
+          protectedGit.sandboxDriver.id,
         ),
       { message: /[Rr]epository credentials require/ },
     );
-    const { context, revision, requirements } = runtimeSandboxFixture(drivers.sandboxDriver);
+    const { context, revision, requirements } = runtimeSandboxFixture(protectedGit.sandboxDriver);
     const auth = {
       method: "credential_source",
       sourceId: "cs_test",
@@ -5683,598 +5646,241 @@ test(
           assert.equal(spec.environment.OPENAI_API_KEY, undefined);
           assert.equal(spec.environment.GITHUB_TOKEN, undefined);
           assert.deepEqual(result.proxyWiring.plan, plan);
+          const collisionConfiguration = structuredClone(
+            configuration.drivers.sandbox.configuration,
+          );
+          collisionConfiguration.policy.networkPolicies.push({
+            name: "overlap",
+            endpoints: [{ host: "*.github.com", ports: [443] }],
+            binaries: [{ path: "/usr/bin/curl" }],
+          });
+          // Finding 2131: an overlapping policy fails the Installation at startup, naming the
+          // policy, instead of the first Agent deploy.
+          const collision = () =>
+            new OpenShellSandboxDriver(collisionConfiguration, {
+              id: sandbox.id,
+              backend: backendFor(gateway),
+              openShellGit: git,
+            });
+          for (const host of [
+            "*.github.com",
+            "api.github.com",
+            "github.com",
+            "codeload.github.com",
+            "uploads.github.com",
+          ]) {
+            collisionConfiguration.policy.networkPolicies.at(-1).endpoints[0].host = host;
+            assert.throws(
+              collision,
+              {
+                message:
+                  "OpenShell Git reaches github.com and its subdomains only through its middleware route; remove those hosts from sandbox network policy overlap.",
+              },
+              host,
+            );
+          }
+          // Finding 2145: an IP-address host may lead to GitHub too, so it is refused outright.
+          for (const host of ["140.82.112.3", "[2606:50c0:8000::154]", "140.82.112.0/20"]) {
+            collisionConfiguration.policy.networkPolicies.at(-1).endpoints[0].host = host;
+            assert.throws(
+              collision,
+              {
+                message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there; use a DNS name instead of ${host} in sandbox network policy overlap.`,
+              },
+              host,
+            );
+          }
+          // The same policy is fine without the Git route.
+          const routeless = new OpenShellSandboxDriver(collisionConfiguration, {
+            id: sandbox.id,
+            backend: backendFor(gateway),
+          });
+
+          // Finding 2144: an Agent network grant must not open a route beside the middleware either,
+          // on any port. Admission refuses it for a repository-bound Agent, naming the grant.
+          const allowed = {
+            id: "docs",
+            binary: "/usr/bin/curl",
+            host: "objects.githubusercontent.com",
+            ports: [{ from: 443, to: 443 }],
+          };
+          const repositoryScope = { repositoryCredentials: true };
+          assert.deepEqual(
+            sandbox.admitNetworkPolicy([allowed], 2, undefined, repositoryScope).additions,
+            [allowed],
+          );
+          for (const [host, port] of [
+            ["github.com", 22],
+            ["api.github.com", 443],
+            ["*.github.com", 443],
+            // Finding 2148: GitHub's other front ends under github.com skip the middleware too.
+            ["ssh.github.com", 443],
+            ["codeload.github.com", 443],
+          ]) {
+            const direct = {
+              ...allowed,
+              id: "git-direct",
+              host,
+              ports: [{ from: port, to: port }],
+            };
+            assert.throws(
+              () => sandbox.admitNetworkPolicy([allowed, direct], 2, undefined, repositoryScope),
+              {
+                name: "SandboxNetworkPolicyConflictError",
+                message: `OpenShell Git reaches github.com and its subdomains only through its middleware route, so an Agent with a repository binding cannot also allow them: remove network grant git-direct (${host}).`,
+              },
+              host,
+            );
+            // Without a repository binding, or without the Git route, the grant is admitted.
+            assert.equal(sandbox.admitNetworkPolicy([direct], 2).additions[0].host, host);
+            assert.equal(
+              routeless.admitNetworkPolicy([direct], 2, undefined, repositoryScope).additions[0]
+                .host,
+              host,
+            );
+          }
+          // Finding 2145: an IP-address grant may reach GitHub, so it is refused with its own message;
+          // without the Git route it stays an ordinary grant.
+          for (const host of ["140.82.112.3", "*.82.112.3", "0x8c.0x52.0x70.0x3", "2354212867"]) {
+            const address = { ...allowed, id: "git-address", host };
+            assert.throws(
+              () => sandbox.admitNetworkPolicy([allowed, address], 2, undefined, repositoryScope),
+              {
+                name: "SandboxNetworkPolicyConflictError",
+                message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove network grant git-address (${host}).`,
+              },
+              host,
+            );
+            assert.equal(sandbox.admitNetworkPolicy([address], 2).additions[0].host, host);
+          }
+          // Revision defaults get the same check; the Driver's own policies were checked at startup.
+          const defaults = sandbox.admitNetworkPolicy([], 1).defaults;
+          assert.throws(
+            () =>
+              sandbox.admitNetworkPolicy(
+                [],
+                1,
+                { ...defaults, mirror: { name: "mirror", endpoints: [{ host: "github.com" }] } },
+                repositoryScope,
+              ),
+            /remove sandbox network policy mirror \(github\.com\)\.$/,
+          );
+          for (const host of ["2606:50c0:8000::154", "[2606:50c0:8000::154]", "140.82.112.0/20"]) {
+            assert.throws(
+              () =>
+                sandbox.admitNetworkPolicy(
+                  [],
+                  1,
+                  { ...defaults, mirror: { name: "mirror", endpoints: [{ host }] } },
+                  repositoryScope,
+                ),
+              {
+                name: "SandboxNetworkPolicyConflictError",
+                message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove sandbox network policy mirror (${host}).`,
+              },
+              host,
+            );
+          }
+          // Backstop at provisioning: a revision admitted with such a grant never gets a Sandbox.
+          const direct = {
+            ...allowed,
+            id: "git-direct",
+            host: "github.com",
+            ports: [{ from: 443, to: 443 }],
+          };
+          const bypassRevision = {
+            ...rev,
+            id: "rev_00000000-0000-4000-8000-000000002144",
+            sandboxPolicy: {
+              driverId: sandbox.id,
+              implementation: sandbox.implementation,
+              version: 2,
+              defaults,
+              additions: [direct],
+            },
+          };
+          const createdBefore = created;
+          await assert.rejects(
+            sandbox.provisionHarness({ ...ctx, revision: bypassRevision, requirements: required }),
+            {
+              name: "SandboxRevisionUnsupportedError",
+              code: "SANDBOX_HARNESS_UNSUPPORTED",
+              message: /Protected execution keeps only its protected egress policy/,
+            },
+          );
+          assert.equal(created, createdBefore, "no Sandbox is created");
+          await assert.rejects(
+            sandbox.provisionHarness({
+              ...ctx,
+              revision: {
+                ...bypassRevision,
+                sandboxPolicy: {
+                  ...bypassRevision.sandboxPolicy,
+                  additions: [{ ...direct, id: "git-address", host: "140.82.112.3" }],
+                },
+              },
+              requirements: required,
+            }),
+            {
+              name: "SandboxRevisionUnsupportedError",
+              code: "SANDBOX_HARNESS_UNSUPPORTED",
+              message: /Protected execution keeps only its protected egress policy/,
+            },
+          );
+          assert.equal(created, createdBefore, "no Sandbox is created for an IP-address grant");
+          // Backstop at live application: the running Git Sandbox's policy is never widened.
+          const getSandbox = gateway.getSandbox;
+          const updatePolicy = gateway.updatePolicy;
+          let policyUpdates = 0;
+          gateway.getSandbox = async ({ name }) => ({
+            ...sandboxes.get(name),
+            resourceVersion: "1",
+          });
+          gateway.updatePolicy = async () => {
+            policyUpdates++;
+          };
+          try {
+            await assert.rejects(
+              sandbox.applyNetworkPolicy(
+                { namespace: ctx.namespace, revision: rev, signal: AbortSignal.timeout(2_000) },
+                {
+                  snapshot: { ...bypassRevision.sandboxPolicy },
+                  expectedProviderVersion: "1",
+                  operationId: randomUUID(),
+                },
+              ),
+              {
+                name: "SandboxNetworkPolicyConflictError",
+                message: /remove network grant git-direct/,
+              },
+            );
+            await assert.rejects(
+              sandbox.applyNetworkPolicy(
+                { namespace: ctx.namespace, revision: rev, signal: AbortSignal.timeout(2_000) },
+                {
+                  snapshot: {
+                    ...bypassRevision.sandboxPolicy,
+                    additions: [{ ...direct, id: "git-address", host: "140.82.112.3" }],
+                  },
+                  expectedProviderVersion: "1",
+                  operationId: randomUUID(),
+                },
+              ),
+              {
+                name: "SandboxNetworkPolicyConflictError",
+                message:
+                  /IP address may lead there.*: remove network grant git-address \(140\.82\.112\.3\)\.$/,
+              },
+            );
+            assert.equal(policyUpdates, 0);
+          } finally {
+            gateway.getSandbox = getSandbox;
+            gateway.updatePolicy = updatePolicy;
+          }
         } finally {
           await git.close();
         }
       },
     );
-    const networkRevision = routedRevision(drivers.computeDriver, {
-      sandboxDriverId: drivers.sandboxDriver.id,
-      repositoryCredentials: revision.repositoryCredentials,
-    });
-    assert.ok(
-      drivers.computeDriver.agentNetworkPolicies(networkRevision, {
-        name: context.namespace.name,
-        plane: "execution",
-      }).length > 0,
-      "OpenShell Git renders without a broker network peer",
-    );
-    await assert.rejects(
-      drivers.sandboxDriver.provisionHarness({ ...context, revision, requirements }),
-      /worker is unavailable/,
-    );
-    let material;
-    let approved = true;
-    let approvalCount = 0;
-    const routes = routeStore();
-    await runtime.start(
-      {
-        readOpenShellMaterial: async () => material,
-        authorizeOpenShellRequest: async () => {
-          approvalCount++;
-          return approved;
-        },
-      },
-      undefined,
-      routes,
-    );
-    await drivers.sandboxDriver.provisionHarness({ ...context, revision, requirements });
-    assert.equal(writes, 0);
-    // The route is on record for a restarted worker (finding 2128): the bootstrap generation
-    // this worker wrote, under its own fence, the binding id the Sandbox presents, no token.
-    {
-      const route = routes.rows.get(revision.id);
-      assert.equal(route.fence, 1);
-      assert.equal(route.writePending, undefined);
-      assert.equal(route.generation.credentialState, "bootstrap");
-      assert.match(route.generation.resourceVersion, /^[1-9]\d*$/);
-      assert.equal(
-        route.bindingId,
-        created.spec.policy.network_middlewares["oce-prepared-git"].config.fields.binding_id
-          .stringValue,
-      );
-      assert.equal(route.namespaceId, revision.namespaceId);
-      assert.equal(route.sandbox, created.name);
-    }
-    assert.equal(created.spec.restart_policy, "SANDBOX_RESTART_POLICY_NEVER");
-    assert.equal(created.spec.environment.GITHUB_TOKEN, undefined);
-    assert.equal(created.spec.environment.OPENCLAW_REPOSITORY_ENROLLMENT, undefined);
-    assert.equal(created.spec.environment.OCE_OPENSHELL_GIT_REPOSITORY, "example/project");
-    assert.ok(created.spec.providers.includes(inferenceProvider));
-    assert.deepEqual(
-      created.spec.policy.network_middlewares["oce-prepared-git"].endpoints.include,
-      ["github.com", "api.github.com"],
-    );
-    assert.equal(
-      created.spec.policy.network_policies["model-egress"].endpoints[0].host,
-      "api.openai.com",
-    );
-    const marker = "s" + "a".repeat(64) + "_GITHUB_TOKEN";
-    const credential = spawnSync("git", ["credential", "fill"], {
-      encoding: "utf8",
-      input: "protocol=https\nhost=github.com\npath=example/project.git\n\n",
-      env: {
-        ...process.env,
-        ...created.spec.environment,
-        HOME: tls.directory,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GITHUB_TOKEN: marker,
-      },
-    });
-    assert.equal(credential.status, 0, credential.stderr);
-    assert.match(credential.stdout, /username=x-access-token/);
-    assert.ok(credential.stdout.includes("password=" + marker));
-
-    // Finding 2126: the documented `oce-github pr-create --draft` must run from this sandbox.
-    // Landlock admits the image's repository client, PATH reaches it after the image's own gh,
-    // and the helper routes like Git: OpenShell strips every proxy variable and mediates the
-    // connection, so the helper must not require one.
-    assert.ok(created.spec.policy.filesystem.read_only.includes("/opt/oce/repository-credentials"));
-    const searchPath = created.spec.environment.PATH.split(":");
-    assert.equal(searchPath.at(-1), "/opt/oce/repository-credentials/bin");
-    assert.ok(searchPath.indexOf("/usr/local/bin") >= 0);
-    assert.ok(
-      searchPath.indexOf("/usr/local/bin") <
-        searchPath.indexOf("/opt/oce/repository-credentials/bin"),
-    );
-    assert.ok(
-      !Object.keys(created.spec.environment).some((name) => /_proxy$/i.test(name)),
-      "the sandbox spec carries no proxy routing",
-    );
-    {
-      const leaf = (...args) => {
-        const result = spawnSync("openssl", args, { cwd: tls.directory, encoding: "utf8" });
-        assert.equal(result.status, 0, result.stderr || result.error?.message);
-      };
-      await writeFile(
-        join(tls.directory, "github.ext"),
-        "basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:api.github.com\n",
-      );
-      leaf(
-        "req",
-        "-new",
-        "-newkey",
-        "ec",
-        "-pkeyopt",
-        "ec_paramgen_curve:prime256v1",
-        "-nodes",
-        "-keyout",
-        "github.key",
-        "-out",
-        "github.csr",
-        "-subj",
-        "/CN=api.github.com",
-      );
-      leaf(
-        "x509",
-        "-req",
-        "-in",
-        "github.csr",
-        "-CA",
-        "ca.pem",
-        "-CAkey",
-        "ca.key",
-        "-CAcreateserial",
-        "-days",
-        "1",
-        "-out",
-        "github.pem",
-        "-extfile",
-        "github.ext",
-      );
-      // Stands in for OpenShell's transparent mediation: it terminates TLS for the original
-      // destination with the sandbox CA (NODE_EXTRA_CA_CERTS) and applies the middleware.
-      const exchanges = [];
-      const mediator = createHttpsServer(
-        {
-          cert: await readFile(join(tls.directory, "github.pem")),
-          key: await readFile(join(tls.directory, "github.key")),
-        },
-        async (req, res) => {
-          let text = "";
-          for await (const chunk of req) {
-            text += chunk;
-          }
-          exchanges.push({
-            servername: req.socket.servername,
-            method: req.method,
-            url: req.url,
-            authorization: req.headers.authorization,
-            operationHeader: req.headers["x-oce-operation-id"],
-            body: JSON.parse(text),
-          });
-          const side = (ref) => ({ ref, repo: { full_name: "example/project" } });
-          res.writeHead(201, { "content-type": "application/json" });
-          res.end(
-            JSON.stringify({
-              number: 7,
-              html_url: "https://github.com/example/project/pull/7",
-              state: "open",
-              draft: true,
-              head: side("review/task"),
-              base: side("main"),
-            }),
-          );
-        },
-      );
-      mediator.listen(0, "127.0.0.1");
-      await once(mediator, "listening");
-      t.after(() => mediator.close());
-      // The sandbox network namespace sends any TCP connection to the mediator; record the
-      // destination the helper itself selected.
-      const redirect = `import tls from "node:tls";
-const connect = tls.connect;
-tls.connect = (options, ...rest) => {
-  process.stderr.write("destination " + options.host + ":" + options.port + "\\n");
-  return connect({ ...options, host: "127.0.0.1", port: ${mediator.address().port} }, ...rest);
-};`;
-      // OpenShell's provider placeholder; the supervisor resolves it in the mediated request.
-      const placeholder = "openshell:resolve:env:" + marker;
-      const helper = fileURLToPath(
-        new URL(
-          "../../apps/controller/src/drivers/repo/github/credentials/client/draft-pr.ts",
-          import.meta.url,
-        ),
-      );
-      const draft = (extra = {}) =>
-        new Promise((resolve, reject) => {
-          const child = spawn(
-            process.execPath,
-            [
-              "--import",
-              "data:text/javascript," + encodeURIComponent(redirect),
-              helper,
-              "pr-create",
-              "--draft",
-              "--head",
-              "review/task",
-              "--base",
-              "main",
-              "--title",
-              "Review the proposed change",
-              "--body",
-              "Describe the change.",
-            ],
-            {
-              // Only the Sandbox's own environment plus what OpenShell injects into children.
-              env: {
-                ...created.spec.environment,
-                PATH: process.env.PATH,
-                HOME: tls.directory,
-                TMPDIR: tls.directory,
-                GITHUB_TOKEN: placeholder,
-                NODE_EXTRA_CA_CERTS: tls.rootCertificatePath,
-                ...extra,
-              },
-              stdio: ["ignore", "pipe", "pipe"],
-            },
-          );
-          let stdout = "";
-          let stderr = "";
-          child.stdout.on("data", (chunk) => (stdout += chunk));
-          child.stderr.on("data", (chunk) => (stderr += chunk));
-          child.on("error", reject);
-          child.on("close", (code) => resolve({ code, stdout, stderr }));
-        });
-      const sent = await draft();
-      assert.equal(sent.code, 0, sent.stderr);
-      assert.match(sent.stderr, /^local draft attempt [0-9a-f-]{36}$/m);
-      assert.match(sent.stderr, /^destination api\.github\.com:443$/m);
-      assert.deepEqual(JSON.parse(sent.stdout), {
-        url: "https://github.com/example/project/pull/7",
-        number: 7,
-        head: "review/task",
-        base: "main",
-        draft: true,
-      });
-      assert.equal(exchanges.length, 1, "exactly one request");
-      assert.deepEqual(exchanges[0], {
-        servername: "api.github.com",
-        method: "POST",
-        url: "/repos/example/project/pulls",
-        authorization: "Bearer " + placeholder,
-        operationHeader: undefined,
-        body: {
-          title: "Review the proposed change",
-          head: "review/task",
-          base: "main",
-          body: "Describe the change.",
-          draft: true,
-          maintainer_can_modify: false,
-        },
-      });
-      // A proxy the Agent sets itself is ignored; OpenShell owns the route.
-      const unproxied = await draft({
-        HTTPS_PROXY: "http://127.0.0.1:9",
-        https_proxy: "http://127.0.0.1:9",
-      });
-      assert.equal(unproxied.code, 0, unproxied.stderr);
-      assert.match(unproxied.stderr, /^destination api\.github\.com:443$/m);
-      assert.equal(exchanges.length, 2);
-      assert.deepEqual(exchanges[1], exchanges[0]);
-      // The client-side binding checks still refuse a mismatched branch before any send.
-      const refused = await draft({ OCE_OPENSHELL_GIT_PUSH_REF: "refs/heads/main" });
-      assert.equal(refused.code, 1);
-      assert.doesNotMatch(refused.stderr, /^destination /m);
-      assert.equal(exchanges.length, 2);
-    }
-    const collisionConfiguration = structuredClone(configuration.drivers.sandbox.configuration);
-    collisionConfiguration.policy.networkPolicies.push({
-      name: "overlap",
-      endpoints: [{ host: "*.github.com", ports: [443] }],
-      binaries: [{ path: "/usr/bin/curl" }],
-    });
-    // Finding 2131: an overlapping policy fails the Installation at startup, naming the
-    // policy, instead of the first Agent deploy.
-    const collision = () =>
-      new OpenShellSandboxDriver(collisionConfiguration, {
-        id: drivers.sandboxDriver.id,
-        backend: backendFor(gateway),
-        openShellGit: runtime,
-      });
-    for (const host of [
-      "*.github.com",
-      "api.github.com",
-      "github.com",
-      "codeload.github.com",
-      "uploads.github.com",
-    ]) {
-      collisionConfiguration.policy.networkPolicies.at(-1).endpoints[0].host = host;
-      assert.throws(
-        collision,
-        {
-          message:
-            "OpenShell Git reaches github.com and its subdomains only through its middleware route; remove those hosts from sandbox network policy overlap.",
-        },
-        host,
-      );
-    }
-    // Finding 2145: an IP-address host may lead to GitHub too, so it is refused outright.
-    for (const host of ["140.82.112.3", "[2606:50c0:8000::154]", "140.82.112.0/20"]) {
-      collisionConfiguration.policy.networkPolicies.at(-1).endpoints[0].host = host;
-      assert.throws(
-        collision,
-        {
-          message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there; use a DNS name instead of ${host} in sandbox network policy overlap.`,
-        },
-        host,
-      );
-    }
-    // The same policy is fine without the Git route.
-    const routeless = new OpenShellSandboxDriver(collisionConfiguration, {
-      id: drivers.sandboxDriver.id,
-      backend: backendFor(gateway),
-    });
-
-    // Finding 2144: an Agent network grant must not open a route beside the middleware either,
-    // on any port. Admission refuses it for a repository-bound Agent, naming the grant.
-    const sandboxDriver = drivers.sandboxDriver;
-    const allowed = {
-      id: "docs",
-      binary: "/usr/bin/curl",
-      host: "objects.githubusercontent.com",
-      ports: [{ from: 443, to: 443 }],
-    };
-    const repositoryScope = { repositoryCredentials: true };
-    assert.deepEqual(
-      sandboxDriver.admitNetworkPolicy([allowed], 2, undefined, repositoryScope).additions,
-      [allowed],
-    );
-    for (const [host, port] of [
-      ["github.com", 22],
-      ["api.github.com", 443],
-      ["*.github.com", 443],
-      // Finding 2148: GitHub's other front ends under github.com skip the middleware too.
-      ["ssh.github.com", 443],
-      ["codeload.github.com", 443],
-    ]) {
-      const direct = { ...allowed, id: "git-direct", host, ports: [{ from: port, to: port }] };
-      assert.throws(
-        () => sandboxDriver.admitNetworkPolicy([allowed, direct], 2, undefined, repositoryScope),
-        {
-          name: "SandboxNetworkPolicyConflictError",
-          message: `OpenShell Git reaches github.com and its subdomains only through its middleware route, so an Agent with a repository binding cannot also allow them: remove network grant git-direct (${host}).`,
-        },
-        host,
-      );
-      // Without a repository binding, or without the Git route, the grant is admitted.
-      assert.equal(sandboxDriver.admitNetworkPolicy([direct], 2).additions[0].host, host);
-      assert.equal(
-        routeless.admitNetworkPolicy([direct], 2, undefined, repositoryScope).additions[0].host,
-        host,
-      );
-    }
-    // Finding 2145: an IP-address grant may reach GitHub, so it is refused with its own message;
-    // without the Git route it stays an ordinary grant.
-    for (const host of ["140.82.112.3", "*.82.112.3", "0x8c.0x52.0x70.0x3", "2354212867"]) {
-      const address = { ...allowed, id: "git-address", host };
-      assert.throws(
-        () => sandboxDriver.admitNetworkPolicy([allowed, address], 2, undefined, repositoryScope),
-        {
-          name: "SandboxNetworkPolicyConflictError",
-          message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove network grant git-address (${host}).`,
-        },
-        host,
-      );
-      assert.equal(sandboxDriver.admitNetworkPolicy([address], 2).additions[0].host, host);
-    }
-    // Revision defaults get the same check; the Driver's own policies were checked at startup.
-    const defaults = sandboxDriver.admitNetworkPolicy([], 1).defaults;
-    assert.throws(
-      () =>
-        sandboxDriver.admitNetworkPolicy(
-          [],
-          1,
-          { ...defaults, mirror: { name: "mirror", endpoints: [{ host: "github.com" }] } },
-          repositoryScope,
-        ),
-      /remove sandbox network policy mirror \(github\.com\)\.$/,
-    );
-    for (const host of ["2606:50c0:8000::154", "[2606:50c0:8000::154]", "140.82.112.0/20"]) {
-      assert.throws(
-        () =>
-          sandboxDriver.admitNetworkPolicy(
-            [],
-            1,
-            { ...defaults, mirror: { name: "mirror", endpoints: [{ host }] } },
-            repositoryScope,
-          ),
-        {
-          name: "SandboxNetworkPolicyConflictError",
-          message: `OpenShell Git reaches GitHub only through its middleware route, and an IP address may lead there, so an Agent with a repository binding cannot allow one: remove sandbox network policy mirror (${host}).`,
-        },
-        host,
-      );
-    }
-    // Backstop at provisioning: a revision admitted with such a grant never gets a Sandbox.
-    const direct = {
-      ...allowed,
-      id: "git-direct",
-      host: "github.com",
-      ports: [{ from: 443, to: 443 }],
-    };
-    const bypassRevision = {
-      ...revision,
-      id: "rev_00000000-0000-4000-8000-000000002144",
-      sandboxPolicy: {
-        driverId: sandboxDriver.id,
-        implementation: sandboxDriver.implementation,
-        version: 2,
-        defaults,
-        additions: [direct],
-      },
-    };
-    const createdBefore = created;
-    await assert.rejects(
-      sandboxDriver.provisionHarness({ ...context, revision: bypassRevision, requirements }),
-      {
-        name: "SandboxRevisionUnsupportedError",
-        code: "SANDBOX_HARNESS_UNSUPPORTED",
-        message: /remove network grant git-direct \(github\.com\)\.$/,
-      },
-    );
-    assert.equal(created, createdBefore, "no Sandbox is created");
-    await assert.rejects(
-      sandboxDriver.provisionHarness({
-        ...context,
-        revision: {
-          ...bypassRevision,
-          sandboxPolicy: {
-            ...bypassRevision.sandboxPolicy,
-            additions: [{ ...direct, id: "git-address", host: "140.82.112.3" }],
-          },
-        },
-        requirements,
-      }),
-      {
-        name: "SandboxRevisionUnsupportedError",
-        code: "SANDBOX_HARNESS_UNSUPPORTED",
-        message:
-          /IP address may lead there.*: remove network grant git-address \(140\.82\.112\.3\)\.$/,
-      },
-    );
-    assert.equal(created, createdBefore, "no Sandbox is created for an IP-address grant");
-    // Backstop at live application: the running Git Sandbox's policy is never widened.
-    const getSandbox = gateway.getSandbox;
-    const updatePolicy = gateway.updatePolicy;
-    let policyUpdates = 0;
-    gateway.getSandbox = async ({ name }) => ({ ...sandboxes.get(name), resourceVersion: "1" });
-    gateway.updatePolicy = async () => {
-      policyUpdates++;
-    };
-    try {
-      await assert.rejects(
-        sandboxDriver.applyNetworkPolicy(
-          { namespace: context.namespace, revision, signal: AbortSignal.timeout(2_000) },
-          {
-            snapshot: { ...bypassRevision.sandboxPolicy },
-            expectedProviderVersion: "1",
-            operationId: randomUUID(),
-          },
-        ),
-        { name: "SandboxNetworkPolicyConflictError", message: /remove network grant git-direct/ },
-      );
-      await assert.rejects(
-        sandboxDriver.applyNetworkPolicy(
-          { namespace: context.namespace, revision, signal: AbortSignal.timeout(2_000) },
-          {
-            snapshot: {
-              ...bypassRevision.sandboxPolicy,
-              additions: [{ ...direct, id: "git-address", host: "140.82.112.3" }],
-            },
-            expectedProviderVersion: "1",
-            operationId: randomUUID(),
-          },
-        ),
-        {
-          name: "SandboxNetworkPolicyConflictError",
-          message:
-            /IP address may lead there.*: remove network grant git-address \(140\.82\.112\.3\)\.$/,
-        },
-      );
-      assert.equal(policyUpdates, 0);
-    } finally {
-      gateway.getSandbox = getSandbox;
-      gateway.updatePolicy = updatePolicy;
-    }
-
-    assert.equal(
-      created.spec.policy.network_middlewares["oce-prepared-git"].on_error,
-      "fail_closed",
-    );
-    assert.equal(created.spec.providers.filter((name) => name.startsWith("oce-git-")).length, 1);
-    const grpc = controllerRequire("@grpc/grpc-js");
-    const loader = controllerRequire("@grpc/proto-loader");
-    const definition = loader.loadSync(
-      fileURLToPath(
-        new URL(
-          "../../apps/controller/src/drivers/egress-proxy/proto/supervisor_middleware.proto",
-          import.meta.url,
-        ),
-      ),
-      { keepCase: true, longs: String, enums: Number, defaults: false, oneofs: true },
-    );
-    const Client =
-      grpc.loadPackageDefinition(definition).openshell.middleware.v1.SupervisorMiddleware;
-    const client = new Client(
-      `localhost:${port}`,
-      grpc.credentials.createSsl(Buffer.from(tls.caBundle)),
-    );
-    t.after(() => client.close());
-    const request = {
-      phase: 1,
-      middleware_name: "oce-prepared-git",
-      context: { sandbox_id: "sandbox-id", request_id: randomUUID(), workspace: created.workspace },
-      config: created.spec.policy.network_middlewares["oce-prepared-git"].config,
-      target: {
-        scheme: "https",
-        host: "github.com",
-        port: 443,
-        method: "GET",
-        path: "/example/project.git/info/refs",
-        query: "service=git-upload-pack",
-      },
-      headers: [],
-      body: Buffer.alloc(0),
-    };
-    const evaluate = async () =>
-      (
-        await invokeMiddleware(
-          client,
-          "EvaluateHttpRequest",
-          request,
-          supervisorToken(keys, "supervisor", "sandbox-id"),
-        )
-      ).decision;
-    assert.equal(await evaluate(), 2);
-    const grant = revision.repositoryCredentials.bindings[0].grant;
-    material = {
-      value: "synthetic-installation-token",
-      expiresAt: new Date(Date.now() + 300000).toISOString(),
-      preparationAttemptId: "attempt-one",
-      materialVersion: "material-one",
-      sessionId: "session-one",
-      ...grant,
-      repository: "example/project",
-      pushRef: "refs/heads/review/task",
-      pullRequestBase: "main",
-      apiOrigin: "https://api.github.com",
-    };
-    const until = async (check) => {
-      for (let n = 0; n < 100; n++) {
-        if (await check()) {
-          return;
-        }
-        await delay(50);
-      }
-      assert.fail("runtime condition did not converge");
-    };
-    await until(() => writes === 1);
-    assert.equal(await evaluate(), 2, "provider acceptance is not observed installation");
-    installedVersion = "2";
-    await until(async () => (await evaluate()) === 1);
-    assert.ok(approvalCount > 0);
-    // The installed route's facts follow: the written generation, the material reference and
-    // the verified observation, still no token.
-    await until(() => routes.rows.get(revision.id).material?.materialVersion === "material-one");
-    {
-      const route = routes.rows.get(revision.id);
-      assert.equal(route.generation.credentialState, "active");
-      assert.equal(route.generation.resourceVersion, "2");
-      assert.equal(route.material.preparationAttemptId, "attempt-one");
-      assert.equal(route.observed.supervisorSessionId, "supervisor-one");
-      assert.equal(route.observed.sandboxId, "sandbox-id");
-      assert.equal(route.writePending, undefined);
-      assert.ok(!routes.dump().includes("synthetic-installation-token"), "a token was persisted");
-    }
-    approved = false;
-    assert.equal(await evaluate(), 2, "every request checks current owner authorization");
-    approved = true;
-    supervisor = "replacement-supervisor";
-    assert.equal(await evaluate(), 2);
-    supervisor = "supervisor-one";
-    assert.equal(await evaluate(), 2, "replacement permanently fences this admission");
-    assert.equal(writes, 1);
   },
 );

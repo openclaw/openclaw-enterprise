@@ -301,7 +301,7 @@ Retains repository-session identity and cleanup context after AgentRevision dele
 - `admission_id`
 - `duration_seconds`
 - `deadline_wall_ms`
-- `broker_protocol`
+- `broker_protocol` (0/1: historical native; 2: protected; 3: prepared native)
 - `phase`
 - `session_id`
 - `created_at`

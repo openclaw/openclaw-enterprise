@@ -45,6 +45,7 @@ export function createControlAdmission(
   config: ServiceConfig,
   clock: Clock,
   durableRequired: boolean,
+  preparedAuthority = false,
 ) {
   const records = new Map<string, AdmissionRecord>();
   const sessions = new Map<string, string>();
@@ -205,6 +206,13 @@ export function createControlAdmission(
           profile: snapshot.profile ?? config.sessionPolicy.defaultProfile,
         });
     if (isBoundInput(admittedInput) && (!journal || input.durableAdmission !== true)) {
+      throw new Error("INVALID_ADMISSION");
+    }
+    if (
+      isBoundInput(admittedInput) &&
+      ((admittedInput.preparedOnly === true && !preparedAuthority) ||
+        (!recoverOnly && admittedInput.preparedOnly !== true))
+    ) {
       throw new Error("INVALID_ADMISSION");
     }
     sweep(id);

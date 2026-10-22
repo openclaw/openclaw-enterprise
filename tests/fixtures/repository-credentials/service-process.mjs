@@ -185,7 +185,7 @@ export async function startServiceProcessFixture(
       origin: github.origin,
       wallMs: clock.wallNow(),
       registryFile: registryMaterial.registryFile,
-      socketPath: join(dirname(config.gateway.controlSocket), "prepared.sock"),
+      socketPath: join(dirname(config.gateway.controlSocket), "prepared-git-use.sock"),
     });
     socketIdentity = await lstat(config.gateway.controlSocket);
     return generation;
@@ -242,7 +242,7 @@ export async function startServiceProcessFixture(
         {
           ...input,
           ...(recoverOnly ? { recoverOnly } : {}),
-          ...(durableAdmission ? { durableAdmission } : {}),
+          ...(durableAdmission ? { durableAdmission, preparedOnly: true } : {}),
         },
         id,
       ),

@@ -1,21 +1,17 @@
 # Git and draft pull requests through OpenShell
 
-This opt-in, pre-release integration lets a dedicated Codex Agent use native Git
-and create a draft pull request through stock OpenShell 0.1.4. The OCE worker
-holds the GitHub App signing key and prepared credential custody key. OpenShell
-calls the worker's authenticated request-phase middleware for the admitted
-repository binding before forwarding a GitHub request.
+The earlier broker-backed trial cannot start with this release. Stop new admissions and
+drain accepted work on its original owner before updating the control plane. Preserve the
+original owner’s database, registry, custody key and issuer access until it settles the
+work. Do not transfer a receipt into new authority or replay an uncertain request.
 
-**Use this only for an explicitly accepted pre-release trial.** Stock OpenShell
-cannot require this middleware on every sandbox, and its middleware request does
-not independently prove TLS to the GitHub origin. Registering the service does
-not close either gap. This is not a general hardened credential-isolation claim.
-Qualify your actual deployment before admitting a real repository credential;
-chart renders and source tests do not establish an AWS deployment result.
+A replacement requires a qualified protected sender. [Protected Git through Credential
+Proxy](protected-openshell-git.md) describes its release requirements and configuration.
+Release remains blocked until the actual sender and TLS path are qualified.
 
 ## Prerequisites
 
-Check these before the trial; each one stops Git or the Agent:
+Check these before qualifying a protected release; each one can stop Git or the Agent:
 
 - **Kernel.** The Driver requires Landlock (`hard_requirement`), and Sandboxes need
   Landlock ABI v3 or later, Linux 6.2 or newer. A node on an older kernel, such as
@@ -27,27 +23,16 @@ Check these before the trial; each one stops Git or the Agent:
 - **Unattended commands.** With
   `plugins.entries.codex.config.appServer.approvalPolicy: on-request` and no
   approver, Codex declines the shell commands it asks about, so Git never runs. For
-  an unattended trial, set it to `never`, which removes the approval step.
-- **PATH.** Draft creation needs the helper on PATH; see the login-shell note below.
+  unattended qualification, select an approval policy appropriate for that environment.
 
-## Maintain the earlier Git trial
+## Prepare the request-phase service
 
-See [protected Git through Credential Proxy](protected-openshell-git.md).
-Start with the [repository installation inputs](../../guides/repository-credentials/installation.md)
-and [prepared Git policy](prepared-native-git.md). Select Kubernetes Compute,
-the OpenShell Sandbox Driver and dedicated Codex. Keep the ordinary OpenShell
-inference configuration for Codex; this integration adds repository access.
-To keep this trial during an upgrade, explicitly select `openshellGit.mode: broker-trial`,
-keep `repositoryCredentials.enabled: true` and `authority: prepared-git`, and merge
-[`openshell.fragment.yaml`](../../../deploy/examples/repository-credentials/openshell.fragment.yaml)
-into the Installation. This earlier trial requires broker session authority.
-
-The existing repository inputs still supply the registry, broker image and
-configuration, public CA, GitHub App key and dedicated 32-byte custody key.
-`repositoryCredentials.preparedCustodySecretName` supplies `custody.key`, and
-`repositoryCredentials.appKeySecretName` supplies `private-key.pem`; only the worker
-mounts these under `/etc/openclaw/prepared-repository`. Preserve the custody key
-across restarts. Never put these keys in Agent configuration or Helm values.
+For a qualified protected release, select Kubernetes Compute, the OpenShell Sandbox and
+Credential Proxy from the same installed Driver, dedicated Codex, and the
+[OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
+The GitHub Backend still requires its registry, and only the worker receives the GitHub App
+key and dedicated custody key. Preserve that custody key across restarts. Never put either
+key in Agent configuration or Helm values.
 
 Prepare a separate serving certificate whose DNS SAN covers
 `openclaw-enterprise-openshell-git.openclaw-system.svc`, its private key, and the
@@ -69,7 +54,7 @@ the middleware. Do not select Agent workload Pods as trusted callers.
 ```yaml
 openshellGit:
   enabled: true
-  mode: broker-trial
+  mode: protected
   port: 8445
   tlsSecretName: openshell-git-tls
   issuerPublicKeyConfigMapName: openshell-gateway-public
@@ -123,7 +108,7 @@ timeout = "3s"
 Start the configured OCE worker before restarting the Gateway: Gateway startup
 calls authenticated `Describe` and refuses an unavailable or incompatible service.
 OCE advertises the request-phase binding; policy admission calls `ValidateConfig`.
-The registration name must match `drivers.repo.openShell.registrationName`.
+The registration name must match `repository.openShell.registrationName`.
 OCE attaches the selected binding to the sandbox policy with `on_error: fail_closed`
 for `github.com` and `api.github.com`. Do not hand-author its binding identifier.
 Those hosts, and every other name under `github.com` (such as `ssh.github.com`,
@@ -145,66 +130,12 @@ and origin-TLS limits stated above.
 
 ## Use the admitted repository
 
-Enroll one repository and exact writable branch in the registry and bind it to
-the Agent. For draft creation select `transport: git-and-draft-pr` and an explicit
-`pullRequestBase`, such as `main`; Git-only grants do not enable draft creation.
-The App installation needs the corresponding repository contents and pull request
-permissions. GitHub permissions themselves are broader than the middleware's
-branch and draft checks; keep independent GitHub branch protection.
-
-The Agent may force-push or delete its own review branch; OCE admits both.
-Deleting it closes its draft. To stop either, protect the branch on GitHub.
-
-[Codex OAuth](../../testing/openshell-oauth.md) does not grant Git access. OpenShell Git
-binds a live revision to its installed credential and authorizes each request; other
-sandbox repository bindings remain refused.
-
-From the admitted Agent shell, use ordinary GitHub URLs. OpenShell strips proxy
-variables and routes the sandbox's connections itself. Replace the repository and
-branch below with the enrolled values:
-
-```bash
-git clone https://github.com/example-org/example-repo.git
-cd example-repo
-git switch -c review/agent-change origin/main
-# Make and commit the requested change.
-git push origin HEAD:refs/heads/review/agent-change
-oce-github pr-create --draft --head review/agent-change --base main \
-  --title 'Review the proposed change' --body 'Describe the change and validation.'
-```
-
-With `git-and-draft-pr`, the Sandbox can read the image's repository client and
-its PATH ends with `/opt/oce/repository-credentials/bin`. If a login shell resets
-PATH, call `/opt/oce/repository-credentials/bin/oce-github`. Like Git, the helper
-sends its one draft-create request to `api.github.com` and OpenShell routes it
-through the middleware; the helper ignores proxy variables. It accepts explicit `--body` text, not `--body-file`, and
-records a local attempt ID before sending. A local ID does not make GitHub
-creation idempotent. If a push or draft-create response is lost, inspect GitHub
-for the commit or draft before any new attempt. Do not retry another way. A
-refused request answers 403 with a [reason code](openshell-git-refusals.md).
-
-The draft limit belongs to the grant (repository, review branch and base): every
-Agent version bound to it shares one draft, and closing or merging the draft does
-not reset it. A second create is refused before GitHub, and the helper says the
-binding already opened its draft. OCE never sees GitHub's reply here, so it records
-no pull request number. For another draft, enroll and bind a new review branch; a
-redeploy or rebind does not reset it.
-
-For multiple drafts, set `draftPullLimit: "none"` beside `pullRequestBase` in the registry
-namespace policy and redeploy. Each draft still targets the approved base from the review branch.
-OCE records each authorized exchange as a possible use. A one-draft grant consumes its allowance
-at authorization, before OCE knows whether OpenShell sent the request or GitHub created the draft.
-The broker route allows one draft per grant.
-
-During the accepted trial, use an authorized test repository to verify clone,
-pull of an independently known commit, push to the allowed branch, and draft
-creation from the same admitted Agent. Independently
-read back the pushed SHA and draft. In a disposable repository, verify refusal of
-another repository, another writable branch and a non-draft create. Remove the
-Agent repository binding, confirm a fresh fetch is denied, and confirm ordinary
-chat still works. Withdrawal cannot erase an existing clone or recall a sent push.
-These checks do not prove that every sandbox must use the middleware or that the
-connection from OpenShell to GitHub uses verified TLS.
+New work requires the qualified protected release and an explicit repository binding.
+The GitHub App installation sets the permission ceiling; keep independent branch protection.
+The draft limit belongs to the grant (repository, review branch and base). A one-draft
+grant consumes its allowance at authorization, before OCE knows whether the sender sent the
+request or GitHub created the draft. A lost push or draft response is an unknown outcome:
+inspect the original operation and do not replay it. See [refusal reasons](openshell-git-refusals.md).
 
 ## Route state, restarts and recovery
 

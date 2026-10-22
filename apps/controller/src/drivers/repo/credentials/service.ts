@@ -215,6 +215,12 @@ export function createCredentialService(
       if (isBoundInput(admittedInput) !== (factory.resolveBound !== undefined)) {
         throw new Error("INVALID_BINDING");
       }
+      if (
+        isBoundInput(admittedInput) &&
+        (admittedInput.preparedOnly !== true || !("createPrepared" in factory))
+      ) {
+        throw new Error("INVALID_ADMISSION");
+      }
       const profile = admittedInput.profile ?? policy.defaultProfile;
       if (!policy.allowedProfiles.includes(profile)) {
         throw new Error("INVALID_PROFILE");

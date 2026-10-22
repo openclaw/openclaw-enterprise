@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
@@ -65,9 +66,14 @@ function codexPluginRevisionState(pluginId) {
   };
 }
 
-revisionTest(
+test(
   "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
-  async (fixture, context) => {
+  // First in its file, so it also absorbs the file's cold start (finding 1171):
+  // about 12.5 s typically, 31.7 s once on a slow runner.
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // An interrupted worker retains its lease. Keep its expiry inside the observation window.
+    const fixture = await setup(context, { leaseDurationMs: 5_000 });
     const [
       { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
@@ -77,175 +83,236 @@ revisionTest(
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
     ]);
-    const clock = createControlledClock();
-    const startedWall = clock.wallNow();
-    const credentials = await startRegistryCredentialServiceFixture(context, {
-      namespaceId: fixture.namespace.id,
-      autoOpen: false,
-      // Worker admission IDs use real wall time. Preserve that progress while
-      // allowing this fixture's provider-retirement expiry to advance explicitly.
-      clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
-      gateway: { listen: "127.0.0.1:0" },
-    });
-    const repositoryBackend = {
-      id: credentials.backendId,
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: credentials.config.gateway.controlSocket,
-      }),
-      drivers: { repo: "repository-credentials" },
-    };
-    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
-      publicCa: credentials.tls.ca,
-    });
-    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
-      sessionDurationSeconds: 60,
-    });
-    // The real resolver admits selection fields and returns the richer frozen
-    // binding. Worker revalidation must project that snapshot back to selections;
-    // the strict registry parser rejects backendId/grant as caller input.
-    const resolution = driver.resolve({
-      namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
-    });
-    // Bound admissions require the worker-owned receipt transport and its real
-    // PostgreSQL state; without it the broker correctly refuses the session.
-    const { startRepositoryReceiptServer } =
-      await import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts");
-    const receiptServer = await startRepositoryReceiptServer({
-      state: fixture.state,
-      controlSocket: credentials.config.gateway.controlSocket,
-      driverId: driver.id,
-      implementation: driver.implementation,
-      backendId: credentials.backendId,
-    });
-    context.after(() => receiptServer.close());
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-concrete-driver", {
-      revision: {
-        repositoryCredentials: {
-          driver: { id: driver.id, implementation: driver.implementation },
-          deadlineWallMs: Date.now() + 120_000,
-          bindings: resolution.bindings,
-        },
-      },
-    });
-    const open = sender.open.bind(sender);
-    const close = sender.close.bind(sender);
-    let lostSessionId;
-    const closures = [];
-    // Lose only the first response. The real service owns CLOSED -> DISPOSED,
-    // and the real worker must wait before delivering replacement material.
-    sender.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (lostSessionId === undefined && result.kind === "created") {
-        lostSessionId = result.session.sessionId;
-        throw new Error("repository admission response lost after creation");
-      }
-      return result;
-    };
-    sender.close = async (sessionId, signal) => {
-      const status = await close(sessionId, signal);
-      closures.push(status?.state);
-      return status;
-    };
-    const material = [];
-    const events = [];
-    const retired = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        validateRepositoryCredentials(harness, sandboxDriverId) {
-          assert.equal(harness.mode, "embedded");
-          assert.equal(sandboxDriverId, undefined);
-        },
-        async prepareRevision(revision, deploymentContext) {
-          material.push(...deploymentContext.repositoryCredentials);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-        async retireRevision(revision) {
-          retired.push(revision.id);
-          return fixture.compute.retireRevision(revision);
-        },
-      },
-      {
-        emit: (event) => events.push(event),
-        pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({
-          ...drivers,
-          repositoryPolicy: driver,
-          nativeRepositorySender: sender,
+    const resources = createResourceScope();
+    const credentialResources = createResourceScope();
+    let receiptServer;
+    let releaseLostResponse;
+    resources.after(() => receiptServer?.close());
+    resources.after(() => credentialResources.close());
+    resources.after(() => fixture.stop());
+    try {
+      const clock = createControlledClock();
+      const startedWall = clock.wallNow();
+      const credentials = await startRegistryCredentialServiceFixture(credentialResources, {
+        namespaceId: fixture.namespace.id,
+        autoOpen: false,
+        // Worker admission IDs use real wall time. Preserve that progress while
+        // allowing this fixture's provider-retirement expiry to advance explicitly.
+        clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
+        gateway: { listen: "127.0.0.1:0" },
+      });
+      const repositoryBackend = {
+        id: credentials.backendId,
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: credentials.config.gateway.controlSocket,
         }),
-      },
-    );
-    const terminal = await waitFor(
-      "the concrete repository revision's terminal result",
-      async () => {
-        const result = await fixture.observerPool.query(
-          "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [candidate.idempotencyKey],
-        );
-        return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
-          ? result.rows[0]
-          : undefined;
-      },
-    );
-    assert.equal(
-      terminal.state,
-      "succeeded",
-      JSON.stringify(events.filter(({ workId }) => workId === candidate.idempotencyKey)),
-    );
-    assert.ok(terminal.attempt_count >= 2);
-    assert.equal(material.length, 1);
-    assert.equal(material[0].kind, "new");
-    assert.equal(material[0].repositoryRef, "repo-a");
-    assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
-    assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
-    const status = await sender.status(material[0].sessionId, new AbortController().signal);
-    assert.equal(status.state, "OPEN");
-    assert.deepEqual(status.binding, resolution.bindings[0].grant);
-    const attempts = await repositoryAttempts(fixture, candidate);
-    assert.equal(attempts.length, 2);
-    assert.equal(attempts.find(({ sessionId }) => sessionId === lostSessionId).phase, "disposed");
-    assert.ok(closures.includes("CLOSED"));
-    const attempt = attempts.find(({ phase }) => phase === "open");
-    assert.equal(attempt.phase, "open");
-    assert.equal(attempt.sessionId, status.sessionId);
-    const stop = await fixture.requestStop(owner);
-    await fixture.work(stop, "succeeded");
-    // Both the lost admission and the delivered session must settle even when
-    // their cleanup requests share one durable work item.
-    await waitFor("both concrete repository sessions to settle", async () => {
-      const settled = await repositoryAttempts(fixture, candidate);
-      return settled.length === 2 && settled.every(({ phase }) => phase === "disposed")
-        ? true
-        : undefined;
-    });
-    await waitFor("the concrete session's cleanup work to complete", async () => {
-      const cleanup = await fixture.observerPool.query(
-        `SELECT state FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+        drivers: { repo: "repository-credentials" },
+      };
+      const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+        publicCa: credentials.tls.ca,
+      });
+      const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+        sessionDurationSeconds: 60,
+      });
+      // The real resolver admits selection fields and returns the richer frozen
+      // binding. Worker revalidation must project that snapshot back to selections;
+      // the strict registry parser rejects backendId/grant as caller input.
+      const resolution = driver.resolve({
+        namespaceId: fixture.namespace.id,
+        bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
+      });
+      // Bound admissions require the worker-owned receipt transport and its real
+      // PostgreSQL state; without it the broker correctly refuses the session.
+      const { startRepositoryReceiptServer } =
+        await import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts");
+      receiptServer = await startRepositoryReceiptServer({
+        state: fixture.state,
+        controlSocket: credentials.config.gateway.controlSocket,
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId: credentials.backendId,
+      });
+      const { owner, candidate } = await fixture.admitInitialRevision(
+        "repository-concrete-driver",
+        {
+          revision: {
+            repositoryCredentials: {
+              driver: { id: driver.id, implementation: driver.implementation },
+              deadlineWallMs: Date.now() + 120_000,
+              bindings: resolution.bindings,
+            },
+          },
+        },
       );
-      return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
-    });
-    await fixture.requestDeletion(owner);
-    await waitFor("disposed repository evidence to outlive its Agent", async () =>
-      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
-    );
-    const retained = await fixture.state.read((view) =>
-      view.repositorySessions.findAttempt(attempt.admissionId),
-    );
-    assert.equal(retained.phase, "disposed");
-    assert.equal(retained.liveRevisionId, null);
-    assert.equal(retained.revisionId, candidate.id);
-    assert.equal(retained.agentId, owner.id);
-    assert.deepEqual(retained.cleanupContext, {
-      driver: candidate.repositoryCredentials.driver,
-      binding: resolution.bindings[0],
-    });
+      const open = sender.open.bind(sender);
+      const opens = [];
+      const successorChecks = [];
+      let lost;
+      const lostResponse = new Promise((resolve) => {
+        releaseLostResponse = resolve;
+      });
+      // Hold the first response until this worker stops. Its successor must recover
+      // the original admission and settle it before opening another session.
+      sender.open = async (input, signal) => {
+        opens.push({ admissionId: input.admissionId, recoverOnly: input.recoverOnly === true });
+        if (lost && input.recoverOnly !== true) {
+          const original = await fixture.state.read(async (view) => ({
+            attempt: await view.repositorySessions.findAttempt(lost.admissionId),
+            receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
+          }));
+          successorChecks.push({
+            admissionId: input.admissionId,
+            originalPhase: original.attempt?.phase,
+            originalReceiptState: original.receipt?.state,
+            originalReceiptSessionId: original.receipt?.sessionId,
+            originalReceiptGeneration: original.receipt?.generation,
+          });
+        }
+        const result = await open(input, signal);
+        if (!lost && result.kind === "created") {
+          lost = { admissionId: input.admissionId, sessionId: result.session.sessionId };
+          await lostResponse;
+          throw new Error("repository admission response lost after creation");
+        }
+        return result;
+      };
+      const material = [];
+      const events = [];
+      const startWorker = () =>
+        fixture.start(
+          {
+            ...fixture.compute,
+            validateRepositoryCredentials(harness, sandboxDriverId) {
+              assert.equal(harness.mode, "embedded");
+              assert.equal(sandboxDriverId, undefined);
+            },
+            async prepareRevision(revision, deploymentContext) {
+              material.push(...deploymentContext.repositoryCredentials);
+              return fixture.compute.prepareRevision(revision, deploymentContext);
+            },
+          },
+          {
+            emit: (event) => events.push(event),
+            transformDrivers: (drivers) => ({
+              ...drivers,
+              repositoryPolicy: driver,
+              nativeRepositorySender: sender,
+            }),
+          },
+        );
+      await startWorker();
+      await waitFor("the first concrete session to open", async () => lost);
+      const stopping = fixture.stop();
+      releaseLostResponse();
+      await stopping;
+      assert.equal(material.length, 0);
+      const first = await fixture.state.read(async (view) => ({
+        attempt: await view.repositorySessions.findAttempt(lost.admissionId),
+        receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
+      }));
+      assert.equal(first.attempt?.phase, "opening");
+      assert.equal(first.receipt?.state, "active");
+      assert.equal(first.receipt?.sessionId, lost.sessionId);
+      const claim = await fixture.observerPool.query(
+        "SELECT state, lease_expires_at > clock_timestamp() AS lease_live FROM occ.controller_work WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+      assert.deepEqual(claim.rows, [{ state: "claimed", lease_live: true }]);
+      await startWorker();
+      const terminal = await waitFor(
+        "the concrete repository revision's terminal result",
+        async () => {
+          const result = await fixture.observerPool.query(
+            "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+            [candidate.idempotencyKey],
+          );
+          return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
+            ? result.rows[0]
+            : undefined;
+        },
+        15_000,
+      );
+      assert.equal(
+        terminal.state,
+        "succeeded",
+        JSON.stringify(events.filter(({ workId }) => workId === candidate.idempotencyKey)),
+      );
+      assert.ok(terminal.attempt_count >= 2);
+      assert.equal(material.length, 1);
+      assert.equal(material[0].kind, "new");
+      assert.equal(material[0].repositoryRef, "repo-a");
+      assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
+      assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
+      const status = await sender.status(material[0].sessionId, new AbortController().signal);
+      assert.equal(status.state, "OPEN");
+      assert.deepEqual(status.binding, resolution.bindings[0].grant);
+      const attempts = await repositoryAttempts(fixture, candidate);
+      assert.equal(attempts.length, 2);
+      const original = attempts.find(({ admissionId }) => admissionId === lost.admissionId);
+      assert.equal(original?.sessionId, lost.sessionId);
+      assert.equal(original?.phase, "disposed");
+      assert.equal(
+        opens.filter(
+          ({ admissionId, recoverOnly }) => admissionId === lost.admissionId && !recoverOnly,
+        ).length,
+        1,
+      );
+      assert.ok(
+        opens.some(
+          ({ admissionId, recoverOnly }) => admissionId === lost.admissionId && recoverOnly,
+        ),
+      );
+      assert.notEqual(material[0].sessionId, lost.sessionId);
+      const attempt = attempts.find(({ phase }) => phase === "open");
+      assert.equal(attempt.phase, "open");
+      assert.equal(attempt.sessionId, status.sessionId);
+      assert.deepEqual(successorChecks, [
+        {
+          admissionId: attempt.admissionId,
+          originalPhase: "disposed",
+          originalReceiptState: "disposed",
+          originalReceiptSessionId: lost.sessionId,
+          originalReceiptGeneration: first.receipt.generation,
+        },
+      ]);
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      // Both the lost admission and the delivered session must settle even when
+      // their cleanup requests share one durable work item.
+      await waitFor("both concrete repository sessions to settle", async () => {
+        const settled = await repositoryAttempts(fixture, candidate);
+        return settled.length === 2 && settled.every(({ phase }) => phase === "disposed")
+          ? true
+          : undefined;
+      });
+      await waitFor("the concrete session's cleanup work to complete", async () => {
+        const cleanup = await fixture.observerPool.query(
+          `SELECT state FROM occ.controller_work
+         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+        );
+        return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
+      });
+      await fixture.requestDeletion(owner);
+      await waitFor("disposed repository evidence to outlive its Agent", async () =>
+        (await fixture.currentAgent(owner)) === undefined ? true : undefined,
+      );
+      const retained = await fixture.state.read((view) =>
+        view.repositorySessions.findAttempt(attempt.admissionId),
+      );
+      assert.equal(retained.phase, "disposed");
+      assert.equal(retained.liveRevisionId, null);
+      assert.equal(retained.revisionId, candidate.id);
+      assert.equal(retained.agentId, owner.id);
+      assert.deepEqual(retained.cleanupContext, {
+        driver: candidate.repositoryCredentials.driver,
+        binding: resolution.bindings[0],
+      });
+    } finally {
+      releaseLostResponse?.();
+      await resources.close();
+    }
   },
-  // First in its file, so it also absorbs the file's cold start (finding 1171):
-  // about 12.5 s typically, 31.7 s once on a slow runner.
-  { timeout: 60_000 },
 );
 
 revisionTest(

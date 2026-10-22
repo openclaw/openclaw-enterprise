@@ -140,6 +140,9 @@ export class GitHubNativeRepositorySender implements NativeRepositorySender {
           durationSeconds: input.durationSeconds,
           deadlineWallMs: input.deadlineWallMs,
           durableAdmission: true,
+          ...(input.recoverOnly !== true || input.preparedOnly === true
+            ? { preparedOnly: true as const }
+            : {}),
           ...(input.recoverOnly === true ? { recoverOnly: true } : {}),
         },
         input.admissionId,

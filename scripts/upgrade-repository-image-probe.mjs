@@ -55,12 +55,14 @@ function validateInput(input) {
       "profile",
       "durationSeconds",
       "deadlineWallMs",
+      "preparedOnly",
     ]),
   );
   assert.equal(input.namespaceId, backend);
   assert.equal(input.repositoryRef, backend);
-  assert.equal(input.profile, "git-read");
+  assert.equal(input.profile, "git-write");
   assert.equal(input.durationSeconds, 60);
+  assert.equal(input.preparedOnly, true);
   assert.ok(Number.isSafeInteger(input.deadlineWallMs) && input.deadlineWallMs > 0);
   assert.ok(exactKeys(input.expectedBinding, ["providerInstanceId", "repositoryId", "grantId"]));
   assert.equal(input.expectedBinding.providerInstanceId, backend);
@@ -189,15 +191,6 @@ async function main() {
   try {
     await mkdir(control, { mode: 0o700 });
     await run("openssl", [
-      "genpkey",
-      "-algorithm",
-      "RSA",
-      "-pkeyopt",
-      "rsa_keygen_bits:2048",
-      "-out",
-      join(root, "app.pem"),
-    ]);
-    await run("openssl", [
       "req",
       "-x509",
       "-newkey",
@@ -219,12 +212,11 @@ async function main() {
         gateway: { listen: "0.0.0.0:8443", controlSocket: socket },
         sessionPolicy: {
           maximumDurationSeconds: 60,
-          defaultProfile: "git-read",
-          allowedProfiles: ["git-read"],
+          defaultProfile: "git-write",
+          allowedProfiles: ["git-write"],
         },
-        backend: { kind: "github-app-registry", backendId: backend },
+        backend: { kind: "github-prepared-git-registry", backendId: backend },
       }),
-      "private-key.pem": await readFile(join(root, "app.pem")),
       "tls.crt": await readFile(join(root, "tls.crt")),
       "tls.key": await readFile(join(root, "tls.key")),
     });
@@ -241,7 +233,14 @@ async function main() {
             repositoryRef: backend,
             repositoryId: "1",
             repository: "fixture/repository",
-            namespaces: [{ namespaceId: backend, profiles: ["git-read"] }],
+            namespaces: [
+              {
+                namespaceId: backend,
+                profiles: ["git-write"],
+                transport: "git-only",
+                pushRefAllowlist: ["refs/heads/compatibility-probe"],
+              },
+            ],
           },
         ],
       }),
@@ -352,6 +351,8 @@ async function main() {
       origin,
       "--backend-id",
       backend,
+      "--authority",
+      "prepared-git",
     ]);
     await ready(join(control, "control.sock"));
     await checkBrokerCapability(join(control, "control.sock"));

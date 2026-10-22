@@ -35,6 +35,8 @@ export interface RepositoryCredentialBoundSessionInput extends RepositoryCredent
   readonly recoverOnly?: true;
   /** Requires the durable admission protocol; older brokers must reject it. */
   readonly durableAdmission?: true;
+  /** Part of durable admission identity; only a prepared backend may serve it. */
+  readonly preparedOnly?: true;
 }
 
 export interface RepositoryCredentialSessionResult {

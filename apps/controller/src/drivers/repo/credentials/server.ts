@@ -119,6 +119,7 @@ export async function startListeners(options: StartListenersOptions): Promise<Bo
     config,
     clock,
     options.factory.resolveBound !== undefined,
+    "createPrepared" in options.factory,
   );
   const stopObserving = service.observeDisposal(admissions.observe);
   const route =

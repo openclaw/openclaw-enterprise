@@ -774,6 +774,7 @@ async function boundControlFixture(t, limits = {}, repositories = undefined) {
       expectedBinding: binding.grant,
       durationSeconds: 600,
       deadlineWallMs,
+      preparedOnly: true,
     };
   };
   const input = inputFor(bindings[0].repositoryRef);

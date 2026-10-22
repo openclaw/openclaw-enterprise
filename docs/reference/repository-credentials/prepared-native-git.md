@@ -55,7 +55,8 @@ do not treat that receipt as per-person task authorization.
 
 ## Install and check
 
-The removed `github-app` and `github-app-registry` startup modes fail closed.
+The removed `github-app` and `github-app-registry` startup modes and the legacy
+Installation `drivers.repo` selection fail closed.
 Stop admissions and drain accepted work on its original owner before switching.
 Do not transfer an App key, broaden an approval or replay an uncertain operation.
 
@@ -67,7 +68,13 @@ explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.i
 Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.
-If it cannot, do not fall back to an ambient token or grant broader broker access.
+Every fresh native OPEN carries `preparedOnly: true`. The receiver requires a
+prepared backend, and the durable attempt records protocol 3. Readiness alone
+cannot authorize OPEN; an older receiver rejects the new request field. Existing
+v1 records support original-ID lookup and close, never fresh creation or native
+release. The independent direct development-token tool cannot answer this request.
+If OCE cannot verify prepared authority, do not fall back to an ambient token or
+grant broader broker access.
 The broker Service must record the same hostname selected for the session and route
 HTTPS on port 443 to the selected worker on port 8443. A missing or mismatched
 Service binding prevents admission, including when the chart and controller versions differ.

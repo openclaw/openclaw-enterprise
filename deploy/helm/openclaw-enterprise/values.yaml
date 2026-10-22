@@ -349,12 +349,12 @@ egressAuthority:
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation
-# repository.openShell configuration for protected delivery (drivers.repo.openShell for the retained trial).
+# repository.openShell configuration for protected delivery.
 # Only the Gateway issuer's public key is mounted.
 openshellGit:
   enabled: false
   # protected requires repositoryCredentials.enabled: false and a qualified sender.
-  # Select broker-trial with the broker enabled to maintain the earlier trial through its drain.
+  # Drain an earlier broker trial on its original owner before switching.
   mode: protected
   port: 8445
   tlsSecretName: ""

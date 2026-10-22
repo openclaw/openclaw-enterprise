@@ -95,7 +95,7 @@ for (const alreadyDisposed of [false, true]) {
           throw new Error("repository admission response lost after creation");
         }
         if (alreadyDisposed && result.kind === "recovered") {
-          return { ...result, status: { ...result.status, state: "DISPOSED" } };
+          return { ...result, status: await repository.dispose(result.status.sessionId) };
         }
         return result;
       };

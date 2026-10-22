@@ -351,7 +351,7 @@ export class RepositoryCredentialLifecycle {
         attempt.liveRevisionId !== revision.id ||
         attempt.namespaceId !== revision.namespaceId ||
         attempt.agentId !== revision.agentId ||
-        attempt.brokerProtocol !== 1 ||
+        attempt.brokerProtocol !== 3 ||
         attempt.repositoryRef !== binding.repositoryRef ||
         attempt.sessionId !== binding.sessionId
       ) {
@@ -654,6 +654,9 @@ export class RepositoryCredentialLifecycle {
   ): Promise<RepositoryCredentialRuntimeBinding> {
     const proxy = protectedRepositoryGitAdmission(revision.executionAdmission);
     const driver = proxy ? undefined : this.driverFor(revision.repositoryCredentials?.driver);
+    if (driver && driver.durableBrokerReceipts !== true) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_PREPARED_ADMISSION_UNAVAILABLE");
+    }
     if (driver && driver.checkAdmissionReady !== undefined) {
       await this.dependencies.effect(claim, (signal) =>
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),
@@ -694,11 +697,7 @@ export class RepositoryCredentialLifecycle {
         durationSeconds,
         deadlineWallMs,
         createdAt: new Date(openedAt).toISOString(),
-        ...(proxy
-          ? { brokerProtocol: 2 as const }
-          : driver?.durableBrokerReceipts === true
-            ? { brokerProtocol: 1 as const }
-            : {}),
+        brokerProtocol: proxy ? 2 : 3,
       });
       // OCC creates the opaque session ID and commits both states together. No secret exists
       // here. Preparation requires the active execution and the verified installation separately.
@@ -715,10 +714,7 @@ export class RepositoryCredentialLifecycle {
     }
     await this.authorize(claim, revision);
     const opened = await this.dependencies.effect(claim, (signal) =>
-      this.driverFor(revision.repositoryCredentials?.driver).open(
-        this.input(attempt, binding),
-        signal,
-      ),
+      driver!.open(this.input(attempt, binding), signal),
     );
     if (opened.kind === "missing") {
       await this.advance(claim, attempt, "invalidated");
@@ -783,6 +779,7 @@ export class RepositoryCredentialLifecycle {
     return {
       namespaceId: attempt.namespaceId,
       admissionId: attempt.admissionId,
+      ...(attempt.brokerProtocol === 3 ? { preparedOnly: true as const } : {}),
       binding,
       durationSeconds: attempt.durationSeconds,
       deadlineWallMs: attempt.deadlineWallMs,

@@ -148,6 +148,12 @@ one fails it. Record both image IDs and the cleanup result.
 
 ## Verify prepared native Git
 
+Run `node --test tests/integration/repository-native-cutover.test.ts` for controller
+selection, real Unix control requests, prepared receipt binding, development-token
+rejection and v1 recovery. This uses the in-memory State adapter and no provider.
+PostgreSQL custody, old signing receiver rejection, stock images, native Git and
+protected runtime behavior require separate integration evidence.
+
 The [installed prepared Git lane](../../scripts/ci/test-suites/skipper-prepared-git-installed.json)
 uses a dedicated Codex Agent in a fresh installation with controlled private Git and model peers.
 Its authorized run proves the packaged sender in a real cluster; it is separate from ordinary CI.

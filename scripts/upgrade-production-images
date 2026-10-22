@@ -631,8 +631,10 @@ mv "${candidate_installation}.requested" "$candidate_installation"
 if [[ "$repository_enabled" == true ]]; then
   [[ -n "$controller_image" && -n "$broker_image" ]] ||
     die "repository-enabled upgrades require explicit controller and broker image selections."
-  [[ $(yq -r '.drivers.repo.configuration.controlSocket // ""' "$candidate_installation") == "/run/openclaw/repository-control/private/control.sock" ]] ||
-    die "the repository Driver must use the worker's private broker socket."
+  [[ $(yq -r '.drivers.repo == null' "$candidate_installation") == true ]] ||
+    die "drain accepted repository work on its original owner before switching from drivers.repo."
+  [[ $(yq -r '.repository.nativeSender.controlSocket // ""' "$candidate_installation") == "/run/openclaw/repository-control/private/control.sock" ]] ||
+    die "repository.nativeSender must use the worker's private broker socket."
   for command in docker node openssl; do
     require_command "$command"
   done
@@ -983,12 +985,11 @@ if [[ "$repository_enabled" == true ]]; then
   verify_deployed_pair capability-before
   capability_pod=$(jq -er '.podName' "$evidence_dir/capability-before-worker-identity.json")
   capability_code=$(cat <<'JAVASCRIPT'
-import { GitHubRepoDriver } from "/app/apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "/app/apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "/app/apps/controller/src/backends/repository-credentials/control-client.ts";
 const id = "compatibility-probe";
-const registry = { version: 1, backendId: id, providerInstanceId: id, appId: "1", githubInstallationId: "1", maximumDurationSeconds: 60, repositories: [{ repositoryRef: id, repositoryId: "1", repository: "fixture/repository", namespaces: [{ namespaceId: id, profiles: ["git-read"] }] }] };
 const client = new UnixRepositoryCredentialControlClient({ controlSocket: "/run/openclaw/repository-control/private/control.sock" });
-const driver = new GitHubRepoDriver({ id, drivers: { repo: id }, client }, registry, { sessionDurationSeconds: 60 });
+const driver = new GitHubNativeRepositorySender({ id, drivers: { repo: id }, client }, {});
 if (typeof driver.checkAdmissionReady !== "function") throw new Error("capability check unavailable");
 await driver.checkAdmissionReady(AbortSignal.timeout(5000));
 process.stdout.write("repository-admission-ready\n");

@@ -147,6 +147,7 @@ test(
       binding,
       durationSeconds: 3600,
       deadlineWallMs,
+      preparedOnly: true,
     }));
     for (const input of inputs) {
       await receipts.prepare(input.admissionId, input.binding.repositoryRef, input.durationSeconds);

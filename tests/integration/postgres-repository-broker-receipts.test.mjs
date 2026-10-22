@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { request } from "node:https";
+import { request as controlRequest } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import pg from "pg";
@@ -12,6 +13,8 @@ import {
   PostgresPlatformState,
   DependencyUnavailableError,
 } from "../../packages/occ/src/index.ts";
+import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/credentials/receipt-client.ts";
+import { servePrivateRepositoryRequest } from "../../apps/controller/src/backends/repository-credentials/private-request-server.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -21,27 +24,36 @@ import {
 } from "../conformance/repository-sessions.contract.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
+import { createTestResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-function useGateway(fixture, opened) {
+function requestGitDiscovery(fixture, opened) {
   return new Promise((resolve, reject) => {
     const outgoing = request(
       {
         hostname: "127.0.0.1",
         port: fixture.listeners.address.port,
-        path: "/repos/fixture/repository",
+        path: `/${fixture.repositories[0].repository}.git/info/refs?service=git-upload-pack`,
         ca: fixture.tls.ca,
         agent: false,
         headers: {
           host: "credentials.example.test",
-          authorization: `Bearer ${opened.files.bearer}`,
+          authorization: `Basic ${Buffer.from(`gateway-session:${opened.files.bearer}`).toString("base64")}`,
         },
       },
       (incoming) => {
-        incoming.resume();
-        incoming.once("end", () => resolve(incoming.statusCode));
+        const chunks = [];
+        incoming.on("data", (chunk) => chunks.push(chunk));
+        incoming.once("error", reject);
+        incoming.once("end", () =>
+          resolve({
+            status: incoming.statusCode,
+            contentType: incoming.headers["content-type"],
+            body: Buffer.concat(chunks).toString(),
+          }),
+        );
       },
     );
     outgoing.once("error", reject);
@@ -153,11 +165,16 @@ test(
   "confirmed broker disposal survives service restart in PostgreSQL",
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
+    const resources = createTestResourceScope(t);
     const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-    t.after(() => pool.end());
+    resources.after(() => pool.end());
+    let receiptServer;
+    resources.after(() => receiptServer?.close());
+    let preparedOwner;
+    resources.after(() => preparedOwner?.close());
     const state = new PostgresPlatformState(pool);
     const namespaceId = `ns_${randomUUID()}`;
-    const fixture = await startRegistryCredentialServiceFixture(t, {
+    const fixture = await startRegistryCredentialServiceFixture(resources, {
       namespaceId,
       autoOpen: false,
       gateway: { listen: "127.0.0.1:0" },
@@ -189,22 +206,56 @@ test(
       repositoryRef: binding.repositoryRef,
       admissionId,
       durationSeconds: 3600,
-      brokerProtocol: 1,
+      brokerProtocol: 3,
     });
     await state.transact((unit) => unit.repositorySessions.createAttempt(attempt));
-    const receiptServer = await startRepositoryReceiptServer({
+    receiptServer = await startRepositoryReceiptServer({
       state,
       controlSocket: fixture.config.gateway.controlSocket,
       driverId: driver.id,
       implementation: driver.implementation,
       backendId: fixture.backendId,
     });
-    t.after(() => receiptServer.close());
+    // A controlled owner supplies already-prepared material. The real sender
+    // must use it for Git without acquiring issuance or retirement authority.
+    const repository = fixture.repositories[0];
+    const preparedMaterial = randomUUID();
+    repository.github.acceptStatic(preparedMaterial);
+    const permittedSessions = new Set();
+    const uses = [];
+    preparedOwner = await servePrivateRepositoryRequest(
+      fixture.config.gateway.controlSocket,
+      "prepared-git-use",
+      async (input) => {
+        if (
+          !permittedSessions.has(input.sessionId) ||
+          input.operation !== "advertise-upload-pack"
+        ) {
+          throw new Error("unexpected prepared use");
+        }
+        uses.push(input.sessionId);
+        return {
+          exchangeId: input.exchangeId,
+          preparationAttemptId: "prepared-fixture",
+          materialVersion: "fixture-version",
+          value: preparedMaterial,
+          sendStartBy: new Date(fixture.clock.wallNow() + 4000).toISOString(),
+        };
+      },
+    );
     const signal = AbortSignal.timeout(30_000);
-    const openInput = { namespaceId, admissionId, binding, durationSeconds: 3600, deadlineWallMs };
+    const openInput = {
+      namespaceId,
+      admissionId,
+      binding,
+      durationSeconds: 3600,
+      deadlineWallMs,
+      preparedOnly: true,
+    };
     const opened = await driver.open(openInput, signal);
     assert.equal(opened.kind, "created");
     const sessionId = opened.session.sessionId;
+    permittedSessions.add(sessionId);
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
         admissionId,
@@ -245,9 +296,14 @@ test(
       ]),
       { code: "23514" },
     );
-    // A genuine provider request creates revocable authority; cleanup must finish
-    // before the journal can publish the terminal observation.
-    assert.equal(await useGateway(fixture, opened), 200);
+    const discovery = await requestGitDiscovery(fixture, opened);
+    assert.equal(discovery.status, 200);
+    assert.equal(discovery.contentType, "application/x-git-upload-pack-advertisement");
+    assert.ok(
+      discovery.body.includes(`${await repository.git.ref("refs/heads/main")} refs/heads/main`),
+    );
+    assert.deepEqual(uses, [sessionId]);
+    assert.equal(repository.github.tokenState()[0].uses, 1);
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
         admissionId,
@@ -263,7 +319,29 @@ test(
       ),
       { code: "23514" },
     );
-    await driver.close(sessionId, signal);
+    const disposals = [];
+    const stopObserving = fixture.service.observeDisposal((status) => disposals.push(status));
+    t.after(stopObserving);
+    // Lose the close response body at the real control socket. Recovery must use
+    // the durable observation, without needing the caller to receive the result.
+    await new Promise((resolve, reject) => {
+      const outgoing = controlRequest(
+        {
+          socketPath: fixture.config.gateway.controlSocket,
+          path: `/v1/sessions/${sessionId}/close`,
+          method: "POST",
+          agent: false,
+          signal,
+          headers: { host: "localhost", "content-length": 0, connection: "close" },
+        },
+        (incoming) => {
+          incoming.destroy();
+          resolve();
+        },
+      );
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
     let confirmed;
     for (let i = 0; i < 100; i++) {
       confirmed = await driver.status(sessionId, signal);
@@ -278,9 +356,25 @@ test(
     );
     assert.equal(beforeRestart.state, "disposed");
     assert.equal(beforeRestart.sessionId, sessionId);
-    assert.ok(beforeRestart.revoked > 0);
-    const issued = fixture.repositories[0].github.issuesOfTokens.length;
+    assert.equal(beforeRestart.admissionId, admissionId);
+    assert.equal(beforeRestart.deadlineWallMs, deadlineWallMs);
+    assert.equal(beforeRestart.revoked, 0);
+    assert.equal(beforeRestart.expired, 0);
+    assert.equal((await requestGitDiscovery(fixture, opened)).status, 401);
+    assert.equal(repository.github.tokenState()[0].revoked, false);
+    assert.deepEqual(await driver.close(sessionId, signal), confirmed);
+    assert.deepEqual(
+      await state.read((view) => view.repositorySessions.findBrokerReceipt(admissionId)),
+      beforeRestart,
+    );
     await fixture.restart();
+    assert.equal(
+      disposals.length,
+      1,
+      "repeated close and shutdown must publish disposal exactly once",
+    );
+    assert.equal(disposals[0].sessionId, sessionId);
+    stopObserving();
     assert.deepEqual(await driver.status(sessionId, signal), confirmed);
     const recovered = await driver.open({ ...openInput, recoverOnly: true }, signal);
     assert.equal(recovered.kind, "recovered");
@@ -298,6 +392,7 @@ test(
         durationSeconds: 3600,
         deadlineWallMs,
         recoverOnly: true,
+        preparedOnly: true,
       }),
       { mode: 0o600 },
     );
@@ -322,7 +417,6 @@ test(
     assert.equal(operatorStatus.recovered, true);
     assert.equal(operatorStatus.state, "DISPOSED");
     assert.equal(operatorStatus.sessionId, sessionId);
-    assert.equal(fixture.repositories[0].github.issuesOfTokens.length, issued);
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
         admissionId,
@@ -344,7 +438,7 @@ test(
       DependencyUnavailableError,
     );
 
-    // Graceful broker shutdown must join receipt writes after revoking authority,
+    // Graceful broker shutdown must join receipt writes after closing the sender,
     // even when no caller requests terminal status before the service exits.
     const shutdownId = `${fixture.clock.wallNow()}-${randomUUID()}`;
     const shutdownInput = { ...openInput, admissionId: shutdownId };
@@ -354,12 +448,13 @@ test(
           repositoryRef: binding.repositoryRef,
           admissionId: shutdownId,
           durationSeconds: 3600,
-          brokerProtocol: 1,
+          brokerProtocol: 3,
         }),
       ),
     );
     const shutdownOpened = await driver.open(shutdownInput, signal);
     assert.equal(shutdownOpened.kind, "created");
+    permittedSessions.add(shutdownOpened.session.sessionId);
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
         admissionId: shutdownId,
@@ -369,7 +464,7 @@ test(
         updatedAt: revision.createdAt,
       }),
     );
-    assert.equal(await useGateway(fixture, shutdownOpened), 200);
+    assert.equal((await requestGitDiscovery(fixture, shutdownOpened)).status, 200);
     const lock = await pool.connect();
     let restartCompleted = false;
     let restarting;
@@ -408,7 +503,10 @@ test(
     );
     assert.equal(shutdownReceipt.state, "disposed");
     assert.equal(shutdownReceipt.sessionId, shutdownOpened.session.sessionId);
-    assert.ok(shutdownReceipt.revoked > 0);
+    assert.equal(shutdownReceipt.admissionId, shutdownId);
+    assert.equal(shutdownReceipt.deadlineWallMs, deadlineWallMs);
+    assert.equal(shutdownReceipt.revoked, 0);
+    assert.equal(shutdownReceipt.expired, 0);
     assert.equal((await driver.status(shutdownOpened.session.sessionId, signal)).state, "DISPOSED");
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
@@ -427,7 +525,6 @@ test(
         updatedAt: revision.createdAt,
       }),
     );
-    const issuedAfterShutdown = fixture.repositories[0].github.issuesOfTokens.length;
 
     // A recovery lookup that commits a fence first prevents a delayed open,
     // including after the service owner is replaced.
@@ -439,7 +536,7 @@ test(
           repositoryRef: binding.repositoryRef,
           admissionId: fencedId,
           durationSeconds: 3600,
-          brokerProtocol: 1,
+          brokerProtocol: 3,
         }),
       ),
     );
@@ -453,12 +550,131 @@ test(
     );
     await fixture.restart();
     assert.deepEqual(await driver.open(fencedInput, signal), { kind: "missing" });
-    assert.equal(fixture.repositories[0].github.issuesOfTokens.length, issuedAfterShutdown);
+    assert.deepEqual(uses, [sessionId, shutdownOpened.session.sessionId]);
+    assert.equal(repository.git.trace.length, 2);
+    assert.equal(repository.github.tokenState()[0].uses, 2);
+    assert.equal(repository.github.tokenState()[0].revoked, false);
+    assert.equal(repository.github.issuesOfTokens.length, 0);
+    assert.deepEqual(repository.github.trace, []);
     await state.transact((unit) =>
       unit.repositorySessions.advanceAttempt({
         admissionId: fencedId,
         expectedPhase: "opening",
         phase: "invalidated",
+        updatedAt: revision.createdAt,
+      }),
+    );
+
+    // A registered old v1 owner reports its own observations directly. This is
+    // receipt-protocol evidence, not new provider issuance by the prepared sender.
+    // Distinct positive counts catch accidental normalization of historical data.
+    const oldAdmissionId = `${fixture.clock.wallNow()}-${randomUUID()}`;
+    const oldGeneration = randomUUID();
+    const oldOwner = new RepositoryReceiptClient(
+      fixture.config.gateway.controlSocket,
+      oldGeneration,
+    );
+    const oldInput = {
+      namespaceId,
+      repositoryRef: binding.repositoryRef,
+      profile: binding.profile,
+      expectedBinding: binding.grant,
+      durationSeconds: 3600,
+      deadlineWallMs,
+    };
+    const oldSessionId = `old-${randomUUID()}`;
+    const oldDisposed = {
+      sessionId: oldSessionId,
+      state: "DISPOSED",
+      deadlineWallMs,
+      binding: binding.grant,
+      activeUses: 0,
+      cleanup: {
+        active: 0,
+        pending: 0,
+        revoked: 2,
+        expired: 1,
+        uncertain: 0,
+        auxiliaryPending: false,
+      },
+    };
+    // This v1 reservation and binding predate the cutover; no new v1 admission is opened.
+    await state.transact(async (unit) => {
+      await unit.repositorySessions.createAttempt(
+        sessionAttempt(revision, {
+          repositoryRef: binding.repositoryRef,
+          admissionId: oldAdmissionId,
+          durationSeconds: 3600,
+          brokerProtocol: 1,
+        }),
+      );
+      await unit.repositorySessions.createBrokerReceipt({
+        admissionId: oldAdmissionId,
+        state: "reserved",
+        generation: oldGeneration,
+      });
+      assert.ok(
+        await unit.repositorySessions.advanceBrokerReceipt({
+          admissionId: oldAdmissionId,
+          expectedState: "reserved",
+          generation: oldGeneration,
+          state: "active",
+          sessionId: oldSessionId,
+          deadlineWallMs,
+        }),
+      );
+    });
+    const foreignOwner = new RepositoryReceiptClient(
+      fixture.config.gateway.controlSocket,
+      randomUUID(),
+    );
+    await assert.rejects(
+      foreignOwner.dispose(oldAdmissionId, oldInput, oldDisposed),
+      /RECEIPT_UNAVAILABLE/,
+    );
+    await oldOwner.dispose(oldAdmissionId, oldInput, oldDisposed);
+    // An exact replay is harmless; changed observations cannot overwrite disposal.
+    await oldOwner.dispose(oldAdmissionId, oldInput, oldDisposed);
+    await assert.rejects(
+      oldOwner.dispose(oldAdmissionId, oldInput, {
+        ...oldDisposed,
+        cleanup: { ...oldDisposed.cleanup, revoked: 0 },
+      }),
+      /RECEIPT_UNAVAILABLE/,
+    );
+    await fixture.restart();
+    assert.deepEqual(await client.status(oldSessionId, signal), oldDisposed);
+    assert.deepEqual(await oldOwner.admission(oldAdmissionId, oldInput, true), {
+      kind: "disposed",
+      status: oldDisposed,
+    });
+    assert.deepEqual(
+      await state.read((view) => view.repositorySessions.findBrokerReceipt(oldAdmissionId)),
+      {
+        admissionId: oldAdmissionId,
+        state: "disposed",
+        generation: oldGeneration,
+        sessionId: oldSessionId,
+        deadlineWallMs,
+        revoked: 2,
+        expired: 1,
+      },
+    );
+    await state.transact((unit) =>
+      unit.repositorySessions.advanceAttempt({
+        admissionId: oldAdmissionId,
+        expectedPhase: "opening",
+        phase: "closing",
+        sessionId: oldSessionId,
+        updatedAt: revision.createdAt,
+      }),
+    );
+    await state.transact((unit) =>
+      unit.repositorySessions.advanceAttempt({
+        admissionId: oldAdmissionId,
+        expectedPhase: "closing",
+        phase: "disposed",
+        sessionId: oldSessionId,
         updatedAt: revision.createdAt,
       }),
     );
@@ -492,10 +708,7 @@ test(
       ),
       { code: "23514" },
     );
-    await assert.rejects(
-      driver.open({ ...openInput, admissionId: knownId, recoverOnly: true }, signal),
-      DependencyUnavailableError,
-    );
+    await assert.rejects(oldOwner.admission(knownId, oldInput, true), /RECEIPT_UNAVAILABLE/);
   },
 );
 
@@ -505,15 +718,18 @@ test(
   async (t) => {
     for (const mode of ["delayed-commit", "unavailable", "abrupt-death"]) {
       await t.test(mode, async (context) => {
+        const resources = createTestResourceScope(context);
+        const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
+        resources.after(() => pool.end());
+        let listener;
+        resources.after(() => listener?.close());
         const namespaceId = `ns_${randomUUID()}`;
-        const fixture = await startServiceProcessFixture(context, {
+        const fixture = await startServiceProcessFixture(resources, {
           shutdownGraceMs: 100,
           namespaceId,
           // A free slot lets the later admission open and then meet the lost journal.
           ...(mode === "unavailable" ? { sessions: 2 } : {}),
         });
-        const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-        context.after(() => pool.end());
         const state = new PostgresPlatformState(pool);
         const binding = {
           repositoryRef: fixture.input.repositoryRef,
@@ -537,22 +753,16 @@ test(
               admissionId,
               repositoryRef: binding.repositoryRef,
               durationSeconds: fixture.input.durationSeconds,
-              brokerProtocol: 1,
+              brokerProtocol: 3,
             }),
           ),
         );
-        const listener = await startRepositoryReceiptServer({
+        listener = await startRepositoryReceiptServer({
           state,
           controlSocket: fixture.config.gateway.controlSocket,
           driverId: "repository-credentials",
           implementation: "github",
           backendId: "github-fixture",
-        });
-        let listenerOpen = true;
-        context.after(async () => {
-          if (listenerOpen) {
-            await listener.close();
-          }
         });
         const control = new UnixRepositoryCredentialControlClient({
           controlSocket: fixture.config.gateway.controlSocket,
@@ -582,7 +792,7 @@ test(
         if (mode === "unavailable") {
           // No acknowledgment can be obtained after the worker listener is lost.
           await listener.close();
-          listenerOpen = false;
+          listener = undefined;
           // Capability identifies the protocol, not current journal availability.
           // A later admission cannot return a bearer without a reservation.
           await control.checkAdmissionReady(AbortSignal.timeout(2000));
@@ -641,7 +851,26 @@ test(
         );
         assert.equal(receipt.state, "disposed");
         assert.equal(receipt.sessionId, opened.session.sessionId);
-        assert.ok(receipt.revoked > 0);
+        assert.equal(receipt.admissionId, admissionId);
+        assert.equal(receipt.deadlineWallMs, fixture.input.deadlineWallMs);
+        assert.equal(receipt.revoked, 0);
+        assert.equal(receipt.expired, 0);
+        assert.deepEqual(fixture.github.tokenState(), []);
+        assert.deepEqual(fixture.github.trace, []);
+        await fixture.start();
+        const recovered = await fixture.open(admissionId, true, true);
+        assert.deepEqual(recovered, await fixture.status(opened.session.sessionId));
+        assert.equal(recovered.state, "DISPOSED");
+        assert.equal(recovered.sessionId, opened.session.sessionId);
+        assert.deepEqual(recovered.binding, binding.grant);
+        assert.deepEqual(recovered.cleanup, {
+          active: 0,
+          pending: 0,
+          revoked: 0,
+          expired: 0,
+          uncertain: 0,
+          auxiliaryPending: false,
+        });
       });
     }
   },

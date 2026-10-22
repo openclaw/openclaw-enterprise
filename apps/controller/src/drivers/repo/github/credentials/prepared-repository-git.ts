@@ -160,7 +160,7 @@ function sessionQuery(proxy: Recipient): string {
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
     AND clock_timestamp() < to_timestamp(s.deadline_wall_ms / 1000.0)
     `
-      : `s.broker_protocol=1 AND b.state='active' AND b.generation IS NOT NULL AND b.session_id=s.session_id
+      : `s.broker_protocol=3 AND b.state='active' AND b.generation IS NOT NULL AND b.session_id=s.session_id
     AND clock_timestamp() < to_timestamp(least(b.deadline_wall_ms, s.deadline_wall_ms) / 1000.0)`
   }
   AND NOT EXISTS (

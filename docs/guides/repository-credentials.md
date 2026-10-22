@@ -12,6 +12,11 @@ check forwarding, Ingress, load balancers and effective policy enforcement.
 
 ## Prepare the platform installation
 
+Select `repository.nativeSender` with `repository.preparedGitHub`. Controller
+startup rejects the legacy Installation `drivers.repo` selection. Drain accepted
+work on its original owner before cutover; do not replay an unknown result. See
+[prepared native setup](../reference/repository-credentials/prepared-native-git.md#install-and-check).
+
 Use Kubernetes Compute-owned **Dedicated Codex**, compatible Harness authentication
 and no Sandbox Driver. Enable the optional credential sidecar
 through the [repository installation procedure](repository-credentials/installation.md).

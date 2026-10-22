@@ -26,8 +26,8 @@ export interface RepositorySessionAttempt extends RepositoryRevisionOwner {
   readonly durationSeconds: number;
   readonly deadlineWallMs: number;
   readonly phase: RepositorySessionPhase;
-  /** 0, 1: historical broker protocols; 2: OCC session with no broker or bearer. */
-  readonly brokerProtocol: 0 | 1 | 2;
+  /** 0, 1: historical brokers; 2: OCC session; 3: prepared-only native broker. */
+  readonly brokerProtocol: 0 | 1 | 2 | 3;
   readonly predecessorAdmissionId?: string;
   readonly executionFingerprint?: string;
   readonly sessionId?: string;
@@ -128,7 +128,7 @@ export interface RepositorySessionRepository extends RepositorySessionReadReposi
       readonly durationSeconds: number;
       readonly deadlineWallMs: number;
       readonly createdAt: string;
-      readonly brokerProtocol?: 1 | 2;
+      readonly brokerProtocol?: 1 | 2 | 3;
       readonly predecessorAdmissionId?: string;
       readonly executionFingerprint?: string;
     },

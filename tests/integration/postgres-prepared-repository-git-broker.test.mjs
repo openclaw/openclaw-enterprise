@@ -103,6 +103,7 @@ async function startBroker(
       profile: binding.profile,
       expectedBinding: binding.grant,
       deadlineWallMs,
+      preparedOnly: true,
     });
   const opened = openSession();
   const authorization =

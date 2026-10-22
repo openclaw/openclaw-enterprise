@@ -172,7 +172,7 @@ export async function fixture(
   const attempt = sessionAttempt(revision, {
     repositoryRef,
     durationSeconds: 3600,
-    brokerProtocol: 1,
+    brokerProtocol: 3,
   });
   const socketPath = join(directory, "prepared-git-use.sock");
   const broker = await openBroker?.({

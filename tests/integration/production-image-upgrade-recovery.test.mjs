@@ -484,21 +484,21 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
               drivers: { repo: "repository-credentials" },
             },
           ],
+          repository: {
+            id: "repository-credentials",
+            configuration: { sessionDurationSeconds: 86400 },
+            nativeSender: {
+              controlSocket: "/run/openclaw/repository-control/private/control.sock",
+              publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+            },
+            preparedGitHub: {
+              custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+              privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
+            },
+          },
         }
       : {}),
     drivers: {
-      ...(repositoryCredentials
-        ? {
-            repo: {
-              id: "repository-credentials",
-              configuration: {
-                controlSocket: "/run/openclaw/repository-control/private/control.sock",
-                sessionDurationSeconds: 86400,
-                publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-              },
-            },
-          }
-        : {}),
       compute: {
         id: "compute-kubernetes",
         configuration: {
@@ -832,7 +832,7 @@ test("reviewed settings survive an interrupted controller upgrade without losing
     "/etc/openclaw/repository-registry/registry.json",
   );
   assert.equal(
-    liveInstallation.drivers.repo.configuration.publicCaPath,
+    liveInstallation.repository.nativeSender.publicCaPath,
     "/etc/openclaw/repository-ca/ca.crt",
   );
   assert.equal(
@@ -968,9 +968,9 @@ test(
           if (change === "registry") {
             candidate.backend[0].configuration.registryPath = "/etc/other/registry.json";
           } else if (change === "driver") {
-            candidate.drivers.repo.configuration.publicCaPath = "/etc/other/ca.crt";
+            candidate.repository.nativeSender.publicCaPath = "/etc/other/ca.crt";
           } else if (change === "duration") {
-            candidate.drivers.repo.configuration.sessionDurationSeconds = 3600;
+            candidate.repository.configuration.sessionDurationSeconds = 3600;
           } else if (change === "peer") {
             candidate.drivers.compute.configuration.network.repositoryCredentials.podLabels[
               "app.kubernetes.io/component"
@@ -982,10 +982,10 @@ test(
               context: "other",
             };
           } else if (change === "remove") {
-            delete candidate.drivers.repo;
+            delete candidate.repository;
             delete candidate.backend;
           } else {
-            candidate.drivers.repo = { id: "repository-credentials", configuration: {} };
+            candidate.repository = { id: "repository-credentials", configuration: {} };
             candidate.backend = [
               {
                 id: "github-primary",

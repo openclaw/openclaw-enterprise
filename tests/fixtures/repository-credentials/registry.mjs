@@ -83,7 +83,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
       createPreparedGitHubRegistryFactory,
       registryFile,
       backendId,
-      socketPath: options.socketPath ?? join(controlDirectory, "prepared.sock"),
+      socketPath: options.socketPath ?? join(controlDirectory, "prepared-git-use.sock"),
       config,
       clock,
       tls,
@@ -131,6 +131,7 @@ export async function startRegistryCredentialServiceFixture(t, options = {}) {
           expectedBinding: binding.grant,
           durationSeconds: selectedDuration,
           deadlineWallMs: overrides.deadlineWallMs ?? clock.wallNow() + selectedDuration * 1000,
+          preparedOnly: true,
         });
         const clientDirectory = await writeSessionClientConfiguration(resources, {
           opened,

@@ -339,7 +339,7 @@ function observabilityConfiguration(value: unknown): { readonly url: string } | 
 function backendConfiguration(
   value: unknown,
   serviceAccount: InstallationStartupConfiguration["drivers"]["service_account"],
-  repoSelection: InstallationStartupConfiguration["drivers"]["repo"],
+  repoSelection: InstallationStartupConfiguration["repository"],
   credentialGatewayId: string | undefined,
   credentialRefreshId: string | undefined,
   credentialProxyId: string | undefined,
@@ -349,7 +349,7 @@ function backendConfiguration(
     throw new Error("drivers.service_account requires an owning backend entry with type chatgpt.");
   }
   if (repoSelection !== undefined && !backends.some((backend) => backend.type === "github")) {
-    throw new Error("drivers.repo requires an owning backend entry with type github.");
+    throw new Error("repository requires an owning backend entry with type github.");
   }
   if (credentialRefreshId !== undefined && credentialGatewayId === undefined) {
     throw new Error("drivers.credential_refresh requires drivers.credential_gateway.");
@@ -385,11 +385,11 @@ function backendConfiguration(
     }
     if (backend.type === "github") {
       if (repoSelection === undefined) {
-        throw new Error(`backend[${backend.id}].drivers.repo requires drivers.repo.`);
+        throw new Error(`backend[${backend.id}].drivers.repo requires repository.`);
       }
       if (backend.drivers.repo !== repoSelection.id) {
         throw new Error(
-          `backend[${backend.id}].drivers.repo must match the selected drivers.repo.id.`,
+          `backend[${backend.id}].drivers.repo must match the selected repository.id.`,
         );
       }
       continue;
@@ -603,29 +603,22 @@ export async function loadInstallationConfiguration(options: {
     closed(driverConfiguration, [], "drivers.service_account.configuration");
     serviceAccount = Object.freeze({ id: nonempty(selection.id, "drivers.service_account.id") });
   }
+  if (drivers.repo !== undefined) {
+    throw new Error(
+      "drivers.repo native admission is retired. Drain accepted work ON THE ORIGINAL owner before cutover, then configure repository.nativeSender with repository.preparedGitHub. Do not replay uncertain work.",
+    );
+  }
   let repoSelection: SelectedDriverConfiguration | undefined;
   let nativeRepositorySelection:
     Readonly<{ controlSocket: string; publicCaPath: string }> | undefined;
   let preparedRepositoryGit: PreparedRepositoryGitConfiguration | undefined;
   let openShellGitConfiguration: OpenShellGitRuntimeConfiguration | undefined;
-  if (configuration.repository !== undefined && drivers.repo !== undefined) {
-    throw new Error(
-      "Select repository policy with protected delivery or drivers.repo native delivery, not both.",
-    );
-  }
-  if (configuration.repository !== undefined || drivers.repo !== undefined) {
-    const selection = object(configuration.repository ?? drivers.repo, "repository");
-    const repositoryLabel = configuration.repository === undefined ? "drivers.repo" : "repository";
+  if (configuration.repository !== undefined) {
+    const selection = object(configuration.repository, "repository");
     closed(
       selection,
-      [
-        "id",
-        "configuration",
-        "preparedGitHub",
-        "openShell",
-        ...(configuration.repository === undefined ? [] : ["nativeSender"]),
-      ],
-      repositoryLabel,
+      ["id", "configuration", "preparedGitHub", "openShell", "nativeSender"],
+      "repository",
     );
     if (selection.nativeSender !== undefined) {
       const native = object(selection.nativeSender, "repository.nativeSender");
@@ -640,18 +633,15 @@ export async function loadInstallationConfiguration(options: {
       });
     }
     if (selection.openShell !== undefined) {
-      const value = object(selection.openShell, repositoryLabel + ".openShell");
-      closed(value, ["registrationName", "authority"], repositoryLabel + ".openShell");
+      const value = object(selection.openShell, "repository.openShell");
+      closed(value, ["registrationName", "authority"], "repository.openShell");
       openShellGitConfiguration = {
-        registrationName: nonempty(
-          value.registrationName,
-          repositoryLabel + ".openShell.registrationName",
-        ),
+        registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
         authority: egressAuthorityConfiguration(value.authority, options.mode),
       };
     }
     if (selection.preparedGitHub !== undefined) {
-      const label = repositoryLabel + ".preparedGitHub";
+      const label = "repository.preparedGitHub";
       const owner = object(selection.preparedGitHub, label);
       closed(owner, ["custodyKeyPath", "privateKeyPath", "apiOrigin", "issuerCaPath"], label);
       const privatePath = (key: string): string => {
@@ -670,15 +660,7 @@ export async function loadInstallationConfiguration(options: {
         ...(owner.issuerCaPath === undefined ? {} : { issuerCaPath: privatePath("issuerCaPath") }),
       });
     }
-    repoSelection = selected(
-      selection,
-      "repo",
-      "github",
-      configuration.repository === undefined
-        ? GitHubNativeRepositorySender
-        : GitHubRepositoryPolicy,
-      repositoryLabel,
-    );
+    repoSelection = selected(selection, "repo", "github", GitHubRepositoryPolicy, "repository");
   }
   let credentialGateway: SelectedDriverConfiguration | undefined;
   if (drivers.credential_gateway !== undefined) {
@@ -900,9 +882,7 @@ export async function loadInstallationConfiguration(options: {
     configuration.repository === undefined &&
     (packageRepositoryGit || (openShellGitConfiguration && proxySelection))
   ) {
-    throw new Error(
-      "Protected Git requires repository policy configuration, without drivers.repo.",
-    );
+    throw new Error("Protected Git requires repository policy configuration.");
   }
   if (
     packageRepositoryGit &&
@@ -922,7 +902,7 @@ export async function loadInstallationConfiguration(options: {
       throw new SandboxRepositoryRecipientUnverifiedError();
     }
     throw new Error(
-      "drivers.repo requires the bundled Kubernetes Compute Driver without a Sandbox Driver.",
+      "repository requires the bundled Kubernetes Compute Driver and a supported Git delivery selection.",
     );
   }
   if (sshCompute && sandboxSelection !== undefined) {
@@ -1005,7 +985,7 @@ export async function loadInstallationConfiguration(options: {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.network.repositoryCredentials?.port !== 8443) {
       throw new Error(
-        "drivers.repo requires an exact Kubernetes repository service peer on port 8443.",
+        "repository.nativeSender requires an exact Kubernetes repository service peer on port 8443.",
       );
     }
   }
@@ -1061,7 +1041,7 @@ export async function loadInstallationConfiguration(options: {
     ...(observability === undefined ? {} : { observability }),
     ...(runtime === undefined ? {} : { runtime }),
     backend: backends,
-    ...(configuration.repository === undefined ? {} : { repository: repoSelection! }),
+    ...(repoSelection === undefined ? {} : { repository: repoSelection }),
     drivers: Object.freeze({
       configuration: configured,
       iam,
@@ -1073,9 +1053,6 @@ export async function loadInstallationConfiguration(options: {
       ...(proxySelection === undefined ? {} : { credential_proxy: proxySelection }),
       ...(plugin === undefined ? {} : { plugin }),
       ...(serviceAccount === undefined ? {} : { service_account: serviceAccount }),
-      ...(repoSelection === undefined || configuration.repository !== undefined
-        ? {}
-        : { repo: repoSelection }),
     }),
   });
   const configurationDriver =

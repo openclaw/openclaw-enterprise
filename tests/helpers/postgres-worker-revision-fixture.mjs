@@ -259,6 +259,7 @@ export function createWorkerRevisionFixtures(
     const createWorkerPool = () => createPool(1);
     let workerPool = createWorkerPool();
     const state = new PostgresPlatformState(observerPool);
+    repoDriver?.bindReceiptState?.(state);
     const installation = await ensureInstallation(state, "revision-worker");
     const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
       ["deploy", "agent"],

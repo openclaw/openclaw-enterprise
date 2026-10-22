@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-22"
-last_updated_session: authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f
+last_updated_session: authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3
 ---
 
 # Agent repository credential flow
@@ -144,52 +144,55 @@ control socket, broker CA or session files.
 
 Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
 prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Retained `drivers.repo` uses this native owner.
+cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
+every mode, before it constructs a worker or allocates an attempt. Operators must
+drain accepted work on the original owner before cutover.
 Cleanup matches recorded owner identity without resolving policy or restoring authority.
 The worker's prepared provider owns issuance and custody.
 
 ### 3. Record ownership before opening a session
 
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
-rechecks actor, Namespace, Agent, version, Driver, grant and deadline. Before a
-fresh native attempt, `GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability
-with a two-second timeout signal. Worker readiness also checks it.
-An unavailable capability blocks fresh admission, but not recovery or cleanup.
-Under the live claim and Namespace/Agent locks, State records the attempt and
-immutable cleanup context before the Driver call. It rejects stopped or deleting
-owners and stores identifiers and phases, never bearers or client files.
+rechecks actor, Namespace, Agent, revision, Driver, grant and deadline.
+`GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability with
+a two-second timeout. Failure blocks fresh admission, not recovery or cleanup.
+Every fresh OPEN also carries `preparedOnly: true`: the old parser rejects it
+after a socket replacement, and current control requires a prepared backend.
+Under the live claim and Namespace/Agent locks, State records immutable cleanup
+context before calling the Driver. Stopped or deleting owners are rejected.
+State stores identifiers and phases, never bearers or files.
 
 `apps/controller/src/backends/repository-credentials/control-client.ts:UnixRepositoryCredentialControlClient`
-sends the bound request over the private socket. The service independently
-resolves and compares the grant through
-`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`.
-The client validates each status before projection. `DISPOSED` permits historical
-revoked or expired counts, but no active, pending or uncertain obligations.
+sends the bound request over the private socket.
+`apps/controller/src/drivers/repo/github/credentials/warm-registry-factory.ts:createPreparedGitHubRegistryFactory`
+resolves and compares its grant. The client validates status before projection:
+`DISPOSED` permits historical revoked/expired counts, but no outstanding obligations.
+Only a created response contains a bearer.
+`apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`
+encodes files; the worker records the session ID before passing them to Compute.
 
-Only a created response contains the bearer. The Driver encodes transient files with
-`apps/controller/src/drivers/repo/github/credentials/client/config.ts:encodeRepositoryCredentialSessionFiles`,
-returning status with that closed file map. The worker
-records the session ID before passing files to
-`ComputeRevisionContext.repositoryCredentials`.
+Confirmed open sessions yield `retained` bindings without files. `recoverOnly`
+finds or fences unfinished admissions and closes recovered sessions. Fresh material
+requires confirmed disposal or a missing opening without a recorded session ID.
+Invalidated known sessions block replacement. Closing raises
+`REPOSITORY_CLEANUP_PENDING`, subject to Work bounds and the revision deadline.
+Cleanup uses the configured interval while any session closes. Otherwise, an
+unsettled obligation retains its code and retries at `age / 40`, bounded by the
+configured interval and ten minutes.
+`apps/controller/src/worker.ts:processRepositoryCleanup` logs
+`worker.repository-cleanup-warning` with `cause` once per worker.
 
-A confirmed open session yields a `retained` binding without files. `recoverOnly`
-finds or fences unfinished admissions, including a reserved receipt whose fence
-did not commit, and closes recovered sessions.
-Fresh material requires confirmed disposal or a missing opening without a recorded
-session ID; invalidated known sessions block automatic same-version replacement.
-Closing sessions raise `REPOSITORY_CLEANUP_PENDING` until disposal, subject to Work
-bounds and the version deadline. While any session is still closing, cleanup
-keeps the configured interval. Otherwise cleanup that another pass cannot
-settle, an `invalidated` attempt or a cleanup error, keeps its obligation and
-its code but rechecks with the work row's age (`age / 40`, from the configured
-interval up to 10 minutes). Either way it logs
-`worker.repository-cleanup-warning` with the `cause` once per worker
-(`apps/controller/src/worker.ts:processRepositoryCleanup`). Validated `DISPOSED` observations survive service pruning.
 `apps/controller/src/drivers/repo/credentials/control.ts:createControlAdmission`
-reserves before releasing material. The worker's
+reserves before releasing material.
 `apps/controller/src/backends/repository-credentials/receipt-store.ts:RepositoryReceiptStore`
-commits exact admission fences and original-broker terminal observations. Failure
-before terminal commit remains unknown; transport failure cannot establish absence.
+retains fences and original-broker disposal evidence across service pruning.
+Transport failure cannot establish absence. The receipt store matches
+`preparedOnly` to protocol 3 throughout receipt operations. Unmarked v1 requests
+can recover and close on their original IDs but cannot reserve.
+`RepositoryCredentialLifecycle.verifyRelease` and
+`apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts:sessionQuery`
+require protocol 3 for native release and prepared-material selection.
+Protected sessions retain protocol 2.
 
 ### 4. Deliver and retain one complete runtime generation
 
@@ -364,6 +367,8 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 02:32: Require prepared authority at native OPEN, durable receipt and release; reject legacy controller selection. (authoring-run/b8149a96-d1dc-4681-8930-7d5434fbf1e3 - 2fca4e18d905f7bf760d0da70cb916f20186169e)
 
 - 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
 

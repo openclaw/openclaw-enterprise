@@ -78,7 +78,7 @@ export const repositoryGitRecipients = "occ.protected_repository_git_recipients"
 // The broker owns only its recorded admission, session and generation; the receipt remains after disposal.
 export const repositoryGitBrokerOwnerPredicate = `EXISTS (
   SELECT FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b USING (admission_id)
-  WHERE s.broker_protocol=1 AND s.session_id=b.session_id
+  WHERE s.broker_protocol IN (1,3) AND s.session_id=b.session_id
     AND (s.admission_id,s.revision_id,b.session_id,b.generation::text) =
       (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',
        f.source#>>'{session,sessionId}',f.source#>>'{session,brokerGeneration}')

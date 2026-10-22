@@ -28,7 +28,7 @@ export class RepositoryReceiptStore {
   ): boolean {
     const { binding, driver } = attempt.cleanupContext;
     return (
-      attempt.brokerProtocol === 1 &&
+      attempt.brokerProtocol === (input.preparedOnly === true ? 3 : 1) &&
       attempt.namespaceId === input.namespaceId &&
       attempt.repositoryRef === input.repositoryRef &&
       attempt.durationSeconds === input.durationSeconds &&
@@ -43,7 +43,7 @@ export class RepositoryReceiptStore {
 
   private eligible(attempt: Readonly<RepositorySessionAttempt>): boolean {
     return (
-      attempt.brokerProtocol === 1 &&
+      [1, 3].includes(attempt.brokerProtocol) &&
       attempt.phase !== "invalidated" &&
       attempt.cleanupContext.binding.backendId === this.owner.backendId &&
       attempt.cleanupContext.driver.id === this.owner.driverId &&
@@ -111,7 +111,7 @@ export class RepositoryReceiptStore {
         await unit.repositorySessions.createBrokerReceipt({ admissionId, state: "fenced" });
         return { kind: "missing" as const };
       }
-      if (attempt.phase !== "opening") {
+      if (attempt.phase !== "opening" || input.preparedOnly !== true) {
         throw new Error("RECEIPT_UNAVAILABLE");
       }
       await unit.repositorySessions.createBrokerReceipt({

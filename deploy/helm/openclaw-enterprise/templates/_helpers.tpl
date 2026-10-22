@@ -516,16 +516,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
-{{- if eq .Values.openshellGit.mode "protected" -}}
+{{- if ne .Values.openshellGit.mode "protected" -}}
+{{- fail "openshellGit.mode must be protected; drain the earlier broker trial on its original owner before switching" -}}
+{{- end -}}
 {{- if $repositoryBroker -}}
 {{- fail "protected Git requires the repository broker disabled (repositoryCredentials.enabled: false); drain existing broker sessions before switching" -}}
-{{- end -}}
-{{- else if eq .Values.openshellGit.mode "broker-trial" -}}
-{{- if not $repositoryBroker -}}
-{{- fail "openshellGit.mode broker-trial requires repositoryCredentials.enabled: true" -}}
-{{- end -}}
-{{- else -}}
-{{- fail "openshellGit.mode must be protected or broker-trial" -}}
 {{- end -}}
 {{- if ne .Values.repositoryCredentials.authority "prepared-git" -}}
 {{- fail "openshellGit requires repositoryCredentials.authority prepared-git" -}}

@@ -2061,12 +2061,16 @@ test(
         drivers: { repo: "repository-credentials" },
       },
     ];
-    installationDocument.drivers.repo = {
+    installationDocument.repository = {
       id: "repository-credentials",
-      configuration: {
+      configuration: { sessionDurationSeconds: 86400 },
+      nativeSender: {
         controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        sessionDurationSeconds: 86400,
         publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+      },
+      preparedGitHub: {
+        custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+        privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
       },
     };
     installationDocument.drivers.compute.configuration.network.repositoryCredentials = {
@@ -5785,7 +5789,7 @@ test(
 );
 
 test(
-  "protected OpenShell Git installs without a repository broker and preserves an explicit broker trial",
+  "protected OpenShell Git installs without a repository broker and refuses the retired trial",
   tooling,
   async () => {
     const selected = {
@@ -5922,7 +5926,7 @@ test(
         },
       ],
     );
-    // Keep the previous broker, listener and control socket only when the operator selects the trial.
+    // An older trial must drain on its original owner, not restart with this chart.
     const oldTrial = {
       ...selected,
       ...repositoryCredentialValues,
@@ -5932,13 +5936,10 @@ test(
       render(oldTrial, { isUpgrade: true }),
       /protected Git requires the repository broker disabled/,
     );
-    const trial = await render(
-      { ...oldTrial, "openshellGit.mode": "broker-trial" },
-      { isUpgrade: true },
+    await assert.rejects(
+      render({ ...oldTrial, "openshellGit.mode": "broker-trial" }, { isUpgrade: true }),
+      /drain the earlier broker trial on its original owner/,
     );
-    assert.match(trial.stdout, /targetPort: 8443/);
-    assert.match(trial.stdout, /targetPort: openshell-git/);
-    assert.match(trial.stdout, /mountPath: \/run\/openclaw\/repository-control/);
     const sealed = await resources(
       (
         await render({
@@ -5962,7 +5963,7 @@ test(
       [{ "repositoryCredentials.authority": "github-app" }, /authority prepared-git/],
       [
         { "openshellGit.mode": "broker-trial" },
-        /broker-trial requires repositoryCredentials.enabled/,
+        /drain the earlier broker trial on its original owner/,
       ],
       [
         { "repositoryCredentials.preparedCustodySecretName": "" },

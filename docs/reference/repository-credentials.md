@@ -30,7 +30,9 @@ The `repo` capability uses `RepositoryPolicyDriver` and `GitHubRepositoryPolicy`
 The GitHub Backend's `drivers.repo` member pins its ID. Protected composition selects
 `repository` and the installed Sandbox/Credential Proxy Driver.
 `repository.nativeSender` selects native sessions with prepared custody, without
-protected fallback. Retained `drivers.repo` uses the same native adapter.
+protected fallback. Controller startup rejects the legacy Installation `drivers.repo`
+selection in every mode. Drain accepted work on its original owner before cutover;
+then select `repository.nativeSender` with `repository.preparedGitHub`.
 The [shared policy contract](../../packages/contracts/src/repo.ts) exposes:
 
 - `listOptions` returns Namespace-approved opaque references, names, profiles

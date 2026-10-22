@@ -33,7 +33,14 @@ async function main() {
         repositoryRef: "compatibility-probe",
         repositoryId: "1",
         repository: "fixture/repository",
-        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+        namespaces: [
+          {
+            namespaceId,
+            profiles: ["git-write"],
+            transport: "git-only",
+            pushRefAllowlist: ["refs/heads/compatibility-probe"],
+          },
+        ],
       },
     ],
   } as const;
@@ -43,7 +50,7 @@ async function main() {
   const policy = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 60 });
   const binding = policy.resolve({
     namespaceId,
-    bindings: [{ repositoryRef: "compatibility-probe", profile: "git-read" }],
+    bindings: [{ repositoryRef: "compatibility-probe", profile: "git-write" }],
   }).bindings[0]!;
   const deadlineWallMs = Date.now() + 60_000;
   const input = {
@@ -53,6 +60,7 @@ async function main() {
     profile: binding.profile,
     durationSeconds: 60,
     deadlineWallMs,
+    preparedOnly: true as const,
   };
   const signal = AbortSignal.timeout(2000);
   await driver.checkAdmissionReady(signal);
@@ -62,6 +70,7 @@ async function main() {
     durationSeconds: 60,
     deadlineWallMs,
     admissionId,
+    preparedOnly: true as const,
     ...(mode === "recover" ? { recoverOnly: true as const } : {}),
   };
   let outcome;

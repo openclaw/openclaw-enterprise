@@ -88,6 +88,8 @@ export interface OpenRepositorySessionInput {
   readonly deadlineWallMs: number;
   /** Restricts the operation to recovered/missing results, without creating authority. */
   readonly recoverOnly?: true;
+  /** Retain the original prepared authority during lookup-only recovery. Fresh opens require it. */
+  readonly preparedOnly?: true;
 }
 
 export type OpenRepositorySessionResult =

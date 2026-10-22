@@ -54,7 +54,7 @@ test(
           sessionAttempt(f.revision, {
             deadlineWallMs: f.deadlineWallMs + 3_600_000,
             durationSeconds: 3600,
-            brokerProtocol: 1,
+            brokerProtocol: 3,
           }),
         ),
       ),

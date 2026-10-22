@@ -25,8 +25,7 @@ outlive each finite session. A finite grant keeps its original deadline.
 
 The Installation would select Sandbox and Credential Proxy from the same Driver, as in the
 [OpenShell configuration example](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
-Move the example’s `drivers.repo` block to the top-level `repository` block. Keep
-`repository.preparedGitHub`, `repository.openShell` and the session duration; omit
+Keep `repository.preparedGitHub`, `repository.openShell` and the session duration; omit
 `controlSocket` and `publicCaPath`. The GitHub Backend uses
 `/etc/openclaw/repository-registry/registry.json`. Do not select `repository.nativeSender`.
 
@@ -34,7 +33,7 @@ The corresponding Helm values would be `openshellGit.enabled: true`, `openshellG
 `repositoryCredentials.enabled: false` and `repositoryCredentials.authority: prepared-git`.
 The `repositoryCredentials` settings identify the registry ConfigMap, App key Secret, existing
 custody Secret and approved issuer CIDRs. Only the worker mounts the signing and custody keys.
-The [middleware certificate, public issuer key and trusted callers](openshell-git.md#maintain-the-earlier-git-trial)
+The [middleware certificate, public issuer key and trusted callers](openshell-git.md#prepare-the-request-phase-service)
 are for TCP 8445. This configuration has no broker listener, control socket or broker CA.
 
 ### Grant access to a GitHub App installation
@@ -64,14 +63,14 @@ the original owner settle credentials even for Namespaces whose policy is unchan
 
 ## Move from the earlier trial
 
-Keep the trial’s current configuration, broker and original owner through the database upgrade.
-If you also upgrade the control plane, the chart refuses the old trial values without an explicit
-mode. Set `openshellGit.mode: broker-trial` in that case to preserve the existing trial. Keep the
-database, registry, custody key and issuer access the owner needs to drain sessions and settle
-issued, retiring or uncertain credentials. Helm cannot settle custody or migrate a grant.
+Stop new admissions and drain the trial on its original owner before updating the control plane.
+This release rejects the trial’s Installation `drivers.repo` selection and Helm `broker-trial` mode;
+it cannot restart that owner. Keep the database, registry, custody key and issuer access that the
+original owner needs to settle issued, retiring or uncertain credentials. Helm cannot settle custody
+or migrate a grant.
 
-Only after the replacement sender and release are qualified, fence the old owner against new work
-and let that owner finish settling custody. Then change the Installation and Helm values together.
+Only after the original owner has settled custody and the replacement sender and release are
+qualified, change the Installation and Helm values together.
 That change restarts the worker and removes the broker Service and access policy. A new revision
 must not reuse an old receipt or reset a possibly spent draft allowance.
 [Native Git](prepared-native-git.md) remains a separate explicit choice.

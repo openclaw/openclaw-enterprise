@@ -210,7 +210,7 @@ export function memoryRepositorySessions(
       const attempt = attempts.get(input.admissionId);
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed"].includes(attempt.phase) ||
         receipts.has(input.admissionId) ||
         (input.state === "reserved" && (attempt.phase !== "opening" || !input.generation)) ||
@@ -237,7 +237,7 @@ export function memoryRepositorySessions(
       }
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed"].includes(attempt.phase) ||
         !validIdentifier(input.sessionId) ||
         !Number.isSafeInteger(input.deadlineWallMs) ||
@@ -286,7 +286,7 @@ export function memoryRepositorySessions(
       }
       if (
         !attempt ||
-        attempt.brokerProtocol !== 1 ||
+        ![1, 3].includes(attempt.brokerProtocol) ||
         ["invalidated", "disposed", "open"].includes(attempt.phase) ||
         attempt.sessionId !== undefined
       ) {
@@ -355,7 +355,7 @@ export function memoryRepositorySessions(
           previous.brokerProtocol !== input.brokerProtocol ||
           (input.brokerProtocol === 2
             ? receipt !== undefined
-            : input.brokerProtocol !== 1 ||
+            : input.brokerProtocol !== 3 ||
               receipt?.state !== "disposed" ||
               previous.sessionId !== receipt.sessionId) ||
           !execution ||
@@ -412,7 +412,7 @@ export function memoryRepositorySessions(
         (receipt?.sessionId !== undefined &&
           sessionId !== undefined &&
           receipt.sessionId !== sessionId) ||
-        (current.brokerProtocol === 1 &&
+        ([1, 3].includes(current.brokerProtocol) &&
           input.phase === "disposed" &&
           (receipt?.state !== "disposed" || receipt.sessionId !== sessionId))
       ) {

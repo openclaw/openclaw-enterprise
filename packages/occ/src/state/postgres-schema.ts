@@ -970,7 +970,7 @@ export const repositorySessionAttempts = occSchema.table(
     ),
     check(
       "repository_session_attempts_broker_protocol_valid",
-      sql`${table.brokerProtocol} IN (0, 1, 2)`,
+      sql`${table.brokerProtocol} IN (0, 1, 2, 3)`,
     ),
     check(
       "repository_session_attempts_phase_valid",
