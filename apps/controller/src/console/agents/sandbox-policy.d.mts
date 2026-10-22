@@ -1,7 +1,7 @@
 import type { Agent, DriverConfigurationDescriptor } from "@openclaw-enterprise/contracts";
 import type { NamespacePageContext } from "../namespaces.mjs";
 
-// Driver discovery calls this owner while its implementation is still JavaScript.
+// TODO: Remove this declaration when sandbox-policy.mjs is migrated to sandbox-policy.mts.
 export function renderAgentSandboxPolicy(
   context: Pick<NamespacePageContext, "isCurrent" | "request">,
   options: {

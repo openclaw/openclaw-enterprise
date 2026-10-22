@@ -191,20 +191,26 @@ export function configurationFields(
         const choices = definition.enum;
         read = () => choices[Number(input.value)];
       } else {
-        const number = type === "number" || type === "integer";
+        let inputType = "text";
+        if (type === "boolean") {
+          inputType = "checkbox";
+        } else if (type === "number" || type === "integer") {
+          inputType = "number";
+        }
         const control = element("input", {
-          type: type === "boolean" ? "checkbox" : number ? "number" : "text",
+          type: inputType,
           "aria-label": label,
         });
         input = control;
-        if (type === "boolean") {
+        if (inputType === "checkbox") {
           control.checked = current === true;
           read = () => control.checked;
         } else {
           control.value = String(current ?? "");
-          read = number
-            ? () => (control.value === "" ? null : Number(control.value))
-            : () => control.value;
+          read =
+            inputType === "number"
+              ? () => (control.value === "" ? null : Number(control.value))
+              : () => control.value;
         }
         for (const [source, target] of [
           ["minimum", "min"],
