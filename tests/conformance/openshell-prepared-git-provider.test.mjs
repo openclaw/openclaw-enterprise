@@ -120,6 +120,7 @@ async function wire(t) {
     conflict: false,
     lost: false,
     workspaceId: scope.workspaceId,
+    workspaceReads: 0,
     status: undefined,
   };
   const server = new grpc.Server();
@@ -135,6 +136,7 @@ async function wire(t) {
       callback(null, { status: state.status ?? { state: "PROVIDER_READINESS_STATE_PENDING" } });
     },
     GetWorkspace(call, callback) {
+      state.workspaceReads += 1;
       assert.equal(call.request.name, scope.workspace);
       callback(null, { workspace: { metadata: { name: scope.workspace, id: state.workspaceId } } });
     },
@@ -416,7 +418,7 @@ function installedStatus(binding) {
   };
 }
 
-test("prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state", async (t) => {
+test("prepared Git keeps bootstrap, rotation, restart and installed state distinct", async (t) => {
   const { state, binding } = await wire(t);
   const bootstrap = await binding.bootstrap(signal());
   assert.equal(bootstrap.credentialState, "bootstrap");
@@ -447,6 +449,27 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
     await binding.observe(active, "sandbox-id", signal()),
     installed,
     "heartbeat sequence is not a new installed identity",
+  );
+
+  // A restored generation names the same provider but cannot establish supervisor readiness.
+  const { providerId, profileVersion, resourceVersion, expiresAt, credentialState } = active;
+  const generation = { providerId, profileVersion, resourceVersion, expiresAt, credentialState };
+  const requestCounts = [state.workspaceReads, state.requests.length];
+  const restored = binding.restore(generation);
+  assert.deepEqual(restored, active);
+  assert.ok(Object.isFrozen(restored) && Object.isFrozen(restored.readiness));
+  const expired = { ...generation, expiresAt: new Date(Date.now() - 60_000).toISOString() };
+  const finite = binding.restore(expired);
+  assert.equal(finite.credentialState, "bootstrap");
+  assert.equal(finite.expiresAt, "");
+  const standing = binding.restore(expired, true);
+  assert.equal(standing.credentialState, "active");
+  assert.equal(standing.expiresAt, expired.expiresAt);
+  assert.equal(await binding.observe(standing, "sandbox-id", signal()), undefined);
+  assert.deepEqual(
+    [state.workspaceReads, state.requests.length],
+    requestCounts,
+    "restore and expired observation make no gateway requests",
   );
 });
 

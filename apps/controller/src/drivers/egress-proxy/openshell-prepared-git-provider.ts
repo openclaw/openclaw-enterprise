@@ -345,19 +345,31 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
-    // An accepted update is not evidence that the current supervisor installed it.
+    return this.bindingForGeneration({
+      providerId: provider.id,
+      profileVersion,
+      resourceVersion: provider.resourceVersion,
+      expiresAt,
+      credentialState,
+    });
+  }
+
+  private bindingForGeneration(
+    generation: OpenShellPreparedGitGeneration,
+  ): OpenShellPreparedGitBinding {
+    // Neither a confirmed write nor a restored generation proves supervisor installation.
     // observe() separately correlates the gateway's desired and installed identities.
     return Object.freeze({
       workspace: this.scope.workspace,
       sandbox: this.scope.sandbox,
       executionId: this.scope.executionId,
       provider: this.provider,
-      providerId: provider.id,
+      providerId: generation.providerId,
       profile: this.profile.id,
-      profileVersion,
-      resourceVersion: provider.resourceVersion,
-      expiresAt,
-      credentialState,
+      profileVersion: generation.profileVersion,
+      resourceVersion: generation.resourceVersion,
+      expiresAt: generation.expiresAt,
+      credentialState: generation.credentialState,
       update: "accepted",
       supervisor: "unknown",
       readiness: Object.freeze({
@@ -401,25 +413,12 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
-    return Object.freeze({
-      workspace: this.scope.workspace,
-      sandbox: this.scope.sandbox,
-      executionId: this.scope.executionId,
-      provider: this.provider,
+    return this.bindingForGeneration({
       providerId: generation.providerId,
-      profile: this.profile.id,
       profileVersion: generation.profileVersion,
       resourceVersion: generation.resourceVersion,
       expiresAt: expired ? "" : generation.expiresAt,
       credentialState: expired ? "bootstrap" : generation.credentialState,
-      update: "accepted",
-      supervisor: "unknown",
-      readiness: Object.freeze({
-        rpc: "GetSandboxProviderStatus",
-        workspace: this.scope.workspace,
-        sandbox: this.scope.sandbox,
-        provider: this.provider,
-      }),
     });
   }
 
