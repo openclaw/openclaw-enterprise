@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
 import { SandboxRepositoryRecipientUnverifiedError } from "@openclaw-enterprise/occ";
 import type { GitHubRepositoryCredentialBackendDefinition } from "@openclaw-enterprise/contracts";
-import { closed, nonempty, object } from "../../../composition/startup-file.ts";
+import {
+  closed,
+  nonempty,
+  object,
+  openShellRepositoryConfiguration,
+} from "../../../composition/installation-fields.ts";
 import type { SelectedDriverConfiguration } from "../../../composition/installation-config.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
-import { openShellRepositoryConfiguration } from "../../egress-proxy/openshell-configuration.ts";
 import { GitHubNativeRepositorySender } from "./driver.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";

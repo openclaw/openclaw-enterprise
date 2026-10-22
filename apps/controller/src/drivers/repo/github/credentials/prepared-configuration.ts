@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { object, closed, nonempty } from "../../../../composition/startup-file.ts";
+import { object, closed, nonempty } from "../../../../composition/installation-fields.ts";
 
 /** Mounted key locations are configuration; key bytes stay with the credential owner. */
 export function preparedGitHubConfiguration(input: unknown, repository: boolean) {

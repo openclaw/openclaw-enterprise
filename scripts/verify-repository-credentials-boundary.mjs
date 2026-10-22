@@ -11,9 +11,11 @@ const credentialDirectories = [
   "backends/repository-credentials",
   "backends/token-service",
 ];
+const sharedConfigurationFields = "composition/installation-fields.ts";
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
+  sharedConfigurationFields,
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
   "composition/repository-credentials/probe.ts",
@@ -32,6 +34,24 @@ const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", 
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
 const reviewedImports = {
+  [sharedConfigurationFields]: {
+    "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
+    "node:path": ["isAbsolute"],
+  },
+  "drivers/repo/github/credentials/prepared-configuration.ts": {
+    "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
+  },
+  "drivers/repo/github/installation.ts": {
+    "../../../composition/installation-fields.ts": [
+      "object",
+      "closed",
+      "nonempty",
+      "openShellRepositoryConfiguration",
+    ],
+    // Hash selected configuration without loading mounted key bytes.
+    "node:crypto": ["createHash"],
+    "@openclaw-enterprise/occ": ["SandboxRepositoryRecipientUnverifiedError"],
+  },
   "drivers/repo/github/credentials/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
   },
@@ -145,6 +165,10 @@ const reviewedImports = {
     "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
   },
   "drivers/repo/github/credentials/prepared-repository-git.ts": {
+    // Existing stateful helper on the caller's transaction, not general OCC access.
+    "@openclaw-enterprise/occ": ["CredentialDeliveries"],
+    // Process-local identity for the existing recipient-delivery worker.
+    "node:crypto": ["randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
   // Worker only: the Installation's read-only App and custody mounts, public key
@@ -413,12 +437,13 @@ function inspectSource(path, root, sources, ast) {
       continue;
     }
     const source = node.source.value;
-    if (ordinaryBuiltins.has(source)) {
+    if (ordinaryBuiltins.has(source) && file !== sharedConfigurationFields) {
       continue;
     }
-    if (source.startsWith(".")) {
+    if (source.startsWith(".") && file !== sharedConfigurationFields) {
       const target = relativeSource(path, root, source, sources);
       const restricted =
+        target === sharedConfigurationFields ||
         capabilityConsumers[target] ||
         (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory)) ||
         (file === "repository-credentials.mjs" && source === "../dist/repository-credentials.js");
@@ -438,6 +463,22 @@ function inspectSource(path, root, sources, ast) {
   function edge(node, specifier, names, kind) {
     if (typeof specifier !== "string") {
       deny(node, "nonliteral module loading requires security review");
+      return;
+    }
+    // The pure owner and its consumers admit only exact module spellings and symbols.
+    // Do not inherit ordinary builtin or relative-source permissions here.
+    if (
+      file === sharedConfigurationFields ||
+      (specifier.startsWith(".") &&
+        relativeSource(path, root, specifier, sources) === sharedConfigurationFields)
+    ) {
+      if (
+        kind === "import" &&
+        names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
+      ) {
+        return;
+      }
+      deny(node, `unreviewed shared field validation ${kind} from ${specifier}`);
       return;
     }
     if (specifier.startsWith(".")) {
@@ -624,7 +665,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of processEntrypoints) {
+  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields]) {
     const path = join(root, entrypoint);
     const stat = await lstat(path).catch((error) => {
       if (error.code !== "ENOENT") {

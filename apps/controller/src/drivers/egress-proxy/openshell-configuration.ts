@@ -1,23 +1,14 @@
 import type { OpenShellBackendDefinition } from "@openclaw-enterprise/contracts";
-import { closed, nonempty, object } from "../../composition/startup-file.ts";
-import { egressAuthorityConfiguration } from "../../composition/egress-authority.ts";
+import {
+  closed,
+  nonempty,
+  object,
+  egressAuthorityConfiguration,
+} from "../../composition/installation-fields.ts";
 import { preparedGitHubConfiguration } from "../repo/github/credentials/prepared-configuration.ts";
 import type { OpenShellGitRuntimeConfiguration } from "./openshell-git-runtime.ts";
 
-export function openShellRepositoryConfiguration(
-  input: unknown,
-  mode: "development" | "production",
-) {
-  if (input === undefined) {
-    return undefined;
-  }
-  const value = object(input, "repository.openShell");
-  closed(value, ["registrationName", "authority"], "repository.openShell");
-  return {
-    registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(value.authority, mode),
-  };
-}
+export { openShellRepositoryConfiguration } from "../../composition/installation-fields.ts";
 
 /** The adapter selects its discovery profile from its own repository transport configuration. */
 export function openShellProxyConfiguration(
