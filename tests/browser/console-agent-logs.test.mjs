@@ -20,6 +20,7 @@ import {
   settlePageRequests,
   trackSettledFetches,
   waitForCondition,
+  waitForEnabled,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -1257,7 +1258,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const pod = computeDriver.podName({ id: revisionId });
   await page.getByText(`Showing gateway in ${pod}.`).waitFor();
   assert.equal(await page.locator(".runtime-pod").count(), 0);
-  assert.equal(await page.locator("#runtime-log-source").isDisabled(), false);
+  await waitForEnabled(page.locator("#runtime-log-source"));
   // Without status the console names no Pod; OCC reads the source's current Pod.
   const [first] = logRequests(requests, revisionId);
   assert.equal(new URL(first.path, fixture.origin).searchParams.has("pod"), false);
@@ -1359,7 +1360,7 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await pane.getByText("log reader can see this").waitFor();
-  assert.equal(await page.locator("#runtime-log-source").isDisabled(), false);
+  await waitForEnabled(page.locator("#runtime-log-source"));
   assert.equal(statusReads(), before);
   assert.equal(await page.getByRole("note").count(), 0);
 });

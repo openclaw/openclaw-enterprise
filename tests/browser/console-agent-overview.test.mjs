@@ -32,6 +32,7 @@ import {
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -239,7 +240,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
 
   roles.release();
   await sharing.getByText("Current policy loaded.", { exact: false }).waitFor();
-  assert.equal(await principal.isEnabled(), true);
+  await waitForEnabled(principal);
   // The read's placeholder held the line its result takes, so nothing below moved.
   const after = await grants.boundingBox();
   assert.ok(Math.abs(after.y - before.y) < 1, `the grants moved ${after.y - before.y}px`);
@@ -2382,7 +2383,7 @@ test("A share in flight holds version and page changes until it finishes", async
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   const version = page.getByRole("button", { name: "View version v1, current version" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
   assert.equal(await asksBeforeUnload(page), false);
@@ -2409,7 +2410,7 @@ test("A share in flight holds version and page changes until it finishes", async
   write.release();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await held.waitFor({ state: "detached" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
   assert.equal(await asksBeforeUnload(page), false);
   const bindings = (
     await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
@@ -2713,7 +2714,7 @@ for (const viewport of [
 
     // Deploy is the page's one primary.
     const deploy = card.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     const layout = await page.evaluate(() => {
       const doc = globalThis.document;
       const box = (node) => node.getBoundingClientRect();
