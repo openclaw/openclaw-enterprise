@@ -134,6 +134,8 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 		{"read failed", `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"unavailable"}}`, "Harness Sandbox: unknown (the status could not be read)."},
 		// The logs hint names the observed revision, so a later deployment cannot redirect it.
 		{"restarting", observed(`{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}`), "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox --revision " + testRevision1ID + ")."},
+		// A revision ID OCC would not issue is not echoed into the logs hint.
+		{"odd revision", `{"status":"observed","revisionId":"rev_1 --source gateway","harness":{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}}`, "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox)."},
 		// A stopped Agent, an embedded Harness or a Driver without a Sandbox record adds nothing.
 		{"unobserved", `{"status":"unobserved"}`, ""},
 	} {
@@ -155,13 +157,14 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 	}
 	// Structured output is the Agent resource alone, and a stopped Agent has no Sandbox to
 	// read, so neither reads the status.
-	stopped := strings.Replace(agent, `"running"`, `"stopped"`, 1)
 	for _, test := range []struct {
 		name, agent string
 		args        []string
 	}{
 		{"json", agent, []string{"-o", "json"}},
-		{"stopped", stopped, nil},
+		{"stopped", strings.Replace(agent, `"running"`, `"stopped"`, 1), nil},
+		{"deleting", strings.Replace(agent, `"active"`, `"deleting"`, 1), nil},
+		{"no active revision", strings.Replace(agent, testRevision1ID, "", 1), nil},
 	} {
 		args := append(append([]string{"--namespace", testNamespaceID}, test.args...), "agent", "get", testAgentID)
 		out, requested, err := runOCC(t, map[string]string{"GET " + agentPath: test.agent}, args...)

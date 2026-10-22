@@ -393,6 +393,26 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     assert.equal(await page.getByText("Sandbox lost").count(), 0);
     assert.equal(await page.getByText("token-secret", { exact: false }).count(), 0);
   }
+
+  // Stopping the Agent drops the answer for the old serving state: a stopped Agent's Sandbox
+  // is removed by design, so Live serving no longer reports it lost, and nothing is read.
+  {
+    state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+    state.harnessError = undefined;
+    const { page, harnessReads } = await openOverview(consoleViewports[0]);
+    await liveServing(page).getByText("Sandbox lost", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop Agent" }).click();
+    await page
+      .getByRole("dialog", { name: "Stop this Agent?" })
+      .getByRole("button", { name: "Stop Agent" })
+      .click();
+    const summary = page.getByRole("region", { name: "Agent state at a glance" });
+    await summary.getByText("Stop requested", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
+    assert.equal(await liveServing(page).locator(".stat-help").textContent(), "");
+    assert.equal(harnessReads.length, 1);
+  }
 });
 
 // One readable version per history page: the first page lists the newest readable version.

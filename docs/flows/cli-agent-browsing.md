@@ -112,14 +112,14 @@ value, and all-healthy tables retain their existing columns.
 
 For one Agent in table output, `cli.go:agentCommand` then reads
 `occclient.Client.GetAgentHarnessStatus`, and
-`internal/occcli/agent_runtime_output.go:printAgentHarness` prints the
-[Harness Sandbox status](../reference/drivers/sandbox.md#harness-sandbox-status) under
-the table as a `Harness Sandbox:` line, as `occ agent runtime` does. It reads only a running Agent with an active revision, and names that revision
-in the Sandbox logs hint. A `lost` line tells the operator to deploy the Agent
-again. An `unobserved` answer prints nothing, and a failed read prints
-`unknown`, never `lost`. `agent list` reads no
-Sandbox, so a list costs no Sandbox Driver call per Agent. JSON and YAML print
-the Agent resource only.
+`internal/occcli/agent_runtime_output.go:printAgentHarness` prints the [Harness
+Sandbox status](../reference/drivers/sandbox.md#harness-sandbox-status) under
+the table as a `Harness Sandbox:` line, as `occ agent runtime` does. It reads
+only a running Agent with an active revision, and names that revision in the
+Sandbox logs hint. A `lost` line tells the operator to deploy the Agent again.
+An `unobserved` answer prints nothing, and a failed read prints `unknown`, never
+`lost`. `agent list` reads no Sandbox, so a list costs no Sandbox Driver call
+per Agent. JSON and YAML print the Agent resource only.
 
 The helper clones rows before formatting the error so table presentation cannot
 alter the response used elsewhere. JSON and YAML bypass this projection and
