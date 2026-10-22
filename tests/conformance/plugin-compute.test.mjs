@@ -3630,12 +3630,15 @@ async function startCodexGatewaySupervisor(
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(fixture.peerStatus));
   });
-  // The native Gateway's own readiness endpoint, answered only while serving.
+  // The native Gateway's own readiness and startup endpoints, answered only
+  // while serving.
   const gatewayPort = await listen((request, response) => {
-    assert.equal(request.url, "/readyz");
+    assert.ok(["/readyz", "/startupz"].includes(request.url), request.url);
     const live = fixture.children.at(-1);
     const status = fixture.serving && live?.exited === undefined ? 200 : 503;
-    fixture.readinessProbes.push({ child: fixture.children.length, status });
+    if (request.url === "/readyz") {
+      fixture.readinessProbes.push({ child: fixture.children.length, status });
+    }
     response.writeHead(status).end();
   });
   fixture.gatewayPort = gatewayPort;

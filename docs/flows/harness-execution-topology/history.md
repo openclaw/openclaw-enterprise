@@ -8,6 +8,8 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 ## Changelog
 
+- 2026-10-22 22:10: Gateway readiness also requires native `/startupz`. Native `/readyz` admits a Gateway while OpenClaw still inspects its agent databases in the background, for example after an unclean stop, and the first chat turn then failed with HTTP 500. `/startupz` holds until that inspection ends. (fix-2185)
+
 - 2026-09-28 02:55: Trace dedicated native OpenClaw on paired node hosts with full-facet Sandbox provisioning. (oce-pr-440-sync - e2b739f51f89)
 
 - 2026-09-25 18:25: Document candidate Gateway bootstrap during dedicated recovery from an unready predecessor. (authoring-run/9b15ee1e-3767-4dd0-8d9a-56ad2087dcb5 - 7b2345a3cd6e78b9c7c8bae530f3379db56be443)

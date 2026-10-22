@@ -27,7 +27,8 @@
       "expectedTests": [
         "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
         "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
-        "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness"
+        "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
+        "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns"
       ]
     },
     {
