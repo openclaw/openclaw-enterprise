@@ -125,8 +125,8 @@ function heldClock(holdAt, gates) {
   return ["--import", preload.href];
 }
 
-// Node arguments that hold the runner between reading /proc and killing what it found, the first
-// time it ends its descendants, until the `forked` path exists. It creates the `window` path when
+// Node arguments that hold the runner just after it lists /proc, the first time it ends its
+// descendants, until the `forked` path exists. It creates the `window` path when
 // the hold starts (tests/helpers/ci-runner-kill-window.mjs, finding 2182).
 function killWindow(window, forked) {
   const preload = new URL("../helpers/ci-runner-kill-window.mjs", import.meta.url);

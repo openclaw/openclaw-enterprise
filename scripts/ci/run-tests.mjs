@@ -1789,7 +1789,8 @@ function processParents() {
     });
     for (const line of listed.stdout?.split("\n") ?? []) {
       const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-      if (pid > 0) {
+      // ps itself is this process's child, gone by now.
+      if (pid > 0 && pid !== listed.pid) {
         parents.set(pid, ppid);
       }
     }
@@ -1810,10 +1811,9 @@ function processParents() {
 // Every process this runner started that is still running, with their descendants. Each is
 // stopped (SIGSTOP) before any is killed: a stopped process starts no child, and it keeps its
 // children in this tree, where a killed parent's children would move to another parent. A
-// process still running when the tree was listed can start a child before it is stopped, so
-// the listing repeats until it finds no process it has not stopped (finding 2182). Then all of
-// them are killed. The kernel either finishes a fork before the stop arrives, so the next
-// listing finds the child, or abandons it.
+// child started before its parent's stop is found by the next listing, so the listing repeats
+// until it finds no process it has not stopped (finding 2182); then all of them are killed. A
+// process that starts a child and exits on its own before its stop still loses that child.
 function killDescendants() {
   // Stop owned cleanup groups before the snapshot can kill their supervisors
   // alone. A command's already-orphaned descendants are absent from this tree.
@@ -1836,6 +1836,8 @@ function killDescendants() {
       break;
     }
     for (const pid of found) {
+      // Recorded even when the stop fails, so a process that refuses it cannot keep the listing
+      // going.
       stopped.add(pid);
       try {
         process.kill(pid, "SIGSTOP");
