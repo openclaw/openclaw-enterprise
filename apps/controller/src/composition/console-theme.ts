@@ -80,7 +80,7 @@ function imageType(name: string, body: Buffer, favicon: boolean): string {
   throw new ConsoleThemeError(`${name} has an unsupported image format or signature.`);
 }
 
-/** Only the API loads themes; no request reads operator-controlled filesystem paths. */
+/** API startup and the Helm upgrade check load themes; no request reads operator-controlled filesystem paths. */
 export async function loadConsoleTheme(
   directory: string | undefined,
 ): Promise<ConsoleTheme | undefined> {

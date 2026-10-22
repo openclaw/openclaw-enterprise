@@ -61,7 +61,12 @@ test(
     );
     assert.ok(!install.hook.volumes.some(({ name }) => name === "installation-startup"));
 
-    for (const values of [{}, repositoryCredentialValues, themeValues]) {
+    for (const values of [
+      {},
+      repositoryCredentialValues,
+      themeValues,
+      { ...repositoryCredentialValues, ...themeValues },
+    ]) {
       const { job, hook, api } = await render(values, true);
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
@@ -83,7 +88,7 @@ test(
       const environment = (container, name) =>
         container.env.find((variable) => variable.name === name);
       // A theme bundle the API would refuse fails the hook rather than the API rollout.
-      const theme = values === themeValues;
+      const theme = "api.consoleTheme.configMapName" in values;
       assert.deepEqual(check.env, [
         environment(server, "NODE_ENV"),
         environment(server, "OCC_CONFIG_PATH"),
@@ -94,7 +99,7 @@ test(
       if (theme) {
         expected.push("console-theme");
       }
-      if (values === repositoryCredentialValues) {
+      if ("repositoryCredentials.enabled" in values) {
         expected.push("repository-registry", "repository-public-ca");
       }
       assert.deepEqual(
@@ -188,8 +193,11 @@ test("the upgrade hook check names the key and file of a refused Installation", 
     refused.stderr,
     `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
   );
+});
 
-  // The API's theme loader runs too: a bundle it refuses fails the hook, not the rollout.
+test("the upgrade hook check refuses a Console theme the API would refuse", async (t) => {
+  // A valid Installation with a bad bundle: the API's own loader fails the hook, so the
+  // upgrade stops before the API rolls instead of at API startup.
   const themed = await runCheck(
     t,
     installation(),
@@ -200,6 +208,6 @@ test("the upgrade hook check names the key and file of a refused Installation", 
   assert.equal(themed.stdout, "");
   assert.equal(
     themed.stderr,
-    "installation-check: API startup would refuse the Console theme (CONSOLE_THEME_INVALID): Console theme: colors must use supported roles and six- or eight-digit hex colors.\n",
+    "installation-check: API startup would refuse (CONSOLE_THEME_INVALID): Console theme: colors must use supported roles and six- or eight-digit hex colors.\n",
   );
 });

@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 // the hook and leaves the running Pods serving. Errors are one line on stderr and
 // identify rejected fields without their values; Preset file errors also identify the file.
 const prefix = "installation-check: API and worker startup would refuse the Installation";
-const themePrefix = "installation-check: API startup would refuse the Console theme";
+const themePrefix = "installation-check: API startup would refuse";
 
 let formatConfigurationFailure;
 try {

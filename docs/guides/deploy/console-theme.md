@@ -60,9 +60,11 @@ The chart mounts the ConfigMap directory read-only on the API, not the worker.
 The API captures its bytes at startup. On `helm upgrade`, the pre-upgrade
 `installation-check` container also loads the bundle with the API's loader. A
 refused bundle fails the upgrade with `CONSOLE_THEME_INVALID`, and the old API
-keeps serving. Updating an existing ConfigMap requires changing `checksum` to
-roll the API, or explicitly restarting the API Deployment. A new ConfigMap name
-also triggers replacement. Keep the previous bundle for recovery.
+keeps serving. Fix or restore the ConfigMap before the API restarts. A direct
+API restart does not run the check. Updating an existing ConfigMap requires
+changing `checksum` to roll the API, or explicitly restarting the API
+Deployment. A new ConfigMap name also triggers replacement. Keep the previous
+bundle for recovery.
 
 ## Direct process
 
@@ -79,7 +81,8 @@ theme. Replace the bundle, restart the API, and reload to verify the new snapsho
 
 `CONSOLE_THEME_INVALID` means startup or the upgrade check refused the bundle.
 Check the manifest, referenced filenames, file signatures, size limits, and
-nonroot read permissions.
-The API does not silently fall back. Restore the previous directory or ConfigMap
-and restart. To restore bundled OCE branding, remove the variable and mount, or
-clear Helm's `api.consoleTheme.configMapName`, then recreate the API.
+nonroot read permissions. After a refused upgrade check, fix the bundle and run
+`helm upgrade` again. The API does not silently fall back. Restore the previous
+directory or ConfigMap and restart. To restore bundled OCE branding, remove the
+variable and mount, or clear Helm's `api.consoleTheme.configMapName`, then
+recreate the API.
