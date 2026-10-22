@@ -1364,7 +1364,9 @@ function request(path, auth) {
 }
 const allowed = request("fixture/repository.git/info/refs?service=git-upload-pack", true);
 assert.equal(allowed.endsWith("\n200") && allowed.includes("# service=git-upload-pack"), true, "admitted discovery did not succeed");
-assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"unsupported-request"}}\n400', true, "unadmitted broker denial did not match");
+// This single-repository sender rejects Git Basic authentication for an unconfigured
+// repository before route planning. Compare as a boolean to keep the response out of failures.
+assert.equal(request("fixture/unadmitted.git/info/refs?service=git-upload-pack", true) === '{"error":{"code":"invalid-credential"}}\n401', true, "unadmitted repository must return 401 invalid-credential");
 console.log("broker-denial-codes-confirmed");
 NODE`;
     const probeSecurityOptions = await reviewedCodexSeccompSecurityOptions();
