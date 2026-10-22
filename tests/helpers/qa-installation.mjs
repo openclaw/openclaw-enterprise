@@ -7,9 +7,10 @@ import { join, resolve } from "node:path";
 import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
+import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
   registerQaSecret,
@@ -380,7 +381,7 @@ export async function createQaInstallation(
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
-    ports.add(await unusedPort());
+    ports.add(await availablePort());
   }
   const [apiPort, kubePort, browserPort, postgresPort] = [...ports];
   const env = {
@@ -615,7 +616,7 @@ export async function createQaInstallation(
     },
     async gatewayUrl(agent) {
       const pod = await f.pod(agent, "gateway");
-      const port = await unusedPort();
+      const port = await availablePort();
       const child = spawn(
         "kubectl",
         [
