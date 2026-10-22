@@ -1531,6 +1531,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
     name: "Native model",
     createdAt: tenant.createdAt,
     namespaceId: tenant.id,
+    ownerCapability: "credential_gateway",
     driverId: snapshot.credentialGatewayId,
     type: "openai",
     config: { base_url: "https://models.example.test/inference/v1" },
