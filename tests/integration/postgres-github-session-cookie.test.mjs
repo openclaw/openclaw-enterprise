@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { chromium } from "playwright";
@@ -14,6 +11,7 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
 test(
@@ -21,7 +19,6 @@ test(
   requiresPostgres,
   async (t) => {
     const pool = new pg.Pool({ connectionString: databaseUrl });
-    const certificateDirectory = await mkdtemp(join(tmpdir(), "oce-session-cookie-"));
     let app;
     let browser;
     let proxy;
@@ -34,8 +31,9 @@ test(
         await new Promise((resolve) => proxy.close(resolve));
       }
       await pool.end();
-      await rm(certificateDirectory, { recursive: true, force: true });
     });
+    // Registered after the hook above, so it is removed after the servers close.
+    const certificateDirectory = await temporaryDirectory(t, "oce-session-cookie-");
     const { key, cert } = await selfSigned(certificateDirectory, {
       commonName: "console.example.test",
       subjectAltName: "DNS:console.example.test,DNS:sibling.example.test",
