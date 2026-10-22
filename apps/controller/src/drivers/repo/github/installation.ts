@@ -13,6 +13,15 @@ import { GitHubNativeRepositorySender } from "./driver.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";
 
+function nativeRepositorySenderConfiguration(input: unknown) {
+  const native = object(input, "repository.nativeSender");
+  closed(native, ["controlSocket", "publicCaPath"], "repository.nativeSender");
+  return GitHubNativeRepositorySender.requireConfiguration({
+    controlSocket: nonempty(native.controlSocket, "repository.nativeSender.controlSocket"),
+    publicCaPath: nonempty(native.publicCaPath, "repository.nativeSender.publicCaPath"),
+  });
+}
+
 /** Interpret the existing public GitHub selection at its Repo owner. */
 export function githubRepositoryConfiguration(input: unknown, mode: "development" | "production") {
   if (input === undefined) {
@@ -24,22 +33,10 @@ export function githubRepositoryConfiguration(input: unknown, mode: "development
     ["id", "configuration", "preparedGitHub", "openShell", "nativeSender"],
     "repository",
   );
-  const native =
+  const nativeSender =
     selection.nativeSender === undefined
       ? undefined
-      : object(selection.nativeSender, "repository.nativeSender");
-  let nativeSender: { controlSocket: string; publicCaPath: string } | undefined;
-  if (native) {
-    closed(native, ["controlSocket", "publicCaPath"], "repository.nativeSender");
-    nativeSender = {
-      controlSocket: nonempty(native.controlSocket, "repository.nativeSender.controlSocket"),
-      publicCaPath: nonempty(native.publicCaPath, "repository.nativeSender.publicCaPath"),
-    };
-    GitHubNativeRepositorySender.validateConfiguration({
-      ...object(selection.configuration, "repository.configuration"),
-      ...nativeSender,
-    });
-  }
+      : nativeRepositorySenderConfiguration(selection.nativeSender);
   return {
     selection,
     nativeSender,

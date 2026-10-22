@@ -1,6 +1,4 @@
-import type { ErrorDetail } from "@openclaw-enterprise/contracts";
 import type {
-  JSONSchema,
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
   Backend,
@@ -19,6 +17,11 @@ import type { SessionStatus } from "../credentials/service-contracts.ts";
 import { sameBinding } from "../credentials/sessions.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 
+type NativeRepositorySenderConfiguration = Readonly<{
+  controlSocket: string;
+  publicCaPath: string;
+}>;
+
 function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus {
   return Object.freeze({
     sessionId: status.sessionId,
@@ -33,43 +36,21 @@ function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus 
 }
 
 export class GitHubNativeRepositorySender implements NativeRepositorySender {
-  static readonly configurationSchema: JSONSchema = Object.freeze({
-    type: "object",
-    additionalProperties: false,
-    required: ["sessionDurationSeconds", "controlSocket", "publicCaPath"],
-    properties: {
-      controlSocket: { type: "string", minLength: 1, maxLength: 103 },
-      sessionDurationSeconds: {
-        type: "integer",
-        minimum: 1,
-        maximum: Math.floor(Number.MAX_SAFE_INTEGER / 1000),
-      },
-      publicCaPath: { type: "string", minLength: 1 },
-    },
-  });
-
-  static validateConfiguration(
-    configuration: Readonly<Record<string, unknown>>,
-  ): readonly ErrorDetail[] {
+  static requireConfiguration(
+    configuration: NativeRepositorySenderConfiguration,
+  ): NativeRepositorySenderConfiguration {
     for (const field of ["controlSocket", "publicCaPath"] as const) {
       const path = configuration[field];
       if (
-        typeof path !== "string" ||
         !isAbsolute(path) ||
         resolve(path) !== path ||
         hasControlCharacter(path) ||
         (field === "controlSocket" && Buffer.byteLength(path) > 103)
       ) {
-        return [
-          {
-            path: "",
-            code: "INVALID_VALUE",
-            message: "Configuration violates the Driver's constraints.",
-          },
-        ];
+        throw new Error(`repository.nativeSender.${field} is invalid.`);
       }
     }
-    return [];
+    return configuration;
   }
 
   readonly id: string;

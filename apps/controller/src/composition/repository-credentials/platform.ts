@@ -45,10 +45,6 @@ export async function composeRepositoryAccess(input: {
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
     throw new Error("The repository credential Driver must match its owning Backend.");
   }
-  // Native sending has its own transport validation; it is not a Repo Driver.
-  if (!input.protectedGit) {
-    GitHubNativeRepositorySender.validateConfiguration(selection.configuration);
-  }
   const configuration = (
     input.protectedGit
       ? requireConfiguration(GitHubRepositoryPolicy, selection.configuration)

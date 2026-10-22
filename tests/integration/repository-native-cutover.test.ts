@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test, { type TestContext } from "node:test";
 import { rootCertificates } from "node:tls";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
@@ -10,6 +10,7 @@ import {
   loadInstallationConfiguration,
   loadStartupConfigurationSnapshot,
 } from "../../apps/controller/src/composition/installation-config.ts";
+import { composeRepositoryAccess } from "../../apps/controller/src/composition/repository-credentials/platform.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
@@ -401,14 +402,13 @@ test("complete native configuration requires explicit selection and custody with
     podLabels: { app: "worker" },
     port: 8443,
   };
-  configuration.backend = [
-    {
-      id: f.registry.backendId,
-      type: "github",
-      configuration: { registryPath },
-      drivers: { repo: f.sender.id },
-    },
-  ];
+  const backend = {
+    id: f.registry.backendId,
+    type: "github" as const,
+    configuration: { registryPath },
+    drivers: { repo: f.sender.id },
+  };
+  configuration.backend = [backend];
   const repository = {
     id: f.sender.id,
     configuration: { sessionDurationSeconds: 600 },
@@ -426,6 +426,40 @@ test("complete native configuration requires explicit selection and custody with
       startupConfiguration: { ...snapshot, configuration },
     });
   assert.ok((await load())?.nativeRepositorySender);
+  const protectedAccess = await composeRepositoryAccess({
+    backend,
+    selection: {
+      id: f.sender.id,
+      implementation: "github",
+      definition: GitHubRepositoryPolicy,
+      configuration: repository.configuration,
+    },
+    protectedGit: true,
+  });
+  assert.equal(protectedAccess.repositoryPolicy.id, f.sender.id);
+  assert.equal(protectedAccess.nativeRepositorySender, undefined);
+  const rejectsPath = (field: "controlSocket" | "publicCaPath") =>
+    assert.rejects(load(), { message: `repository.nativeSender.${field} is invalid.` });
+  // Both spellings reach the same valid CA if startup attempts to load them.
+  for (const path of [relative(process.cwd(), publicCaPath), `${f.directory}/./ca.pem`]) {
+    configuration.repository = {
+      ...repository,
+      nativeSender: { ...repository.nativeSender, publicCaPath: path },
+    };
+    await rejectsPath("publicCaPath");
+  }
+  // A missing registry distinguishes selection-time refusal from later file I/O.
+  configuration.backend = [
+    { ...backend, configuration: { registryPath: join(f.directory, "missing-registry.json") } },
+  ];
+  for (const controlSocket of ["relative.sock", `/${"é".repeat(52)}`]) {
+    configuration.repository = {
+      ...repository,
+      nativeSender: { ...repository.nativeSender, controlSocket },
+    };
+    await rejectsPath("controlSocket");
+  }
+  configuration.backend = [backend];
   configuration.repository = { ...repository, preparedGitHub: undefined };
   await assert.rejects(load(), /requires prepared GitHub custody/);
   // Selecting a Sandbox never downgrades protected delivery to the native socket.

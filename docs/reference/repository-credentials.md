@@ -118,9 +118,10 @@ Each Namespace policy may set a
 accidental native Git pushes outside selected branches; it is not server-side
 branch authorization.
 
-Driver configuration supplies `controlSocket`, `sessionDurationSeconds` and
-`publicCaPath`, never the App key. See [Backend configuration](backends.md) and
-the [installation procedure](../guides/deploy/production-installation.md).
+`repository.configuration.sessionDurationSeconds` sets policy duration; native delivery uses
+`repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`, never the App key.
+See [Backend configuration](backends.md) and the
+[installation procedure](../guides/deploy/production-installation.md).
 
 ### Repository options
 

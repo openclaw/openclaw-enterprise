@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-22"
-last_updated_session: authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4
+last_updated_session: authoring-run/deaf3d45-89b5-4e08-a6b7-c99fd1ffb6ea
 ---
 
 # Agent repository credential flow
@@ -137,18 +137,17 @@ re-resolves the draft, validates Compute topology and freezes Driver identity,
 grants and an absolute deadline unaffected by renewal or recovery.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
-constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
-member. Protected installations select `repository.preparedGitHub` and the installed
-Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
-control socket, broker CA or session files.
+constructs `GitHubRepositoryPolicy` with the GitHub Backend's `repo` ID. Protected installations
+select `repository.preparedGitHub` and the installed Sandbox/Credential Proxy Driver; OCC's finite
+sessions omit native senders, control sockets, broker CAs and session files.
 
-Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
-prepared GitHub custody. It owns session operations and files, receives no App key, and
-cannot coexist with protected delivery. Controller startup rejects `drivers.repo` in
-every mode, before it constructs a worker or allocates an attempt. Operators must
-drain accepted work on the original owner before cutover.
-Cleanup matches recorded owner identity without resolving policy or restoring authority.
-The worker's prepared provider owns issuance and custody.
+`apps/controller/src/drivers/repo/github/installation.ts:githubRepositoryConfiguration`
+rejects invalid native paths before registry or CA loading. `GitHubNativeRepositorySender` requires
+prepared GitHub custody, excludes protected delivery, and owns session operations and files without
+an App key. Startup rejects `drivers.repo` in every mode before worker or attempt
+creation. Drain accepted work on its original owner before cutover. Cleanup matches recorded
+ownership without resolving policy or restoring authority; the worker's prepared provider owns
+issuance and custody.
 
 ### 3. Record ownership before opening a session
 
@@ -364,6 +363,8 @@ denied before reaching the provider, and chat continues.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 22:21: Trace native sender path validation in the accompanying startup fix. (authoring-run/deaf3d45-89b5-4e08-a6b7-c99fd1ffb6ea - 31156790238dff36eaf29bce1a2f6ae5dce50834)
 
 - 2026-10-22 06:30: Preserve independent authority facts and source recovery in the accompanying worker fix. (authoring-run/3ab680f7-bea5-4377-bb8c-14e6b81c49b4 - 221dff2ff7985a19cd34dad392d68cf5549e1136)
 
