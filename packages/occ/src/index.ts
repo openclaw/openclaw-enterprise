@@ -7121,6 +7121,9 @@ export class OpenClawController {
     );
     let admissionMessage = "The Sandbox Driver refused the requested policy.";
     try {
+      // OCC owns the grant shape it stores and checks against the ceiling. A Driver's
+      // contribution can only narrow it, so the shared rules always run first.
+      validateSandboxNetworkGrants(input);
       const admitted = requireConfiguration(contribution, { additions: input }) as {
         additions: readonly SandboxNetworkGrant[];
       };
