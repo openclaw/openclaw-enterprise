@@ -103,15 +103,13 @@ export function renderSecrets(
     list,
   );
   search.addEventListener("input", renderList);
-  context.setLeaveGuard(() => {
-    if (modal?.pending) {
-      modal.feedback.replaceChildren(
+  context.holdWhileWriting({
+    writing: () => Boolean(modal?.pending),
+    held: () =>
+      modal?.feedback.replaceChildren(
         statusBlock("info", null, "Wait for the current request to finish before leaving."),
-      );
-      return true;
-    }
-    closeModal();
-    return false;
+      ),
+    released: closeModal,
   });
 
   function renderList() {

@@ -739,6 +739,25 @@ export function asksBeforeUnload(page) {
   });
 }
 
+// Checks that a write which holds the page also makes a reload or tab close ask first, only while
+// it is in flight (finding 2181). It holds the next `method` request to `url`, which `start`
+// sends, until the page is shown to ask; then it lets the answer through, waits for `settled`
+// and checks the page no longer asks. The real server answers the write; only its answer waits.
+export async function expectWriteAsksBeforeUnload(t, page, url, { method, start, settled }) {
+  assert.equal(await asksBeforeUnload(page), false, "the page asked before the write started");
+  const held = await holdRequests(t, page, url, {
+    method,
+    once: true,
+    afterServer: true,
+  });
+  await start();
+  await held.requested;
+  assert.equal(await asksBeforeUnload(page), true, "a reload during the write would not ask");
+  held.release();
+  await settled();
+  assert.equal(await asksBeforeUnload(page), false, "the page still asks after the write");
+}
+
 // Whether the locator's element holds focus.
 export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);
