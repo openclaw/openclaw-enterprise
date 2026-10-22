@@ -3,8 +3,9 @@ import { authenticatedHeaders } from "./auth-session.mjs";
 /**
  * One Fastify `app.inject` request to the API, as tests send it: `Host: 127.0.0.1` (override
  * with `host`), signed by `session` (a session's cookie and origin, or a bare cookie header;
- * see authenticatedHeaders) or a service API `key` (`x-api-key`), with a JSON `body` when one
- * is given. `headers` are added last and replace any of these. Returns Fastify's response.
+ * see authenticatedHeaders) or a service API `key` (`x-api-key`). `body` is JSON-encoded (a
+ * string too) and sets the content type. `headers` replace any header but that content type.
+ * Returns the raw Fastify response.
  */
 export function injectJson(
   app,
