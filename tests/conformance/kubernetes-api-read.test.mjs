@@ -4,9 +4,8 @@
 // certificate: the same stdout, the same failures, and kubectl itself for
 // anything it does not serve.
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { selfSigned } from "../helpers/certificates.mjs";
@@ -14,6 +13,7 @@ import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const resource = (name, kind, namespaced, shortNames) => ({
   name,
@@ -92,8 +92,7 @@ const missing = {
 };
 
 async function cluster(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-api-read-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-api-read-");
   const server = await selfSigned(directory, {
     name: "api-server",
     commonName: "api-server",

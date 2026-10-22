@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
@@ -62,8 +62,7 @@ if (args.includes("create")) {
 }
 
 async function fixture(t, options) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-bootstrap-volume-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-bootstrap-volume-");
   const kubeconfig = join(directory, "kubeconfig");
   await writeFile(kubeconfig, "apiVersion: v1\nkind: Config\n", { mode: 0o600 });
   const fake = await writeFakeKubectl(directory, options);

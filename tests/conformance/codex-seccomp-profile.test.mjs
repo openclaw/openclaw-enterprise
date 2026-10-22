@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -12,6 +11,7 @@ import {
 } from "../../scripts/lib/codex-seccomp-profile.mjs";
 
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.mjs");
@@ -26,8 +26,7 @@ const runtimeDefaultBaseline = Object.freeze({
 });
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "codex-seccomp-profile-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "codex-seccomp-profile-test-");
   await mkdir(root, { recursive: true });
   return root;
 }

@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
 test("development wrappers resolve relative paths without changing CDPATH", async (t) => {
   // Spaces and an alternate scripts directory exercise real shell path lookup;
   // help reaches the actual CLI without starting a container engine or stack.
-  const directory = await mkdtemp(join(tmpdir(), "openclaw dev entry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw dev entry-");
   const checkout = join(directory, "checkout");
   const search = join(directory, "shell search");
   await mkdir(join(checkout, "scripts"), { recursive: true });
@@ -68,8 +67,7 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
 test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
   // Each wrapper exits on a path that needs no cluster, container engine or download:
   // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.
-  const directory = await mkdtemp(join(tmpdir(), "openclaw tool entry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw tool entry-");
   const checkout = join(directory, "checkout");
   const search = join(directory, "shell search");
   await mkdir(join(checkout, "scripts", "ci"), { recursive: true });

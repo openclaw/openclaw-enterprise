@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
@@ -11,6 +10,7 @@ import {
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
 // it refuses kept the API down until the operator restored it (D407: 324 s of 503). The
@@ -110,8 +110,7 @@ test(
 );
 
 async function runCheck(t, configuration, files = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installation-check-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installation-check-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration), "utf8");
   for (const [name, contents] of Object.entries(files)) {

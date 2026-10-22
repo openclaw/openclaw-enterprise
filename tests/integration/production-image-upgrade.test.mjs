@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
@@ -17,8 +17,7 @@ const upgradeScript = fileURLToPath(
 );
 
 test("production image upgrades preserve controller/runtime ownership and wait for ready Pods", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-");
   const baselineControllerImage = `registry.example.invalid/controller@sha256:${"f".repeat(64)}`;
   const controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
   const runtimeImage = `registry.example.invalid/runtime@sha256:${"b".repeat(64)}`;
@@ -433,8 +432,7 @@ function validationArguments(directory, revision = "d".repeat(40)) {
 }
 
 test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-digest-");
   const required = validationArguments(directory);
   // Kubernetes rejects uppercase digest hex as InvalidImageName, so each image
   // flag must refuse it instead of failing later in a rollout. A digest is
@@ -488,8 +486,7 @@ test("production image upgrades refuse uppercase repository paths and bad digest
 // digest, as profile preflight, the chart and Compute do. Image flags are checked before any
 // file access, so an accepted reference gets as far as the missing kubeconfig.
 test("production image upgrades give image references Kubernetes' verdict", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-references-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-references-");
   const kubeconfig = join(directory, "kubeconfig");
   const required = validationArguments(directory);
   const flags = ["--controller-image", "--broker-image", "--runtime-image"];
@@ -521,8 +518,7 @@ test("production image upgrades give image references Kubernetes' verdict", asyn
 });
 
 test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-locale-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-locale-");
   const locale = await rangeWideningLocale();
   if (!locale) {
     t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");

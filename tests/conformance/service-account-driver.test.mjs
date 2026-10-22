@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -21,6 +18,7 @@ import {
 import { selfSigned } from "../helpers/certificates.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
@@ -579,8 +577,7 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
 });
 
 test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "chatgpt-backend-tls-");
   const { key, cert } = await selfSigned(directory, {
     commonName: "api.chatgpt.com",
     subjectAltName: "DNS:api.chatgpt.com",

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, open, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -15,6 +14,7 @@ import {
   revertAdoption,
   storageNamespaceName,
 } from "../../scripts/split-layout-adopt.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The script drives a cluster only through kubectl. This fake answers the kubectl commands it
 // issues from an in-memory object store and models the API-server and controller behaviour the
@@ -535,8 +535,7 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
 }
 
 async function withArchive(t) {
-  const archive = await mkdtemp(join(tmpdir(), "split-layout-adopt-"));
-  t.after(() => rm(archive, { recursive: true, force: true }));
+  const archive = await temporaryDirectory(t, "split-layout-adopt-");
   return archive;
 }
 

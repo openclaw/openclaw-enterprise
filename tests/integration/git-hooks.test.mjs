@@ -1,28 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  chmod,
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, copyFile, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 
 async function createRepositoryFixture(t, { initializeGit = true } = {}) {
-  const fixtureRoot = await mkdtemp(join(tmpdir(), "openclaw-enterprise-git-hooks-"));
-  t.after(async () => {
-    await rm(fixtureRoot, { recursive: true, force: true });
-  });
+  const fixtureRoot = await temporaryDirectory(t, "openclaw-enterprise-git-hooks-");
 
   await mkdir(join(fixtureRoot, "scripts"));
   await mkdir(join(fixtureRoot, ".githooks"));

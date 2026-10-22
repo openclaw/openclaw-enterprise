@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import test from "node:test";
 import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
@@ -11,6 +10,7 @@ import {
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
 import { withHelmInstallDiagnostic } from "../helpers/production-helm-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Synthetic values only; none is a real credential.
 const syntheticSecret = "synthetic-diagnostic-secret-0123456789";
@@ -418,8 +418,7 @@ test("a stalled pod diagnostic gives way to its deadline and starts no read afte
 test("a failed Helm install's error gains the hook Job Pod's logs through kubectl", async (t) => {
   // A fake kubectl on PATH, like #2613's: it records its arguments and answers from fixtures.
   // No cluster is involved.
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const calls = join(directory, "calls");
   await writeFile(join(directory, "pods.json"), JSON.stringify({ items: [hookPod, postgresPod] }));
   await writeFile(join(directory, "events.json"), JSON.stringify({ items: events }));

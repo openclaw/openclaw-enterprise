@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -19,6 +18,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
 const provisionPath = "/tmp/local-test";
@@ -50,8 +50,7 @@ function selectedCompute() {
 }
 
 async function installedPackages(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installed-drivers-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installed-drivers-");
 
   const owner = join(directory, "owner");
   await writeFile(join(directory, "empty.npmrc"), "", "utf8");
@@ -721,8 +720,7 @@ function escapeRegExp(text) {
 }
 
 async function onDiskConfigurationPackage(t, exports) {
-  const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
-  t.after(() => rm(owner, { recursive: true, force: true }));
+  const owner = await temporaryDirectory(t, "occ-driver-export-array-");
   const installed = join(owner, "node_modules", configurationPackage);
   await mkdir(dirname(installed), { recursive: true });
   await cp(join(fixtures, "test-configuration-driver"), installed, { recursive: true });
