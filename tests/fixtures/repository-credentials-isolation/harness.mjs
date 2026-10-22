@@ -191,7 +191,6 @@ export async function qualifyIsolation(t, { serviceImage, clientImage }) {
     }
     await start(names.provider, [
       ...listener,
-      "--env",
       "--network",
       network,
       "--network-alias",
