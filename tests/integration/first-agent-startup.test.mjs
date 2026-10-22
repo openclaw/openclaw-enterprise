@@ -13,6 +13,7 @@ import {
   firstAgentRevisionValuesMatch,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -24,10 +25,10 @@ async function fixture(t, sandboxDriver) {
   const keyPath = join(directory, "initial-admin-service-key.json");
   await mkdir(tools, { mode: 0o700 });
   await Promise.all([
-    writeFile(
-      join(tools, "docker"),
-      '#!/bin/sh\nprintf "%s\\n" "$*" "DOCKER_HOST=$DOCKER_HOST" "DOCKER_TLS=${DOCKER_TLS-unset}" "DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY-unset}" "DOCKER_CERT_PATH=${DOCKER_CERT_PATH-unset}" > "$FIRST_AGENT_TEST_ENGINE_LOG"\nprintf "controller container is unavailable\\033[31m\\n" >&2\nprintf "%9000s" "" >&2\nexit 23\n',
-      { mode: 0o700 },
+    writeCommand(
+      tools,
+      "docker",
+      'printf "%s\\n" "$*" "DOCKER_HOST=$DOCKER_HOST" "DOCKER_TLS=${DOCKER_TLS-unset}" "DOCKER_TLS_VERIFY=${DOCKER_TLS_VERIFY-unset}" "DOCKER_CERT_PATH=${DOCKER_CERT_PATH-unset}" > "$FIRST_AGENT_TEST_ENGINE_LOG"\nprintf "controller container is unavailable\\033[31m\\n" >&2\nprintf "%9000s" "" >&2\nexit 23\n',
     ),
     writeFile(join(directory, ".openclaw-development"), "openclaw-enterprise-development-v3\n", {
       mode: 0o600,
@@ -64,7 +65,7 @@ async function fixture(t, sandboxDriver) {
     ...process.env,
     FIRST_AGENT_TEST_ENGINE_LOG: engineLog,
     OCC_DEVELOPMENT_STATE_DIRECTORY: directory,
-    PATH: `${tools}:${process.env.PATH}`,
+    PATH: commandPath(tools),
   };
   delete env.NODE_TEST_CONTEXT;
   delete env.OCC_SERVICE_KEY_FILE;
@@ -327,10 +328,10 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
     { mode: 0o600 },
   );
   const context = "k3d-occ-dev-first-agent-test";
-  await writeFile(
-    join(directory, "tools", "kubectl"),
-    `#!/bin/sh
-case "$*" in
+  await writeCommand(
+    join(directory, "tools"),
+    "kubectl",
+    `case "$*" in
   *" config view "*) printf '%s' '${JSON.stringify({
     "current-context": context,
     clusters: [{ cluster: { server: "https://127.0.0.1:6443" } }],
@@ -339,7 +340,6 @@ case "$*" in
   *) exit 64 ;;
 esac
 `,
-    { mode: 0o700 },
   );
 
   // spawnSync would block this process's fake controller, so wait asynchronously.

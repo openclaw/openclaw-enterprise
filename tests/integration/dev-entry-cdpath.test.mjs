@@ -4,6 +4,7 @@ import { copyFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/prom
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -28,10 +29,10 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
   assert.equal(build.status, 0, build.stderr || build.error?.message);
   const observed = join(directory, "child-cdpath");
   // Observe the delegation environment, then execute the compiled CLI unchanged.
-  await writeFile(
-    join(checkout, "bin", "occ"),
-    '#!/bin/sh\nprintf "%s" "$CDPATH" > "$TEST_CDPATH_OUTPUT"\nexec "$TEST_CDPATH_CLI" "$@"\n',
-    { mode: 0o755 },
+  await writeCommand(
+    join(checkout, "bin"),
+    "occ",
+    'printf "%s" "$CDPATH" > "$TEST_CDPATH_OUTPUT"\nexec "$TEST_CDPATH_CLI" "$@"\n',
   );
   for (const cdpath of ["", ".:", search]) {
     const env = {
