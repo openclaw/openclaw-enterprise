@@ -25,8 +25,8 @@ export function fileTemporaryDirectory(prefix) {
   return directory;
 }
 
-// Returns a new directory under TMPDIR that is removed when the test (or suite) that
-// owns `t` ends, passed or failed.
+// Returns a new directory under TMPDIR that is removed after the test that owns `t`
+// ends, passed or failed. Prefer it whenever a test context is at hand.
 export async function temporaryDirectory(t, prefix) {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   t.after(() => rm(directory, { recursive: true, force: true }));
