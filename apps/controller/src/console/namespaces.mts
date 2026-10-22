@@ -10,10 +10,7 @@ export interface NamespacePageContext {
   navigate: ReturnType<typeof createNavigation>["navigate"];
   isCurrent(): boolean;
   onExpired(): void;
-  /**
-   * Holds in-app navigation, and makes a reload or tab close ask first, while `writing()` is
-   * true. `held` says why the page stayed; `released` runs when leaving goes ahead.
-   */
+  /** While `writing()`: `held` says why the page stayed; `released` runs when leaving goes ahead. */
   holdWhileWriting(hold: { writing(): boolean; held(): void; released?(): void }): void;
 }
 

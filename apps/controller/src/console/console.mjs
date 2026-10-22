@@ -1869,9 +1869,8 @@ async function loadPage({
           writeInFlight = check;
         }
       },
-      // A page that is held only while its own write is in flight sets both guards here, so it
-      // cannot hold in-app navigation and still let a reload or tab close cut the write short
-      // (finding 2181). `held` says why the page stayed; `released` runs when leaving goes ahead.
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
       holdWhileWriting({ writing, held, released }) {
         agentContext.setLeaveGuard(() => {
           if (!writing()) {

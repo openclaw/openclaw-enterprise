@@ -470,6 +470,10 @@ test("a reload asks first only while a Secret write is in flight", async (t) => 
   await expectWriteAsksBeforeUnload(t, page, url, {
     method: "POST",
     start: submit,
-    settled: () => dialog(page, "Secret created").waitFor(),
+    // The heading changes before the list is read again; Close is enabled once the write ends.
+    settled: () =>
+      dialog(page, "Secret created")
+        .getByRole("button", { name: "Close", disabled: false })
+        .waitFor(),
   });
 });
