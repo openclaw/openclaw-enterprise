@@ -5225,6 +5225,17 @@ export const scenarios = {
     description:
       "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
   },
+  runtimeLogsDedicatedPods: {
+    ...runtimeLogsPage,
+    name: "Runtime status for a dedicated Agent's Pods",
+    runtimePod: "dedicatedPair",
+    description:
+      "The Agent (Harness) and Gateway Pod cards share the Logs panel's width, each with its long generated name and its init containers.",
+    steps: [
+      "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
+      "At 390 each card spans the panel, one under the other.",
+    ],
+  },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
     name: "Runtime logs filtered and downloaded",

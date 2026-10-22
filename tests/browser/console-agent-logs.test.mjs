@@ -669,6 +669,44 @@ test("the log message column stays readable beside the version list", async (t) 
   }
 });
 
+// The Pod cards share the status strip's width. Fixed-width columns left a dedicated Agent's two
+// cards at about 265 px each beside the version list, Pod names and container states wrapping
+// over 3-4 lines next to about 280 px of blank strip (finding 2100, at 1440 on a live install).
+// Here the strip is a little narrower, so the old layout leaves that gap from 1600 px.
+test("runtime Pod cards fill the status strip at desktop and phone widths", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.harnessPod = { ready: true };
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const strip = page.locator(".runtime-strip");
+  await strip.getByRole("heading", { name: "Agent (Harness)" }).waitFor();
+  await strip.getByRole("heading", { name: "Gateway" }).waitFor();
+  for (const width of [1440, 1600, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    const { row, cards } = await strip.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return {
+        row: { left: box.left, right: box.right },
+        cards: [...node.querySelectorAll(".runtime-pod")].map((card) => {
+          const rect = card.getBoundingClientRect();
+          return { top: rect.top, left: rect.left, right: rect.right };
+        }),
+      };
+    });
+    assert.equal(cards.length, 2);
+    // Each row of cards starts at the strip's left edge and its last card ends at its right edge.
+    const rows = Map.groupBy(cards, ({ top }) => Math.round(top));
+    assert.equal(rows.size, width === 390 ? 2 : 1, `card rows at ${width}px`);
+    for (const rowCards of rows.values()) {
+      assert.ok(Math.abs(rowCards[0].left - row.left) <= 1, `first card starts at ${width}px`);
+      assert.ok(
+        Math.abs(rowCards.at(-1).right - row.right) <= 1,
+        `cards end ${row.right - rowCards.at(-1).right}px before the strip's edge at ${width}px`,
+      );
+    }
+  }
+});
+
 test("log levels stay on one line and keep log columns aligned", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const levels = ["error", "warn", "info", "debug"];

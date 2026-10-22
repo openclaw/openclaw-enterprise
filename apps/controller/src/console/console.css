@@ -3974,13 +3974,17 @@ select:not([multiple])[size="1"] {
 .agent-logs-opening > .danger-zone {
   visibility: hidden;
 }
+/* Pod cards share the panel's width: auto-fit drops the empty columns that left one or two cards
+   at a fixed 260 px with the rest of the row blank (finding 2100). */
 .runtime-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
 }
 .runtime-pod {
+  min-width: 0;
+  overflow-wrap: break-word;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);

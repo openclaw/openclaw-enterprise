@@ -1833,6 +1833,54 @@ export function installFixture(scenario, evidence) {
                 ],
           };
           const pods = [pod];
+          if (scenario.runtimePod === "dedicatedPair") {
+            // A dedicated Agent: a Harness Pod beside the Gateway, both with the generated long
+            // names and completed init containers a real install shows.
+            const completed = (name) => ({
+              name,
+              state: "terminated",
+              reason: "Completed",
+              ready: false,
+              restartCount: 0,
+              startedAt: "2026-09-27T10:00:02.000Z",
+              lastTermination: {
+                reason: "Completed",
+                exitCode: 0,
+                finishedAt: "2026-09-27T10:00:04.000Z",
+              },
+            });
+            const running = (name) => ({
+              name,
+              state: "running",
+              reason: null,
+              ready: true,
+              restartCount: 0,
+              startedAt: "2026-09-27T10:00:05.000Z",
+              lastTermination: null,
+            });
+            pods.splice(
+              0,
+              1,
+              {
+                ...pod,
+                role: "agent",
+                name: "agent-9194e1800111-rev-997042d6ce64-6b5bbd9699-v5rcp",
+                uid: "8d6b1c2e-3f4a-4b5c-9d6e-7f8a9b0c1d2e",
+                containers: [
+                  running("agent"),
+                  completed("prepare-private-state"),
+                  completed("initialize-workspace"),
+                ],
+                events: [],
+              },
+              {
+                ...pod,
+                name: "gateway-9194e1800111-65579dc888-j2czd",
+                containers: [running("gateway"), completed("prepare-private-state")],
+                events: [],
+              },
+            );
+          }
           if (scenario.runtimePod === "rollover") {
             const retiring = podRolloverStatusReads++ === 0;
             pods.push({
@@ -1849,16 +1897,27 @@ export function installFixture(scenario, evidence) {
               {
                 id: "gateway",
                 kind: "container",
-                pods: pods.map(({ name, uid }) => ({
-                  name,
-                  uid,
-                  container: "gateway",
-                  restartCount: 1,
-                })),
+                pods: pods
+                  .filter(({ role }) => role === "gateway")
+                  .map(({ name, uid }) => ({
+                    name,
+                    uid,
+                    container: "gateway",
+                    restartCount: 1,
+                  })),
                 available: true,
                 retention:
                   "Kubernetes keeps only the current and the previous instance of each container; older output and output from deleted Pods is gone.",
               },
+              ...pods
+                .filter(({ role }) => role === "agent")
+                .map(({ name, uid }) => ({
+                  id: "agent",
+                  kind: "container",
+                  pods: [{ name, uid, container: "agent", restartCount: 0 }],
+                  available: true,
+                  retention: "Kubernetes keeps the current and the previous instance.",
+                })),
             ],
           });
         }
