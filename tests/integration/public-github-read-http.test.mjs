@@ -1,14 +1,12 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { connect as connectTcp, createServer as createTcpServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { createPublicGithubReadServer } from "../../apps/controller/src/drivers/repo/github/public-read/server.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Request headers a client never finishes, so the reader holds the connection open.
 const unfinished = "GET /healthz HTTP/1.1\r\nHost: reader\r\n";
@@ -87,8 +85,7 @@ async function startReader(t) {
 }
 
 test("public GitHub reader enforces anonymous GET, fresh visibility, bounded responses and shared quota", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "public-github-provider-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "public-github-provider-");
   const name = "api.github.com";
   const { key, cert } = await selfSigned(directory, {
     commonName: name,

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, mkdir, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 
@@ -10,10 +9,10 @@ import {
 } from "../../apps/controller/src/composition/console-theme.ts";
 import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function bundle(t: TestContext, manifest: object = { schemaVersion: 1 }) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-theme-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-theme-");
   await writeFile(join(directory, "theme.json"), JSON.stringify(manifest));
   return directory;
 }

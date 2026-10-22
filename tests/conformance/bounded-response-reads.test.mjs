@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
@@ -15,6 +14,7 @@ import { RepositoryReceiptClient } from "../../apps/controller/src/drivers/repo/
 import { callControl } from "../../apps/controller/src/drivers/repo/github/credentials/client/operator.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Each upstream here sends more than its reader's limit and then holds the response
 // open. A reader that buffers to the end, or stops reading without settling, shows up
@@ -26,8 +26,7 @@ const { fetch: undiciFetch } = controllerRequire("undici");
 const sdk = controllerRequire("@kubernetes/client-node");
 
 async function scratch(t) {
-  const dir = await mkdtemp(join(tmpdir(), "occ-bounded-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await temporaryDirectory(t, "occ-bounded-");
   return dir;
 }
 

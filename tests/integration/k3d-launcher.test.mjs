@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -65,8 +65,7 @@ async function runLauncher(
     preparedBaseUrl,
   } = {},
 ) {
-  const root = await mkdtemp(join(tmpdir(), `oce-k3d-${engine}-launcher-`));
-  context.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(context, `oce-k3d-${engine}-launcher-`);
   const bin = join(root, "bin");
   const action = args[0];
   const harnessOption = args.indexOf("--harness");

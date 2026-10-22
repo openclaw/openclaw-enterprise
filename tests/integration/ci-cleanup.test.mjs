@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -15,8 +16,7 @@ const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
 const resetK3dModelPath = join(repositoryRoot, "scripts/ci/reset-k3d-model.mjs");
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-cleanup-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-cleanup-test-");
   await mkdir(join(root, "bin"), { recursive: true });
   return root;
 }

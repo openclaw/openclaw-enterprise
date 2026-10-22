@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -19,6 +18,7 @@ import {
   providerErrorTypes as helperErrorTypes,
 } from "../helpers/local-first-agent-native.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const ready = {
@@ -107,8 +107,7 @@ test(
   "real Node reporter retains only closed probe failure observations",
   { timeout: 10_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "pr687-probe-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "pr687-probe-report-");
     const fixture = join(directory, "failure.test.mjs");
     await writeFile(
       fixture,

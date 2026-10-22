@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,6 +11,7 @@ import {
   loadGitHubAppObserverInput,
 } from "../helpers/github-app-observer.mjs";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = "fixture-owner/fixture-repo";
 const repositoryId = 789;
@@ -34,8 +34,7 @@ async function fixture(
     stallGetBody = false,
   } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "github-app-observer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "github-app-observer-");
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   await writeFile(
     join(directory, "private-key.pem"),

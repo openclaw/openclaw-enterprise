@@ -10,6 +10,7 @@ import { describe, test } from "node:test";
 import ts from "typescript-compiler-api";
 import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
 import { settled as settle } from "../helpers/child-processes.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
@@ -732,8 +733,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("rejects symbolic links in configured source roots and their ancestors", async (t) => {
     const { root, write, check } = await workspace(t);
-    const outside = await mkdtemp(join(tmpdir(), "module-outside-"));
-    t.after(() => rm(outside, { recursive: true, force: true }));
+    const outside = await temporaryDirectory(t, "module-outside-");
     await writeFile(join(outside, "outside.mjs"), "export const outside = true;");
     await mkdir(join(outside, "nested"));
     await writeFile(join(outside, "nested", "outside.mjs"), "export const outside = true;");
