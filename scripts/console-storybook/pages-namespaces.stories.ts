@@ -1,4 +1,4 @@
-import { story } from "./story.mjs";
+import { story } from "./story.ts";
 
 // Namespace rows are cards with toned status badges. Walk the shared badge and card patterns
 // with badge-and-card-workflow.md.

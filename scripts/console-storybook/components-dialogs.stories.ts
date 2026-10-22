@@ -1,21 +1,11 @@
-import { story } from "./story.mjs";
+import { story } from "./story.ts";
 
 export default { title: "Components/Dialogs" };
 
 // The dialog pattern (one chrome, drawer and phone sheet) across the five modal dialogs. Each
 // story reuses the dialog's own scenario; the phone variants frame it at 390 px, where every
 // dialog is a bottom sheet. Walk them with dialog-pattern-workflow.md.
-function framed(id, width) {
-  const base = story(id);
-  return {
-    render() {
-      const root = base.render();
-      root.querySelector("iframe").style.maxWidth = width;
-      return root;
-    },
-  };
-}
-const phone = (id) => framed(id, "390px");
+const phone = (id: string) => story(id, { frameWidth: "390px" });
 
 export const StopConfirmation = { ...story("stopConfirm"), name: "Stop confirmation" };
 export const StopConfirmationPhone = { ...phone("stopConfirm"), name: "Stop confirmation (phone)" };
@@ -28,7 +18,7 @@ export const Plugins = { ...story("pluginsAvailable"), name: "Plugins (wide)" };
 export const PluginsPhone = { ...phone("pluginsAvailable"), name: "Plugins (phone)" };
 // Up to 1100 px the plugin workspace stacks: the catalog or one plugin's detail, with Back to plugins.
 export const PluginsTablet = {
-  ...framed("pluginsAvailable", "1024px"),
+  ...story("pluginsAvailable", { frameWidth: "1024px" }),
   name: "Plugins (tablet)",
 };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor (drawer)" };

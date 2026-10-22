@@ -1,4 +1,4 @@
-import { story } from "./story.mjs";
+import { story } from "./story.ts";
 
 export default { title: "Pages/Create Agent" };
 
