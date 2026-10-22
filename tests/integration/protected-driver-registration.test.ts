@@ -36,25 +36,29 @@ import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/comp
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
   const id = "release-fixture";
   const { directory, entry } = await protectedDriverPackage(t, id);
-  const { calls, exchangeProbe } = (await import(
+  const { calls, exchangeProbe, createDriver } = (await import(
     join(entry, "index.mjs")
   )) as typeof import("../fixtures/driver-packages/protected-execution-driver/index.ts");
 
   let installed: EgressInstallation;
   let trusted = true;
-  const { cert, key, caBundle: ca } = await harnessTlsFixture(t);
+  const { cert, key } = await createTlsMaterial(t);
+  const ca = cert.toString("utf8");
+  const requestedPaths: string[] = [];
   const peer = createServer({ cert, key }, (req, res) => {
+    requestedPaths.push(req.url ?? "");
     assert.equal(req.headers.authorization, "Bearer test-supervisor");
     res.writeHead(trusted ? 200 : 401).end(JSON.stringify(installed));
-  }).listen(0);
+  }).listen(0, "127.0.0.1");
   t.after(() => new Promise<void>((resolve) => peer.close(() => resolve())));
   await once(peer, "listening");
-  const endpoint = "https://localhost:" + (peer.address() as { port: number }).port;
+  const endpoint = "https://127.0.0.1:" + (peer.address() as { port: number }).port;
   const base = createInstallationDriverConfiguration();
   const configuration = {
     ...base,
@@ -292,6 +296,60 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   configuration.drivers.sandbox.configuration.endpoint = endpoint.replace("https:", "http:");
   await writeFile(path, JSON.stringify(configuration));
   await assert.rejects(load(), /Fixture peer must use TLS/);
+  // Direct factory callers retain their object; deferred TLS reads must use the
+  // original validated primitives even after mutation or through changing getters.
+  trusted = true;
+  const boundEndpoint = `${endpoint}/bound-supervisor`;
+  const mutable = { endpoint: boundEndpoint, ca };
+  let endpointReads = 0;
+  let caReads = 0;
+  const registrations = [
+    mutable,
+    {
+      get endpoint() {
+        return ++endpointReads === 1 ? boundEndpoint : `${endpoint}/changed`;
+      },
+      get ca() {
+        return ++caReads === 1 ? ca : "invalid changed CA";
+      },
+    },
+  ].map((candidate) => createDriver({ id, implementation: id, configuration: candidate }));
+  mutable.endpoint = `${endpoint}/changed`;
+  mutable.ca = "invalid changed CA";
+  const requestsBefore = requestedPaths.length;
+  try {
+    for (const registration of registrations) {
+      const proxy = registration.capabilities.credential_proxy;
+      assert.ok(proxy);
+      await proxy.sourceControl.assertAvailable(t.signal);
+    }
+    assert.deepEqual(requestedPaths.slice(requestsBefore), [
+      "/bound-supervisor",
+      "/bound-supervisor",
+    ]);
+    assert.equal(endpointReads, 1);
+    assert.equal(caReads, 1);
+  } finally {
+    await Promise.all(registrations.map((registration) => registration.close?.()));
+  }
+
+  // Direct construction must refuse unsafe targets without waiting for the first request.
+  for (const candidate of [
+    { endpoint: "https://remote.invalid/supervisor", ca },
+    { endpoint: "https://127.1/supervisor", ca },
+    { endpoint: "https://[::1]:443/supervisor", ca },
+    { endpoint: "https://127.0.0.1/allow\\changed", ca },
+    { endpoint: "https://\\user@127.0.0.1/supervisor", ca },
+    { endpoint: "https://127.0.0.1\t@remote.invalid/supervisor", ca },
+    { endpoint: "https://127.0.0.1:65536/supervisor", ca },
+    { endpoint, ca: null },
+  ]) {
+    const invalid = candidate as Parameters<typeof createDriver>[0]["configuration"];
+    assert.throws(
+      () => createDriver({ id, implementation: id, configuration: invalid }),
+      /Fixture peer must use TLS with a literal loopback endpoint and string CA/,
+    );
+  }
 });
 
 function repositoryDeliveryFixture() {

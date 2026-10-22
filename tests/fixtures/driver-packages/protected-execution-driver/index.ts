@@ -25,9 +25,22 @@ type Configuration = { endpoint: string; ca: string };
 
 export function validateConfiguration(config: Configuration): void {
   calls.validate++;
-  if (new URL(config.endpoint).protocol !== "https:") {
-    throw Error("Fixture peer must use TLS");
+  captureConfiguration(config);
+}
+
+function captureConfiguration(config: Readonly<Configuration>): Configuration {
+  const { endpoint, ca } = config ?? {};
+  // Check the original authority before URL normalization can turn an alias into loopback.
+  if (
+    typeof endpoint !== "string" ||
+    typeof ca !== "string" ||
+    !URL.canParse(endpoint) ||
+    /[\s\\]/.test(endpoint) ||
+    !/^https:\/\/127\.0\.0\.1(?::[0-9]+)?(?:[/?#]|$)/.test(endpoint)
+  ) {
+    throw new Error("Fixture peer must use TLS with a literal loopback endpoint and string CA");
   }
+  return { endpoint, ca };
 }
 
 /** Only the release protocol is implemented. This fixture has no credential source or provider effects. */
@@ -41,13 +54,14 @@ export function createDriver({
   configuration: Configuration;
 }): DriverRegistration {
   calls.create++;
+  const { endpoint, ca } = captureConfiguration(configuration);
   const sender = { id: "fixture-sender", generation: 1 };
   function read(): Promise<EgressInstallation> {
     return new Promise((resolve, reject) =>
       get(
-        configuration.endpoint,
+        endpoint,
         {
-          ca: configuration.ca,
+          ca,
           timeout: 2000,
           headers: { authorization: "Bearer test-supervisor" },
         },
