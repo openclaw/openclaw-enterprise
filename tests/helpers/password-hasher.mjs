@@ -8,6 +8,7 @@ import {
 export { scryptPasswordHasher };
 
 const TEST_HASH_LABEL = "test-sha256";
+const scryptVerifications = new Map();
 
 function testDigest(salt, password) {
   return createHash("sha256")
@@ -21,7 +22,9 @@ function testDigest(salt, password) {
  * which the controller's scrypt hasher refuses (the key never matches), so a test hash can
  * never sign in to a controller composed without this hasher. It verifies any other stored
  * hash with the real scrypt hasher, so fixtures may sign in to accounts that a production
- * entry point (scripts/bootstrap-installation.mjs, hashLocalPassword) wrote.
+ * entry point (scripts/bootstrap-installation.mjs, hashLocalPassword) wrote. Those results are
+ * remembered per hash and password for the process: a fixture signs its bootstrap
+ * administrator in many times, and scrypt gives the same answer every time.
  *
  * Tests whose subject is the hash cost, timing or stored format pass `scryptPasswordHasher`
  * instead (postgres-password-sign-in-limit; postgres-password-default checks the default).
@@ -34,7 +37,11 @@ export const testPasswordHasher = Object.freeze({
   async verify({ hash, password }) {
     const [label, salt, key, ...rest] = hash.split(":");
     if (label !== TEST_HASH_LABEL) {
-      return scryptPasswordHasher.verify({ hash, password });
+      const remembered = `${hash}\0${password}`;
+      if (!scryptVerifications.has(remembered)) {
+        scryptVerifications.set(remembered, scryptPasswordHasher.verify({ hash, password }));
+      }
+      return scryptVerifications.get(remembered);
     }
     if (!salt || !key || rest.length > 0 || !/^[0-9a-f]{64}$/.test(key)) {
       return false;
