@@ -15451,6 +15451,11 @@
                               "required": ["phase", "lastAttempt"],
                               "type": "object"
                             },
+                            "requestId": {
+                              "description": "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+                              "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
                             "revisionId": {
                               "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -15674,6 +15679,11 @@
                           },
                           "required": ["phase", "lastAttempt"],
                           "type": "object"
+                        },
+                        "requestId": {
+                          "description": "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -15905,6 +15915,11 @@
                           },
                           "required": ["phase", "lastAttempt"],
                           "type": "object"
+                        },
+                        "requestId": {
+                          "description": "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

@@ -17,6 +17,7 @@ import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField } from "./secret-picker.mjs";
 import { createPresetFields } from "./presets.mjs";
+import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
@@ -283,9 +284,15 @@ function jobDeploymentWait(job) {
     : `${provisioningStatusText("running")} ${attempt.message}`;
 }
 
-async function waitForProvisioning({ request, status, first, namespaceId, isCurrent }) {
-  let current = first.provisioning ?? first;
-  const jobUrl = current?.url;
+async function waitForProvisioning({
+  request,
+  status,
+  first,
+  namespaceId,
+  provisionPath,
+  isCurrent,
+}) {
+  let current = first;
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
@@ -294,9 +301,6 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
   // text (finding 1637); a fresh answer or a refusal replaces it.
   let named = null;
   while (current?.status === "queued" || current?.status === "running") {
-    if (typeof current.url !== "string" || !current.url) {
-      throw new Error("Provisioning status URL is unavailable.");
-    }
     started ||= current.status === "running";
     // Spend the interval between polls on optional detail. At the next poll, stop that read
     // even if only its headers arrived; the provisioning job remains the source of truth.
@@ -321,8 +325,8 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
     }
-    const next = await request(current.url);
-    current = next.provisioning ?? next;
+    const next = await request(first.url);
+    current = provisioningJob(next, provisionPath, first.requestId, first.url);
   }
   // A Stop during the first deployment (REVISION_STOPPED) or before it (PROVISIONING_CANCELLED)
   // is the owner's choice, not a failure to repair.
@@ -343,7 +347,6 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
     error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
-    error.provisioningUrl = current?.url ?? jobUrl;
     throw error;
   }
   if (typeof current.agentId !== "string" || !current.agentId) {
@@ -357,26 +360,29 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
 
 async function finishProvisioningAttempt({ request, status, namespaceId, attempt, isCurrent }) {
   status.textContent = "Submitting provisioning request…";
+  const provisionPath = `${namespacePath(namespaceId)}/agents/provision`;
   const provisioned =
-    attempt.retryUrl === undefined
-      ? await request(`${namespacePath(namespaceId)}/agents/provision`, {
+    attempt.statusUrl === undefined
+      ? await request(provisionPath, {
           method: "POST",
           body: attempt.body,
         })
-      : await request(attempt.retryUrl, { method: "POST" });
+      : await request(`${attempt.statusUrl}/retry`, { method: "POST" });
   attempt.acknowledged = true;
-  const accepted = provisioned.provisioning ?? provisioned;
-  attempt.statusUrl = accepted.url ?? attempt.statusUrl;
-  attempt.retryUrl =
-    typeof attempt.statusUrl === "string" && attempt.statusUrl.length > 0
-      ? `${attempt.statusUrl}/retry`
-      : undefined;
+  const accepted = provisioningJob(
+    provisioned,
+    provisionPath,
+    attempt.body.requestId,
+    attempt.statusUrl,
+  );
+  attempt.statusUrl = accepted.url;
   status.textContent = "Provisioning request accepted.";
   return waitForProvisioning({
     request,
     status,
-    first: provisioned,
+    first: accepted,
     namespaceId,
+    provisionPath,
     isCurrent,
   });
 }
@@ -2451,7 +2457,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     // A retry of a job known to have failed. Read before the request: an admitted first
     // attempt also gains a retry URL, and after an unknown outcome the job may have
     // succeeded (recovering), so a refusal there must keep the request ID to recover it.
-    const viaRetry = attempt.retryUrl !== undefined;
+    const viaRetry = attempt.statusUrl !== undefined;
     const retrying = viaRetry && !outcomeUnknown;
     const recovering = viaRetry && outcomeUnknown;
     pending = true;
@@ -2502,7 +2508,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           ? error.serverMessage
           : "The provisioning job can no longer be retried.";
       let detail;
-      if (outcomeUnknown && attempt.acknowledged) {
+      if (outcomeUnknown && attempt.statusUrl) {
         detail =
           "Outcome unknown after provisioning admission. Retry resumes the accepted provisioning job, or retries it if it failed. If the API refuses because the job finished, select Create Agent to resend the same request ID.";
       } else if (outcomeUnknown) {
@@ -2568,12 +2574,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       // an admitted request returns that job before validation.
       requestAdmitted =
         attempt.acknowledged || outcomeUnknown || (requestAdmitted && error.status !== 400);
-      if (error.provisioningTerminal && error.canRetryProvisioning) {
-        provisioningAttempt = {
-          ...attempt,
-          retryUrl: error.provisioningUrl ? `${error.provisioningUrl}/retry` : attempt.retryUrl,
-        };
-      } else if (!outcomeUnknown) {
+      if (!outcomeUnknown && !(error.provisioningTerminal && error.canRetryProvisioning)) {
         provisioningAttempt = null;
         if (error.provisioningFailed || retryRefused) {
           // The failed job keeps this request ID; an edited form needs a new one.

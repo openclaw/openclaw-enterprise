@@ -64,6 +64,88 @@ async function routeDedicatedProvisioning(page, fixture, namespace) {
   );
 }
 
+test("Create keeps provisioning reads and retries on the admitted job", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision response identity", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeDedicatedProvisioning(page, fixture, namespace);
+  const root = `/namespaces/${namespace.id}/agents/provision`;
+  const url = `${root}/work_create`;
+  const other = `${root}/work_other`;
+  const job = { workId: "work_create", status: "queued", url };
+  const requests = apiRequests(page, fixture.origin);
+  const admissions = [];
+  const failure = { code: "PROVISIONING_FAILED", message: "Another job failed." };
+  const otherJob = { workId: "work_other", url: other, status: "failed", error: failure };
+  await page.route(`**${root}`, (route) => {
+    const body = route.request().postDataJSON();
+    admissions.push(body);
+    const { requestId } = body;
+    const responses = [
+      // An internally consistent admission for another request by the same caller.
+      { ...otherJob, status: "queued", requestId: `req_${randomUUID()}` },
+      // An older controller that did not identify the request.
+      job,
+      // The expected request and work ID with another job's URL.
+      { ...job, requestId, url: other },
+      { ...job, requestId },
+    ];
+    const provisioning = responses[admissions.length - 1];
+    assert.ok(provisioning);
+    return route.fulfill({ status: 202, json: { data: { provisioning } } });
+  });
+  await page.route(`**${other}*`, (route) => route.fulfill({ json: { data: otherJob } }));
+  // The honest admission's first poll then returns a complete response for that other job.
+  await page.route(`**${url}`, (route) =>
+    route.fulfill({ json: { data: { ...otherJob, requestId: admissions[0].requestId } } }),
+  );
+  await page.route(`**${url}/retry`, (route) =>
+    route.fulfill({
+      status: 202,
+      json: {
+        data: {
+          ...job,
+          requestId: admissions[0].requestId,
+          status: "failed",
+          error: {
+            code: "PROVISIONING_REJECTED",
+            message: "This job ended.",
+          },
+        },
+      },
+    }),
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Provision response identity");
+  await enterManualModel(page, "test-model-key");
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const alert = page.getByRole("alert");
+  const retry = page.getByRole("button", { name: "Retry provisioning request" });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    await alert
+      .filter({
+        hasText: "Retry resubmits the same request ID",
+      })
+      .waitFor();
+    assert.equal(pathRequests(requests, "GET", other).length, 0);
+    assert.equal(pathRequests(requests, "GET", url).length, 0);
+    assert.equal(admissions.length, attempt);
+    await retry.click();
+  }
+  await alert.filter({ hasText: "Outcome unknown after provisioning admission" }).waitFor();
+  assert.equal(admissions.length, 4);
+  for (const body of admissions) {
+    assert.deepEqual(body, admissions[0]);
+  }
+  await retry.click();
+  await alert.filter({ hasText: /This job ended/ }).waitFor();
+  assert.equal(pathRequests(requests, "POST", `${url}/retry`).length, 1);
+  assert.equal(pathRequests(requests, "POST", `${other}/retry`).length, 0);
+});
+
 test("Dedicated Agent creation offers Retry only for a transient provisioning failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -136,7 +218,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       json(
         {
           provisioning: {
-            workId: `work_${bodies.length}`,
+            requestId: body.requestId,
+            workId: `work_${work}`,
             status: "queued",
             phase: "accepted",
             attemptCount: 0,
@@ -169,6 +252,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       json(
         {
           provisioning: {
+            requestId: bodies[1].requestId,
             workId: "work_2",
             status: "failed",
             phase: "transport",
@@ -217,6 +301,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
               }),
             }
           : json({
+              requestId: bodies[3].requestId,
               workId: "work_4",
               status: "succeeded",
               phase: "handoff",
@@ -232,6 +317,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     const { agentId: createdAgentId, ...error } = failures[index - 1];
     await route.fulfill(
       json({
+        requestId: bodies[index - 1].requestId,
         workId: `work_${index}`,
         status: "failed",
         phase: "accepted",
@@ -364,15 +450,17 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     "The requested platform resource already exists.",
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
-  let jobs = 0;
+  const requestIds = [];
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
-    jobs += 1;
+    const { requestId } = route.request().postDataJSON();
+    const jobs = requestIds.push(requestId);
     await route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
         data: {
           provisioning: {
+            requestId,
             workId: `work_${jobs}`,
             status: "queued",
             phase: "accepted",
@@ -402,6 +490,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
             contentType: "application/json",
             body: JSON.stringify({
               data: {
+                requestId: requestIds[work - 1],
                 workId: `work_${work}`,
                 status: "failed",
                 phase: "accepted",
@@ -444,7 +533,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     assert.equal(await retry.isVisible(), false);
     assert.equal(await page.getByLabel("Agent name").isDisabled(), false);
   }
-  assert.equal(jobs, 2);
+  assert.equal(requestIds.length, 2);
 });
 
 // The stopped guidance is not an error, so neither its text nor its block's stripe takes the
@@ -492,13 +581,16 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_stopped`;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  let clientRequestId;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    clientRequestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
         data: {
           provisioning: {
+            requestId: clientRequestId,
             workId: "work_stopped",
             status: "queued",
             phase: "admitted",
@@ -509,8 +601,8 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
         },
         meta,
       }),
-    }),
-  );
+    });
+  });
   const cancelled = (agentId, by) => ({
     agentId,
     error: {
@@ -589,6 +681,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       contentType: "application/json",
       body: JSON.stringify({
         data: {
+          requestId: clientRequestId,
           workId: "work_stopped",
           status: "failed",
           phase: "configuration",
@@ -666,6 +759,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_label`;
+  let clientRequestId;
   const job = (status, extra = {}) => ({
     workId: "work_label",
     status,
@@ -675,13 +769,17 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     url,
     ...extra,
   });
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    clientRequestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
-      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
-    }),
-  );
+      body: JSON.stringify({
+        data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
+        meta,
+      }),
+    });
+  });
   // The worker starts the job, waits to retry it, then retries it twice before it fails.
   const reads = [
     job("running"),
@@ -700,7 +798,10 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+      body: JSON.stringify({
+        data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
+        meta,
+      }),
     }),
   );
 
@@ -755,6 +856,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     const updatedAt = new Date().toISOString();
     const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
     const url = `/namespaces/${namespace.id}/agents/provision/work_quota`;
+    let clientRequestId;
     const agentId = "agt_00000000-0000-4000-8000-00000000a617";
     const revisionId = "rev_00000000-0000-4000-8000-00000000a617";
     const job = (status, extra = {}) => ({
@@ -770,10 +872,14 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     let submitted = false;
     await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
       submitted = true;
+      clientRequestId = route.request().postDataJSON().requestId;
       return route.fulfill({
         status: 202,
         contentType: "application/json",
-        body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+        body: JSON.stringify({
+          data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
+          meta,
+        }),
       });
     });
     // The job starts, creates its Agent, hands off its first deployment, which waits on the
@@ -797,7 +903,10 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+        body: JSON.stringify({
+          data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
+          meta,
+        }),
       }),
     );
     const attempts =
@@ -993,6 +1102,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     const updatedAt = new Date().toISOString();
     const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
     const url = `/namespaces/${namespace.id}/agents/provision/work_named`;
+    let clientRequestId;
     const agentId = "agt_00000000-0000-4000-8000-00000000a690";
     const revisionId = "rev_00000000-0000-4000-8000-00000000a690";
     const job = (status, extra = {}) => ({
@@ -1020,10 +1130,14 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     let submitted = false;
     await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
       submitted = true;
+      clientRequestId = route.request().postDataJSON().requestId;
       return route.fulfill({
         status: 202,
         contentType: "application/json",
-        body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+        body: JSON.stringify({
+          data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
+          meta,
+        }),
       });
     });
     // Each poll: the job's named wait, then what the deployment read that follows it answers.
@@ -1068,7 +1182,10 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+        body: JSON.stringify({
+          data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
+          meta,
+        }),
       }),
     );
     await page.route(
@@ -1204,10 +1321,18 @@ for (const [name, leave] of [
 
     const provision = `/namespaces/${namespace.id}/agents/provision`;
     const url = `${provision}/work_slow_detail`;
-    const job = { url, agentId, revisionId, phase: "handoff", status: "running" };
-    await page.route(`**${provision}`, (route) =>
-      route.fulfill({ status: 202, json: { data: { provisioning: job } } }),
-    );
+    const job = {
+      workId: "work_slow_detail",
+      url,
+      agentId,
+      revisionId,
+      phase: "handoff",
+      status: "running",
+    };
+    await page.route(`**${provision}`, (route) => {
+      job.requestId = route.request().postDataJSON().requestId;
+      return route.fulfill({ status: 202, json: { data: { provisioning: job } } });
+    });
     const finishPoll = Promise.withResolvers();
     await page.route(`**${url}`, async (route) => {
       // Let the browser report cancellation before navigation can cancel the detail read itself.

@@ -1368,6 +1368,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
       json(
         {
           provisioning: {
+            requestId: provisionBody.requestId,
             workId: "work_create",
             status: "queued",
             phase: "admitted",
@@ -1392,6 +1393,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     await route.fulfill(
       json({
         provisioning: {
+          requestId: provisionBody.requestId,
           workId: "work_create",
           status: allowProvisioningSuccess ? "succeeded" : "running",
           phase: allowProvisioningSuccess ? "handoff" : "configuration",
@@ -1913,6 +1915,7 @@ test("Dedicated Agent creation reuses separately saved Secret references after p
       json(
         {
           provisioning: {
+            requestId: bodies.at(-1).requestId,
             workId: "work_retry",
             status: "succeeded",
             phase: "handoff",

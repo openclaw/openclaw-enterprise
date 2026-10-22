@@ -30,6 +30,7 @@ import {
   RepositoryBindingSelectionsSchema,
   RepositoryAccessSchema,
   RevisionId,
+  RequestId,
   ResourceKindSchema,
   SecretBindings,
   SecretId,
@@ -717,6 +718,13 @@ export const NamespaceCallerPermissionsResponse = Type.Object(
 
 export const AgentProvisioningStatusSchema = Type.Object(
   {
+    requestId: Type.Optional(
+      Type.String({
+        ...RequestId,
+        description:
+          "The client request ID stored when this job was admitted. Older controllers omit it. The separate meta.requestId identifies the current HTTP request.",
+      }),
+    ),
     workId: Type.String({ minLength: 1, maxLength: 200 }),
     status: Type.Union([
       Type.Literal("queued"),

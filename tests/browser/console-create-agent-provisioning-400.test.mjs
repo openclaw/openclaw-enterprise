@@ -1470,6 +1470,7 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
+  let clientRequestId;
   const agentId = "agt_00000000-0000-4000-8000-00000000b637";
   const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
   const job = (status, extra = {}) => ({
@@ -1482,13 +1483,17 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     ...extra,
   });
   const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    clientRequestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
-      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
-    }),
-  );
+      body: JSON.stringify({
+        data: { provisioning: { ...job("queued"), requestId: clientRequestId } },
+        meta,
+      }),
+    });
+  });
   // Create Agent reads the handed-off deployment three times before the job fails.
   const reads = [
     job("running"),
@@ -1508,7 +1513,10 @@ test("Create Agent drops the Pod quota line when the deployment read is denied",
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+      body: JSON.stringify({
+        data: { ...reads[Math.min(read++, reads.length - 1)], requestId: clientRequestId },
+        meta,
+      }),
     }),
   );
   // The first deployment read names the quota; every later one is denied.

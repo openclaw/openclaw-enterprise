@@ -65,6 +65,7 @@ function clientAgentProvisioning(
   namespaceId: string,
 ): Record<string, unknown> {
   return {
+    requestId: provisioning.requestId,
     workId: provisioning.workId,
     status: provisioning.status,
     phase: provisioning.phase,

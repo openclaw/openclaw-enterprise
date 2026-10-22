@@ -895,13 +895,16 @@ async function fillProvisionedAgent(page, fixture, namespace, name) {
 // Admits one provisioning job and answers its status reads with `read`.
 async function routeProvisioningJob(page, namespace, read) {
   const url = `/namespaces/${namespace.id}/agents/provision/work_1`;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  let requestId;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    requestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
         data: {
           provisioning: {
+            requestId,
             workId: "work_1",
             status: "queued",
             phase: "accepted",
@@ -912,9 +915,9 @@ async function routeProvisioningJob(page, namespace, read) {
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000202" },
       }),
-    }),
-  );
-  await page.route(`**${url}`, (route) => route.fulfill(read(url)));
+    });
+  });
+  await page.route(`**${url}`, (route) => route.fulfill(read(url, requestId)));
 }
 
 test("an uncertain Create outcome keeps no draft", async (t) => {
@@ -965,11 +968,12 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await routeInstallationProvisioning(page, fixture);
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
   // kept draft would create the Agent again.
-  await routeProvisioningJob(page, namespace, (url) => ({
+  await routeProvisioningJob(page, namespace, (url, requestId) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
       data: {
+        requestId,
         workId: "work_1",
         status: "failed",
         phase: "handoff",

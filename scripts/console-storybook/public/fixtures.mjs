@@ -1240,6 +1240,7 @@ export function installFixture(scenario, evidence) {
         return response(
           {
             provisioning: {
+              requestId,
               workId,
               status: scenario.provisioningStatus ?? "queued",
               phase: "admitted",
@@ -1264,6 +1265,7 @@ export function installFixture(scenario, evidence) {
           return response(
             {
               provisioning: {
+                requestId: current.requestId,
                 workId: current.workId,
                 status: current.status,
                 phase: "admitted",
@@ -1290,6 +1292,7 @@ export function installFixture(scenario, evidence) {
           }
           return response({
             provisioning: {
+              requestId: current.requestId,
               workId: current.workId,
               status: current.status,
               phase: current.reads > 1 ? "handoff" : "configuration",

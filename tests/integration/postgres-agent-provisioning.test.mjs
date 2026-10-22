@@ -745,6 +745,7 @@ test(
     assert.deepEqual(Object.keys(admitted.data).sort(), ["provisioning"]);
     assert.match(admitted.data.provisioning.workId, /^agent-provisioning:/);
     assert.deepEqual(admitted.data.provisioning, {
+      requestId: body.requestId,
       workId: admitted.data.provisioning.workId,
       status: "queued",
       phase: "admitted",
@@ -807,6 +808,21 @@ test(
     });
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+
+    assert.equal(replay.data.provisioning.requestId, body.requestId);
+    // The same actor may submit the same plan twice. Each job reports the request that admitted it.
+    const otherId = requestId();
+    const other = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: { ...body, requestId: otherId },
+    });
+    assert.equal(other.status, 202);
+    const otherJob = other.data.provisioning;
+    fixture.cancelQueuedWorkAtTeardown(otherJob.workId, "Finished the request identity check.");
+    assert.equal(otherJob.requestId, otherId);
+    assert.notEqual(otherJob.workId, admitted.data.provisioning.workId);
+    const otherStatus = await fixture.request("GET", otherJob.url);
+    assert.equal(otherStatus.status, 200);
+    assert.deepEqual(otherStatus.data, otherJob);
 
     const changed = structuredClone(body);
     changed.configuration.values = { ...changed.configuration.values, changed: randomUUID() };
