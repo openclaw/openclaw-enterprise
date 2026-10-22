@@ -14,6 +14,7 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 import { jsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
@@ -274,12 +275,7 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
 }
 
 async function request(app, method, url, apiKey, body) {
-  const response = await app.inject({
-    method,
-    url,
-    headers: { "x-api-key": apiKey, host: "127.0.0.1" },
-    ...(body === undefined ? {} : { payload: body }),
-  });
+  const response = await injectJson(app, method, url, { key: apiKey, body });
   const parsed = response.body.length === 0 ? undefined : response.json();
   return { status: response.statusCode, body: parsed };
 }

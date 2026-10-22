@@ -19,7 +19,8 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { OpenClawController, PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { authenticatedHeaders, cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
+import { injectJson as inject } from "../helpers/inject-json.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -264,20 +265,6 @@ async function createApi(t, label, upstreamPort, options = {}) {
     }
   });
   return { app, auth, controller, iamDriver, state, pool };
-}
-
-async function inject(app, method, url, { session, headers = {}, body } = {}) {
-  return app.inject({
-    method,
-    url,
-    headers: {
-      host: "127.0.0.1",
-      ...(session === undefined ? {} : authenticatedHeaders(session)),
-      ...headers,
-      ...(body === undefined ? {} : { "content-type": "application/json" }),
-    },
-    ...(body === undefined ? {} : { payload: JSON.stringify(body) }),
-  });
 }
 
 async function signIn(app, credentials = { email: adminEmail, password: adminPassword }) {

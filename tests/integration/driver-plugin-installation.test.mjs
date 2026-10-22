@@ -18,6 +18,7 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
@@ -247,16 +248,11 @@ async function authenticatedApplication(t, drivers) {
   };
 }
 
-async function request(fixture, method, url, payload) {
-  const response = await fixture.app.inject({
-    method,
-    url,
-    headers: {
-      cookie: fixture.config.cookie,
-      origin: fixture.config.authOrigin,
-      host: "127.0.0.1",
-    },
-    ...(payload === undefined ? {} : { payload }),
+async function request(fixture, method, url, body) {
+  const { cookie, authOrigin } = fixture.config;
+  const response = await injectJson(fixture.app, method, url, {
+    session: { cookie, origin: authOrigin },
+    body,
   });
   return { status: response.statusCode, ...response.json() };
 }

@@ -16,6 +16,7 @@ import {
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 import { listen } from "../helpers/listen.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
@@ -196,12 +197,7 @@ test("IAM decision reasons must be strings before an installation-admin read", a
   t.after(() => app.close());
   const session = await signInToControllerApp(app, authFixture);
   const read = () =>
-    app.inject({
-      method: "GET",
-      url: "/observability",
-      headers: { ...authenticatedHeaders(session), host: "127.0.0.1" },
-      remoteAddress: "127.0.0.1",
-    });
+    injectJson(app, "GET", "/observability", { session, remoteAddress: "127.0.0.1" });
 
   for (const [name, reason] of [
     ["omitted", undefined],
