@@ -639,8 +639,24 @@ export function installFixture(scenario, evidence) {
     namespaceId,
     agentId: agent.id,
     version: 1,
-    additions: scenario.policyState === "protected" ? [policyGrant] : [],
+    additions:
+      scenario.policyState === "protected"
+        ? [policyGrant]
+        : Array.from({ length: scenario.policyRuleCount ?? 0 }, (_, index) => ({
+            ...structuredClone(policyGrant),
+            id: `explicit-${index + 1}`,
+            host: `allowed-${index + 1}.example.org`,
+          })),
   };
+  if (scenario.policyRuleCount) {
+    sandboxPolicy.applied = {
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      providerVersion: "4",
+      appliedAt: createdAt,
+    };
+  }
+  let policyNewRead = false;
   if (scenario.policyState === "failed") {
     sandboxPolicy.application = {
       id: "00000000-0000-4000-8000-000000000009",
@@ -1597,6 +1613,22 @@ export function installFixture(scenario, evidence) {
                     reason: "Destination is not in the network policy",
                   },
           };
+          if (url.searchParams.has("cursor") && scenario.policyNewDenials && !policyNewRead) {
+            policyNewRead = true;
+            return response({
+              revisionId: candidateRevisionId,
+              source: "sandbox",
+              stream,
+              observedAt: createdAt,
+              records: Array.from({ length: scenario.policyNewDenials }, (_, index) => ({
+                ...log,
+                time: new Date(Date.parse(createdAt) + (index + 1) * 1000).toISOString(),
+              })),
+              cursor: "simulated-policy-new-cursor",
+              withheld: 0,
+              truncated: false,
+            });
+          }
           return response({
             revisionId: candidateRevisionId,
             source: "sandbox",
@@ -1617,7 +1649,21 @@ export function installFixture(scenario, evidence) {
                           },
                         ]
                       : []),
-                    log,
+                    ...Array.from({ length: scenario.policyDenialCount ?? 1 }, (_, index) => ({
+                      ...log,
+                      time: new Date(
+                        Date.parse(createdAt) -
+                          ((scenario.policyDenialCount ?? 1) - index - 1) * 17000,
+                      ).toISOString(),
+                      ...(scenario.policyDenialCount
+                        ? {
+                            decision: {
+                              ...log.decision,
+                              host: `service-${Math.floor(index / 2) + 1}.example.org`,
+                            },
+                          }
+                        : {}),
+                    })),
                   ],
             cursor: "simulated-policy-cursor",
             withheld: 0,

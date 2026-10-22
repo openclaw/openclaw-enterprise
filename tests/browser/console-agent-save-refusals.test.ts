@@ -427,7 +427,9 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
     const preview = reply === "an incomplete preview";
     const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
     await login(page, fixture, url.href);
-    await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
+    await page.getByRole("button", { name: "Manage rules", exact: true }).click();
+    await page.getByLabel("Actions for network rule 1", { exact: true }).click();
+    await page.getByRole("button", { name: "Remove rule", exact: true }).click();
     const refresh = page.getByRole("button", { name: "Refresh policy", exact: true });
 
     // The operator removes the grant. Let the controller validate or commit that removal, then
@@ -454,7 +456,10 @@ for (const reply of ["an incomplete preview", "a save with different rules"] as 
         .getByRole("alert")
         .filter({ hasText: "could not read the validated rules" })
         .waitFor();
-      assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+      assert.equal(
+        await page.getByRole("button", { name: "Save for later", exact: true }).count(),
+        0,
+      );
       assert.equal(pathRequests(requests, "PUT", base).length, 0);
       assert.equal(await review.isEnabled(), true);
     } else {

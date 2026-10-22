@@ -7567,6 +7567,8 @@ export const scenarios = {
 
 for (const [id, state, name] of [
   ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  ["policyDenialsMany", "many", "Two hundred denials with batch approval"],
+  ["policyRulesPopulated", "populated", "Manage ten applied network rules"],
   [
     "policyConfigurationAlternate",
     "alternate",
@@ -7620,6 +7622,9 @@ for (const [id, state, name] of [
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     policyState: state,
+    ...(["many", "populated"].includes(state)
+      ? { policyDenialCount: 200, policyRuleCount: 10, policyNewDenials: 12 }
+      : {}),
     ...(state === "discoveryLoading"
       ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
       : {}),
@@ -7631,8 +7636,8 @@ for (const [id, state, name] of [
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
-      "Use the schema field Add and Remove controls to edit proposed rules. Confirm these local edits do not save. Review changes and return with Back to editing.",
-      "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
+      "Select denial rows across pages, then Allow selected. Confirm the validated proposal retains existing rules and combines repeated executable/host/port requests. Back to editing preserves the draft.",
+      "Open Manage rules. Search the five-row pages, use a row menu to edit or remove a rule, or Add rule. Compare Save for later with Save and apply to current revision. Apply saved policy is unavailable while a proposal has unsaved edits.",
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
@@ -7664,8 +7669,8 @@ for (const [id, state, name] of [
     ...(state === "protected"
       ? {
           steps: [
-            "The tab states that protected execution applies: the Credential Proxy routes alone govern this Agent's egress, so network policy additions are refused. The proposal editor and Apply are unavailable.",
-            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules and confirm the saved policy is now empty.",
+            "Open Manage rules. The protected execution notice is visible, adding and editing are disabled, and live application is unavailable.",
+            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules, review the removal, then Save for later and confirm the saved policy is empty.",
           ],
         }
       : {}),

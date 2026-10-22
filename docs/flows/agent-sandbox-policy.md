@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-22"
-last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
+last_updated_session: "authoring-run/cd2ce6a3-4507-46cc-b936-68c9862c794b"
 ---
 
 # Agent sandbox policy flow
@@ -140,9 +140,23 @@ native draft approval cannot bypass OCC admission.
 `console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
 sections and selects resource-owner controls. `console/configuration-fields.mts`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
-`console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
-preview. Review shows the rules the controller validated, and Save sends those
-rules with the reviewed policy version. Superseded preview and read responses
+`console/agents/sandbox-policy.mts:renderLogs` snapshots the displayed log window,
+filters it, and renders five denials per page initially. Selection spans pages;
+Select page changes only eligible visible rows. Follow retains up to 1,000 new
+log records without replacing inspected rows. Show newest accepts the retained
+window and removes selections for records no longer retained.
+
+`stageGrants` builds exact executable/host/port candidates, deduplicates requests,
+and skips requests already covered by saved or proposed grants. It retains the
+complete additions array and opens the schema editor or batch preview. Missing
+metadata disables prefilling. An incomplete existing draft must be corrected
+before staging more grants. `ruleList` searches and pages explicit rules five at
+a time; row controls edit or remove local additions.
+
+`console/agents/sandbox-policy.mts:renderPolicy` places policy status and suggestions
+above the log. `renderEditor` keeps proposed rules local until preview. Review shows additions, updates, and removals from the controller-validated rules,
+with the previously saved policy available for comparison. Save sends the complete
+validated array with the reviewed policy version. Superseded preview and read responses
 cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
@@ -176,6 +190,10 @@ waiting for a policy request that never starts.
 - [PostgreSQL admission integration](../../tests/integration/postgres-agent-sandbox-policy.test.mjs)
   exercises HTTP/IAM/storage; the [OpenShell runtime lane](../../tests/integration/sandbox-driver-openshell-k3d-real.test.mjs)
   owns real enforcement proof. Storybook proves simulated presentation only.
+- [Console batch browser tests](../../tests/browser/console-policy-denials.test.ts)
+  cover selection across pages, stable Follow, deduplication, preservation of saved
+  rules, and ceiling rejection through real controller routes. They use in-memory
+  storage and test Drivers with simulated log input, not provider enforcement.
 
 ## Related docs
 
@@ -187,6 +205,8 @@ waiting for a policy request that never starts.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-22 16:59: Trace the accompanying console changes for paged denials, batch proposals, rule management, and review before saving. (authoring-run/cd2ce6a3-4507-46cc-b936-68c9862c794b - 0c73a86a6cdd92f0129c8e52e0f230517490bd46)
 
 - 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
 
