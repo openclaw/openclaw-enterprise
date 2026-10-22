@@ -69,6 +69,7 @@ async function fixture(t, options) {
   return { directory, kubeconfig, ...fake };
 }
 
+// The stand-in kubectl appends one JSON line per call.
 async function invocations(statePath) {
   return (await commandCalls(statePath)).map((line) => JSON.parse(line).args);
 }

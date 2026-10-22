@@ -20,11 +20,15 @@ function shellQuote(value) {
 // Writes an executable stand-in for the command `name` into `directory` and returns
 // its path. `body` is the script after the shebang line, which `interpreter` picks:
 // "sh" (the default), "bash", "node", "python3", or an absolute path such as
-// process.execPath. With `log`, a shell stand-in first
+// process.execPath. With `log` (interpreter "sh" or "bash" only), the stand-in first
 // appends its arguments ("$*") to that file, one line per call; read them back with
 // `commandCalls`. Writing the same name again replaces the stand-in.
 export async function writeCommand(directory, name, body = "", { interpreter = "sh", log } = {}) {
-  const shebang = interpreter.startsWith("/") ? `#!${interpreter}` : shebangs[interpreter];
+  const shebang = interpreter.startsWith("/")
+    ? `#!${interpreter}`
+    : Object.hasOwn(shebangs, interpreter)
+      ? shebangs[interpreter]
+      : undefined;
   if (!shebang) {
     throw new Error(`writeCommand: unknown interpreter ${JSON.stringify(interpreter)}`);
   }
@@ -46,9 +50,9 @@ export async function writeCommand(directory, name, body = "", { interpreter = "
 }
 
 // A PATH value that finds commands in `directories` first, in order, then on the
-// inherited PATH.
+// inherited PATH (if any).
 export function commandPath(...directories) {
-  return [...directories, process.env.PATH].join(delimiter);
+  return [...directories, process.env.PATH].filter(Boolean).join(delimiter);
 }
 
 // Puts `directories` first on this process's PATH until the test that owns `t` ends.
@@ -65,8 +69,9 @@ export function prependPath(t, ...directories) {
   });
 }
 
-// The lines a stand-in's call log holds, one per call, oldest first; none when no
-// stand-in has run yet (the file does not exist).
+// The lines a call log holds, one per call, oldest first; none when no stand-in has
+// run yet (the file does not exist). So a test that expects no calls should also show
+// that its stand-in is reachable, or it passes when the wiring is wrong.
 export async function commandCalls(log) {
   let text;
   try {
