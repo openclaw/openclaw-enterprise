@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:https";
 import test from "node:test";
 import type {
   AgentRevision,
@@ -24,6 +25,7 @@ import {
   repositoryCredentials,
 } from "../fixtures/repository-credentials/session-state.mjs";
 import { createDriver } from "../fixtures/driver-packages/protected-execution-driver/index.ts";
+import { createTlsMaterial, listen } from "../fixtures/repository-credentials/process.mjs";
 
 test("Git reduction recovery observes its original operation despite discovery failure", async (t) => {
   const state = new InMemoryPlatformState();
@@ -31,11 +33,22 @@ test("Git reduction recovery observes its original operation despite discovery f
     bindings: [repositoryBinding({ profile: "git-write" })],
   });
   const seeded = await seedSessionRevision(state, credentials, { executionMode: "dedicated" });
+  const { cert, key, ca } = await createTlsMaterial(t);
+  let supervisorRequests = 0;
+  const supervisor = createServer({ cert, key }, (_request, response) => {
+    supervisorRequests++;
+    response.writeHead(500).end();
+  });
+  const endpoint = await listen(t, supervisor);
+  t.after(() => {
+    assert.equal(supervisorRequests, 0, "recovery must not query the release supervisor");
+  });
   const registration = createDriver({
     id: "recovery-driver",
     implementation: "reference",
-    configuration: { endpoint: "https://unused.invalid", ca: "unused" },
+    configuration: { endpoint, ca: ca.toString("utf8") },
   });
+  t.after(() => registration.close?.());
   let available = false;
   let applies = 0;
   let request: CredentialPolicyReduction | undefined;
