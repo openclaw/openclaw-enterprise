@@ -11,6 +11,7 @@ import {
   localDockerCli,
   withRuntimeImageFixture,
 } from "./runtime-image-fixture.mjs";
+import { waitFor } from "./wait-for.mjs";
 
 test("runtime image test routes only to its dedicated hosted job", () => {
   const job = {
@@ -543,16 +544,12 @@ test("process group observation detects a surviving descendant", async () => {
   );
   await once(child, "close");
   assert.throws(() => assertProcessGroupSettled(child.pid), /still active/);
-  const deadline = Date.now() + 3000;
-  while (true) {
-    try {
+  await waitFor(
+    "the detached process group to settle",
+    () => {
       assertProcessGroupSettled(child.pid);
-      break;
-    } catch (error) {
-      if (Date.now() >= deadline) {
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
+      return true;
+    },
+    { timeoutMs: 3000, intervalMs: 25, retryErrors: true },
+  );
 });

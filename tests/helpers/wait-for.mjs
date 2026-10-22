@@ -5,21 +5,39 @@ import { setTimeout as delay } from "node:timers/promises";
 // deadline is checked after each read, so the last read happens at or past the deadline.
 // The third argument is the timeout in milliseconds or { timeoutMs, intervalMs }: use a
 // longer interval when each read is costly (a subprocess or a cluster API call). An error
-// thrown by `read` fails at once; catch the ones that mean "not yet" inside `read`.
+// thrown by `read` fails at once; catch the ones that mean "not yet" inside `read`, or pass
+// `retryErrors: true` to treat every error as "not yet": the timeout then reports the last
+// error seen.
 // `description` may be a function, called once at the deadline, so the failure can report
 // the state that was still wrong.
 export async function waitFor(description, read, options = {}) {
-  const { timeoutMs = 10_000, intervalMs = 20 } =
-    typeof options === "number" ? { timeoutMs: options } : (options ?? {});
+  const {
+    timeoutMs = 10_000,
+    intervalMs = 20,
+    retryErrors = false,
+  } = typeof options === "number" ? { timeoutMs: options } : (options ?? {});
   const deadline = Date.now() + timeoutMs;
+  let lastError;
   for (;;) {
-    const value = await read();
+    let value;
+    try {
+      value = await read();
+    } catch (error) {
+      if (!retryErrors) {
+        throw error;
+      }
+      lastError = error;
+    }
     if (value !== undefined) {
       return value;
     }
     if (Date.now() >= deadline) {
       const text = typeof description === "function" ? description() : description;
-      assert.fail(`Timed out waiting for ${text}.`);
+      const last =
+        lastError === undefined
+          ? ""
+          : ` Last error: ${lastError instanceof Error ? lastError.message : String(lastError)}`;
+      assert.fail(`Timed out waiting for ${text}.${last}`);
     }
     await delay(intervalMs);
   }

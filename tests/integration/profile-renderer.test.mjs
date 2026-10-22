@@ -31,6 +31,7 @@ import {
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
   renderInstallationProfile,
@@ -289,29 +290,6 @@ async function startDnsFixture(t, records) {
     }),
   ]);
   return { directory, queriesPath, server: `127.0.0.1:${port}` };
-}
-
-function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
-  return execFileSync(
-    helm,
-    [
-      "template",
-      releaseName,
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      join(output.directory, "values.yaml"),
-      ...extraValueFiles.flatMap((path) => ["--values", path]),
-      ...extraArgs,
-    ],
-    {
-      cwd: repository,
-      encoding: "utf8",
-      maxBuffer: 2_000_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
 }
 
 function deploymentChecksum(manifests, component) {
