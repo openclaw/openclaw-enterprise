@@ -186,9 +186,13 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
   );
 }
 
+/** @param {import("playwright").Locator} locator */
 export async function optionValues(locator) {
-  return locator.evaluate((node) =>
-    Array.from(node.options).map((option) => ({ value: option.value, text: option.textContent })),
+  return locator.evaluate((element) =>
+    Array.from(/** @type {HTMLSelectElement} */ (element).options).map((option) => ({
+      value: option.value,
+      text: option.textContent,
+    })),
   );
 }
 

@@ -12,7 +12,7 @@
     "tests/browser/console-dialogs.test.mjs",
     "tests/browser/console-form-fields.test.mjs",
     "tests/browser/console-form-fields-2.test.mjs",
-    "tests/browser/console-agents-2.test.mjs",
+    "tests/browser/console-agents-2.test.ts",
     "tests/browser/console-agent-state.test.mjs",
     "tests/browser/console-agent-saves.test.mjs",
     "tests/browser/console-runtime-credentials.test.mjs",
@@ -34,7 +34,7 @@
       "path": "tests/browser/console-agents.test.ts"
     },
     {
-      "path": "tests/browser/console-agents-2.test.mjs"
+      "path": "tests/browser/console-agents-2.test.ts"
     },
     {
       "path": "tests/browser/console-codex-oauth.test.mjs"
