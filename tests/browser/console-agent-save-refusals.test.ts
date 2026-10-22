@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page } from "playwright";
+
+import type { AgentWire, NamespaceWire } from "../../packages/contracts/src/api/resources.ts";
+import type { Principal, Restriction } from "../../packages/contracts/src/index.ts";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -33,26 +37,32 @@ const READ_REFUSAL =
   "You do not have permission to read this Agent's saved settings. Ask an administrator for Agent read and Configuration read access.";
 
 // A member who can read the Namespace's Agents and Configurations but change nothing.
-function createReader(fixture, namespace) {
-  return fixture.createAccountWithPolicy("save-refusal-reader", (principal) => {
-    fixture.policy.roles.push({
-      id: "role-save-refusal-reader",
-      namespaceId: namespace.id,
-      permissions: ["namespace", "agent", "agent_revision", "configuration"].map(
-        (resourceKind) => ({ action: "read", resourceKind }),
-      ),
-    });
-    fixture.policy.bindings.push({
-      id: "binding-save-refusal-reader",
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: principal.id,
-      roleId: "role-save-refusal-reader",
-    });
-  });
+function createReader(
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: Pick<NamespaceWire, "id">,
+) {
+  return fixture.createAccountWithPolicy(
+    "save-refusal-reader",
+    (principal: Pick<Principal, "id">) => {
+      fixture.policy.roles.push({
+        id: "role-save-refusal-reader",
+        namespaceId: namespace.id,
+        permissions: (["namespace", "agent", "agent_revision", "configuration"] as const).map(
+          (resourceKind) => ({ action: "read", resourceKind }),
+        ),
+      });
+      fixture.policy.bindings.push({
+        id: "binding-save-refusal-reader",
+        namespaceId: namespace.id,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: "role-save-refusal-reader",
+      });
+    },
+  );
 }
 
-async function readOnlyMember(t, name) {
+async function readOnlyMember(t: TestContext, name: string) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
@@ -99,7 +109,7 @@ const configurationSaves = [
   {
     name: "JSON editor",
     tab: "configuration",
-    async save(page) {
+    async save(page: Page) {
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
       const edited = JSON.stringify(nativeValues("edited by a reader"), null, 2);
@@ -114,7 +124,7 @@ const configurationSaves = [
   {
     name: "Slack drawer",
     tab: "channels",
-    async save(page) {
+    async save(page: Page) {
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Edit Slack" });
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
@@ -135,7 +145,7 @@ for (const c of configurationSaves) {
     await login(
       page,
       fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", c.tab),
+      detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href,
       member.credentials,
     );
     const refused = refusedPatch();
@@ -149,15 +159,21 @@ for (const c of configurationSaves) {
 
 // Every field a tab's Save would write is disabled or inert: an edit no Save can keep would
 // only block leaving the tab or Deploy (finding 1539).
-const editableFields = (page, scope = ".agent-card") =>
+const editableFields = (page: Page, scope = ".agent-card") =>
   page.locator(scope).evaluateAll((cards) =>
     cards
-      .flatMap((card) => [...card.querySelectorAll("input, select, textarea")])
+      .flatMap((card) =>
+        Array.from(
+          card.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+            "input, select, textarea",
+          ),
+        ),
+      )
       .filter(
         (field) =>
           field.type !== "hidden" &&
           !field.disabled &&
-          !field.readOnly &&
+          !("readOnly" in field && field.readOnly) &&
           !field.closest("[inert]"),
       )
       .map((field) => field.id || field.getAttribute("aria-label") || field.name),
@@ -177,18 +193,18 @@ test("a member without Agent update sees the Agent-side saves and fields disable
     // Repository fields need a repository Driver; the next test covers them.
     { tab: "repositories", save: "Save repository access" },
   ];
-  const patches = [];
+  const patches: string[] = [];
   page.on("request", (request) => {
     if (request.method() === "PATCH") {
       patches.push(request.url());
     }
   });
   for (const [index, { tab, save, field, scope }] of tabs.entries()) {
-    const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab);
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", tab).href;
     if (index === 0) {
       await login(page, fixture, url, member.credentials);
     } else {
-      await page.goto(url.href);
+      await page.goto(url);
     }
     const button = page.getByRole("button", { name: save, exact: true });
     await button.waitFor();
@@ -211,7 +227,7 @@ test("a member without Agent update sees the Agent-side saves and fields disable
 });
 
 test("a member without Agent update cannot edit repository access", async (t) => {
-  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId: string) => [
     {
       repositoryRef: "application",
       repositoryId: "1600",
@@ -235,7 +251,7 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"),
+    detailUrl(fixture, namespace.id, agent.id, "draft", "repositories").href,
     member.credentials,
   );
   // Listing repository choices also needs Agent update; the saved access still shows.
@@ -261,16 +277,16 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"),
+    detailUrl(fixture, namespace.id, agent.id, "draft", "credentials").href,
     member.credentials,
   );
   const save = page.getByRole("button", { name: "Save authentication source", exact: true });
   const note = page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED });
   await note.waitFor();
   assert.equal(await save.isDisabled(), true);
-  fixture.policy.roles
-    .find((role) => role.id === "role-save-refusal-reader")
-    .permissions.push({ action: "update", resourceKind: "agent" });
+  const reader = fixture.policy.roles.find((role) => role.id === "role-save-refusal-reader");
+  assert.ok(reader, "the read-only role exists");
+  reader.permissions.push({ action: "update", resourceKind: "agent" });
   await page.getByRole("button", { name: "Reload authentication source", exact: true }).click();
   await note.waitFor({ state: "detached" });
   await page
@@ -281,7 +297,13 @@ test("a granted Agent update enables the Agent-side save on the next draft refre
 
 // A save first rereads what it saves. A 403 from that read is a missing read grant, not a
 // missing update grant (finding 1540). The read is revoked once the editor is ready.
-const readRefusals = [
+const readRefusals: {
+  name: string;
+  tab: string;
+  deny(agent: AgentWire): Pick<Restriction, "resourceKind" | "resourceId" | "action">;
+  edit(page: Page): Promise<void>;
+  save(page: Page): Promise<void>;
+}[] = [
   {
     name: "authentication source",
     tab: "credentials",
@@ -321,13 +343,13 @@ for (const c of readRefusals) {
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
     const agent = await fixture.createAgent(namespace.id, `Read ${c.tab}`, nativeValues("read"));
     const { page } = await newPage(t, fixture, { browser });
-    const patches = [];
+    const patches: string[] = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
         patches.push(request.url());
       }
     });
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab));
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", c.tab).href);
     await c.edit(page);
     fixture.policy.restrictions.push({
       id: `deny-${c.tab}-read`,
@@ -367,7 +389,7 @@ test("a refused workspace file save names Agent operate", async (t) => {
   await login(
     page,
     fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
   );
   const editor = page.getByLabel("AGENTS.md", { exact: true });
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();

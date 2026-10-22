@@ -14,10 +14,10 @@
     "tests/browser/console-form-fields-2.test.mjs",
     "tests/browser/console-agents-2.test.mjs",
     "tests/browser/console-agent-state.test.mjs",
-    "tests/browser/console-agent-saves.test.mjs",
+    "tests/browser/console-agent-saves.test.ts",
     "tests/browser/console-runtime-credentials.test.mjs",
     "tests/browser/console-codex-oauth.test.mjs",
-    "tests/browser/console-agent-save-refusals.test.mjs",
+    "tests/browser/console-agent-save-refusals.test.ts",
     "tests/browser/console-repository-dedicated.test.mjs",
     "tests/browser/console-create-agent-provisioning-400.test.mjs",
     "tests/browser/console-agent-deploy-focus.test.mjs",
@@ -73,10 +73,10 @@
       "path": "tests/integration/ci-impact.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-saves.test.mjs"
+      "path": "tests/browser/console-agent-saves.test.ts"
     },
     {
-      "path": "tests/browser/console-agent-save-refusals.test.mjs"
+      "path": "tests/browser/console-agent-save-refusals.test.ts"
     },
     {
       "path": "tests/browser/console-agent-deploy-focus.test.mjs"
