@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { captureChild } from "../helpers/child-processes.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -33,6 +33,7 @@ const repositoryCredentialValues = {
   "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
   "repositoryCredentials.serviceName": "git",
 };
+const themeValues = { "api.consoleTheme.configMapName": "console-theme-v2" };
 
 async function render(values, isUpgrade) {
   const objects = await parseProductionChart(
@@ -60,7 +61,7 @@ test(
     );
     assert.ok(!install.hook.volumes.some(({ name }) => name === "installation-startup"));
 
-    for (const values of [{}, repositoryCredentialValues]) {
+    for (const values of [{}, repositoryCredentialValues, themeValues]) {
       const { job, hook, api } = await render(values, true);
       // Pre-upgrade hooks finish before Helm updates the Deployments.
       assert.match(job.metadata.annotations["helm.sh/hook"], /(^|,)pre-upgrade(,|$)/);
@@ -81,12 +82,18 @@ test(
       assert.deepEqual(check.resources, migration.resources);
       const environment = (container, name) =>
         container.env.find((variable) => variable.name === name);
+      // A theme bundle the API would refuse fails the hook rather than the API rollout.
+      const theme = values === themeValues;
       assert.deepEqual(check.env, [
         environment(server, "NODE_ENV"),
         environment(server, "OCC_CONFIG_PATH"),
+        ...(theme ? [environment(server, "OCC_CONSOLE_THEME_DIR")] : []),
       ]);
       // Each file the check reads comes from the API's own volume at the API's path.
       const expected = ["installation-startup"];
+      if (theme) {
+        expected.push("console-theme");
+      }
       if (values === repositoryCredentialValues) {
         expected.push("repository-registry", "repository-public-ca");
       }
@@ -109,7 +116,7 @@ test(
   },
 );
 
-async function runCheck(t, configuration, files = {}) {
+async function runCheck(t, configuration, files = {}, environment = () => ({})) {
   const directory = await temporaryDirectory(t, "occ-installation-check-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -126,6 +133,7 @@ async function runCheck(t, configuration, files = {}) {
       PATH: process.env.PATH,
       NODE_ENV: "production",
       OCC_CONFIG_PATH: path,
+      ...environment(directory),
     },
     timeout: 30_000,
   });
@@ -136,9 +144,13 @@ async function runCheck(t, configuration, files = {}) {
 test("the upgrade hook check passes an Installation API startup accepts", async (t) => {
   const configuration = installation();
   configuration.presets = { includeDefaults: true, files: ["presets/team.json"] };
-  const result = await runCheck(t, configuration, {
-    "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }),
-  });
+  const result = await runCheck(
+    t,
+    configuration,
+    { "presets/team.json": JSON.stringify({ name: "Team Codex", template: {} }) },
+    // The documented example bundle, as the chart mounts it for the API.
+    () => ({ OCC_CONSOLE_THEME_DIR: resolve("deploy/examples/console-theme") }),
+  );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "installation-startup-ready\n");
   assert.equal(result.stderr, "");
@@ -175,5 +187,19 @@ test("the upgrade hook check names the key and file of a refused Installation", 
   assert.equal(
     refused.stderr,
     `${prefix}: observability.url must be an absolute HTTP or HTTPS URL without credentials or a fragment.\n`,
+  );
+
+  // The API's theme loader runs too: a bundle it refuses fails the hook, not the rollout.
+  const themed = await runCheck(
+    t,
+    installation(),
+    { "theme/theme.json": JSON.stringify({ schemaVersion: 1, colors: { accent: "blue" } }) },
+    (directory) => ({ OCC_CONSOLE_THEME_DIR: join(directory, "theme") }),
+  );
+  assert.equal(themed.status, 1);
+  assert.equal(themed.stdout, "");
+  assert.equal(
+    themed.stderr,
+    "installation-check: API startup would refuse the Console theme (CONSOLE_THEME_INVALID): Console theme: colors must use supported roles and six- or eight-digit hex colors.\n",
   );
 });

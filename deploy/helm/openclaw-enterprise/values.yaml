@@ -236,7 +236,8 @@ database:
   port: 5432
 
 api:
-  # Public branding files: theme.json and referenced images. Only the API mounts them.
+  # Public branding files: theme.json and referenced images. Only the API mounts them,
+  # plus the pre-upgrade installation check, which refuses a bundle the API would refuse.
   consoleTheme:
     configMapName: ""
     # Change this when updating an existing ConfigMap to restart the API.
