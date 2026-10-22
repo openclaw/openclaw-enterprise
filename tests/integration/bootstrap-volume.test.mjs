@@ -23,11 +23,16 @@ const controllerRequire = createRequire(
 const { loadYaml } = controllerRequire("@kubernetes/client-node");
 const helper = join(repository, "scripts/prepare-bootstrap-volume");
 const image = `registry.example.invalid/openclaw/controller@sha256:${"a".repeat(64)}`;
+const shimTools = {
+  bash: "/bin/bash",
+  sleep: executablePath("sleep") || "/bin/sleep",
+  setsid: executablePath("setsid") || "/usr/bin/setsid",
+};
 
 // The stand-in kubectl is a bash shim answered by this test process (see
 // fixture-command-server.mjs), so each call costs a bash start instead of a node start.
 // It appends one JSON line per call to kubectl-state.jsonl, so a file that does not
-// exist means kubectl never ran.
+// exist means no kubectl call reached the server.
 async function writeFakeKubectl(t, directory, options = {}) {
   const statePath = join(directory, "kubectl-state.jsonl");
   const manifestPath = join(directory, "manifest.yaml");
@@ -58,15 +63,15 @@ async function writeFakeKubectl(t, directory, options = {}) {
       io.exit(0);
     },
   });
+  // Runs after the fixture directory's removal: every call has ended by then, because
+  // each case awaits the helper.
   t.after(() => server.close());
   const kubectl = join(directory, "kubectl");
   const { port, clientToken, serverToken } = server;
   await writeFile(
     kubectl,
     commandShim({
-      bash: "/bin/bash",
-      sleep: executablePath("sleep") || "/bin/sleep",
-      setsid: executablePath("setsid") || "/usr/bin/setsid",
+      ...shimTools,
       port,
       clientToken,
       serverToken,
