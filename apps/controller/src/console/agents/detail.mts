@@ -3382,12 +3382,19 @@ export async function renderAgentDetail(
                 }
               }
             } catch (cause) {
+              // Keep the refused grant's status and Request ID: the notice names the ID for the
+              // Namespace administrator, and a 401 still ends the session below.
+              const { status, requestId } = requestFailure(cause);
               throw Object.assign(
                 new Error(
                   "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask a Namespace administrator to grant this Agent access to the saved Secret.",
                   { cause },
                 ),
-                { outcomeUnknown: true },
+                {
+                  outcomeUnknown: true,
+                  ...(status === undefined ? {} : { status }),
+                  ...(requestId === undefined ? {} : { requestId }),
+                },
               );
             }
             if (context.isCurrent()) {
