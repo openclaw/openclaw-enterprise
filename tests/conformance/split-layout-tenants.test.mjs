@@ -335,3 +335,65 @@ test("remap replaces exact IDs only, and the retired ChatGPT method becomes a se
   const runtime = { method: "runtime" };
   assert.equal(currentHarnessAuth(runtime, "ns_old"), runtime);
 });
+
+test("tenant import preserves Namespace names that match inherited object properties", async (t) => {
+  const fixture = await createFixture();
+  for (const name of ["ordinary-team", "constructor", "toString", "hasOwnProperty", "__proto__"]) {
+    await t.test(name, async () => {
+      // These are supported Names, created and exported through the actual API.
+      // An existing empty Namespace is the supported import-resume destination.
+      const namespace = await created(fixture, "/namespaces", { name });
+      await markReady(fixture, namespace.id);
+      const exported = await exportTenants(fixture.api);
+      const bundle = {
+        ...exported,
+        namespaces: exported.namespaces.filter((item) => item.id === namespace.id),
+      };
+      const state = { ids: {}, deployed: [] };
+      const imported = await importTenants(
+        fixture.api,
+        bundle,
+        {},
+        {
+          state,
+          deploy: false,
+          sleep: noSleep,
+          intervalMs: 0,
+          readyTimeoutMs: 0,
+        },
+      );
+      assert.equal(imported.complete, true);
+      assert.equal(
+        state.ids[namespace.id],
+        namespace.id,
+        "reuse the exact empty Namespace, without changing its name",
+      );
+      const listed = (await fixture.api.expect("GET", "/namespaces")).data;
+      assert.equal(listed.filter((item) => item.name === name).length, 1);
+
+      // A caller-supplied own rename remains authoritative, including __proto__.
+      const target = await created(fixture, "/namespaces", { name: name + " restored" });
+      await markReady(fixture, target.id);
+      const renamed = { ids: {}, deployed: [] };
+      assert.equal(
+        (
+          await importTenants(
+            fixture.api,
+            bundle,
+            {},
+            {
+              state: renamed,
+              names: { [name]: target.name },
+              deploy: false,
+              sleep: noSleep,
+              intervalMs: 0,
+              readyTimeoutMs: 0,
+            },
+          )
+        ).complete,
+        true,
+      );
+      assert.equal(renamed.ids[namespace.id], target.id);
+    });
+  }
+});

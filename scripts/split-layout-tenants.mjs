@@ -349,7 +349,8 @@ export async function importTenants(
 ) {
   // A deleted Namespace's name stays reserved, so the copies usually need new names.
   const namespaces = bundle.namespaces.filter(({ name }) => !skip.includes(name));
-  const targetName = (namespace) => names[namespace.name] ?? namespace.name;
+  const targetName = (namespace) =>
+    (Object.hasOwn(names, namespace.name) ? names[namespace.name] : undefined) ?? namespace.name;
   const problems = checkImport({ ...bundle, namespaces }, secretValues);
   if (problems.length > 0) {
     throw new SplitLayoutError(problems.join("\n"));
@@ -630,7 +631,7 @@ export async function importTenants(
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
-  const options = { command, names: {}, skip: [] };
+  const options = { command, names: Object.create(null), skip: [] };
   for (let index = 0; index < rest.length; index += 1) {
     const flag = rest[index];
     if (["--yes", "--no-deploy", "--allow-unread-workspace-files"].includes(flag)) {

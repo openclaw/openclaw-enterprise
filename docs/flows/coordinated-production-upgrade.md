@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-20"
-last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
+updated: "2026-10-21"
+last_updated_session: "authoring-run/71c701e8-7c22-4edb-a4ab-43b14c77e146"
 ---
 
 # Production image upgrade flow
@@ -253,6 +253,12 @@ the operator, who retries the read after restoring the API response path and
 checks the exported inventory before following the recovery procedure. Empty
 204 deletes and explicitly accepted 404 responses retain their existing meaning.
 
+During restore, `scripts/split-layout-tenants.mjs:importTenants` reads only explicit
+rename entries. Otherwise it retains the exported Namespace name, including
+`constructor` or `__proto__`. The CLI parser stores every rename as a literal key.
+An existing empty destination is reused by its exact name; populated destinations
+retain the existing refusal.
+
 ## Debugging and Verification
 
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
@@ -286,6 +292,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 04:35: Retain literal Namespace names during tenant import. (authoring-run/71c701e8-7c22-4edb-a4ab-43b14c77e146 - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 01:48: Preserve field diagnostics before quiescence. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 - 2026-10-19 22:34: Document that pending repository cleanup does not block upgrade preparation. (authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3 - 57acafe81482a890b02ae530793246f2c2e7be79)
