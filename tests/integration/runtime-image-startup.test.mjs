@@ -35,11 +35,9 @@ import {
   imageTestOptions,
   runDocker,
   waitForDockerLog,
-  commandOutput,
   temporaryGatewayConfiguration,
   createAdmittedRuntimeImageConfiguration,
   jsonLogEntries,
-  failureTail,
   runGatewaySmoke,
   reviewedCodexSeccompSecurityOptions,
   assertGatewayLogEntry,
@@ -323,10 +321,6 @@ async function createRuntimeRepositoryMaterial(t, fixture) {
   }));
   await writeFile(manifestPath, JSON.stringify(manifest), { mode: 0o600 });
   return material.root;
-}
-
-function sanitizeSyntheticCredential(output) {
-  return output.replaceAll(syntheticCodexApiKey, "[REDACTED_SYNTHETIC_KEY]");
 }
 
 function assertNoPackagingFailure(output) {
@@ -711,7 +705,10 @@ test(
     const probe = String.raw`
 set -eu
 printf "%s\n" "$SYNTHETIC_CODEX_API_KEY" | timeout ${20 * imageSmokeTimeoutMultiplier}s codex login --with-api-key >/tmp/codex-login.stdout 2>/tmp/codex-login.stderr || {
-  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stderr >&2
+  status=$?
+  # 124: timeout stopped codex login. Its output may be empty, so name the status.
+  echo "codex login exited $status" >&2
+  sed -E "s/sk-[A-Za-z0-9_-]+/[REDACTED_SYNTHETIC_KEY]/g" /tmp/codex-login.stdout /tmp/codex-login.stderr >&2
   exit 1
 }
 node - <<'NODE'
@@ -768,10 +765,8 @@ NODE
         "-c",
         probe,
       ],
-      { timeout: 30_000 * imageSmokeTimeoutMultiplier },
-    ).catch((error) => {
-      throw new Error(failureTail(sanitizeSyntheticCredential(commandOutput(error))));
-    });
+      { timeout: 30_000 * imageSmokeTimeoutMultiplier, redact: [syntheticCodexApiKey] },
+    );
 
     const result = JSON.parse(stdout);
     assert.equal(result.uid, 1000);

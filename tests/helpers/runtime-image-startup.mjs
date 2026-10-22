@@ -20,6 +20,7 @@ import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from 
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
+import { redactLogLine } from "../../scripts/ci/failure-redaction.mjs";
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -32,21 +33,132 @@ export const imageTestOptions =
       }
     : {};
 
+// `options.redact` lists extra values (synthetic credentials) a failure message must not show.
 export async function runDocker(args, options = {}, input) {
-  const command = execute(docker, args, {
-    timeout: 60_000 * imageSmokeTimeoutMultiplier,
-    maxBuffer: 1_000_000,
-    ...options,
-  });
-  if (input === undefined) {
-    return command;
+  return runDockerCommand(docker, args, options, input);
+}
+
+// Runs a docker command. A failure rejects with dockerCommandFailure's error.
+export async function runDockerCommand(dockerBin, args, options = {}, input) {
+  const { redact = [], ...execOptions } = options;
+  const timeout = execOptions.timeout ?? 60_000 * imageSmokeTimeoutMultiplier;
+  const startedAt = Date.now();
+  const command = execute(dockerBin, args, { maxBuffer: 1_000_000, ...execOptions, timeout });
+  // A stdin error (EPIPE when docker exits early) waits for the command, whose failure
+  // says more; it is thrown only when the command itself succeeded.
+  let inputError;
+  const inputComplete =
+    input === undefined
+      ? undefined
+      : new Promise((resolve) => {
+          command.child.stdin.once("error", (error) => {
+            inputError = error;
+            resolve();
+          });
+          command.child.stdin.end(input, resolve);
+        });
+  let result;
+  try {
+    [result] = await Promise.all([command, inputComplete]);
+  } catch (error) {
+    throw dockerCommandFailure(error, args, {
+      timeout,
+      elapsedMs: Date.now() - startedAt,
+      redact,
+    });
   }
-  const inputComplete = new Promise((resolve, reject) => {
-    command.child.stdin.once("error", reject);
-    command.child.stdin.end(input, resolve);
-  });
-  const [result] = await Promise.all([command, inputComplete]);
+  if (inputError !== undefined) {
+    throw inputError;
+  }
   return result;
+}
+
+const dockerArgumentLimit = 120;
+const dockerStdoutTailLimit = 4 * 1024;
+const dockerStderrTailLimit = 8 * 1024;
+
+// Replaces each value in `redact`. Run on the whole text, before any cut can split a value.
+function withoutRedactValues(text, redact) {
+  let result = String(text);
+  for (const value of redact) {
+    if (typeof value === "string" && value.length > 0) {
+      result = result.replaceAll(value, "[redacted]");
+    }
+  }
+  return result;
+}
+
+// Then redacts like CI's failure report: token shapes such as the sk- keys these tests plant,
+// secret assignments, URL passwords.
+function redactDockerText(text) {
+  return redactLogLine(text, [], Number.POSITIVE_INFINITY);
+}
+
+// Node's own error for a failed command names the whole command line (which can carry
+// synthetic credentials and multi-line scripts) and keeps no exit code, signal or timeout in
+// its message. Finding 2184's failure had empty output, so its message was empty and its
+// cause was lost. This error's message names the command (long or multi-line arguments
+// elided), the exit code, the signal, whether the timeout stopped it and how long it ran,
+// then the redacted ends of stdout and of stderr. stderr comes last so a caller's own tail
+// cut keeps it. The error keeps code, signal, killed and timedOut, and the raw stdout and
+// stderr (not enumerable, so printing the error shows only the redacted message) for
+// callers that check them. Node's error is not kept as the cause: its message is the raw
+// command line.
+export function dockerCommandFailure(error, args, { timeout, elapsedMs, redact = [] } = {}) {
+  const shown = args.map((arg) => {
+    const text = String(arg);
+    return text.includes("\n") || text.length > dockerArgumentLimit
+      ? `<${text.length}-char argument>`
+      : text;
+  });
+  const fullCommand = withoutRedactValues(`docker ${shown.join(" ")}`, redact);
+  const command = redactDockerText(
+    fullCommand.length > 512 ? `${fullCommand.slice(0, 512)}...` : fullCommand,
+  );
+  const timedOut =
+    error.killed === true &&
+    error.code !== "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" &&
+    error.name !== "AbortError" &&
+    timeout > 0 &&
+    elapsedMs >= timeout;
+  const outcome = [
+    typeof error.code === "number"
+      ? `exit code ${error.code}`
+      : `no exit code${typeof error.code === "string" ? ` (${error.code})` : ""}`,
+    `signal ${error.signal ?? "none"}`,
+    timedOut ? `timed out after ${timeout} ms` : "not timed out",
+    `ran ${elapsedMs ?? "?"} ms`,
+  ];
+  if (error.killed === true && !timedOut) {
+    outcome.push("killed");
+  }
+  const sections = [`${command} failed (${outcome.join(", ")}).`];
+  const stdout = withoutRedactValues(error.stdout ?? "", redact);
+  const stderr = withoutRedactValues(error.stderr ?? "", redact);
+  if (stdout.trim() !== "") {
+    sections.push(`stdout:\n${redactDockerText(failureTail(stdout, dockerStdoutTailLimit))}`);
+  }
+  if (stderr.trim() !== "") {
+    sections.push(`stderr:\n${redactDockerText(failureTail(stderr, dockerStderrTailLimit))}`);
+  }
+  if (stdout.trim() === "" && stderr.trim() === "") {
+    sections.push("(no stdout or stderr)");
+  }
+  const failure = new Error(sections.join("\n"));
+  Object.assign(failure, {
+    code: error.code,
+    signal: error.signal ?? null,
+    killed: error.killed === true,
+    timedOut,
+    elapsedMs,
+  });
+  for (const [name, value] of [
+    ["stdout", error.stdout],
+    ["stderr", error.stderr],
+  ]) {
+    Object.defineProperty(failure, name, { value, enumerable: false, writable: true });
+  }
+  return failure;
 }
 
 // Like Promise.all over a case's scenarios, but waits for every one so no
@@ -342,8 +454,8 @@ export async function runGatewaySmoke(t, harnessId, options = {}) {
     };
   } catch (error) {
     const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
-    // A failed docker command's message carries its whole stderr after the
-    // line that names the command.
+    // A failed docker command's message names the command and its exit on the first
+    // line; the ends of its stdout and stderr follow, stderr last.
     const [headline, ...detail] = error.message.split("\n");
     const failure = [
       headline.slice(0, 512),
