@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { listen } from "../helpers/listen.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
@@ -471,28 +472,13 @@ async function databaseCertificates(directory) {
 
 async function tlsServer(context, host, identity) {
   const state = { accepted: 0 };
-  const sockets = new Set();
   const server = createTlsServer(identity, (socket) => {
     state.accepted++;
     socket.once("data", () => socket.destroy());
   });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
   server.on("tlsClientError", () => {});
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, host, resolve);
-  });
-  context.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
   return Object.assign(state, {
-    port: server.address().port,
+    port: await listen(context, server, host),
     use: (next) => server.setSecureContext(next),
   });
 }

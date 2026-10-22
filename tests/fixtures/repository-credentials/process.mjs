@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sharedRsaPrivateKeyPem } from "./shared-keys.mjs";
+import { listen as listenOn } from "../../helpers/listen.mjs";
 
 // Fixture children start from this allowlist rather than the runner's environment,
 // and every Git they start inherits it. A commit, merge or receive-pack otherwise
@@ -154,20 +155,5 @@ export async function createTlsMaterial(t) {
 }
 
 export async function listen(t, server, port = 0, host = "127.0.0.1") {
-  const sockets = new Set();
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, resolve);
-  });
-  t.after(async () => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `https://127.0.0.1:${server.address().port}`;
+  return `https://127.0.0.1:${await listenOn(t, server, host, { port })}`;
 }

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -17,21 +16,11 @@ import {
   signInWithEmailPassword,
   signInToControllerApp,
 } from "../helpers/auth-session.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const installationId = "ins_3033697e-6397-4cc6-9b04-8ec17af78cf1";
 const allowedNamespace = "ns_00000000-0000-4000-8000-000000000001";
 const deniedNamespace = "ns_00000000-0000-4000-8000-000000000002";
-
-async function listen(context, handler) {
-  const server = createServer(handler);
-  context.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  return `http://127.0.0.1:${server.address().port}`;
-}
 
 test("the singleton Namespace HTTP route enforces internal admission and exact IAM", async (t) => {
   const authFixture = await createTestAuthPrincipal({
@@ -285,10 +274,11 @@ test("compute operation cancellation disconnects an actual in-flight HTTP reques
   const requestDisconnected = new Promise((resolve) => {
     disconnected = resolve;
   });
-  const endpoint = await listen(t, (request) => {
+  const server = createServer((request) => {
     request.once("close", disconnected);
     received();
   });
+  const endpoint = `http://127.0.0.1:${await listen(t, server)}`;
   const cancellation = new AbortController();
 
   // This proves operation-context transport cancellation; it does not simulate a database lease.

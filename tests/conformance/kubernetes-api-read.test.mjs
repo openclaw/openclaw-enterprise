@@ -14,6 +14,7 @@ import test from "node:test";
 import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 function selfSignedCertificate(directory, name, subjectAltName) {
   const keyPath = join(directory, `${name}.key`);
@@ -208,11 +209,7 @@ async function cluster(t) {
     response.statusCode = body === undefined ? 503 : 200;
     response.end(JSON.stringify(body ?? { kind: "Status", reason: "ServiceUnavailable" }));
   });
-  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
-  t.after(() => {
-    listener.closeAllConnections();
-    return new Promise((resolve) => listener.close(resolve));
-  });
+  await listen(t, listener);
 
   // A kubectl on PATH that prints its kubeconfig for `config view` and logs every run.
   const calls = join(directory, "kubectl-calls");

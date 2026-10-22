@@ -9,6 +9,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 
@@ -108,10 +109,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
       incoming.pipe(upstream);
     },
   );
-  proxy.listen(0, "127.0.0.1");
-  await once(proxy, "listening");
-  t.after(() => new Promise((resolve) => proxy.close(resolve)));
-  const url = `https://127.0.0.1:${proxy.address().port}/status`;
+  const url = `https://127.0.0.1:${await listen(t, proxy)}/status`;
   const clientFile = join(directory, "client.cjs");
   await writeFile(
     clientFile,

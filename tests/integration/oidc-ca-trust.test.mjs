@@ -21,6 +21,7 @@ import {
   parseProductionChart,
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const execute = promisify(execFile);
 const tooling = await chartTooling();
@@ -349,12 +350,7 @@ async function tlsServer(t, certificate, handler) {
     { key: certificate["leaf.key"], cert: certificate["leaf.pem"] },
     handler,
   );
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return server.address().port;
+  return listen(t, server);
 }
 
 test(
@@ -610,7 +606,6 @@ test(
     );
     const caPath = wiring.resolve("/etc/openclaw/database-ca/ca.pem");
     let accepted = 0;
-    const sockets = new Set();
     const server = createTlsServer(
       { key: database["leaf.key"], cert: database["leaf.pem"] },
       (socket) => {
@@ -618,20 +613,10 @@ test(
         socket.once("data", () => socket.destroy());
       },
     );
-    server.on("connection", (socket) => {
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
-    });
     server.on("tlsClientError", () => {});
     // Listen and connect through the same "localhost" lookup: the certificate names
     // DNS:localhost, and the guard refuses IP literal database hosts.
-    await new Promise((resolve) => server.listen(0, "localhost", resolve));
-    t.after(async () => {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise((resolve) => server.close(resolve));
-    });
+    await listen(t, server, "localhost");
     const connection = (search, password = "synthetic-secret", host = "localhost") =>
       syntheticCredentialUrl({
         protocol: "postgresql",
@@ -716,11 +701,7 @@ test(
       },
     );
     ipServer.on("tlsClientError", () => {});
-    await new Promise((resolve) => ipServer.listen(0, "127.0.0.1", resolve));
-    t.after(async () => {
-      ipServer.closeAllConnections?.();
-      await new Promise((resolve) => ipServer.close(resolve));
-    });
+    await listen(t, ipServer);
     const ipConnection = (search) =>
       syntheticCredentialUrl({
         protocol: "postgresql",

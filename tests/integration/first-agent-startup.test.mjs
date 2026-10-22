@@ -12,6 +12,7 @@ import {
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
 } from "../../scripts/first-agent-model.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const repository = await realpath(resolve(import.meta.dirname, "../.."));
 const firstAgent = join(repository, "scripts", "first-agent.mjs");
@@ -312,9 +313,7 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
     response.writeHead(data === undefined ? 404 : 200, { "content-type": "application/json" });
     response.end(JSON.stringify(data === undefined ? { error: { code: "NOT_FOUND" } } : { data }));
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => server.close());
+  await listen(t, server);
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   await writeFile(
     join(directory, "state.json"),
