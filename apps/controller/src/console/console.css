@@ -1743,6 +1743,9 @@ select:not([multiple])[size="1"] {
   margin: 0;
   padding: var(--space-3) 0;
   line-height: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .native-admin-heading {
   display: flex;

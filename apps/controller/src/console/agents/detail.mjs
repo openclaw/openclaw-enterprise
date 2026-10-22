@@ -1406,8 +1406,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
   const latestDeploymentValue = element("strong", { className: "stat-value" });
-  // The note keeps its line while empty (console.css), so the loading text giving way to a
-  // recorded outcome moves nothing below it (finding 2163).
+  // The note keeps its line while empty (console.css) when the page shows before the outcome,
+  // so the loading text giving way to it moves nothing below (finding 2163); see showDetail.
   const latestDeploymentNote = element("p", { className: "stat-help stat-help-line" });
   setDelayedText(latestDeploymentValue, "", "Loading…");
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
@@ -1910,7 +1910,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
   view.classList.add("agent-detail-pending");
   let revealTimer = null;
-  // Set once the page shows, whether its first deployment record is in or the wait ran out.
+  // Set once the page shows (after any minimum loading time), whether its first deployment
+  // record is in or the wait ran out.
   let detailShown = false;
   let markRevealed;
   const revealed = new Promise((resolve) => {
@@ -2032,8 +2033,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   });
   function showDetail() {
     clearTimeout(revealTimer);
-    detailShown = true;
     const shown = () => {
+      // A note already empty gives its line back before the page first shows; one still loading
+      // keeps it, so the outcome that empties it moves nothing (finding 2163).
+      if (!detailShown && !latestDeploymentNote.textContent) {
+        latestDeploymentNote.classList.remove("stat-help-line");
+      }
+      detailShown = true;
       if (view.classList.contains("agent-detail-pending")) {
         view.classList.remove("agent-detail-pending");
       }

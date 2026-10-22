@@ -1265,7 +1265,8 @@ test("a late first deployment read moves nothing above the version tabs", async 
     deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
     async (route) => {
       requested?.();
-      await route.fulfill(await answer);
+      // A poll from the page a later goto replaced is answered into nothing.
+      await route.fulfill(await answer).catch(() => {});
     },
   );
   await trackSettledFetches(page);
@@ -1299,6 +1300,19 @@ test("a late first deployment read moves nothing above the version tabs", async 
     await page.setViewportSize(consoleViewports[0]);
     return sizes;
   };
+  // Control: a pending record read before the page shows opens its details as before, and the
+  // summary's note, empty by then, gives its line back.
+  answer = Promise.resolve(deploymentStatusResponse(revision, { status: "running" }));
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
+  await expectDeploymentOutcome(page, "In progress", { folded: false });
+  assert.equal(
+    await summary
+      .locator(":scope > div:nth-child(2) > p")
+      .evaluate((node) => node.checkVisibility()),
+    false,
+  );
+
   const unavailable = {
     status: 503,
     json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." } },

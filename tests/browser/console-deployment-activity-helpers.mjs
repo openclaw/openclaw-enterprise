@@ -61,7 +61,7 @@ export async function expectDeploymentOutcome(page, label, { folded } = {}) {
   if (!open) {
     await page
       .getByRole("region", { name: "Agent state at a glance" })
-      .getByText(new RegExp(` · ${label}$`))
+      .getByText(new RegExp(` · ${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`))
       .waitFor();
     await openDeploymentActivity(page);
   }
