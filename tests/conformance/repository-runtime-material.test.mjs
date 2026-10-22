@@ -6,12 +6,12 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
-import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 
@@ -2049,6 +2049,7 @@ test("a repository-access Sandbox revision stops, retires and is deleted without
     // A fresh deploy with no active predecessor prepares without material either.
     const next = { ...structuredClone(f.revision), id: "revision-repository-material-next" };
     await f.driver.prepareRevision(next, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
     // Agent deletion retires each revision, then removes the Agent's runtime credentials.
     for (const revision of [f.revision, next]) {
       await f.driver.retireRevision(revision);

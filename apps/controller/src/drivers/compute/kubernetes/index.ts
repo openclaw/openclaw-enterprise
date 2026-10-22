@@ -8929,10 +8929,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   /**
    * Whether this Compute may hold Kubernetes repository material Secrets for the revision. Only
-   * a configured repository credential endpoint projects them. With a repository-access Sandbox
-   * the worker delivers material to the Sandbox instead and no Secret exists, and the chart then
-   * does not grant the worker Secret list, so cleanup there would never finish (finding 2201).
-   * Namespace deletion applies the same condition.
+   * a configured repository credential endpoint projects them. Without one (for example an
+   * Installation whose repository-access Sandbox receives material from the worker) no Secret
+   * exists and the chart grants the worker no Secret list, so cleanup there would never finish
+   * (finding 2201). Namespace deletion applies the same condition.
    */
   private projectsRepositoryMaterial(revision: AgentRevision): boolean {
     return (
