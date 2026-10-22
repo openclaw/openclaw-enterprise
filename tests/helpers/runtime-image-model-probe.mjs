@@ -6,8 +6,7 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
@@ -17,6 +16,7 @@ import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
 import { jsonLines } from "./json-lines.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -75,8 +75,7 @@ async function waitForLog(containerName, pattern) {
 }
 
 async function createProbeMaterial(t, configuration) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-model-probe-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-model-probe-");
   const file = (name) => join(directory, name);
   // Sign a leaf with a private CA, as a provider certificate would be.
   await createModelProbeCertificates({
