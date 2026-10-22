@@ -14,8 +14,10 @@ import {
   DEVELOPMENT_BROWSER_ORIGIN_RULE,
   isDevelopmentBrowserOrigin,
 } from "../../apps/controller/src/auth/configuration.ts";
+import { PresetFileError } from "../../apps/controller/src/composition/installation-presets.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   admitLoggingConfiguration,
@@ -388,7 +390,7 @@ test("Installation startup validates the optional external observability URL", a
 });
 
 test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
-  for (const [mutate, details] of [
+  const cases = [
     [
       (configuration) => {
         configuration.drivers.compute.configuration.authentication = {
@@ -448,11 +450,33 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
         },
       ],
     ],
-  ]) {
+  ];
+  // All three entrypoints map a ConfigurationValidationError to the code and its details with
+  // the same function, so the last case boots them for real. The others reach the loader all
+  // three call with the file (production mode) and get that function's one-line diagnostic.
+  for (const [index, [mutate, details]] of cases.entries()) {
     const configuration = installation();
     configuration.occ.cluster = "production-west";
     mutate(configuration);
     const path = await fixture(t, configuration);
+    if (index < cases.length - 1) {
+      await assert.rejects(
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: path },
+        }),
+        (error) => {
+          assert.ok(error instanceof ConfigurationValidationError, String(error));
+          const line = formatStartupConfigurationFailure(error);
+          assert.match(line, /^DRIVER_CONFIGURATION_INVALID: /);
+          assert.deepEqual(JSON.parse(line.split("DRIVER_CONFIGURATION_INVALID: ")[1]), details);
+          assert.ok(!line.includes(path));
+          assert.doesNotMatch(line, /Bad_Class|ceiling\.example\.test|\/additions/);
+          return true;
+        },
+      );
+      continue;
+    }
     const environment = {
       PATH: process.env.PATH,
       NODE_ENV: "production",
@@ -1940,8 +1964,11 @@ test("API and worker name a Preset file failure in their startup error code", as
     ["not-a-list.json", undefined, "cases/not-a-list.json"],
     ["blank-entry", undefined, ["  "]],
   ];
+  // Both processes map any PresetFileError to the code (`instanceof`), and their logs keep only
+  // the code. One real pair proves that mapping and the log; each other cause must reach the
+  // loader both processes call with the file (production mode) as a PresetFileError.
   await settled(
-    cases.map(async ([filename, contents, files]) => {
+    cases.map(async ([filename, contents, files], index) => {
       const configuration = installation();
       configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
       const path = await fixture(t, configuration);
@@ -1949,6 +1976,17 @@ test("API and worker name a Preset file failure in their startup error code", as
       if (contents !== undefined) {
         await writeFile(join(dirname(path), "cases", filename), contents);
         await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
+      }
+      if (index > 0) {
+        await assert.rejects(
+          loadInstallationConfiguration({
+            mode: "production",
+            environment: { OCC_CONFIG_PATH: path },
+          }),
+          PresetFileError,
+          filename,
+        );
+        return;
       }
       const shared = {
         PATH: process.env.PATH,
