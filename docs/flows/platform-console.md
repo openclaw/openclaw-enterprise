@@ -250,7 +250,7 @@ Responses follow the ordering checks below.
 owns DM policies and channel-only reply defaults. Admission snapshots native values;
 Kubernetes `prepareRevision` carries them into `openclaw.json` without adding defaults.
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` registers tab
 navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
 version, tab clicks/history replace only tab content; shell, native-admin panel,
 and version controls stay mounted. Configuration and Agent revision reads are shared;
@@ -260,7 +260,7 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+`agents/detail.mts:renderTab` brings a clipped selected tab into the horizontal
 strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
 this on viewport changes, disconnects for inactive or detached views, and re-arms
 through the retained view's resume hook.

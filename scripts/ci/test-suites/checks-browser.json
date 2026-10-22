@@ -10,11 +10,11 @@
     "tests/browser/console-namespace-create.test.mjs",
     "tests/browser/console-create-agent-member.test.mjs",
     "tests/browser/console-shell.test.ts",
-    "tests/browser/console-json-error-feedback.test.mjs",
+    "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
     "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console-agent-deploy-again.test.mjs",
-    "tests/browser/console-agent-logs.test.mjs",
+    "tests/browser/console-agent-logs.test.ts",
     "tests/browser/console-agent-repositories.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
@@ -39,10 +39,10 @@
       "path": "tests/browser/console-agent-detail-2.test.mjs"
     },
     {
-      "path": "tests/browser/console-agent-logs.test.mjs"
+      "path": "tests/browser/console-agent-logs.test.ts"
     },
     {
-      "path": "tests/browser/console-json-error-feedback.test.mjs"
+      "path": "tests/browser/console-json-error-feedback.test.ts"
     },
     {
       "path": "tests/browser/console-agent-plugin-approvers.test.mjs"

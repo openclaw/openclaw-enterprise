@@ -1,6 +1,28 @@
+/// <reference lib="es2024.promise" />
+
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Dialog, Locator, Request, Response as BrowserResponse } from "playwright";
+
+import type {
+  HarnessAuthBinding,
+  Preset,
+  PresetTemplate,
+  PresetVariable,
+} from "../../packages/contracts/src/index.ts";
+import type { CreateAgentBody, CreateSecretBody } from "../../packages/contracts/src/api/common.ts";
+import type {
+  AgentWire,
+  ConfigurationResponse,
+  SecretResponse,
+  ConfigurationWire,
+  IAMAccessBindingWire,
+  IAMRoleWire,
+  PresetSummaryWire,
+  SecretWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import type { PlatformUnitOfWork } from "../../packages/occ/src/state/platform-state.ts";
 
 import {
   CodexPluginDriver,
@@ -27,6 +49,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settlePageRequests,
   trackSettledFetches,
   waitForEnabled,
   waitForInputValue,
@@ -45,19 +68,66 @@ import {
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
-// The Preset list returns summaries; the template comes from the exact Preset (finding 1323).
-async function presetTemplate(fixture, namespaceId, presetId) {
-  const preset = await fixture.request("GET", `/namespaces/${namespaceId}/presets/${presetId}`);
-  assert.equal(preset.status, 200);
-  return structuredClone(preset.data.template);
+type ConsoleFixture = Awaited<ReturnType<typeof createBaseConsoleAppFixture>>;
+type FixtureResponse<Data> = Omit<Awaited<ReturnType<ConsoleFixture["request"]>>, "data"> & {
+  data: Data;
+};
+type ModelConfiguration = ConfigurationWire & { values: ReturnType<typeof nativeValues> };
+
+async function defaultPresetSummary(fixture: ConsoleFixture, namespaceId: string) {
+  const presets: FixtureResponse<PresetSummaryWire[]> = await fixture.request(
+    "GET",
+    `/namespaces/${namespaceId}/presets`,
+  );
+  assert.equal(presets.status, 200);
+  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  assert.ok(starter, "the installed default Preset must be listed");
+  return starter;
 }
 
-const defaultCodexPreset = JSON.parse(
+// The Preset list returns summaries; the template comes from the exact Preset (finding 1323).
+async function presetTemplate(fixture: ConsoleFixture, namespaceId: string, presetId: string) {
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "GET",
+    `/namespaces/${namespaceId}/presets/${presetId}`,
+  );
+  assert.equal(preset.status, 200);
+  return preset.data.template;
+}
+
+async function createdAgent(response: Promise<BrowserResponse>): Promise<AgentWire> {
+  const result = await response;
+  assert.equal(result.status(), 201);
+  return (await result.json()).data;
+}
+
+const defaultCodexPreset: Pick<Preset, "name" | "template"> = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
+// The shipped standard template is the input. Each case can edit only its own copy.
+const standardCodexPreset: {
+  name: string;
+  template: {
+    variables: Record<string, PresetVariable>;
+    agent: {
+      harnessAuth:
+        | Extract<HarnessAuthBinding, { method: "api_key" | "codex_pat" }>
+        | { method: "api_key" | "codex_pat"; secret?: string };
+      initialWorkspaceFiles?: Record<string, string>;
+    };
+  };
+} = JSON.parse(
+  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+);
+
 // Default Presets also select the filesystem Configuration Driver (native value validation).
-const createConsoleAppFixture = (t, options = {}) =>
-  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+const createConsoleAppFixture = (
+  t: TestContext,
+  options: {
+    defaultPresets?: (typeof defaultCodexPreset)[];
+    filesystemConfiguration?: boolean;
+  } = {},
+) => createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
 
 test("Preset string variables preserve multiline defaults, edits and restored drafts", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -110,9 +180,13 @@ test("Preset string variables preserve multiline defaults, edits and restored dr
         },
       },
     };
-    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-      body: { name: scenario.name, template },
-    });
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: { name: scenario.name, template },
+      },
+    );
     assert.equal(preset.status, 201, JSON.stringify(preset.body));
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -149,11 +223,13 @@ test("Preset string variables preserve multiline defaults, edits and restored dr
       scenario.name,
     );
     assert.deepEqual(nonAuthWriteRequests(requests), [], scenario.name);
-    const stored = await fixture.request(
+    const stored: FixtureResponse<Preset> = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/presets/${preset.data.id}`,
     );
-    assert.equal(stored.data.template.variables.notes.default, scenario.value, scenario.name);
+    const notesVariable = stored.data.template.variables?.notes;
+    assert.equal(notesVariable?.type, "string");
+    assert.equal(notesVariable.default, scenario.value, scenario.name);
   }
 });
 
@@ -162,8 +238,8 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap("Model selection");
     const namespace = await fixture.createNamespace("Fallback choices", { ready: true });
-    const ids = ["primary-model", "fallback-one", "fallback-two"];
-    const reference = (id) => `openai/${id}`;
+    const ids = ["primary-model", "fallback-one", "fallback-two"] as const;
+    const reference = (id: string) => `openai/${id}`;
     const values = {
       agents: {
         defaults: {
@@ -197,12 +273,16 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
         },
       },
     };
-    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-      body: {
-        name: "Fallback models",
-        template: { configuration: { values }, agent: { executionMode: "embedded" } },
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: {
+          name: "Fallback models",
+          template: { configuration: { values }, agent: { executionMode: "embedded" } },
+        },
       },
-    });
+    );
     assert.equal(preset.status, 201, JSON.stringify(preset.body));
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -210,10 +290,10 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     const editor = page.locator("#configuration-json");
     const model = page.getByLabel("Model ID", { exact: true });
-    const checkSelection = async (id, retained) => {
+    const checkSelection = async (id: string, retained: string[]) => {
       await model.fill(id);
       await model.press("Tab");
-      const selected = JSON.parse(await editor.inputValue());
+      const selected: typeof values = JSON.parse(await editor.inputValue());
       assert.equal(selected.agents.defaults.model.primary, reference(id));
       assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
       assert.deepEqual(
@@ -237,7 +317,7 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
         );
       }
       const configuration = await fixture.createConfiguration(namespace.id, selected);
-      const reread = await fixture.request(
+      const reread: FixtureResponse<ConfigurationWire> = await fixture.request(
         "GET",
         `/namespaces/${namespace.id}/configurations/${configuration.id}`,
       );
@@ -261,29 +341,34 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
     defaultPresets: [defaultCodexPreset],
   });
   const primary = "anthropic/claude-runtime-model";
-  const values = nativeValues("runtime-preset");
-  values.agents.defaults.model = primary;
-  values.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
-  values.models.providers = {
+  const base = nativeValues("runtime-preset");
+  base.agents.defaults.model = primary;
+  base.agents.defaults.models = { [primary]: { agentRuntime: { id: "openclaw" } } };
+  const providers = {
     anthropic: {
       baseUrl: "https://api.anthropic.com",
       api: "anthropic-messages",
       models: [{ id: "claude-runtime-model", name: "claude-runtime-model" }],
     },
   };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Operator-managed credentials",
-      template: {
-        agent: {
-          name: "Runtime provider Agent",
-          executionMode: "embedded",
-          harnessAuth: { method: "runtime" },
+  const values = { ...base, models: { ...base.models, providers } };
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Operator-managed credentials",
+        template: {
+          agent: {
+            name: "Runtime provider Agent",
+            executionMode: "embedded",
+            harnessAuth: { method: "runtime" },
+          },
+          configuration: { values },
         },
-        configuration: { values },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -304,17 +389,15 @@ test("Runtime-auth Presets retain OpenClaw when changing from Anthropic to OpenA
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const created = await createdAgent(createdResponse);
   assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, { method: "runtime" });
-  const saved = await fixture.request(
+  const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
   assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-4.1");
-  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"].agentRuntime, {
+  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"]?.agentRuntime, {
     id: "openclaw",
   });
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
@@ -389,7 +472,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   const originalFetch = globalThis.fetch;
   const logoUrl = "https://plugin-images.example.test/calendar.png";
   const brokenLogoUrl = "https://plugin-images.example.test/missing.png";
-  const imageRequests = [];
+  const imageRequests: { url: string; headers: Record<string, string> }[] = [];
   // The public image host is the only browser request substituted; the real CSP and image loader run.
   await page.route("https://plugin-images.example.test/**", async (route) => {
     imageRequests.push({ url: route.request().url(), headers: await route.request().allHeaders() });
@@ -406,19 +489,16 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     );
   });
   let failTools = true;
-  let releaseList;
-  let listStarted;
+  const listRelease = Promise.withResolvers<void>();
+  const listStarted = Promise.withResolvers<void>();
   let holdList = false;
   let holdPrefetch = true;
-  const prefetchRelease = Promise.withResolvers();
-  const listPending = new Promise((resolve) => {
-    listStarted = resolve;
-  });
-  const detailStarted = Promise.withResolvers();
-  const detailRelease = Promise.withResolvers();
-  const searchStarted = Promise.withResolvers();
-  const searchRelease = Promise.withResolvers();
-  const hosted = (name, overrides = {}) => ({
+  const prefetchRelease = Promise.withResolvers<void>();
+  const detailStarted = Promise.withResolvers<void>();
+  const detailRelease = Promise.withResolvers<void>();
+  const searchStarted = Promise.withResolvers<void>();
+  const searchRelease = Promise.withResolvers<void>();
+  const hosted = (name: string, overrides: { status?: string; disabled_reason?: string } = {}) => ({
     id: `remote-${name}`,
     name,
     scope: "GLOBAL",
@@ -446,22 +526,24 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     },
     ...overrides,
   });
-  const upstreamCalls = [];
+  const upstreamCalls: { path: string; token: string | null }[] = [];
   // Only external HTTP is simulated. Browser, OCC auth/routes, and the selected Driver are real.
-  t.mock.method(globalThis, "fetch", async (input, options) => {
-    const url = new URL(typeof input === "string" ? input : (input.url ?? input));
+  t.mock.method(globalThis, "fetch", async (...[input, options]: Parameters<typeof fetch>) => {
+    const url = new URL(input instanceof globalThis.Request ? input.url : input);
     if (!["auth.openai.com", "chatgpt.com"].includes(url.hostname)) {
       return originalFetch(input, options);
     }
-    upstreamCalls.push({ path: url.pathname, token: options.headers.Authorization });
+    const headers = new Headers(options?.headers);
+    const token = headers.get("authorization");
+    upstreamCalls.push({ path: url.pathname, token });
     if (url.hostname === "auth.openai.com") {
       return Response.json({
         chatgpt_account_id: "account-plugin-test",
         chatgpt_account_is_fedramp: false,
       });
     }
-    assert.equal(options.headers["ChatGPT-Account-ID"], "account-plugin-test");
-    assert.equal(options.headers["OAI-Product-Sku"], "codex");
+    assert.equal(headers.get("ChatGPT-Account-ID"), "account-plugin-test");
+    assert.equal(headers.get("OAI-Product-Sku"), "codex");
     if (url.pathname.endsWith("/plugins/search")) {
       assert.equal(url.searchParams.get("scope"), "GLOBAL");
       assert.equal(url.searchParams.get("limit"), "20");
@@ -488,13 +570,11 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
         holdPrefetch = false;
         await prefetchRelease.promise;
       }
-      if (holdList && options.headers.Authorization === "Bearer at-browser-plugin-one") {
-        listStarted();
-        await new Promise((resolve) => {
-          releaseList = resolve;
-        });
+      if (holdList && token === "Bearer at-browser-plugin-one") {
+        listStarted.resolve();
+        await listRelease.promise;
       }
-      if (options.headers.Authorization === "Bearer at-browser-plugin-two") {
+      if (token === "Bearer at-browser-plugin-two") {
         return Response.json({
           plugins: [hosted("New-account-plugin")],
           pagination: { next_page_token: null },
@@ -530,6 +610,10 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
       return Response.json(hosted("calendar"));
     }
     assert.equal(url.pathname, "/backend-api/ps/apps/batch");
+    assert.ok(
+      typeof options?.body === "string",
+      "the batch body must contain the requested app IDs",
+    );
     assert.deepEqual(JSON.parse(options.body), {
       app_ids: ["app_calendar", "app_shared"],
       include_tools: true,
@@ -556,7 +640,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     });
   });
   t.after(() => prefetchRelease.resolve());
-  t.after(() => releaseList?.());
+  t.after(() => listRelease.resolve());
   t.after(() => detailRelease.resolve());
   t.after(() => searchRelease.resolve());
   const requests = apiRequests(page, fixture.origin);
@@ -623,7 +707,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await setupDisclosure.focus();
   await setupDisclosure.press("Enter");
   await setup.getByText(/Service accounts/).waitFor();
-  assert.match(await setup.textContent(), /App connection status is not verified/);
+  assert.match(await setup.innerText(), /App connection status is not verified/);
   for (const [name, href] of [
     ["Manage workspace plugins", "https://chatgpt.com/admin/plugins?catalog=GLOBAL"],
     ["Service account credentials", "https://admin.openai.com/"],
@@ -631,7 +715,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
       "OCE plugin setup",
       "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/reference/drivers/plugin-bundled.md#selection-and-catalogs",
     ],
-  ]) {
+  ] as const) {
     const link = setup.getByRole("link", { name, exact: true });
     assert.equal(await link.getAttribute("href"), href);
     assert.equal(await link.getAttribute("target"), "_blank");
@@ -679,7 +763,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     await unavailableRow.evaluate((node) => node.getBoundingClientRect().height),
     rowHeight,
   );
-  assert.match(await rowReason.textContent(), /Disabled by a ChatGPT workspace administrator/);
+  assert.match(await rowReason.innerText(), /Disabled by a ChatGPT workspace administrator/);
   const rowHelp = unavailableRow.getByRole("link", {
     name: "Manage workspace plugins",
     exact: true,
@@ -706,8 +790,8 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await rowPopover.waitFor({ state: "hidden" });
   assert.equal(await dialog.isVisible(), true);
   const listLogo = calendar.locator(".plugin-logo img");
-  await listLogo.evaluate((image) => image.decode());
-  assert.ok(await listLogo.evaluate((image) => image.naturalWidth > 0));
+  await listLogo.evaluate((image: HTMLImageElement) => image.decode());
+  assert.ok(await listLogo.evaluate((image: HTMLImageElement) => image.naturalWidth > 0));
   assert.equal(await listLogo.getAttribute("alt"), "");
   assert.equal(await listLogo.getAttribute("referrerpolicy"), "no-referrer");
   const missingLogo = dialog
@@ -726,8 +810,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     await calendar.evaluate(
       (node, unavailable) =>
         Boolean(
-          node.compareDocumentPosition(unavailable) &
-          node.ownerDocument.defaultView.Node.DOCUMENT_POSITION_FOLLOWING,
+          node.compareDocumentPosition(unavailable) & globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
         ),
       await dialog.getByRole("button", { name: "Admin-disabled", exact: true }).elementHandle(),
     ),
@@ -741,7 +824,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await unavailableDetails;
   const disabledDetail = dialog.locator(".plugin-detail");
   assert.match(
-    await disabledDetail.locator(".plugin-unavailable").textContent(),
+    await disabledDetail.locator(".plugin-unavailable").innerText(),
     /Disabled by a ChatGPT workspace administrator/,
   );
   assert.equal(
@@ -849,7 +932,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   }
   await dialog.getByText(/credential was rejected or cannot access plugins/).waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
-  assert.equal((await dialog.textContent()).includes("private upstream response"), false);
+  assert.equal((await dialog.textContent())?.includes("private upstream response"), false);
   failTools = false;
   await dialog.getByRole("button", { name: "Retry tools for Calendar", exact: true }).click();
   await dialog.locator('details.plugin-tool-row[data-tool="app_calendar/events%2Flist"]').waitFor();
@@ -862,15 +945,15 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     0,
   );
   const detailLogo = dialog.locator(".plugin-detail-header .plugin-logo img");
-  await detailLogo.evaluate((image) => image.decode());
-  assert.ok(await detailLogo.evaluate((image) => image.naturalWidth > 0));
+  await detailLogo.evaluate((image: HTMLImageElement) => image.decode());
+  assert.ok(await detailLogo.evaluate((image: HTMLImageElement) => image.naturalWidth > 0));
   assert.equal(await detailLogo.getAttribute("alt"), "");
   assert.equal(await detailLogo.getAttribute("referrerpolicy"), "no-referrer");
   for (const [name, href] of [
     ["Website", "https://calendar.example/"],
     ["Privacy policy", "https://calendar.example/privacy"],
     ["Terms of service", "https://calendar.example/terms"],
-  ]) {
+  ] as const) {
     const link = dialog.getByRole("link", { name, exact: true });
     assert.equal(await link.getAttribute("href"), href);
     assert.equal(await link.getAttribute("target"), "_blank");
@@ -922,7 +1005,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   assert.equal(await clearedSetup.locator("a").count(), 0);
   assert.equal(await clearedSetup.isVisible(), false);
   assert.equal(
-    (await clearedSetup.locator(".plugin-access-instructions").textContent()).trim(),
+    (await clearedSetup.locator(".plugin-access-instructions").textContent())?.trim(),
     "",
   );
   assert.equal(await reminder.isVisible(), false);
@@ -936,14 +1019,14 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   });
   await token.fill("at-browser-plugin-one");
   await page.clock.runFor(300);
-  await listPending;
+  await listStarted.promise;
   assert.equal(await dialog.isVisible(), false);
   await token.fill("at-browser-plugin-two");
   await stalePrefetchCanceled;
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   await page.clock.runFor(300);
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
-  releaseList();
+  listRelease.resolve();
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
   assert.equal(await calendar.count(), 0);
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), selected);
@@ -969,12 +1052,12 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
     (request) =>
       request.path.endsWith("/agents/plugins") || request.path.endsWith("/agents/plugins/details"),
   );
-  assert.deepEqual(selectedRequests.at(-2).body, { secretRef: firstSecret.ref });
-  assert.deepEqual(selectedRequests.at(-1).body, {
+  assert.deepEqual(selectedRequests.at(-2)?.body, { secretRef: firstSecret.ref });
+  assert.deepEqual(selectedRequests.at(-1)?.body, {
     secretRef: firstSecret.ref,
     pluginId: "remote-calendar",
   });
-  assert.doesNotMatch(JSON.stringify(selectedRequests.at(-2).body), /at-browser-plugin/);
+  assert.doesNotMatch(JSON.stringify(selectedRequests.at(-2)?.body), /at-browser-plugin/);
   await closePluginDialog();
 
   // Switching the saved Secret discards the previous account's catalog and reloads with the new one.
@@ -984,7 +1067,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   await dialog.getByRole("button", { name: "New-account-plugin", exact: true }).waitFor();
   assert.equal(await calendar.count(), 0);
   assert.deepEqual(
-    requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1).body,
+    requests.filter((request) => request.path.endsWith("/agents/plugins")).at(-1)?.body,
     { secretRef: secondSecret.ref },
   );
   await closePluginDialog();
@@ -1037,20 +1120,24 @@ test("Agent creation edits Preset plugin policies through the modal and persists
     },
     [removedPluginId]: { enabled: true },
   };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Plugin policies",
-      template: {
-        agent: {
-          name: "Plugin policy Agent",
-          executionMode: "dedicated",
-          harnessAuth: { method: "api_key", source: secret.ref },
-          plugins,
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Plugin policies",
+        template: {
+          agent: {
+            name: "Plugin policy Agent",
+            executionMode: "dedicated",
+            harnessAuth: { method: "api_key", source: secret.ref },
+            plugins,
+          },
+          configuration: { values: nativeValues("plugin-policies", { harnessId: "codex" }) },
         },
-        configuration: { values: nativeValues("plugin-policies", { harnessId: "codex" }) },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -1066,7 +1153,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   await json.fill("{");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal(await json.inputValue(), "{");
-  assert.notEqual(await json.evaluate((node) => node.validationMessage), "");
+  assert.notEqual(await json.evaluate((node: HTMLTextAreaElement) => node.validationMessage), "");
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await json.fill(JSON.stringify(plugins));
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -1119,13 +1206,13 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   });
   // The summary toggle edits only enablement; an omitted override remains visibly inherited.
   await searchTool.locator("summary").click();
-  assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
+  assert.equal(await toolToggle.evaluate((node: HTMLInputElement) => node.indeterminate), true);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
     approval: "none",
     enabled: true,
   });
-  assert.equal(await searchTool.evaluate((node) => node.open), false);
+  assert.equal(await searchTool.evaluate((node: HTMLDetailsElement) => node.open), false);
   await toolToggle.click();
   assert.deepEqual(JSON.parse(await json.inputValue())[pluginId].tools["app_knowledge/search"], {
     approval: "none",
@@ -1133,7 +1220,7 @@ test("Agent creation edits Preset plugin policies through the modal and persists
   });
   await searchTool.locator("summary").click();
   await toolEnabled.selectOption("");
-  assert.equal(await toolToggle.evaluate((node) => node.indeterminate), true);
+  assert.equal(await toolToggle.evaluate((node: HTMLInputElement) => node.indeterminate), true);
   await toolToggle.click();
   await toolApproval.selectOption("");
   await dialog
@@ -1174,10 +1261,11 @@ test("Agent creation edits Preset plugin policies through the modal and persists
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${created.id}`);
+  const created = await createdAgent(createdResponse);
+  const saved: FixtureResponse<AgentWire> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${created.id}`,
+  );
   assert.equal(saved.status, 200);
   assert.deepEqual(saved.data.plugins, expected);
 });
@@ -1219,7 +1307,9 @@ test("Plugin approval choices explain unsupported provider modes and preserve th
   assert.deepEqual(
     await approval
       .locator("option")
-      .evaluateAll((options) => options.map(({ value, disabled }) => [value, disabled])),
+      .evaluateAll((options: HTMLOptionElement[]) =>
+        options.map(({ value, disabled }) => [value, disabled]),
+      ),
     [
       ["", false],
       ["provider_default", false],
@@ -1243,7 +1333,10 @@ test("Plugin approval choices explain unsupported provider modes and preserve th
   );
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
   assert.equal((await savedResponse).status(), 200);
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const saved: FixtureResponse<AgentWire> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
   assert.deepEqual(saved.data.plugins, {
     "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },
   });
@@ -1255,15 +1348,19 @@ test("API-key Presets keep their credential provider fixed while allowing model 
   const namespace = await fixture.createNamespace("Bound provider Preset", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "preset-model-key");
   const harnessAuth = { method: "api_key", source: secret.ref };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Saved OpenAI credential",
-      template: {
-        agent: { name: "Bound provider Agent", executionMode: "embedded", harnessAuth },
-        configuration: { values: nativeValues("bound-provider") },
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Saved OpenAI credential",
+        template: {
+          agent: { name: "Bound provider Agent", executionMode: "embedded", harnessAuth },
+          configuration: { values: nativeValues("bound-provider") },
+        },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201);
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
@@ -1312,12 +1409,10 @@ test("API-key Presets keep their credential provider fixed while allowing model 
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const created = await createdAgent(createdResponse);
   assert.deepEqual(created.harnessAuth, harnessAuth);
   assert.equal(created.executionMode, "dedicated");
-  const saved = await fixture.request(
+  const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
@@ -1331,23 +1426,32 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   const namespace = await fixture.createNamespace("Dedicated OpenClaw Preset", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "dedicated-key");
   const harnessAuth = { method: "api_key", source: secret.ref };
-  const values = nativeValues("dedicated-openclaw");
-  values.models.providers.openai = {
-    ...values.models.providers.openai,
+  const base = nativeValues("dedicated-openclaw");
+  const provider = base.models.providers.openai;
+  assert.ok(provider, "the native fixture must supply the OpenAI provider");
+  const openai = {
+    ...provider,
     baseUrl: "https://models.example.test/v1",
     api: "openai-completions",
     headers: { "X-Model-Route": "enterprise" },
   };
-  values.models.providers.openai.models[0].id = "openai/gpt-4.1";
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Dedicated OpenClaw",
-      template: {
-        agent: { name: "Dedicated OpenClaw Agent", executionMode: "dedicated", harnessAuth },
-        configuration: { values },
+  const [model] = openai.models;
+  assert.ok(model);
+  model.id = "openai/gpt-4.1";
+  const values = { ...base, models: { ...base.models, providers: { openai } } };
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Dedicated OpenClaw",
+        template: {
+          agent: { name: "Dedicated OpenClaw Agent", executionMode: "dedicated", harnessAuth },
+          configuration: { values },
+        },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const unavailable =
     /Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support/;
@@ -1394,17 +1498,15 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201, JSON.stringify(await response.json()));
-  const created = (await response.json()).data;
+  const created = await createdAgent(createdResponse);
   assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, harnessAuth);
-  const saved = await fixture.request(
+  const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
   assert.equal(saved.data.values.agents.defaults.model, "openai/gpt-4.1");
-  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"].agentRuntime, {
+  assert.deepEqual(saved.data.values.agents.defaults.models["openai/gpt-4.1"]?.agentRuntime, {
     id: "openclaw",
   });
   assert.deepEqual(saved.data.values.models.providers, values.models.providers);
@@ -1414,15 +1516,19 @@ test("Partial Presets without a model policy retain the default Codex harness", 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Partial model Preset", { ready: true });
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Gateway settings only",
-      template: {
-        agent: { name: "Partial Preset Agent" },
-        configuration: { values: { gateway: { mode: "local", bind: "lan" } } },
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Gateway settings only",
+        template: {
+          agent: { name: "Partial Preset Agent" },
+          configuration: { values: { gateway: { mode: "local", bind: "lan" } } },
+        },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -1440,16 +1546,14 @@ test("Partial Presets without a model policy retain the default Codex harness", 
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const created = await createdAgent(createdResponse);
   assert.equal(created.executionMode, "dedicated");
-  const saved = await fixture.request(
+  const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
   assert.equal(saved.data.values.agents.defaults.model, "codex/gpt-6-astra");
-  assert.deepEqual(saved.data.values.agents.defaults.models["codex/gpt-6-astra"].agentRuntime, {
+  assert.deepEqual(saved.data.values.agents.defaults.models["codex/gpt-6-astra"]?.agentRuntime, {
     id: "codex",
   });
   assert.deepEqual(saved.data.values.gateway, { mode: "local", bind: "lan" });
@@ -1481,33 +1585,37 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     },
   };
   const secretBindings = { CHANNEL_TOKEN: { source: secret.ref, delivery: { type: "env" } } };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Reusable Agent",
-      template: {
-        variables: {
-          name: { type: "string" },
-          execution: { type: "string", default: "dedicated" },
-          marker: { type: "string", default: "initial" },
-          enabled: { type: "boolean", default: false },
-          count: { type: "number", default: 0 },
-        },
-        agent: {
-          name: "{{ vars.name }}",
-          executionMode: "{{ vars.execution }}",
-          backendId: backendFixtures[0].id,
-          harnessAuth: { method: "codex_pat", source: secret.ref },
-          plugins,
-          initialWorkspaceFiles: {
-            "AGENTS.md": "# {{ vars.name }} workspace\n",
-            "IDENTITY.md": "",
-            "USER.md": "marker {{ vars.marker }}",
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Reusable Agent",
+        template: {
+          variables: {
+            name: { type: "string" },
+            execution: { type: "string", default: "dedicated" },
+            marker: { type: "string", default: "initial" },
+            enabled: { type: "boolean", default: false },
+            count: { type: "number", default: 0 },
           },
+          agent: {
+            name: "{{ vars.name }}",
+            executionMode: "{{ vars.execution }}",
+            backendId: backendFixtures[0]!.id,
+            harnessAuth: { method: "codex_pat", source: secret.ref },
+            plugins,
+            initialWorkspaceFiles: {
+              "AGENTS.md": "# {{ vars.name }} workspace\n",
+              "IDENTITY.md": "",
+              "USER.md": "marker {{ vars.marker }}",
+            },
+          },
+          configuration: { values, secretBindings },
         },
-        configuration: { values, secretBindings },
       },
     },
-  });
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   // Exercise the supported draft path; dedicated provisioning has separate workflow coverage.
@@ -1521,7 +1629,9 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   const apply = page.getByRole("button", { name: "Use Preset" });
   await apply.click();
   assert.equal(
-    await page.getByLabel("Name", { exact: true }).evaluate((input) => input.validity.valueMissing),
+    await page
+      .getByLabel("Name", { exact: true })
+      .evaluate((input: HTMLInputElement) => input.validity.valueMissing),
     true,
   );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
@@ -1656,32 +1766,36 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
       response.request().method() === "POST",
   );
   await save.click();
-  const created = await (await createdResponse).json();
+  const created = await createdAgent(createdResponse);
   assert.equal(
     pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/models`).length,
     0,
   );
-  assert.equal(created.data.name, "Preset Agent");
+  assert.equal(created.name, "Preset Agent");
   const expectedWorkspaceFiles = {
     ...WORKSPACE_DEFAULTS,
     "AGENTS.md": "# Edited workspace\n",
     "IDENTITY.md": "",
     "USER.md": "marker changed",
   };
-  assert.deepEqual(
-    agentPostRequests(requests, namespace.id).map((request) => request.body.initialWorkspaceFiles),
-    [expectedWorkspaceFiles, expectedWorkspaceFiles],
-  );
-  assert.deepEqual(
-    agentPostRequests(requests, namespace.id).map((request) => request.body.workspaceDefaultsId),
-    [WORKSPACE_DEFAULTS_ID, WORKSPACE_DEFAULTS_ID],
-  );
-  assert.deepEqual(created.data.plugins, plugins);
-  assert.equal(created.data.backendId, backendFixtures[0].id);
-  assert.deepEqual(created.data.harnessAuth, { method: "codex_pat", source: secret.ref });
-  const saved = await fixture.request(
+  const agentWrites = agentPostRequests(requests, namespace.id);
+  assert.equal(agentWrites.length, 2);
+  for (const { body } of agentWrites) {
+    assert.ok(
+      typeof body === "object" &&
+        body !== null &&
+        "initialWorkspaceFiles" in body &&
+        "workspaceDefaultsId" in body,
+    );
+    assert.deepEqual(body.initialWorkspaceFiles, expectedWorkspaceFiles);
+    assert.equal(body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
+  }
+  assert.deepEqual(created.plugins, plugins);
+  assert.equal(created.backendId, backendFixtures[0]!.id);
+  assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: secret.ref });
+  const saved: FixtureResponse<ModelConfiguration> = await fixture.request(
     "GET",
-    `/namespaces/${namespace.id}/configurations/${created.data.configurationId}`,
+    `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
   );
   assert.deepEqual(saved.data.secretBindings, secretBindings);
   assert.deepEqual(saved.data.values.gateway.controlUi, { enabled: false });
@@ -1693,15 +1807,14 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
     1,
   );
 
-  await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Service account token Secret").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
   await waitForInputValue(page.getByLabel("Service account token Secret"), secret.name);
   const patched = page.waitForResponse(
     (response) =>
-      response.url().endsWith(`/agents/${created.data.id}`) &&
-      response.request().method() === "PATCH",
+      response.url().endsWith(`/agents/${created.id}`) && response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
   assert.deepEqual((await (await patched).json()).data.harnessAuth, {
@@ -1710,16 +1823,20 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   });
 
   // A Preset can supply an explicit model while requiring the operator to select its model Secret.
-  await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
-  const keyEntryPreset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Preset requiring an API key",
-      template: {
-        agent: { name: "Preset key entry", executionMode: "embedded" },
-        configuration: { values: nativeValues("preset-key-entry") },
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const keyEntryPreset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Preset requiring an API key",
+        template: {
+          agent: { name: "Preset key entry", executionMode: "embedded" },
+          configuration: { values: nativeValues("preset-key-entry") },
+        },
       },
     },
-  });
+  );
   assert.equal(keyEntryPreset.status, 201);
   const presetKeySecrets = await Promise.all(
     ["preset-openai-key", "preset-anthropic-key", "preset-dedicated-openai-key"].map((value) =>
@@ -1763,12 +1880,14 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Password Preset", { ready: true });
   await fixture.createAgent(namespace.id, "Existing Agent");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -1780,7 +1899,10 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
   const password = page.getByLabel("Model Secret", { exact: true });
   assert.equal(await password.getAttribute("type"), "password");
   await page.getByRole("button", { name: "Use Preset" }).click();
-  assert.equal(await password.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(
+    await password.evaluate((input: HTMLInputElement) => input.validity.valueMissing),
+    true,
+  );
   const key = "synthetic-password-key-{{ vars.name }}";
   await password.fill(key);
   await page.getByRole("button", { name: "Use Preset" }).click();
@@ -1812,32 +1934,44 @@ test("standard Codex password Preset creates one scoped Secret and reuses it aft
       response.request().method() === "POST",
   );
   await save.click();
-  const created = await (await createdResponse).json();
-  await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
-  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  const created = await createdAgent(createdResponse);
+  await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
+  const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 1);
-  assert.equal(secretWrites[0].body.value, key);
+  assert.partialDeepStrictEqual(secretWrites[0]?.body, {
+    value: key,
+  } satisfies Pick<CreateSecretBody, "value">);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   assert.equal(
     JSON.stringify(requests.filter((request) => !request.path.endsWith("/secrets"))).includes(key),
     false,
   );
-  assert.equal(created.data.executionMode, "dedicated");
-  assert.equal(created.data.harnessAuth.source.namespaceId, namespace.id);
-  const secrets = await fixture.request("GET", `/namespaces/${namespace.id}/secrets`);
-  assert.ok(secrets.data.some((secret) => secret.id === created.data.harnessAuth.source.id));
+  assert.equal(created.executionMode, "dedicated");
+  const auth = created.harnessAuth;
+  assert.ok(auth?.method === "api_key" && auth.source.kind === "secret");
+  const source = auth.source;
+  assert.equal(source.namespaceId, namespace.id);
+  const secrets: FixtureResponse<SecretWire[]> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/secrets`,
+  );
+  assert.ok(secrets.data.some((secret) => secret.id === source.id));
   assert.equal(JSON.stringify(secrets.body).includes(key), false);
-  const retained = await fixture.request(
+  const retained: FixtureResponse<Preset> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/presets/${preset.data.id}`,
   );
   assert.deepEqual(retained.data.template, artifact.template);
-  const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  const access: FixtureResponse<IAMAccessBindingWire[]> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/iam/access-bindings`,
+  );
   assert.ok(
     access.data.some(
       (binding) =>
-        binding.subjectId === created.data.servicePrincipalId &&
-        binding.resourceId === created.data.harnessAuth.source.id,
+        binding.subjectId === created.servicePrincipalId &&
+        "resourceId" in binding &&
+        binding.resourceId === source.id,
     ),
   );
 });
@@ -1846,16 +1980,18 @@ test("Preset marks referenced variables without defaults as required before rend
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Required Preset variables", { ready: true });
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = structuredClone(standardCodexPreset);
   // Defaulted and unreferenced variables cannot fail rendering, so they stay optional.
   artifact.template.variables.marker = { type: "string", default: "initial" };
   artifact.template.variables.unused = { type: "boolean" };
   artifact.template.agent.initialWorkspaceFiles = { "USER.md": "marker {{ vars.marker }}" };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -1869,9 +2005,12 @@ test("Preset marks referenced variables without defaults as required before rend
   await marker.fill("");
   await page.getByRole("button", { name: "Use Preset" }).click();
   // The browser points at the empty Model field instead of a raw template path.
-  assert.equal(await model.evaluate((input) => input.validity.valueMissing), true);
-  assert.equal(await marker.evaluate((input) => input.validity.valid), true);
-  assert.equal(await unused.evaluate((input) => input.validity.valid), true);
+  assert.equal(
+    await model.evaluate((input: HTMLInputElement) => input.validity.valueMissing),
+    true,
+  );
+  assert.equal(await marker.evaluate((input: HTMLTextAreaElement) => input.validity.valid), true);
+  assert.equal(await unused.evaluate((input: HTMLSelectElement) => input.validity.valid), true);
   assert.equal(
     await page.getByRole("group", { name: "Preset" }).getByRole("alert").textContent(),
     "",
@@ -1888,14 +2027,16 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Bound Secret Preset", { ready: true });
   const modelSecret = await fixture.createSecret(namespace.id, "Model token", "hidden-model-token");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = structuredClone(standardCodexPreset);
   delete artifact.template.variables.modelSecret;
   artifact.template.agent.harnessAuth = { method: "api_key", source: modelSecret.ref };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -1910,14 +2051,20 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
-  const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
+  const bindings: FixtureResponse<IAMAccessBindingWire[]> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/iam/access-bindings`,
+  );
+  const roles: FixtureResponse<IAMRoleWire[]> = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/iam/roles`,
+  );
   const secretOperateRole = roles.data.find(
     (role) =>
       role.permissions.length === 1 &&
-      role.permissions[0].resourceKind === "secret" &&
+      role.permissions[0]?.resourceKind === "secret" &&
       role.permissions[0].action === "operate",
   );
   assert.ok(secretOperateRole);
@@ -1927,6 +2074,7 @@ test("Preset with a prebound model Secret grants the created draft access", asyn
         binding.subjectKind === "identity" &&
         binding.subjectId === created.servicePrincipalId &&
         binding.roleId === secretOperateRole.id &&
+        "resourceKind" in binding &&
         binding.resourceKind === "secret" &&
         binding.resourceId === modelSecret.id,
     ),
@@ -1939,14 +2087,13 @@ for (const collection of ["secrets", "configurations"]) {
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace("Preset creation receipts", { ready: true });
     const root = `/namespaces/${namespace.id}`;
-    const other =
+    const other: SecretWire | ConfigurationWire =
       collection === "secrets"
         ? await fixture.createSecret(namespace.id, "Other model credential", "other-test-value")
         : await fixture.createConfiguration(namespace.id, nativeValues("other"));
-    const artifact = JSON.parse(
-      await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-    );
-    const preset = await fixture.request("POST", `${root}/presets`, { body: artifact });
+    const preset: FixtureResponse<Preset> = await fixture.request("POST", `${root}/presets`, {
+      body: standardCodexPreset,
+    });
     assert.equal(preset.status, 201);
     const { page } = await newPage(t, fixture);
     await routeInstallationWithoutProvisioning(page, fixture);
@@ -1959,7 +2106,7 @@ for (const collection of ["secrets", "configurations"]) {
       // The requested write commits. Return a genuine record from this same Namespace in its place.
       const response = await route.fetch();
       assert.equal(response.status(), 201);
-      const { data, meta } = await response.json();
+      const { data, meta }: SecretResponse | ConfigurationResponse = await response.json();
       assert.notEqual(data.id, other.id);
       assert.equal(data.namespaceId, other.namespaceId);
       await route.fulfill({ status: 201, json: { data: other, meta } });
@@ -1977,6 +2124,13 @@ for (const collection of ["secrets", "configurations"]) {
       .getByRole("alert")
       .filter({ hasText: /Outcome unknown/ })
       .waitFor();
+    assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
+    assert.equal(await create.isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
+    await page
+      .locator("#create-agent-form")
+      .evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await settlePageRequests(page);
     const bindings = `${root}/iam/access-bindings`;
     assert.equal(
       pathRequests(requests, "POST", bindings).length,
@@ -1984,10 +2138,6 @@ for (const collection of ["secrets", "configurations"]) {
       "do not grant a Secret after an unconfirmed create",
     );
     assert.equal(agentPostRequests(requests, namespace.id).length, 0);
-    assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
-    assert.equal(await create.isDisabled(), true);
-    assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
-    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
     assert.equal(pathRequests(requests, "POST", `${root}/secrets`).length, 1);
     assert.equal(
       configurationPostRequests(requests, namespace.id).length,
@@ -2005,12 +2155,14 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
     "Existing model token",
     "hidden-model-token",
   );
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -2045,7 +2197,7 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page
     .getByRole("alert")
     .filter({ hasText: /credential access is not confirmed.*interrupted/ })
@@ -2055,17 +2207,25 @@ test("password Preset can reuse an existing Secret and retry an uncertain grant 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
 
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
-  assert.equal(agentPostRequests(requests, namespace.id).length, 1);
-  assert.deepEqual(agentPostRequests(requests, namespace.id)[0].body.harnessAuth, {
+  const agentWrites = agentPostRequests(requests, namespace.id);
+  assert.equal(agentWrites.length, 1);
+  const body = agentWrites[0]?.body;
+  assert.ok(typeof body === "object" && body !== null && "harnessAuth" in body);
+  assert.deepEqual(body.harnessAuth, {
     method: "api_key",
     source: modelSecret.ref,
-  });
-  const bindings = await fixture.request("GET", bindingPath);
+  } satisfies CreateAgentBody["harnessAuth"]);
+  const bindings: FixtureResponse<IAMAccessBindingWire[]> = await fixture.request(
+    "GET",
+    bindingPath,
+  );
   assert.equal(bindings.status, 200);
   assert.equal(bindings.data.length, 1);
-  assert.equal(bindings.data[0].subjectId, created.servicePrincipalId);
-  assert.equal(bindings.data[0].resourceId, modelSecret.id);
-  const retained = await fixture.request(
+  const [binding] = bindings.data;
+  assert.ok(binding && "resourceId" in binding, "the committed grant must name the Secret");
+  assert.equal(binding.subjectId, created.servicePrincipalId);
+  assert.equal(binding.resourceId, modelSecret.id);
+  const retained: FixtureResponse<Preset> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/presets/${preset.data.id}`,
   );
@@ -2077,14 +2237,18 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Codex PAT Preset", { ready: true });
   await fixture.createAgent(namespace.id, "Existing Codex Agent");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = structuredClone(standardCodexPreset);
   artifact.name = "standard-codex-pat";
-  artifact.template.agent.harnessAuth.method = "codex_pat";
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
+  const auth = artifact.template.agent.harnessAuth;
+  assert.ok("secret" in auth, "the shipped template must request the password variable");
+  artifact.template.agent.harnessAuth = { ...auth, method: "codex_pat" };
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -2118,13 +2282,15 @@ test("codex_pat password Preset creates one Secret and reuses it after an Agent 
       response.request().method() === "POST",
   );
   await save.click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 1);
-  assert.equal(secretWrites[0].body.value, "at-codex-pat-preset-token");
+  assert.partialDeepStrictEqual(secretWrites[0]?.body, {
+    value: "at-codex-pat-preset-token",
+  } satisfies Pick<CreateSecretBody, "value">);
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
-  assert.equal(created.harnessAuth.method, "codex_pat");
+  assert.equal(created.harnessAuth?.method, "codex_pat");
 });
 
 test("password Preset names the taken Secret when an earlier Agent left one with the same name", async (t) => {
@@ -2133,12 +2299,14 @@ test("password Preset names the taken Secret when an earlier Agent left one with
   const namespace = await fixture.createNamespace("Secret name conflict", { ready: true });
   // Deleting an Agent keeps its model Secret, which is named after the Agent.
   await fixture.createSecret(namespace.id, "Recreated Agent", "earlier-model-key");
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -2174,12 +2342,14 @@ test("password Preset names the taken Secret when an earlier Agent left one with
       response.request().method() === "POST",
   );
   await save.click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
-  const secretWrites = pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`);
+  const secretWrites = secretPostRequests(requests, namespace.id);
   assert.deepEqual(
-    secretWrites.map((write) => write.body.name),
-    ["Recreated Agent", "Recreated Agent 2"],
+    secretWrites.map(({ body }) => body),
+    ["Recreated Agent", "Recreated Agent 2"].map(
+      (name) => ({ name, value: "replacement-model-key" }) satisfies CreateSecretBody,
+    ),
   );
 });
 
@@ -2192,15 +2362,17 @@ test("method-only codex_pat Preset requires credential entry in the create form"
     "Existing service account token",
     "hidden-existing-token",
   );
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  const artifact = structuredClone(standardCodexPreset);
   artifact.name = "method-only-codex-pat";
   delete artifact.template.variables.modelSecret;
   artifact.template.agent.harnessAuth = { method: "codex_pat" };
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -2218,7 +2390,9 @@ test("method-only codex_pat Preset requires credential entry in the create form"
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.waitForFunction(
-    () => globalThis.document.querySelector("#agent-auth-method")?.disabled === false,
+    () =>
+      globalThis.document.querySelector<HTMLSelectElement>("#agent-auth-method")?.disabled ===
+      false,
   );
   assert.equal(
     await page.getByLabel("Agent name", { exact: true }).inputValue(),
@@ -2234,7 +2408,10 @@ test("method-only codex_pat Preset requires credential entry in the create form"
     "",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  assert.equal(await credential.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(
+    await credential.evaluate((input: HTMLInputElement) => input.validity.valueMissing),
+    true,
+  );
   assert.equal(nonAuthWriteRequests(requests).length, 0);
 
   await selectSecret(page, "Service account token Secret", modelSecret);
@@ -2251,16 +2428,18 @@ test("method-only codex_pat Preset requires credential entry in the create form"
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   const secretWrites = secretPostRequests(requests, namespace.id);
   assert.equal(secretWrites.length, 0);
   const agentWrites = agentPostRequests(requests, namespace.id);
   assert.equal(agentWrites.length, 1);
-  assert.deepEqual(agentWrites[0].body.harnessAuth, {
+  const body = agentWrites[0]?.body;
+  assert.ok(typeof body === "object" && body !== null && "harnessAuth" in body);
+  assert.deepEqual(body.harnessAuth, {
     method: "codex_pat",
     source: modelSecret.ref,
-  });
+  } satisfies CreateAgentBody["harnessAuth"]);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
 });
 
@@ -2281,7 +2460,7 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   await page.clock.install({ time: new Date("2026-09-27T12:00:00Z") });
   await page.clock.pauseAt(new Date("2026-09-27T12:00:01Z"));
   const secretValue = "picker-created-model-token";
-  const modelSecret = await createModelCredentialSecret(page, secretValue);
+  const modelSecret: SecretWire | null = await createModelCredentialSecret(page, secretValue);
   assert.ok(modelSecret);
   assert.equal(
     await page.getByLabel("Service account token Secret", { exact: true }).inputValue(),
@@ -2300,8 +2479,8 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
   await model.fill("gpt-5.1");
   await model.press("Tab");
 
-  const submitStarted = Promise.withResolvers();
-  const submitRelease = Promise.withResolvers();
+  const submitStarted = Promise.withResolvers<void>();
+  const submitRelease = Promise.withResolvers<void>();
   t.after(() => submitRelease.resolve());
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
     if (route.request().method() === "POST") {
@@ -2348,13 +2527,13 @@ test("Create Agent reuses its PAT Secret and resumes plugin prefetch after an Ag
       response.request().method() === "POST",
   );
   await save.click();
-  const created = (await (await createdResponse).json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
-  assert.deepEqual(secretPostRequests(requests, namespace.id)[0].body, {
+  assert.deepEqual(secretPostRequests(requests, namespace.id)[0]?.body, {
     name: "Existing picker Agent model credential",
     value: secretValue,
-  });
+  } satisfies CreateSecretBody);
   assert.deepEqual(created.harnessAuth, { method: "codex_pat", source: modelSecret.ref });
   assert.equal(agentPostRequests(requests, namespace.id).length, 2);
 });
@@ -2363,12 +2542,14 @@ test("Preset Secret picker preserves existing mode on catalog failure and can sw
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Preset secret catalog failure", { ready: true });
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
@@ -2408,33 +2589,38 @@ test("Preset picker ignores stale Preset responses after switching selection", a
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Preset picker race", { ready: true });
-  const first = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "First delayed Preset",
-      template: {
-        variables: { firstName: { type: "string" } },
-        agent: { name: "{{ vars.firstName }}", executionMode: "embedded" },
+  const first: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "First delayed Preset",
+        template: {
+          variables: { firstName: { type: "string" } },
+          agent: { name: "{{ vars.firstName }}", executionMode: "embedded" },
+        },
       },
     },
-  });
-  const second = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Second current Preset",
-      template: {
-        variables: { secondName: { type: "string" } },
-        agent: { name: "{{ vars.secondName }}", executionMode: "embedded" },
+  );
+  const second: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Second current Preset",
+        template: {
+          variables: { secondName: { type: "string" } },
+          agent: { name: "{{ vars.secondName }}", executionMode: "embedded" },
+        },
       },
     },
-  });
+  );
   assert.equal(first.status, 201, JSON.stringify(first.body));
   assert.equal(second.status, 201, JSON.stringify(second.body));
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   await routeInstallationWithoutProvisioning(page, fixture);
-  let releaseFirst;
-  const firstBlocked = new Promise((resolve) => {
-    releaseFirst = resolve;
-  });
+  const { resolve: releaseFirst, promise: firstBlocked } = Promise.withResolvers<void>();
   await page.route(`**/namespaces/${namespace.id}/presets/${first.data.id}`, async (route) => {
     await firstBlocked;
     await route.fallback();
@@ -2461,7 +2647,7 @@ test("a default starter creation form survives every exit but a confirmed Cancel
   const savedAgent = await fixture.createAgent(namespace.id, "Saved Agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const dialogs = [];
+  const dialogs: string[] = [];
   let acceptDialogs = false;
   page.on("dialog", async (dialog) => {
     dialogs.push(`${dialog.type()}: ${dialog.message()}`);
@@ -2539,7 +2725,7 @@ test("a default starter creation form survives every exit but a confirmed Cancel
 
   // Exiting an unsaved form must not mutate or delete an Agent already saved by the user.
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  const result = await fixture.request(
+  const result: FixtureResponse<AgentWire> = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${savedAgent.id}`,
   );
@@ -2551,11 +2737,13 @@ test("a restored default starter chooser keeps its applied form across navigatio
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Customized starter", { ready: true });
-  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
-  const template = await presetTemplate(fixture, namespace.id, starter.id);
-  template.variables = { name: { type: "string" } };
-  template.agent.name = "{{ vars.name }}";
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  const defaults = await presetTemplate(fixture, namespace.id, starter.id);
+  const template: PresetTemplate = {
+    ...defaults,
+    variables: { name: { type: "string" } },
+    agent: { ...defaults.agent, name: "{{ vars.name }}" },
+  };
   const updated = await fixture.request(
     "PATCH",
     `/namespaces/${namespace.id}/presets/${starter.id}`,
@@ -2587,17 +2775,10 @@ test("a default shortcut restored after a pending Preset read keeps its form", a
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pending starter", { ready: true });
-  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  const starter = await defaultPresetSummary(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
-  let releaseRead;
-  let markRead;
-  const blocked = new Promise((resolve) => {
-    releaseRead = resolve;
-  });
-  const observed = new Promise((resolve) => {
-    markRead = resolve;
-  });
+  const { resolve: releaseRead, promise: blocked } = Promise.withResolvers<void>();
+  const { resolve: markRead, promise: observed } = Promise.withResolvers<void>();
   t.after(() => releaseRead());
   const presetPath = `**/namespaces/${namespace.id}/presets/${starter.id}`;
   await page.route(presetPath, async (route) => {
@@ -2626,12 +2807,13 @@ test("invalid Preset application retains chooser edits and the applied form for 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Invalid starter", { ready: true });
-  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
-  const template = await presetTemplate(fixture, namespace.id, starter.id);
-  template.variables = { mode: { type: "string" } };
-  template.agent.name = "Preset draft";
-  template.agent.executionMode = "{{ vars.mode }}";
+  const starter = await defaultPresetSummary(fixture, namespace.id);
+  const defaults = await presetTemplate(fixture, namespace.id, starter.id);
+  const template: PresetTemplate = {
+    ...defaults,
+    variables: { mode: { type: "string" } },
+    agent: { ...defaults.agent, name: "Preset draft", executionMode: "{{ vars.mode }}" },
+  };
   const updated = await fixture.request(
     "PATCH",
     `/namespaces/${namespace.id}/presets/${starter.id}`,
@@ -2672,8 +2854,8 @@ test("invalid Preset application retains chooser edits and the applied form for 
       origin,
     );
     // The variables typed in the chooser are the form's changes: Cancel asks before discarding.
-    const asked = [];
-    const answer = async (dialog) => {
+    const asked: string[] = [];
+    const answer = async (dialog: Dialog) => {
       asked.push(dialog.message());
       await dialog.accept();
     };
@@ -2693,16 +2875,25 @@ test("failed Preset form construction retains chooser edits for both origins", a
 
   for (const origin of ["shortcut", "explicit"]) {
     const namespace = await fixture.createNamespace(`Invalid model ${origin}`, { ready: true });
-    const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-    const starter = presets.data.find((preset) => preset.name === "default-codex");
+    const starter = await defaultPresetSummary(fixture, namespace.id);
     const validTemplate = await presetTemplate(fixture, namespace.id, starter.id);
-    const fallback = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-      body: { name: "Usable fallback", template: validTemplate },
-    });
+    const fallback: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: { name: "Usable fallback", template: validTemplate },
+      },
+    );
     assert.equal(fallback.status, 201);
-    const invalidTemplate = structuredClone(validTemplate);
-    invalidTemplate.variables = { marker: { type: "string" } };
-    invalidTemplate.configuration.values.agents = { defaults: { model: { primary: 42 } } };
+    const configuration = validTemplate.configuration;
+    const invalidTemplate: PresetTemplate = {
+      ...validTemplate,
+      variables: { marker: { type: "string" } },
+      configuration: {
+        ...configuration,
+        values: { ...configuration?.values, agents: { defaults: { model: { primary: 42 } } } },
+      },
+    };
     const updated = await fixture.request(
       "PATCH",
       `/namespaces/${namespace.id}/presets/${starter.id}`,
@@ -2737,12 +2928,14 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Draft navigation", { ready: true });
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+  const artifact = structuredClone(standardCodexPreset);
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
   );
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -2779,11 +2972,16 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   const credentialSecret = page.getByLabel("API key Secret", { exact: true });
   await credentialSecret.waitFor();
   await page.waitForFunction(() => {
-    const select = globalThis.document.querySelector("#provider-credential-secret");
+    const select = globalThis.document.querySelector<HTMLInputElement>(
+      "#provider-credential-secret",
+    );
     return select && !select.disabled && select.required;
   });
   assert.equal(await credentialSecret.inputValue(), "");
-  assert.equal(await credentialSecret.evaluate((select) => select.validity.valueMissing), true);
+  assert.equal(
+    await credentialSecret.evaluate((input: HTMLInputElement) => input.validity.valueMissing),
+    true,
+  );
   assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
   assert.equal(new URL(page.url()).search, `?namespace=${namespace.id}`);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2807,8 +3005,8 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   // The browser asks first while the draft holds changes.
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
-  const leaving = [];
-  const answer = async (dialog) => {
+  const leaving: string[] = [];
+  const answer = async (dialog: Dialog) => {
     leaving.push(dialog.type());
     await dialog.accept();
   };
@@ -2877,9 +3075,7 @@ test("a delayed restored Preset list cannot read a selection after starting with
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Delayed Preset list", { ready: true });
-  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
-  assert.ok(starter);
+  const starter = await defaultPresetSummary(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -2896,26 +3092,24 @@ test("a delayed restored Preset list cannot read a selection after starting with
 
   // A real catalog change makes the admitted return construct a fresh chooser
   // with the retained selection. Do not hold its outer access revalidation.
-  const added = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Another Preset",
-      template: await presetTemplate(fixture, namespace.id, starter.id),
+  const added: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Another Preset",
+        template: await presetTemplate(fixture, namespace.id, starter.id),
+      },
     },
-  });
+  );
   assert.equal(added.status, 201, JSON.stringify(added.body));
 
-  let releaseList;
-  const heldList = new Promise((resolve) => {
-    releaseList = resolve;
-  });
-  let finishList;
-  const listHandled = new Promise((resolve) => {
-    finishList = resolve;
-  });
+  const { resolve: releaseList, promise: heldList } = Promise.withResolvers<void>();
+  const { resolve: finishList, promise: listHandled } = Promise.withResolvers<void>();
   const listUrl = `${fixture.origin}/namespaces/${namespace.id}/presets`;
   const listPath = `**/namespaces/${namespace.id}/presets`;
   let routedLists = 0;
-  let heldRequest;
+  let heldRequest: Request | undefined;
   await page.route(listPath, async (route) => {
     if (route.request().method() !== "GET" || ++routedLists !== 2) {
       await route.continue();
@@ -2975,7 +3169,7 @@ test("a delayed restored Preset list cannot read a selection after starting with
   assert.equal(response.request(), pendingList);
   assert.equal(response.request().method(), "GET");
   assert.equal(response.status(), 200);
-  const releasedPresets = (await response.json()).data;
+  const releasedPresets: PresetSummaryWire[] = (await response.json()).data;
   assert.ok(releasedPresets.some((preset) => preset.id === starter.id));
   assert.ok(releasedPresets.some((preset) => preset.id === added.data.id));
   await response.finished();
@@ -3000,14 +3194,15 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Denied Preset", { ready: true });
-  const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  const starter = await defaultPresetSummary(fixture, namespace.id);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page
     .getByRole("button", { name: "Start with default Preset" })
     .waitFor({ state: "visible" });
-  await page.waitForFunction(() => !globalThis.document.querySelector("#agent-preset").disabled);
+  await page.waitForFunction(
+    () => globalThis.document.querySelector<HTMLSelectElement>("#agent-preset")?.disabled === false,
+  );
   // Deny the exact read after the list is visible to exercise a changed grant.
   fixture.policy.restrictions.push({
     id: "deny-selected-preset",
@@ -3042,9 +3237,13 @@ test("The console requires a readable installed default for quick-start and stil
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("No installed starter", { ready: true });
-  const alternative = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: { name: "Custom starter", template: { agent: { name: "Custom Agent" } } },
-  });
+  const alternative: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: { name: "Custom starter", template: { agent: { name: "Custom Agent" } } },
+    },
+  );
   assert.equal(alternative.status, 201);
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -3068,7 +3267,7 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   const namespace = await fixture.createNamespace("Managed account Preset", { ready: true });
   // Account issuance is outside this browser test. Association before issuance is
   // supported; this proves Preset rendering and draft creation, not deployment.
-  const account = await fixture.controller.transact((state) =>
+  const account = await fixture.controller.transact((state: PlatformUnitOfWork) =>
     state.serviceAccounts.createServiceAccount({
       id: `sa_${crypto.randomUUID()}`,
       namespaceId: namespace.id,
@@ -3078,15 +3277,17 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   const harnessAuth = {
     method: "codex_pat",
     source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
-  };
-  const artifact = JSON.parse(
-    await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
-  );
+  } satisfies HarnessAuthBinding;
+  const artifact = structuredClone(standardCodexPreset);
   delete artifact.template.variables.modelSecret;
   artifact.template.agent.harnessAuth = harnessAuth;
-  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: artifact,
-  });
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: artifact,
+    },
+  );
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -3101,9 +3302,7 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const created = await createdAgent(createdResponse);
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.id}`);
   assert.deepEqual(created.harnessAuth, harnessAuth);
   assert.equal(
@@ -3121,22 +3320,26 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Preset emphasis", { ready: true });
-  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: {
-      name: "Team Preset",
-      template: {
-        variables: { agentName: { type: "string" } },
-        agent: { name: "{{ vars.agentName }}", executionMode: "embedded" },
+  const other: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Team Preset",
+        template: {
+          variables: { agentName: { type: "string" } },
+          agent: { name: "{{ vars.agentName }}", executionMode: "embedded" },
+        },
       },
     },
-  });
+  );
   assert.equal(other.status, 201, JSON.stringify(other.body));
   const { page } = await newPage(t, fixture);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const shortcut = page.getByRole("button", { name: "Start with default Preset" });
   const use = page.getByRole("button", { name: "Use Preset" });
-  const filled = (locator) =>
+  const filled = (locator: Locator) =>
     locator.evaluate((node) => node.classList.contains("button--primary"));
   await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
   assert.equal(await shortcut.getAttribute("aria-describedby"), "agent-preset-default-hint");

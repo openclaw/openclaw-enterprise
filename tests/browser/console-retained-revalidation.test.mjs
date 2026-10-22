@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mjs";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,

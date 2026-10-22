@@ -12,6 +12,7 @@ export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
 export const ConfigurationSaveRefused = story("configurationSaveRefused");
+export const ConfigurationSaveUnconfirmed = story("configurationSaveUnconfirmed");
 export const GatewayPasswordAccess = story("gatewayPasswordAccess");
 export const GatewayPasswordEnabled = story("gatewayPasswordEnabled");
 export const GatewayPasswordSaveDenied = story("gatewayPasswordSaveDenied");

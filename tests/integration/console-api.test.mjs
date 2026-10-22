@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -366,7 +367,9 @@ test("console scripts and styles are compressed when accepted; the shell and bin
       request.end();
     });
 
-  const script = await consoleFile("agents/detail.mjs");
+  const script = Buffer.from(
+    stripTypeScriptTypes((await consoleFile("agents/detail.mts")).toString("utf8")),
+  );
   const plain = await fetchRaw("/console/agents/detail.mjs");
   assert.equal(plain.statusCode, 200);
   assert.equal(plain.headers["content-encoding"], undefined);

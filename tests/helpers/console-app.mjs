@@ -740,6 +740,10 @@ export async function createConsoleAppFixture(t, options = {}) {
     return secret.data;
   }
 
+  /**
+   * @param {string} label
+   * @param {(principal: import("../../packages/contracts/src/index.ts").Principal) => void} configurePolicy
+   */
   async function createAccountWithPolicy(label, configurePolicy) {
     const accountCredentials = {
       email: `${label}-${randomUUID()}@example.com`,

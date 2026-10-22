@@ -30,6 +30,7 @@ import {
   login,
   nativeValues,
   newPage,
+  nonAuthWriteRequests,
   pathRequests,
   recordLayoutShifts,
   selectSecret,
@@ -193,6 +194,26 @@ type SlackAgentWithNewSecrets = Awaited<ReturnType<typeof slackAgentWithNewSecre
 
 const configurationPath = ({ namespace, agent }: Pick<Draft, "namespace" | "agent">) =>
   `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+
+test("saving a Configuration with negative zero confirms the value sent as JSON", async (t) => {
+  const c = await plainAgent(t, "JSON Configuration");
+  const page = await openTab(t, c.fixture, c.namespace, c.agent, "configuration");
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  const json = JSON.stringify(nativeValues("signed zero")).replace('"signed zero"', "-0");
+  await page.getByLabel("Configuration JSON").fill(json);
+  const url = c.fixture.origin + configurationPath(c);
+  const patched = page.waitForResponse((r) => r.url() === url && r.request().method() === "PATCH");
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  const response = await patched;
+  assert.equal(response.status(), 200);
+  const sent = response.request().postDataJSON().values;
+  assert.equal(sent.plugins.entries.knowledge.config.marker, 0);
+  assert.deepEqual((await response.json()).data.values, sent);
+  const saved = page.getByText("Configuration saved.", { exact: true });
+  await saved.or(page.getByText(/Outcome unknown. Configuration may have been saved/)).waitFor();
+  assert.equal(await saved.isVisible(), true);
+});
 
 // Each save or Reload draft refreshes the draft in place, names the saved generation, moves
 // focus to the control that remains, and leaves a draft that can be deployed.
@@ -808,6 +829,56 @@ for (const c of outcomeFocusCases) {
     }
   });
 }
+
+test("a Channels save cannot change the service principal receiving its Secret grant", async (t) => {
+  const c = await slackAgentWithNewSecrets(t, "Channels principal");
+  const { fixture, namespace, agent, secondBot } = c;
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { data: original } = await fixture.request("GET", path);
+  const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+  assert.notEqual(other.servicePrincipalId, original.servicePrincipalId);
+
+  const page = await openTab(t, fixture, namespace, agent, "channels");
+  await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+  await selectSecret(dialog, "Slack bot token", secondBot);
+  await page.route(
+    fixture.origin + path,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const { data, meta } = (await response.json()) as AgentResponse;
+      assert.equal(data.servicePrincipalId, original.servicePrincipalId);
+      await route.fulfill({
+        response,
+        json: { data: { ...data, servicePrincipalId: other.servicePrincipalId }, meta },
+      });
+    },
+    { times: 1 },
+  );
+  const requests = apiRequests(page, fixture.origin);
+  const save = dialog.getByRole("button", { name: "Save configuration", exact: true });
+  await save.click();
+  const reload = page.getByRole("button", { name: "Reload draft", exact: true });
+  const saved = page.getByRole("status").filter({ hasText: "Channels saved." });
+  await reload.or(saved).first().waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+
+  // Reload gets the original principal. An explicit save can now bind the chosen Secret to it.
+  await reload.click();
+  await dialog.getByText(/Your edits are applied over the reloaded settings/).waitFor();
+  await save.click();
+  await saved.waitFor();
+  assert.equal(pathRequests(requests, "PATCH", configurationPath(c)).length, 1);
+  const bindings = accessBindingPostRequests(requests, namespace.id);
+  assert.deepEqual(
+    bindings.map(({ body }) => {
+      assert.ok(body && typeof body === "object" && "subjectId" in body && "resourceId" in body);
+      return [body.subjectId, body.resourceId];
+    }),
+    [[original.servicePrincipalId, secondBot.id]],
+  );
+});
 
 // A Channels save that conflicted with another browser's save failed the same way on every
 // retry: Cancel, reopening the editor and tab switches kept the page's old generation, and only

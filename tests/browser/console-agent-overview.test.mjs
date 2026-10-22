@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
-import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mjs";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
 import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
 import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
 import { fileConsoleApp } from "../helpers/console-app.mjs";

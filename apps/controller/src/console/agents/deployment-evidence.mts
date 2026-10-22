@@ -399,7 +399,12 @@ export function createDeploymentStatusPanel(
           revisionsResult.status === "fulfilled" &&
           revisionsResult.value
         ) {
-          onAgentChange(agentResult.value, revisionsResult.value);
+          try {
+            onAgentChange(agentResult.value, revisionsResult.value);
+          } catch {
+            // An overview that does not identify this Agent cannot invalidate its deployment record.
+            overviewUnavailable = true;
+          }
         } else {
           overviewUnavailable = true;
         }

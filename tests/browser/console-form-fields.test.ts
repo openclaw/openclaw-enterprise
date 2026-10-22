@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Locator, Page } from "playwright";
 
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
@@ -34,12 +35,20 @@ const defaultCodexPreset = JSON.parse(
 const standardCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
 );
-const createConsoleAppFixture = (t, options = {}) =>
+const createConsoleAppFixture = (t: TestContext, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+function presetId(preset: unknown) {
+  assert.ok(
+    typeof preset === "object" && preset && "id" in preset && typeof preset.id === "string",
+    "created Preset has an ID",
+  );
+  return preset.id;
+}
 
 // A control's accessible name and description as Chromium's accessibility tree computes them,
 // which is what a screen reader announces on focus.
-async function accessible(page, locator) {
+async function accessible(page: Page, locator: Locator) {
   await locator.evaluate((node) => node.setAttribute("data-ax-probe", ""));
   const cdp = await page.context().newCDPSession(page);
   try {
@@ -53,6 +62,7 @@ async function accessible(page, locator) {
       fetchRelatives: false,
     });
     const [node] = nodes;
+    assert.ok(node, "Chromium exposes the field in its accessibility tree");
     return {
       name: node.name?.value ?? "",
       description: node.description?.value ?? "",
@@ -66,7 +76,7 @@ async function accessible(page, locator) {
 
 // The field's error sits under its control (or the control's wrapper), inside the same field,
 // and reads in the danger colour.
-const errorPlacement = (control) =>
+const errorPlacement = (control: Locator) =>
   control.evaluate((node) => {
     const error = globalThis.document.getElementById(`${node.id}-error`);
     if (!error || error.hidden) {
@@ -86,9 +96,14 @@ const errorPlacement = (control) =>
     };
   });
 
-const focusedId = (page) => page.evaluate(() => globalThis.document.activeElement?.id ?? null);
+const focusedId = (page: Page) =>
+  page.evaluate(() => globalThis.document.activeElement?.id ?? null);
 
-async function assertFieldError(page, control, { name, error, help }) {
+async function assertFieldError(
+  page: Page,
+  control: Locator,
+  { name, error, help }: { name: string; error: string; help?: string },
+) {
   const shown = await accessible(page, control);
   assert.equal(shown.name, name, `${name}: accessible name`);
   assert.equal(shown.invalid, "true", `${name}: aria-invalid`);
@@ -122,7 +137,7 @@ test("Create Agent form fields", async (t) => {
         await routeInstallationWithoutProvisioning(page, fixture);
         await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
         const selector = page.getByLabel("Preset template", { exact: true });
-        await selector.selectOption(preset.data.id);
+        await selector.selectOption(presetId(preset.data));
         const name = page.getByLabel("Name", { exact: true });
         const model = page.getByLabel("Model", { exact: true });
         const secret = page.getByLabel("Model Secret", { exact: true });
@@ -142,7 +157,9 @@ test("Create Agent form fields", async (t) => {
             height: Math.round(node.getBoundingClientRect().height),
           };
         });
-        const inputHeight = Math.round((await name.boundingBox()).height);
+        const inputHeight = await name.evaluate((node) =>
+          Math.round(node.getBoundingClientRect().height),
+        );
         assert.equal(chrome.edge, true, "the Preset select has the input edge");
         assert.equal(chrome.height, inputHeight, "the Preset select is as tall as the inputs");
         assert.ok(inputHeight >= 40, `controls are at least --control-h tall (${inputHeight})`);
@@ -225,9 +242,9 @@ test("Create Agent form fields", async (t) => {
       const invalidEvents = await countInvalidEvents(page);
       await routeInstallationWithoutProvisioning(page, fixture);
       await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+      await page.getByLabel("Preset template", { exact: true }).selectOption(presetId(preset.data));
       await page.getByLabel("Agent Name", { exact: true }).waitFor();
-      const tag = (label) =>
+      const tag = (label: string) =>
         page.getByLabel(label, { exact: true }).evaluate((node) => node.tagName);
       assert.deepEqual(
         [await tag("Agent Name"), await tag("Notes"), await tag("Prefix"), await tag("Lines")],
@@ -320,9 +337,7 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const principal = panel.getByLabel("Existing person’s Principal ID", { exact: true });
   const acknowledge = panel.getByRole("checkbox");
   const share = panel.getByRole("button", { name: "Share Agent", exact: true });
-  await page.waitForFunction(
-    () => !globalThis.document.querySelector("#share-principal-id")?.disabled,
-  );
+  await panel.locator("#share-principal-id:enabled").waitFor();
   await share.click();
   assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
   assert.equal(await focusedId(page), "share-principal-id");
@@ -335,7 +350,9 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   assert.equal(consent.invalid, "true");
   assert.equal(consent.description, "Check this box to continue.");
   // Both errors clear as the fields are fixed, and the share goes ahead.
-  await principal.fill(fixture.provisionedAccounts[0].principal.id);
+  const [recipient] = fixture.provisionedAccounts;
+  assert.ok(recipient, "Share recipient was provisioned");
+  await principal.fill(recipient.principal.id);
   await acknowledge.check();
   assert.equal((await accessible(page, principal)).invalid, "false");
   assert.equal((await accessible(page, acknowledge)).invalid, "false");
@@ -387,7 +404,11 @@ test("the shared submit check stops a failing form and opens the collapsed secti
   const { page } = await newPage(t, fixture, { browser });
   await page.goto(new URL("/console/", fixture.origin).href);
   const outcome = await page.evaluate(async () => {
-    const { element, validateOnSubmit } = await import("/console/dom.mjs");
+    const path = "/console/dom.mjs";
+    const {
+      element,
+      validateOnSubmit,
+    }: typeof import("../../apps/controller/src/console/dom.mts") = await import(path);
     const name = element("input", { id: "helper-name", type: "text", value: "Named" });
     const token = element("input", { id: "helper-token", type: "text", required: true });
     const section = element(
@@ -416,7 +437,7 @@ test("the shared submit check stops a failing form and opens the collapsed secti
     globalThis.document.body.append(form);
     validateOnSubmit(form);
     // The form's own handler, which (unlike the shipped ones) checks nothing itself.
-    const submitted = [];
+    const submitted: string[] = [];
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       submitted.push(token.value);
@@ -456,10 +477,14 @@ test("the shared submit check stops a failing form and opens the collapsed secti
 // The required Secret picker as the console's check leaves it: the error names the label the
 // page shows (finding 1987), and the list stays closed so it does not cover that error (finding
 // 1988). Click, typing and ArrowDown still open it.
-const pickerState = (control) =>
+const pickerState = (control: Locator) =>
   control.evaluate((node) => {
     const error = globalThis.document.getElementById(`${node.id}-error`);
-    const listbox = globalThis.document.getElementById(node.getAttribute("aria-controls"));
+    const listboxId = node.getAttribute("aria-controls");
+    const listbox = listboxId && globalThis.document.getElementById(listboxId);
+    if (!listbox || !error) {
+      throw new Error(`Missing listbox or error for ${node.id}`);
+    }
     const box = error.getBoundingClientRect();
     const top = globalThis.document.elementFromPoint(box.left + 4, box.top + box.height / 2);
     return {
@@ -491,9 +516,10 @@ for (const viewport of consoleViewports) {
     await apiKey.focus();
     assert.equal(await apiKey.getAttribute("aria-expanded"), "true");
     assert.equal(
-      await apiKey.evaluate(
-        (node) => globalThis.document.getElementById(node.getAttribute("aria-controls")).hidden,
-      ),
+      await apiKey.evaluate((node) => {
+        const id = node.getAttribute("aria-controls");
+        return id && globalThis.document.getElementById(id)?.hidden;
+      }),
       false,
       "its list shows",
     );
@@ -566,6 +592,9 @@ for (const viewport of consoleViewports) {
     const focusedRefusal = () =>
       page.evaluate(() => {
         const active = globalThis.document.activeElement;
+        if (!active) {
+          throw new Error("Expected a focused refusal");
+        }
         const box = active.getBoundingClientRect();
         return {
           inDialog: Boolean(active.closest("dialog[open]")),
@@ -582,7 +611,7 @@ for (const viewport of consoleViewports) {
         "Access denied. You do not have permission to manage this Secret binding.",
       ],
       [429, "RATE_LIMITED", "Too many requests. Wait before trying again."],
-    ];
+    ] as const;
     for (const [status, code, text] of cases) {
       refusal.status = status;
       refusal.code = code;
