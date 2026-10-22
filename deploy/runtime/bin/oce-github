@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/local/bin/node /opt/oce/repository-credentials/dist/drivers/repo/github/credentials/client/draft-pr.js "$@"

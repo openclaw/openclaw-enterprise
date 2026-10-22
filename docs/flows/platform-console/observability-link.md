@@ -58,7 +58,7 @@ not persisted as an Installation resource or used as an OTLP export target.
 
 The console settles the read once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab, so a Namespace-only user produces one audited denial per session and tab rather than one per page. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel.
 
-`apps/controller/src/console/shell.mjs:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
+`apps/controller/src/console/shell.mts:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
 
 ## Debugging and Verification
 

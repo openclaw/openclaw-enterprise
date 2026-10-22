@@ -71,6 +71,7 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
     let outbound: ClientRequest | undefined;
     let upstream: IncomingMessage | undefined;
     let dispatched = false;
+    let settling = false;
     let failed = false;
     let inputCompleted = false;
     let receivedHeaders = false;
@@ -106,10 +107,19 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       if (context.signal.aborted) {
         throw new Error("cancelled");
       }
+      // Prepared materials have a short send-start window. Establish verified TLS
+      // without queuing HTTP bytes, then enter the gate at our first application write.
+      const afterTls = plan.bindRequestDigest === true;
+      let tlsReady!: () => void;
+      let tlsFailed!: (error: Error) => void;
+      const connected = new Promise<void>((resolve, reject) => {
+        tlsReady = resolve;
+        tlsFailed = reject;
+      });
+      void connected.catch(() => {});
       const responseReady = new Promise<IncomingMessage>((resolve, reject) => {
         try {
-          outbound = context.gate.dispatch(cancel, () => {
-            dispatched = true;
+          const connect = () => {
             const req = httpsRequest(
               {
                 protocol: "https:",
@@ -131,15 +141,35 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
                 resolve(response);
               },
             );
-            req.once("error", () => reject(new Error("upstream-failed")));
-            req.once("close", () => resolveSocket());
+            req.once("error", () => {
+              const error = new Error("upstream-failed");
+              reject(error);
+              if (afterTls) {
+                tlsFailed(error);
+              }
+            });
+            req.once("close", () => {
+              if (afterTls) {
+                tlsFailed(new Error("upstream-closed"));
+              }
+              resolveSocket();
+            });
             req.once("socket", (socket) => {
               socket.once("secureConnect", () => {
                 stopConnect?.();
+                if (afterTls) {
+                  tlsReady();
+                }
               });
             });
             return req;
-          });
+          };
+          outbound = afterTls
+            ? connect()
+            : context.gate.dispatch(cancel, () => {
+                dispatched = true;
+                return connect();
+              });
         } catch {
           reject(new Error("dispatch-denied"));
         }
@@ -154,6 +184,15 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       stopInput = options.clock.schedule(plan.limits.inputMs, cancel);
       if (!outbound) {
         throw new Error("dispatch-denied");
+      }
+      if (afterTls) {
+        await connected;
+        const req = outbound;
+        context.gate.dispatch(cancel, () => {
+          // Once this write starts, an error is a possible dispatch; never replay it.
+          dispatched = true;
+          req.flushHeaders();
+        });
       }
       const wire = new ByteLimit(plan.limits.inputWireBytes, inputStall.reset);
       const decoded = new ByteLimit(plan.limits.inputDecodedBytes, inputStall.reset);
@@ -196,6 +235,16 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       }
       const allowed = safeResponseHeaders(plan.responsePolicy.headers(status, raw));
       const noBody = plan.method === "HEAD" || status === 204 || status === 304;
+      if (
+        privateRequest.settle &&
+        (status !== 201 ||
+          noBody ||
+          plan.responsePolicy.body !== "bounded-json" ||
+          plan.responsePolicy.trailers !== "forbid" ||
+          !plan.responsePolicy.rewriteJson)
+      ) {
+        throw new Error("invalid-operation-response");
+      }
       if (noBody) {
         for await (const chunk of upstream) {
           if (chunk.length) {
@@ -216,10 +265,24 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
           responseStall.reset();
           parts.push(Buffer.from(chunk));
         }
+        // Trailer declarations are not the trailers received at stream end.
+        // Opted-in bounded policies reject actual trailers before releasing any bytes.
+        if (plan.responsePolicy.trailers === "forbid" && upstream.rawTrailers.length !== 0) {
+          throw new Error("invalid-upstream");
+        }
         let bytes = Buffer.concat(parts);
         if (plan.responsePolicy.rewriteJson !== undefined) {
-          const value: JsonValue = JSON.parse(bytes.toString("utf8"));
-          bytes = Buffer.from(JSON.stringify(plan.responsePolicy.rewriteJson(value)));
+          const parse = plan.responsePolicy.parseJson;
+          const value: JsonValue = parse
+            ? parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes))
+            : JSON.parse(bytes.toString("utf8"));
+          const approved = plan.responsePolicy.rewriteJson(value);
+          if (privateRequest.settle) {
+            await inputDone;
+            settling = true;
+            return await privateRequest.settle({ created: approved });
+          }
+          bytes = Buffer.from(JSON.stringify(approved));
           if (bytes.length > plan.limits.responseBytes) {
             throw new Error("limit-exceeded");
           }
@@ -254,6 +317,13 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       }
       return { kind: "completed", status };
     } catch {
+      if (privateRequest.settle) {
+        stopUpstream();
+        if (!settling) {
+          return await privateRequest.settle(dispatched ? "outcome_unknown" : "not-submitted");
+        }
+        // A commit may already have happened. Only a same-operation receipt lookup can resolve it.
+      }
       if (dispatched) {
         // An active input pipeline owns the incoming socket. Preserve it for a
         // service error only after the pipeline settles, before response headers.
@@ -282,6 +352,10 @@ export function createUpstreamSender(options: UpstreamSenderOptions): ExchangeSe
       context.signal.removeEventListener("abort", cancel);
       if (!outbound) {
         resolveSocket();
+      } else if (!dispatched) {
+        // No HTTP data was queued. Close the TLS connection, preserving the caller's
+        // socket so the broker can report a definite pre-dispatch refusal.
+        stopUpstream();
       }
       // A completed response and agent:false close the socket. Failed work is destroyed.
       await Promise.allSettled(pending);

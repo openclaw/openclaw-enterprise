@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { jsonChunkDestination } from "./json-lines.mjs";
+import { listen } from "./listen.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { APIError, betterAuth } = await import(require.resolve("better-auth"));
@@ -36,7 +38,7 @@ export function createLoginFixture({
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: { write: (chunk) => operationalLines.push(JSON.parse(chunk)) },
+    destination: jsonChunkDestination(operationalLines),
   });
   const state = {
     // State's clock is deliberately ahead of the controller's: cookie lifetimes must
@@ -188,11 +190,7 @@ export function cookiePairs(response) {
 }
 
 export async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
+  await waitUntil("the transport observation", predicate, { timeoutMs: 2_000, intervalMs: 10 });
 }
 
 // Sends only the provider's fixed URLs to `target`. Real fetch, cancellation, stream
@@ -227,12 +225,7 @@ export async function startProviderServer(t, handle) {
   // overdue server timer destroys it, and fails as a provider outage. Only the client
   // closes idle connections here.
   server.keepAliveTimeout = 0;
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return { requests, port: server.address().port };
+  return { requests, port: await listen(t, server) };
 }
 
 // One subtest per [endpoint, step] and framing. The endpoint answers past the provider

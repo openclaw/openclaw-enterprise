@@ -70,7 +70,8 @@ examples, while excluding frontmatter, HTML comments, Markdown syntax, and link
 destinations. Symlinks resolve to one real file so aliases cannot duplicate
 counts or bypass the limit.
 
-`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. It accepts an optional
+`serve.mjs` serves only `dist/docs/` on `127.0.0.1`. MP4 walkthrough links open
+in the browser player with the `video/mp4` media type. It accepts an optional
 `--port` for parallel local previews and tests. These two small internal CLIs use
 built-in Node argument handling because each has one option and no subcommands.
 

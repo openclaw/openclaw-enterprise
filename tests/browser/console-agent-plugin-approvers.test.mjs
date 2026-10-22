@@ -12,12 +12,16 @@ import {
   apiRequests,
   detailUrl,
   fileBrowser,
+  holdRequests,
   login,
   nativeValues,
   newPage,
+  nextFrames,
   pathRequests,
   selectSecret,
+  settledView,
   statusTone,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
@@ -38,6 +42,9 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
       return released.promise;
     });
     await login(page, fixture, "/console");
+    // Sign-in reloads the page after its session check, and that reload closes every open
+    // dialog in the document: mount the component once the Agents page has settled.
+    await page.locator(settledView).waitFor();
     // Exercise the served Console component with a held synthetic catalog update.
     await page.evaluate(async () => {
       const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
@@ -88,6 +95,8 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console");
+  // As above: the dialog opens only after sign-in's reload of the page.
+  await page.locator(settledView).waitFor();
   await page.evaluate(async () => {
     const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
@@ -209,6 +218,23 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await openAdvancedSettings(page);
+  // The approvers select looks like every other select on the form: it was bold with a thin
+  // square border and no padding (finding 2401).
+  const controlStyle = (locator) =>
+    locator.evaluate((node) => {
+      const style = globalThis.getComputedStyle(node);
+      return {
+        border: `${style.borderTopWidth} ${style.borderTopColor}`,
+        radius: style.borderTopLeftRadius,
+        padding: style.padding,
+        minHeight: style.minHeight,
+        weight: style.fontWeight,
+      };
+    });
+  assert.deepEqual(
+    await controlStyle(page.getByLabel("Default plugin approvers mode")),
+    await controlStyle(page.getByLabel("Provider", { exact: true })),
+  );
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
   const people = page.getByRole("combobox", {
     name: "Default plugin approvers people",
@@ -283,6 +309,15 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
+  // This administrator may not create Secrets in the Namespace, so the Namespace permission answer
+  // denies Secret create; nothing here creates one.
+  fixture.policy.restrictions.push({
+    id: "deny-approver-secret-create",
+    namespaceId: namespace.id,
+    resourceKind: "secret",
+    action: "create",
+    effect: "deny",
+  });
   const { page } = await newPage(t, fixture, { browser });
   const lookups = [];
   await page.route(
@@ -303,6 +338,19 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
+  // The people search's Secret picker follows the answer: its inline Create Secret is disabled
+  // with the reason (finding 2451).
+  await page
+    .getByLabel("Slack bot token Secret for people search", { exact: true })
+    .fill("no matching Secret");
+  const createAction = page
+    .locator('[id^="approver-directory-secret-option-"]')
+    .filter({ hasText: "Create new Secret..." });
+  assert.equal(
+    await createAction.textContent(),
+    "Create new Secret... Your access does not include creating Secrets in this Namespace.",
+  );
+  assert.equal(await createAction.getAttribute("aria-disabled"), "true");
   await selectSecret(page, "Slack bot token Secret for people search", bot);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
@@ -423,37 +471,25 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await result.waitFor();
   const resultNode = await result.elementHandle();
   const lookupCount = directoryBodies.length;
-  let releaseSession;
-  const sessionGate = new Promise((resolve) => {
-    releaseSession = resolve;
-  });
-  t.after(() => releaseSession());
-  let sessionReached;
-  const sessionHeld = new Promise((resolve) => {
-    sessionReached = resolve;
-  });
   const sessionPath = `${fixture.origin}/api/auth/session`;
-  await page.route(sessionPath, async (route) => {
-    const response = await route.fetch();
-    sessionReached();
-    await sessionGate;
-    await route.fulfill({ response });
-  });
+  const session = await holdRequests(t, page, sessionPath, { afterServer: true, timeout: 0 });
 
   // Refocus checks access without discarding an open search or repeating its lookup.
+  const beforeRefocus = requests.length;
   await page.evaluate(() => {
     globalThis.dispatchEvent(new Event("focus"));
     globalThis.document.dispatchEvent(new Event("visibilitychange"));
   });
-  await sessionHeld;
+  await session.requested;
   await page.locator('.content [aria-live="polite"][inert]').waitFor();
-  await page.evaluate(
-    () =>
-      new Promise((resolve) =>
-        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve)),
-      ),
-  );
-  releaseSession();
+  await nextFrames(page);
+  // While the session answer is held the view stays inert with the search still open, and the
+  // check has not gone on to read the Namespaces.
+  assert.equal(await people.inputValue(), "Alex");
+  assert.equal(await people.getAttribute("aria-expanded"), "true");
+  assert.equal(await resultNode.evaluate((node) => node.isConnected), true);
+  assert.deepEqual(pathRequests(requests.slice(beforeRefocus), "GET", "/namespaces"), []);
+  session.release();
   await page.locator('.content [aria-live="polite"]:not([inert])').waitFor();
   assert.equal(await people.inputValue(), "Alex");
   assert.equal(await people.getAttribute("aria-expanded"), "true");
@@ -639,7 +675,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isDisabled(), false);
+  await waitForEnabled(deploy);
 
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
@@ -656,6 +692,53 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
     .getByText("Save or discard plugin changes before deploying.", { exact: true })
     .waitFor();
   assert.equal(await deploy.isDisabled(), true);
+});
+
+// A member who can only read the Agent sees the draft's saved default approvers, which the next
+// deployment uses. The approver field waits for the policy capabilities, a read that needs Agent
+// update and is skipped for this reader, so they show as text, as a version's snapshot does
+// (finding 2447).
+test("A reader sees the version draft's default plugin approvers", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Reader plugin approvers");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Reader Approver Agent",
+    nativeValues("reader-approvers"),
+    { executionMode: "embedded", harnessAuth: { method: "runtime" } },
+  );
+  const approver = "team:TTEST123:user:UREADER1";
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    pluginApprovers: [{ channel: "slack", id: approver }],
+  });
+  const reader = await fixture.createNamespaceMember("approver-reader", namespace.id, [
+    ["read", "namespace"],
+    ["read", "agent"],
+    ["read", "agent_revision"],
+    ["read", "configuration"],
+  ]);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    reader.credentials,
+  );
+  await page
+    .getByText("These are the version draft's plugin selections, read-only", { exact: false })
+    .waitFor();
+  const saved = page.locator(".plugin-approvers-saved");
+  await saved.getByRole("heading", { name: "Default plugin approvers", exact: true }).waitFor();
+  await saved.getByText("The next deployment uses these Agent default approvers.").waitFor();
+  assert.deepEqual(await saved.getByRole("listitem").allTextContents(), [`slack: ${approver}`]);
+  // No editable field stands in for the text, and no capabilities read answers 403.
+  assert.equal(await page.getByLabel("Default plugin approvers mode").isVisible(), false);
+  assert.deepEqual(pathRequests(requests, "GET", `${path}/plugins/capabilities`), []);
 });
 
 test("Codex Agents offer only default plugin approvers", async (t) => {
@@ -689,4 +772,64 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
   await toolRow.getByLabel(`${toolId} require approval for`).waitFor();
   assert.equal(await pluginDialog.getByLabel(`${pluginId} plugin approvers mode`).count(), 0);
   assert.equal(await toolRow.getByLabel(`${toolId} tool approvers mode`).count(), 0);
+});
+
+test("No Slack approvers does not ask the operator to select hidden people", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.locator(settledView).waitFor();
+  const hints = await page.evaluate(async () => {
+    const { createSlackApproverField } = await import("/console/agents/slack-approvers.mjs");
+    let value = [];
+    const field = createSlackApproverField({
+      context: {
+        namespaceId: "ns_1",
+        request() {
+          return Promise.resolve({ candidates: [], truncated: false });
+        },
+        isCurrent() {
+          return true;
+        },
+        onExpired() {},
+      },
+      label: "Approvers",
+      allowInherit: false,
+      getSecretId() {
+        return "sec_1";
+      },
+      getValue() {
+        return value;
+      },
+      onChange(next) {
+        value = next;
+      },
+    });
+    globalThis.document.body.append(field);
+    const helper = field.querySelector("p.hint");
+    const picker = field.querySelector(".slack-directory-field");
+    const select = field.querySelector("select");
+    const none = { hint: helper.textContent, pickerHidden: picker.hidden };
+    select.value = "chosen";
+    select.dispatchEvent(new Event("change"));
+    const chosen = { hint: helper.textContent, pickerHidden: picker.hidden };
+    value = [{ channel: "teams", id: "person-1" }];
+    select.value = "none";
+    select.dispatchEvent(new Event("change"));
+    return {
+      none,
+      chosen,
+      preserved: { hint: helper.textContent, pickerHidden: picker.hidden },
+    };
+  });
+  assert.equal(hints.none.hint, "No Slack user can approve.");
+  assert.equal(hints.none.pickerHidden, true);
+  assert.equal(hints.chosen.hint, "No Slack user can approve until people are selected.");
+  assert.equal(hints.chosen.pickerHidden, false);
+  assert.equal(
+    hints.preserved.hint,
+    "No Slack user can approve. 1 other channel entries are preserved.",
+  );
+  assert.equal(hints.preserved.pickerHidden, true);
 });

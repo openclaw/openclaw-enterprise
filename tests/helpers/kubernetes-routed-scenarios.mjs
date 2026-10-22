@@ -91,6 +91,7 @@ export function routedOptions(overrides = {}) {
 export function routedRevision(driver, overrides = {}) {
   return {
     id: "revision-routed-1",
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: "agent-routed",
     revision: 1,
@@ -125,6 +126,11 @@ export function routedRevision(driver, overrides = {}) {
     createdAt: tenant.createdAt,
     ...overrides,
   };
+}
+
+/** The labels an equality-only Kubernetes `labelSelector` string ("key=value,key=value") names. */
+export function labelSelectorLabels(selector) {
+  return Object.fromEntries(selector.split(",").map((entry) => entry.split("=")));
 }
 
 export function selectorMatches(selector, labels) {

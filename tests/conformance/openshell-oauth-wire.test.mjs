@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +11,7 @@ import {
   createOpenShellBackend,
   openShellProviderName,
 } from "../../apps/controller/src/backends/openshell.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -20,8 +20,7 @@ const loader = require("@grpc/proto-loader");
 // Real TLS proves client identity and header separation; the RPC bodies below are
 // controlled protocol fixtures, not proof of OpenShell's refresh implementation.
 async function wireCertificates(t) {
-  const directory = await mkdtemp(join(tmpdir(), "openshell-oauth-wire-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openshell-oauth-wire-");
   const path = (name) => join(directory, name);
   const openssl = (...args) => execFileSync("openssl", args, { stdio: "ignore" });
   openssl(

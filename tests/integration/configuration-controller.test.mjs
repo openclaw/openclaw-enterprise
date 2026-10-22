@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -25,6 +24,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -82,7 +82,7 @@ function forwarder(identity, target) {
   });
 }
 
-async function sharedApp(withCompute, withConfiguration) {
+async function sharedApp(withCompute, withConfiguration, computeImplementation) {
   const authFixture = await (administrator ??= createTestAuthPrincipal({
     name: "Configuration Integration Administrator",
   }));
@@ -130,7 +130,7 @@ async function sharedApp(withCompute, withConfiguration) {
             {
               id: "compute-configuration-integration",
               capability: "compute",
-              implementation: "integration-compute-substrate",
+              implementation: computeImplementation,
             },
             () => running.computeDriver,
           ),
@@ -174,12 +174,18 @@ async function fixture({
   permissions,
   configurationDriver = createConfigurationBackend(),
   computeDriver,
+  // The Compute identity OCC sees. OCC applies the bundled Kubernetes Compute's channel binding
+  // rule only for its implementations (finding 2319).
+  computeImplementation = "integration-compute-substrate",
   auditSink = new InMemoryAuditSink(),
 } = {}) {
   Object.assign(running, { configurationDriver, computeDriver, auditSink });
-  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}`;
+  const shape = `${computeDriver !== undefined}/${configurationDriver !== null}/${computeImplementation}`;
   if (!apps.has(shape)) {
-    apps.set(shape, sharedApp(computeDriver !== undefined, configurationDriver !== null));
+    apps.set(
+      shape,
+      sharedApp(computeDriver !== undefined, configurationDriver !== null, computeImplementation),
+    );
   }
   const { grant, ...context } = await apps.get(shape);
   grant(permissions);
@@ -200,8 +206,7 @@ async function fixture({
 // A ready Namespace on the Filesystem Configuration Driver, for Configuration and Preset saves.
 // The default Compute, like Docker Compute, runs no Configuration rules of its own.
 async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-save-rules")) {
-  const root = await mkdtemp(join(tmpdir(), "occ-save-rules-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-save-rules-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const context = await fixture({ configurationDriver, computeDriver });
   const { id } = context.namespace;
@@ -248,7 +253,7 @@ function createOpenClawConfiguration() {
     secrets: {
       providers: { teamstore: { source: "store" } },
       defaults: { store: "teamstore" },
-      egressProxy: { enabled: true },
+      credential_proxy: { enabled: true },
     },
     agents: { defaults: { sandbox: { mode: "all" } } },
     plugins: {
@@ -368,6 +373,11 @@ async function writePastOcc(configurationDriver, configurationId, values) {
 
 // The refusal texts the save rules name a field or setting with.
 const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+const unboundChannelReference = (path, name) =>
+  setting(
+    path,
+    `references ${name} without a Configuration Secret binding: bind ${name} in secretBindings to an environment-backed Secret, or remove the reference`,
+  );
 const absoluteUrl = (field) =>
   `Configuration field ${field} must be an absolute http or https URL.`;
 const modelApi = (field) =>
@@ -844,6 +854,14 @@ const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents
 const gatewayId = (path) =>
   `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
 
+// Deployment's text for a model selection whose model names no provider.
+const providerModel = (path) =>
+  setting(
+    `${path}.model`,
+    "must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1",
+  );
+const withModel = (model) => withAgents({ defaults: { ...runtimeDefaults, model } });
+
 // A selected Compute with no Configuration rules is not the same as no Compute selected.
 // The shared content rules (model providers, settings, roster) must protect Configuration create
 // and update in either case.
@@ -911,6 +929,17 @@ const rosterRefusals = [
   [
     withAgents({ ownership: "explicit" }),
     'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
+  ],
+  // Finding 1828: a model without its provider, as a primary, a fallback or an entry's model;
+  // OpenClaw's openrouter:auto selector among them. Fallbacks that are not a list.
+  [withModel("fast"), providerModel("agents.defaults")],
+  [withModel({ primary: "openai/gpt-4.1", fallbacks: ["fast"] }), providerModel("agents.defaults")],
+  [withModel({ primary: "openrouter:auto" }), providerModel("agents.defaults")],
+  [withModel({ fallbacks: ["openai/gpt-4.1"] }), providerModel("agents.defaults")],
+  [withAgents({ entries: { main: { model: "openai/" } } }), providerModel("agents.entries.main")],
+  [
+    withModel({ primary: "openai/gpt-4.1", fallbacks: "openai/gpt-4.1-mini" }),
+    setting("agents.defaults.model.fallbacks", "must be an array"),
   ],
 ];
 
@@ -1005,6 +1034,14 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       withAgents({ entries: { [`${"a".repeat(65)}{{ vars.id }}`]: {} } }),
       gatewayId(`agents.entries["${"a".repeat(65)}{{ vars.id }}"]`),
     ],
+    // A model no filling makes <provider>/<model>: written text that starts or ends with a
+    // slash, or a number variable that is the whole model.
+    [withModel("/{{ vars.id }}"), providerModel("agents.defaults")],
+    [
+      withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai{{ vars.id }}/"] }),
+      providerModel("agents.defaults"),
+    ],
+    [withModel("{{ vars.count }}"), providerModel("agents.defaults")],
     // Finding 1315: many adjacent variables are matched in linear time. Keep this case last.
     ownership(`${"{{ vars.ownership }}".repeat(64)}x`),
   ];
@@ -1025,7 +1062,7 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   // An Agent ID or ownership that a filling can still make valid saves, and the launch's
   // Configuration is checked in full: two IDs that normalize alike, or an ownership filled with
   // anything but "explicit", are refused there with the Configuration save text.
-  await t.test("accepts a roster whose Agent ID or ownership waits on a variable", async () => {
+  await t.test("accepts a roster or model that waits on a variable", async () => {
     const accepted = [
       withAgents({ ownership: "explicit", entries: { "{{ vars.id }}": {}, main: {} } }),
       withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
@@ -1033,11 +1070,22 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
       withAgents({ ownership: "ex{{ vars.ownership }}plicit", entries: { main: {}, helper: {} } }),
       withAgents({ entries: { [`${"a".repeat(64)}{{ vars.id }}`]: {} } }),
+      withModel("{{ vars.id }}"),
+      withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai/{{ vars.id }}"] }),
+      // A variable key that a filling can make `primary` supplies the primary model.
+      withModel({ "{{ vars.id }}": "openai/gpt-4.1" }),
     ];
     for (const [index, values] of accepted.entries()) {
       const saved = await savePreset(context, template(values), `Templated-${index}`);
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
+    const launch = (values, inputs) =>
+      request(context.app, "POST", context.collection, {
+        body: {
+          kind: "agent",
+          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
+        },
+      });
     for (const [values, inputs, message] of [
       [
         accepted[0],
@@ -1045,15 +1093,13 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
         "The OpenClaw Gateway normalizes agents.entries.Main and agents.entries.main to the same Agent ID: rename one.",
       ],
       [accepted[2], { ownership: "shared" }, onlyExplicit],
+      [accepted[6], { id: "fast" }, providerModel("agents.defaults")],
+      [accepted[8], { id: "other" }, providerModel("agents.defaults")],
     ]) {
-      const launched = await request(context.app, "POST", context.collection, {
-        body: {
-          kind: "agent",
-          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
-        },
-      });
-      assertRefused(launched, message);
+      assertRefused(await launch(values, inputs), message);
     }
+    const primary = await launch(accepted[8], { id: "primary" });
+    assert.equal(primary.status, 201, JSON.stringify(primary.body));
   });
 });
 
@@ -1372,6 +1418,191 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
     );
   }
+});
+
+test("Configuration create, update and Agent create's check refuse a channel credential reference without a Secret binding (finding 2319)", async () => {
+  // The bundled Kubernetes Compute delivers channel credentials only from Configuration Secret
+  // bindings. Deployment refused an unbound reference; create and update carry values and
+  // bindings in one request, so OCC refuses it where it is written, with the setting and the
+  // missing name.
+  const configurationDriver = createConfigurationBackend();
+  const { namespace, collection, ...context } = await fixture({
+    configurationDriver,
+    computeDriver: kubernetesRules("compute-channel-bindings", ...configurationRules),
+    computeImplementation: "kubernetes-local",
+  });
+  const valid = runtimeSelected;
+  const { created, configurationId, item } = await deployableAgent(context, namespace, {
+    values: valid,
+    name: "Channel bindings consumer",
+    secretName: "channel-bindings-key",
+  });
+  const binding = async (name) => {
+    const secret = await context.controller.createSecret(context.principal.id, {
+      namespaceId: namespace.id,
+      name,
+      value: `synthetic-${name}`,
+    });
+    return { source: secret.ref, delivery: { type: "env" } };
+  };
+  const bothBindings = {
+    SLACK_APP_TOKEN: await binding("slack-app"),
+    SLACK_BOT_TOKEN: await binding("slack-bot"),
+  };
+  const slackWith = (slack) => ({
+    ...valid,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: "${SLACK_BOT_TOKEN}",
+        ...slack,
+      },
+    },
+  });
+  const slack = slackWith({});
+  const botRefusal = unboundChannelReference("channels.slack.botToken", "SLACK_BOT_TOKEN");
+  const appRefusal = unboundChannelReference("channels.slack.appToken", "SLACK_APP_TOKEN");
+  const unchanged = async (label) =>
+    assert.deepEqual((await request(context.app, "GET", item)).body.data, created.body.data, label);
+
+  // Create: one binding of two is refused, naming the other; both save.
+  assertRefused(
+    await request(context.app, "POST", collection, {
+      body: {
+        kind: "agent",
+        values: slack,
+        secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
+      },
+    }),
+    botRefusal,
+    { label: "create with one binding" },
+  );
+  const saved = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+
+  // Update that adds the references and keeps the Configuration's bindings (none).
+  assertRefused(
+    await request(context.app, "PATCH", item, { body: { values: slack } }),
+    appRefusal,
+    { label: "update adds references" },
+  );
+  await unchanged("update adds references");
+  // Values and bindings in one update save; then an update that drops one binding is refused.
+  const bound = await request(context.app, "PATCH", item, {
+    body: { values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(bound.status, 200, JSON.stringify(bound.body));
+  // An update of values only, as the Console's Configuration JSON editor sends, keeps and checks
+  // against the stored bindings.
+  const valuesOnly = await request(context.app, "PATCH", item, { body: { values: slack } });
+  assert.equal(valuesOnly.status, 200, JSON.stringify(valuesOnly.body));
+  assert.deepEqual(valuesOnly.body.data.secretBindings, bothBindings);
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: slack, secretBindings: { SLACK_BOT_TOKEN: bothBindings.SLACK_BOT_TOKEN } },
+    }),
+    appRefusal,
+    { label: "update removes a binding" },
+  );
+  assert.deepEqual(
+    (await request(context.app, "GET", item)).body.data,
+    valuesOnly.body.data,
+    "update removes a binding",
+  );
+
+  // A reference under a named account names its own setting; a disabled channel is not checked.
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: {
+        values: slackWith({ accounts: { work: { botToken: "${WORK_BOT_TOKEN}" } } }),
+        secretBindings: bothBindings,
+      },
+    }),
+    unboundChannelReference("channels.slack.accounts.work.botToken", "WORK_BOT_TOKEN"),
+    { label: "named account" },
+  );
+  // A binding is an own key: an inherited name such as `constructor` binds nothing.
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: slackWith({ botToken: "${constructor}" }), secretBindings: bothBindings },
+    }),
+    unboundChannelReference("channels.slack.botToken", "constructor"),
+    { label: "inherited name" },
+  );
+  const disabled = await request(context.app, "PATCH", item, {
+    body: { values: slackWith({ enabled: false }), secretBindings: {} },
+  });
+  assert.equal(disabled.status, 200, JSON.stringify(disabled.body));
+
+  // A row an older release stored without bindings still reads. As for every save rule, an
+  // update that keeps the reference unbound is refused even when it changes something else, and
+  // one that adds the bindings repairs it.
+  await writePastOcc(configurationDriver, configurationId, slack);
+  const stored = await request(context.app, "GET", item);
+  assert.equal(stored.status, 200, JSON.stringify(stored.body));
+  assert.deepEqual(stored.body.data.values, slack);
+  assertRefused(
+    await request(context.app, "PATCH", item, {
+      body: { values: { ...slack, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } } },
+    }),
+    appRefusal,
+    { label: "unrelated update of a stored row" },
+  );
+  const repaired = await request(context.app, "PATCH", item, {
+    body: { values: slack, secretBindings: bothBindings },
+  });
+  assert.equal(repaired.status, 200, JSON.stringify(repaired.body));
+  assert.deepEqual(repaired.body.data.secretBindings, bothBindings);
+
+  // Agent create's check refuses the reference when the caller sends the bindings it will save,
+  // before any Secret or Configuration is saved; without them, that check is skipped.
+  const validate = (configuration) =>
+    request(context.app, "POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: { configuration: { kind: "agent", ...configuration }, executionMode: "dedicated" },
+    });
+  assertRefused(
+    await validate({
+      values: slack,
+      secretBindings: { SLACK_APP_TOKEN: bothBindings.SLACK_APP_TOKEN },
+    }),
+    botRefusal,
+    { label: "validate" },
+  );
+  for (const configuration of [
+    { values: slack, secretBindings: bothBindings },
+    { values: slack },
+  ]) {
+    const checked = await validate(configuration);
+    assert.equal(checked.status, 204, JSON.stringify(checked.body));
+  }
+});
+
+// Another Compute may resolve channel credentials without OCC Secret bindings (SSH Compute reads
+// the host's operator-owned environment file), so OCC applies the binding rule only on the
+// bundled Kubernetes Compute (finding 2319).
+test("Configuration save keeps an unbound channel credential reference on a Compute other than the bundled Kubernetes one", async () => {
+  const { collection, ...context } = await fixture({
+    computeDriver: kubernetesRules("compute-other-channel-bindings", ...configurationRules),
+  });
+  const slack = {
+    ...runtimeSelected,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+        botToken: "${SLACK_BOT_TOKEN}",
+      },
+    },
+  };
+  const saved = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: slack },
+  });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
 });
 
 test("Configuration save refuses a model selection or apiKey off the primary model's provider, naming the setting", async (t) => {
@@ -1882,12 +2113,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
   });
 });
 
-test("Configuration and Preset saves check an OpenRouter compatibility selector as a model fallback or primary", async (t) => {
-  // Finding 1320: the fallback rule kept only references with a slash, so OpenClaw's
-  // openrouter:auto and openrouter:free were never checked. A Codex primary with an
-  // openrouter:auto fallback saved and deployment refused it with a message that named no
-  // setting, and any fallback under an openrouter:auto primary saved unchecked. Both read as the
-  // openrouter provider's models now (finding 1310), so the rule names the setting at save.
+test("Configuration and Preset saves refuse an OpenRouter compatibility selector as a model primary or fallback, as deployment does", async (t) => {
+  // Finding 1320: the fallback rule kept only references with a slash, so a Codex primary with
+  // an openrouter:auto fallback saved. Every deployment refuses a model selection without a
+  // slash, OpenClaw's openrouter:auto and openrouter:free included, so every save refuses it
+  // with deployment's text, which names the setting (finding 1828). Other settings still read
+  // the two selectors as the openrouter provider's models (finding 1310).
   const context = await saveFixture(
     t,
     kubernetesRules("compute-openrouter-fallbacks", ...configurationRules),
@@ -1896,19 +2127,15 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
     model: "codex/gpt-5",
     models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
   };
-  const withModel = (model, defaults = codex) => ({
-    agents: { defaults: { ...defaults, model } },
-  });
-  const fallbacks = (path) =>
-    setting(`${path}.model.fallbacks`, "must use the primary model's provider");
+  const codexModel = (model) => ({ agents: { defaults: { ...codex, model } } });
   const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: withModel(codex.model) },
+    body: { kind: "agent", values: codexModel(codex.model) },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   for (const [values, path] of [
-    [withModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
-    [withModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
+    [codexModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
+    [codexModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
     [
       {
         agents: {
@@ -1918,21 +2145,30 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
       },
       "agents.entries.main",
     ],
-    // An openrouter:auto primary keeps its fallbacks on openrouter.
-    [withModel({ primary: "openrouter:auto", fallbacks: ["codex/gpt-5"] }), "agents.defaults"],
-    [withModel({ primary: "openrouter:free", fallbacks: ["openai/gpt-5"] }), "agents.defaults"],
+    [codexModel({ primary: "openrouter:auto", fallbacks: ["codex/gpt-5"] }), "agents.defaults"],
+    [
+      codexModel({
+        primary: "openrouter:auto",
+        fallbacks: ["openrouter:free", "openrouter/meta/m"],
+      }),
+      "agents.defaults",
+    ],
+    [
+      codexModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
+      "agents.defaults",
+    ],
   ]) {
-    await refusedOnSave(context, values, fallbacks(path), { item });
+    await refusedOnSave(context, values, providerModel(path), { item });
   }
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
   // A Preset selector that waits on a variable is checked once filled: a default fills it here.
-  const waiting = withModel({ primary: codex.model, fallbacks: ["openrouter:{{ vars.kind }}"] });
+  const waiting = codexModel({ primary: codex.model, fallbacks: ["openrouter:{{ vars.kind }}"] });
   const filled = await savePreset(context, {
     variables: { kind: { type: "string", default: "auto" } },
     configuration: { values: waiting },
   });
-  assertRefused(filled, fallbacks("agents.defaults"));
+  assertRefused(filled, providerModel("agents.defaults"));
   const deferred = await savePreset(
     context,
     { variables: { kind: { type: "string" } }, configuration: { values: waiting } },
@@ -1940,12 +2176,11 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
   );
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
 
-  // Fallbacks on the primary model's provider save, a compatibility selector among them.
+  // Fallbacks on the primary model's provider save, and so do the selectors outside the model
+  // selection. Only the two selectors name openrouter there: another bare name is an alias.
   for (const [index, values] of [
-    withModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
-    withModel({ primary: "openrouter:auto", fallbacks: ["openrouter:free", "openrouter/meta/m"] }),
-    withModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
-    // Only the two selectors name openrouter: another bare name is an alias, as written.
+    codexModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
+    codexModel({ primary: "openrouter/meta/m", fallbacks: ["openrouter/meta/n"] }),
     {
       agents: {
         defaults: {
@@ -2248,8 +2483,7 @@ for (const [method, action] of [
 }
 
 test("Filesystem Configuration API rejects plaintext model writes without changing stored references", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-model-configuration-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-model-configuration-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const sentinel = `synthetic-configuration-credential-${randomUUID()}`;
@@ -3998,8 +4232,7 @@ test("A stored Configuration with request credentials an older release accepted 
   // transport settings. After the upgrade the bundled Driver must still read and replace that
   // document so its operator can remove them, while save and deployment refuse it with the
   // Kubernetes Compute rule's message, before any revision or runtime resource exists.
-  const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-upgrade-configuration-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const { namespace, ...context } = await fixture({
     configurationDriver,
@@ -4087,8 +4320,7 @@ test("A stored Configuration with a literal Gateway password an older release ac
     ],
     ["ready Compute", createReadyComputeDriver("compute-stored-gateway-password-ready")],
   ]) {
-    const root = await mkdtemp(join(tmpdir(), "occ-stored-gateway-password-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-stored-gateway-password-");
     const configurationDriver = new FilesystemConfigurationDriver(root);
     const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
     const { configurationId, item, agentPath } = await deployableAgent(context, namespace, {

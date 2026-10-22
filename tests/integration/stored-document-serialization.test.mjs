@@ -3,7 +3,10 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 import { loadInstallationPresets } from "../../apps/controller/src/composition/installation-presets.ts";
-import { cachedResponseSerializers } from "../../apps/controller/src/index.ts";
+import {
+  cachedRequestValidators,
+  cachedResponseSerializers,
+} from "../../apps/controller/src/index.ts";
 import {
   JsonValue,
   PluginApproversSchema,
@@ -264,6 +267,47 @@ test("the serializer keeps the walk for a different schema registered as SafeJso
     httpStatus: "200",
   });
   assert.equal(serializer({ value: { kept: 1, dropped: true } }), '{"value":{"kept":"1"}}');
+});
+
+test("apps share a compiled validator or serializer only for equal shared schemas and options", () => {
+  // Every app holds its own copies of the shared schemas, so equal content shares one compiled
+  // function across apps; a different schema under the same $id, or other compiler options,
+  // compiles its own.
+  const route = () => ({
+    schema: { type: "object", required: ["value"], properties: { value: { $ref: "Item" } } },
+    method: "POST",
+    url: "/",
+    httpPart: "body",
+    httpStatus: "200",
+  });
+  const shared = (type) => ({ Item: { $id: "Item", type } });
+  const validator = (type, options = { customOptions: {} }) =>
+    cachedRequestValidators()(shared(type), options)(route());
+  const text = validator("string");
+  assert.equal(validator("string"), text);
+  const integer = validator("integer");
+  assert.notEqual(integer, text);
+  assert.equal(text({ value: "a" }), true);
+  assert.equal(integer({ value: "a" }), false);
+  assert.notEqual(validator("string", { customOptions: { coerceTypes: true } }), text);
+  assert.notEqual(validator("string", { customOptions: {}, plugins: [() => {}] }), text);
+  const format = (pattern) => ({ customOptions: { formats: { item: pattern } } });
+  assert.notEqual(validator("string", format(/a/)), validator("string", format(/b/)));
+  // Fastify lowercases headers schemas only for its default compiler.
+  const headers = (name) =>
+    cachedRequestValidators()(shared("string"), { customOptions: {} })({
+      schema: { type: "object", required: [name], properties: { [name]: { type: "string" } } },
+      method: "GET",
+      url: "/",
+      httpPart: "headers",
+    });
+  assert.equal(headers("x-item")({ "x-item": "a" }), true);
+  assert.throws(() => headers("X-Item"), /must name headers in lowercase: X-Item/);
+
+  const serializer = (type) => cachedResponseSerializers()(shared(type), undefined)(route());
+  assert.equal(serializer("string"), serializer("string"));
+  assert.notEqual(serializer("integer"), serializer("string"));
+  assert.equal(serializer("integer")({ value: "7" }), '{"value":7}');
 });
 
 test("the Preset route answers with the bytes the per-node walk wrote", async (t) => {

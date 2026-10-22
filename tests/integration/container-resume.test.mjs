@@ -6,22 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { publishWorkflow, repository } from "../../scripts/ci/container-release.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
+import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 
 test("publication aliases and recovery preserve producer bytes and identity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "container-resume-test-"));
-  const original = { PATH: process.env.PATH, GH_TOKEN: process.env.GH_TOKEN };
-  t.after(async () => {
-    for (const [key, value] of Object.entries(original)) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.GH_TOKEN = "test-token";
-  process.env.PATH = `${directory}:${process.env.PATH}`;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  setEnvironment(t, { GH_TOKEN: "test-token" });
+  prependPath(t, directory);
   const workflowSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   let sourceSha = "a".repeat(40);
   const statePath = join(directory, "registry.json");
@@ -84,10 +76,10 @@ test("publication aliases and recovery preserve producer bytes and identity", as
   // The fixture replaces only the external transport executable and HTTP API.
   // Production recovery, seal/hash checks, gate ordering, receipt and remote
   // digest comparisons run unchanged. This is not a real registry proof.
-  await writeFile(
-    join(directory, "skopeo"),
-    `#!${process.execPath}
-import { readFileSync, writeFileSync } from "node:fs";
+  await writeCommand(
+    directory,
+    "skopeo",
+    `import { readFileSync, writeFileSync } from "node:fs";
 const statePath = ${JSON.stringify(statePath)};
 const state = JSON.parse(readFileSync(statePath, "utf8"));
 const args = process.argv.slice(2);
@@ -110,7 +102,7 @@ if (args[0] === "inspect") {
   throw new Error("Unexpected transport command");
 }
 `,
-    { mode: 0o755 },
+    { interpreter: process.execPath },
   );
   const initialState = { remote: { [prepared[0].remote]: prepared[0].bytes }, copies: [] };
   await writeFile(statePath, JSON.stringify(initialState));

@@ -1,3 +1,4 @@
+import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
@@ -10,10 +11,11 @@ import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, initials, panel, sorted } from "./shell.mjs";
+import { brandContents, createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
+import { renderSecrets } from "./secrets.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -32,11 +34,15 @@ let installationAccessProbe = null;
 let installationAdmin = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
 const deniedReadsStorageKey = "occ.console.deniedReads";
+// Set once this tab has a session, until it signs out; see rememberSignedIn.
+const signedInStorageKey = "occ.console.signedIn";
 const deniedReadsLimit = 200;
 let loggingOut = false;
 let navigateAgentTab = null;
 // The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
 let leaveGuard = null;
+// Whether the shown page has a write in flight that a reload or tab close would cut short.
+let writeInFlight = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -214,6 +220,29 @@ function signInUnavailableFailure(label) {
 // password or an attach cannot help, so only an administrator is named.
 function accountDisabledFailure(label) {
   return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+}
+
+// Only a tab that had a session says it expired; a first visit to a deep link, or one after
+// signing out, just asks to sign in (finding 1893). The mark is in tab storage, so a reload
+// after expiry still says it.
+function rememberSignedIn(signedIn) {
+  try {
+    if (signedIn) {
+      sessionStorage.setItem(signedInStorageKey, "1");
+    } else {
+      sessionStorage.removeItem(signedInStorageKey);
+    }
+  } catch {
+    // Without tab storage a reload after expiry asks to sign in without saying why.
+  }
+}
+
+function recalledSignedIn() {
+  try {
+    return sessionStorage.getItem(signedInStorageKey) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function pinSessionKey(value) {
@@ -456,6 +485,28 @@ function takeNativeFragment(current) {
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
 shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
+
+// The page names a Namespace the reader cannot read. Switch Namespace focuses the header's
+// selector, which is disabled when no Namespace is readable (a member whose only grant was
+// revoked, on a bookmarked link), so the panel then points at the header's Refresh, as the
+// no-readable-Namespace panel does (findings 2371, 2393).
+function namespaceUnavailablePanel(view) {
+  if (namespaces.length) {
+    panel(
+      view,
+      "Namespace unavailable",
+      "This Namespace is missing or you no longer have access. Choose another Namespace.",
+      "Switch Namespace",
+      () => switchNamespace(),
+    );
+    return;
+  }
+  panel(
+    view,
+    "Namespace unavailable",
+    "This Namespace is missing or you no longer have access, and you cannot read any other Namespace. Ask an administrator to grant you access to one, then Refresh.",
+  );
+}
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
@@ -550,7 +601,7 @@ function clearRetainedViewsOutsideNamespaces(readable) {
 }
 
 function clearPasswordInputs() {
-  document.querySelectorAll('input[type="password"]').forEach((input) => {
+  document.querySelectorAll('input[type="password"], [data-secret-value]').forEach((input) => {
     if (input.value) {
       if (mountedViewState) {
         mountedViewState.reusable = false;
@@ -756,6 +807,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   }
   navigateAgentTab = null;
   leaveGuard = null;
+  writeInFlight = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -778,6 +830,13 @@ function headerPage(current) {
     return { creating: true };
   }
   return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function collectionPath(feature, selection) {
+  return (
+    { namespaces: "/namespaces", backends: "/backends" }[feature] ??
+    `/namespaces/${encodeURIComponent(selection)}/${feature}`
+  );
 }
 
 function renderShell(
@@ -1007,12 +1066,7 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element(
-        "p",
-        { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OpenClaw Enterprise",
-      ),
+      element("p", { className: "brand" }, ...brandContents("sign-in")),
       element("h1", {}, "Sign in"),
       usernameHint,
       form,
@@ -1364,6 +1418,8 @@ async function loadPage({
     }
   }
   try {
+    // A pinned key alone covers a provider exchange that confirmed a session now missing.
+    const hadSession = session !== null || pinnedSessionKey !== null || recalledSignedIn();
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -1385,7 +1441,8 @@ async function loadPage({
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
-          : current.feature !== "login" &&
+          : hadSession &&
+              current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
             ? "Your session has expired."
@@ -1395,6 +1452,7 @@ async function loadPage({
       return;
     }
     sessionResolved = true;
+    rememberSignedIn(true);
     const owner = sessionOwnerKey(session);
     // Drafts belong to the session that wrote them: a read retried after an unavailable check
     // keeps them (finding 1935); any other session clears them.
@@ -1500,8 +1558,9 @@ async function loadPage({
       )?.id ??
       null;
     replaceUrl(pageUrl(current.target));
-    const agentsNamespaceUnavailable =
-      current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    const scopedNamespaceUnavailable =
+      ["agents", "secrets"].includes(current.feature) &&
+      !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -1515,16 +1574,18 @@ async function loadPage({
     // loading) is replaced once, by the page itself (finding 1407).
     let firstItems = null;
     let firstAgent = null;
-    // The Agents list and Create Agent paint with the caller's permission answer, never enabled
-    // and then refused (findings 1517, 1521). Gating only: the API still authorizes creation, so
-    // an unknown answer (a failed read) keeps the controls.
+    // The Agents and Secrets lists, and Create Agent, paint with the caller's permission answer,
+    // never enabled and then refused (findings 1517, 1521, 2365). Gating only: the API still
+    // authorizes creation, so an unknown answer (a failed read) keeps the controls.
     const permissionsPath = `/namespaces/${encodeURIComponent(namespaceId)}/permissions`;
     const permissionsRead =
-      !agentsNamespaceUnavailable && current.feature === "agents" && !current.agentId
+      !scopedNamespaceUnavailable &&
+      ["agents", "secrets"].includes(current.feature) &&
+      !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
     let firstPermissions = null;
-    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
+    if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
         firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
@@ -1533,11 +1594,7 @@ async function loadPage({
         firstItems =
           current.feature === "namespaces"
             ? namespaces
-            : await request(
-                current.feature === "backends"
-                  ? "/backends"
-                  : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-              );
+            : await request(collectionPath(current.feature, namespaceId));
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -1551,7 +1608,7 @@ async function loadPage({
     }
     const retainedState = retainedView?.state;
     let unchanged = false;
-    if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
+    if (retained && reuseView && retainedState && !scopedNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
         fresh.set(
@@ -1559,12 +1616,7 @@ async function loadPage({
           firstAgent,
         );
       } else if (firstItems && current.feature !== "namespaces") {
-        fresh.set(
-          current.feature === "backends"
-            ? "/backends"
-            : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          firstItems,
-        );
+        fresh.set(collectionPath(current.feature, namespaceId), firstItems);
       }
       if (firstPermissions !== null) {
         fresh.set(permissionsPath, firstPermissions);
@@ -1619,7 +1671,7 @@ async function loadPage({
     if (
       retained &&
       reuseView &&
-      !agentsNamespaceUnavailable &&
+      !scopedNamespaceUnavailable &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
@@ -1647,6 +1699,7 @@ async function loadPage({
       }
       navigateAgentTab = retainedState.tabNavigation;
       leaveGuard = retainedState.leaveGuard ?? null;
+      writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1661,7 +1714,7 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
+    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
@@ -1686,7 +1739,13 @@ async function loadPage({
       // Diagnostics attach to the Agent's own shell when it reveals.
       shell = { ...standIn, view: detailView, diagnostics: null };
     } else {
-      shell = renderShell(current.feature, false);
+      // A Namespace the reader cannot read hides its Agent too: the panel takes the Agents list's
+      // header, not the Agent page's ID, copy button and ← Agents link (finding 2400).
+      shell = renderShell(
+        current.feature,
+        false,
+        scopedNamespaceUnavailable ? { page: null } : undefined,
+      );
     }
     const viewState = {
       active,
@@ -1763,22 +1822,46 @@ async function loadPage({
     }
     if (current.feature === "settings") {
       shell.view.append(settingsView());
+      if (installationAdmin) {
+        shell.view.append(
+          renderInstallationConfigurations({
+            request,
+            isCurrent: () => lifetime.isCurrent(viewState.active),
+          }),
+        );
+      }
+
       markMountedRoute(current);
       return;
     }
-    if (agentsNamespaceUnavailable) {
+    if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
-      panel(
-        shell.view,
-        namespaceId === null ? "No readable Namespaces" : "Namespace unavailable",
-        namespaceId === null
-          ? "Ask an administrator to provision a Namespace or grant access. Namespaces remain available in navigation."
-          : "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        namespaces.length ? "Switch Namespace" : "Refresh",
-        () => (namespaces.length ? switchNamespace() : void loadPage()),
-      );
+      if (namespaceId === null) {
+        // With nothing to switch to, the header's Refresh is the one way to look again, so the
+        // panel adds no second Refresh (finding 2371).
+        panel(
+          shell.view,
+          "No readable Namespaces",
+          "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
+        );
+      } else {
+        namespaceUnavailablePanel(shell.view);
+      }
       return;
     }
+    // Inline Create Secret dialogs follow the Namespace's secrets.create answer (finding 2442).
+    // A page that read the answer up front reuses it; the Agent page reads it once, when a Secret
+    // field first needs it, and only for a Namespace this session can read. A failed read is
+    // unknown and keeps the action.
+    let secretsCreateRead = null;
+    const secretsCreateAllowed = () =>
+      (secretsCreateRead ??= (
+        firstPermissions !== null
+          ? Promise.resolve(firstPermissions)
+          : namespaces.some((item) => item.id === namespaceId)
+            ? request(permissionsPath).catch(() => null)
+            : Promise.resolve(null)
+      ).then((permissions) => permissions?.secrets?.create));
     const agentContext = {
       operatorId: session.user.id,
       installationAdmin,
@@ -1790,6 +1873,7 @@ async function loadPage({
       // The selected Namespace: the Agents list and Create Agent name its status when it is not
       // ready (finding 1895).
       namespace: namespaces.find((item) => item.id === namespaceId),
+      secretsCreateAllowed,
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1852,6 +1936,27 @@ async function loadPage({
           leaveGuard = refuse;
         }
       },
+      // A page whose writes hold it open (an Agent's share, a draft's save) says when one is in
+      // flight, so a reload or tab close asks first too (finding 2125).
+      setWriteInFlight(check) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.writeInFlight = check;
+          writeInFlight = check;
+        }
+      },
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
+      holdWhileWriting({ writing, held, released }) {
+        agentContext.setLeaveGuard(() => {
+          if (!writing()) {
+            released?.();
+            return false;
+          }
+          held();
+          return true;
+        });
+        agentContext.setWriteInFlight(writing);
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
@@ -1859,8 +1964,8 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
-    if (current.creating || (current.feature === "agents" && !current.agentId)) {
-      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
+      // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
       const shownStatus = agentContext.namespace?.status;
@@ -1871,23 +1976,23 @@ async function loadPage({
       });
     }
     if (current.creating) {
-      renderCreateAgent(
-        {
-          ...agentContext,
-          permissions: firstPermissions,
-          setDiscardOnExit(discard) {
-            discardCreationOnExit = discard ? { namespaceId } : null;
-          },
-          setDraftCapture(capture, unsaved) {
-            agentContext.drafts.forget("create");
-            if (capture) {
-              agentContext.drafts.track("create", capture);
-              agentContext.drafts.unsavedWhen("create", unsaved);
-            }
-          },
+      const createContext = {
+        ...agentContext,
+        permissions: firstPermissions,
+        // Create Agent rereads the answer in place, so its Secret fields follow the latest one.
+        secretsCreateAllowed: async () => createContext.permissions?.secrets?.create,
+        setDiscardOnExit(discard) {
+          discardCreationOnExit = discard ? { namespaceId } : null;
         },
-        agentContext.drafts.get("create"),
-      );
+        setDraftCapture(capture, unsaved) {
+          agentContext.drafts.forget("create");
+          if (capture) {
+            agentContext.drafts.track("create", capture);
+            agentContext.drafts.unsavedWhen("create", unsaved);
+          }
+        },
+      };
+      renderCreateAgent(createContext, agentContext.drafts.get("create"));
       markMountedRoute(current);
       return;
     }
@@ -2002,14 +2107,7 @@ async function loadPage({
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(
-      current.feature === "namespaces"
-        ? "/namespaces"
-        : current.feature === "backends"
-          ? "/backends"
-          : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      JSON.stringify(items),
-    );
+    viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
@@ -2019,6 +2117,8 @@ async function loadPage({
         items,
         renderRows,
       );
+    } else if (current.feature === "secrets") {
+      renderSecrets({ ...agentContext, items, sorted, permissions: firstPermissions });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -2046,14 +2146,7 @@ async function loadPage({
       resetReads();
       clearPrivate();
       shell = null;
-      publicPanel(
-        sessionResolved ? "Namespace access unavailable" : "Session unavailable",
-        sessionResolved
-          ? "Could not check Namespace access. Try again."
-          : "Could not check your session. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(sessionResolved, error.status);
       return;
     }
     mountedRouteKey = null;
@@ -2309,14 +2402,7 @@ async function revalidateMountedAgent(current) {
     if (!namespaces.some((item) => item.id === selectedNamespace)) {
       clearRetainedViewsForNamespace(selectedNamespace);
       resetReads();
-      const shell = renderShell(current.feature);
-      panel(
-        shell.view,
-        "Namespace unavailable",
-        "This Namespace is missing or you no longer have access. Choose another Namespace.",
-        "Switch Namespace",
-        () => switchNamespace(),
-      );
+      namespaceUnavailablePanel(renderShell(current.feature, false, { page: null }).view);
       return;
     }
     checking = "detail";
@@ -2349,14 +2435,7 @@ async function revalidateMountedAgent(current) {
     if (checking !== "detail") {
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
-      publicPanel(
-        checking === "session" ? "Session unavailable" : "Namespace access unavailable",
-        checking === "session"
-          ? "Could not check your session. Try again."
-          : "Could not check Namespace access. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(checking !== "session", error.status);
       return;
     }
     if ([400, 403, 404].includes(error.status)) {
@@ -2482,6 +2561,30 @@ function settingsView() {
   );
 }
 
+// The shared session or Namespace read failed, so no private page can show. Once the session
+// is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
+// has no account menu, so it offers Sign out beside Retry (finding 1894).
+function showAdmissionUnavailable(sessionChecked, status) {
+  if (!sessionChecked) {
+    publicPanel(
+      "Session unavailable",
+      "Could not check your session. Try again.",
+      "Retry",
+      () => void loadPage(),
+    );
+    return;
+  }
+  publicPanel(
+    status === 403 ? "No access" : "Namespace access unavailable",
+    status === 403
+      ? "Your account has no access to this Installation. Try again or sign out."
+      : "Could not check Namespace access. Try again.",
+    "Retry",
+    () => void loadPage(),
+    { label: "Sign out", action: () => void logout() },
+  );
+}
+
 async function logout() {
   loggingOut = true;
   pendingIntent = null;
@@ -2492,6 +2595,7 @@ async function logout() {
   clearPrivate();
   forgetInstallationAccess();
   forgetDeniedReads();
+  rememberSignedIn(false);
   publicPanel("Signing out…", "Confirming that your session has ended.");
   let confirmed = false;
   try {
@@ -2534,9 +2638,10 @@ document.addEventListener("visibilitychange", () => {
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work
-// (finding 1902).
+// (finding 1902). It would also cut short a write in flight, such as the second of a share's
+// two bindings (finding 2125).
 window.addEventListener("beforeunload", (event) => {
-  if (!loggingOut && drafts.hasUnsaved()) {
+  if (!loggingOut && (drafts.hasUnsaved() || writeInFlight?.())) {
     event.preventDefault();
     event.returnValue = "";
   }

@@ -21,6 +21,7 @@ import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.
 import {
   deploymentErrorForWork,
   deploymentProgressForWork,
+  revisionAdmittedBeforeWork,
 } from "../../packages/occ/src/state/controller-work.ts";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
@@ -226,6 +227,16 @@ test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
   assert.equal(isStopYieldedCode("PREDECESSOR_STOP_YIELDED"), true);
   assert.equal(isStopYieldedCode("REVISION_INCOMPLETE"), false);
   assert.equal(isStopYieldedCode("REFUSED_CANDIDATE_STOP_PENDING"), false);
+});
+
+// Finding 1195: a stop owns the revisions admitted no later than its work was created. Both
+// stamps are truncated to milliseconds, so a revision admitted in the stop's millisecond
+// belongs to it; otherwise the stop would end STOP_SUPERSEDED and leave that revision running.
+test("a stop owns a revision admitted in the same millisecond as its work", () => {
+  const stop = { createdAt: new Date("2026-10-24T12:00:00.123Z") };
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.122Z" }, stop), true);
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.123Z" }, stop), true);
+  assert.equal(revisionAdmittedBeforeWork({ createdAt: "2026-10-24T12:00:00.124Z" }, stop), false);
 });
 
 // Finding 1107: lease recovery gives a deployment whose predecessor stop started one more attempt

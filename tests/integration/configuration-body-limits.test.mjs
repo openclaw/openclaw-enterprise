@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { assertApiError } from "../helpers/api-error.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
@@ -10,6 +11,7 @@ import {
   assertWriteAuthorizationDenial,
   partialWrite,
 } from "../helpers/partial-write-authorization.mjs";
+import { GENERIC_DENIAL } from "../helpers/refusal-text.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
 // all written with six-byte JSON escapes.
@@ -113,8 +115,7 @@ test("Configuration writes admit every Configuration the Kubernetes Driver store
     ],
   ]) {
     const oversized = await sendRaw(fixture, method, path, padding(body), adminSession);
-    assert.equal(oversized.status, 413, `${method}: ${JSON.stringify(oversized.body)}`);
-    assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE", method);
+    assertApiError(oversized, 413, "PAYLOAD_TOO_LARGE", method);
   }
   const stored = await fixture.request("GET", configurationPath(namespace.id, created.data.id));
   assert.equal(stored.data.generation, 3);
@@ -138,7 +139,7 @@ test("Configuration writes refuse a caller without the grant before reading the 
   const declaredBytes = 6 * 1024 * 1024;
   const forbidden = {
     code: "FORBIDDEN",
-    message: "The exact platform operation was not authorized.",
+    message: GENERIC_DENIAL,
   };
   for (const [method, path, action, grant, targetId] of [
     ["POST", collection(namespace.id), "openclaw.configurations.create", "create", namespace.id],
@@ -211,8 +212,7 @@ test("Configuration writes check the grant again in their transaction after the 
     ["PATCH", configurationPath(namespace.id, existing.id), { values: notes("withdrawn") }],
   ]) {
     const refused = await fixture.request(method, path, { session, body });
-    assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
-    assert.equal(refused.body.error.code, "FORBIDDEN", method);
+    assertApiError(refused, 403, "FORBIDDEN", method);
     assert.equal(fixture.policy.bindings.includes(writer), false, method);
     fixture.policy.bindings.push(writer);
   }

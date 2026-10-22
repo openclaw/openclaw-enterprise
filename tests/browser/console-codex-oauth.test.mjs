@@ -12,6 +12,10 @@ import {
   login,
   nativeValues,
   newPage,
+  settlePageRequests,
+  trackSettledFetches,
+  waitForEnabled,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -398,7 +402,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   await save.click();
   await page.getByText("Complete ChatGPT sign-in before saving.", { exact: true }).waitFor();
   await expectNoText(page, /Service unavailable/);
-  assert.equal(await save.isEnabled(), true);
+  await waitForEnabled(save);
   assert.equal(
     requests.some((request) => request.method === "PATCH" && request.path === agentPath),
     false,
@@ -406,13 +410,15 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
   assert.equal((await fixture.request("GET", agentPath)).data.harnessAuth.method, "api_key");
 });
 
-test("sign-in unavailable at the credential service shows the API cause once", async (t) => {
+test("Codex sign-in can retry a refused start but cannot repeat one with an unreadable confirmation", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
-  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  const start = page.getByRole("button", { name: "Sign in with OAuth", exact: true });
+  await start.click();
   await page
     .getByText(
       "ChatGPT sign-in is unavailable for this Installation. Choose another authentication method.",
@@ -420,8 +426,48 @@ test("sign-in unavailable at the credential service shows the API cause once", a
     )
     .waitFor();
   assert.equal(await page.getByRole("link", { name: "Open Codex sign-in" }).isVisible(), false);
-  assert.equal(
-    await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isEnabled(),
-    true,
+  await waitForEnabled(start);
+
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const namespacePath = `/namespaces/${namespace.id}`;
+  const beginPath = `${namespacePath}/agents/device-authorizations`;
+  const requests = apiRequests(page, fixture.origin);
+  await page.route(`**${beginPath}`, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    assert.equal(body.data.status, "pending");
+    // The real start committed. Lose its session reference only in the reply reaching the page.
+    const sessionId = body.data.session.id;
+    const session = await fixture.request("GET", `${namespacePath}/secrets/${sessionId}`);
+    assert.equal(session.status, 200);
+    assert.equal(session.data.id, sessionId);
+    delete body.data.session;
+    await route.fulfill({ response, json: body });
+  });
+  await start.click();
+  await waitForSettledFetches(page, beginPath, 2);
+  assert.equal(await start.isDisabled(), true, "a login may already exist");
+  await page
+    .getByText(/may have started.*until an administrator investigates the pending attempt/i)
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Cancel login" }).isVisible(), false);
+
+  // Changing the method rerenders the controls. Even a delivered click must not repeat Begin.
+  const method = page.getByLabel("Authentication method");
+  await method.selectOption("api_key");
+  await method.selectOption("credential_source");
+  assert.equal(await start.isDisabled(), true);
+  await start.dispatchEvent("click");
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests
+      .filter(({ path }) => path.includes(beginPath))
+      .map(({ method, path }) => [method, path]),
+    [["POST", beginPath]],
   );
 });

@@ -1,3 +1,4 @@
+import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
@@ -119,6 +120,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       implementation: "deterministic-contract",
       admission: `driver-state:v1:${"a".repeat(64)}`,
     },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
   };
@@ -1544,6 +1546,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     revision,
   });
 
+  await verifyEgressSendReceiptContract(store, installation, namespace, harnessSecret);
   await verifyDeletedResourceAccessBindingContract(store, revision);
   await verifyDuplicateNameContract(store);
   await verifyNameLengthContract(store);
@@ -1613,6 +1616,7 @@ async function verifyDuplicateNameContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1711,6 +1715,7 @@ async function verifyNameLengthContract(store) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -1838,6 +1843,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
     type: "openai",
     config: { base_url: "https://api.openai.com/v1" },
     secrets: { api_key: { kind: "secret", namespaceId: namespace.id, id: secret.id } },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt,
@@ -2013,6 +2019,7 @@ async function verifyCredentialSourceContract(
     secrets: {
       api_key: { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id },
     },
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway-contract",
     state: "ready",
     createdAt: new Date().toISOString(),
@@ -2915,4 +2922,133 @@ async function verifyCredentialSourceContract(
     ),
     externalRevision,
   );
+}
+
+async function verifyEgressSendReceiptContract(store, installation, namespace, secret) {
+  const receipts = new EgressSendReceipts(store);
+  const ref = () => ({ id: randomUUID(), generation: 1 });
+  const sender = ref();
+  const evidence = {
+    kind: "static",
+    source: {
+      installationId: installation.id,
+      namespaceId: namespace.id,
+      source: ref(),
+      backend: ref(),
+      provider: ref(),
+    },
+    binding: ref(),
+    grantHash: "receipt-contract",
+    isolationId: randomUUID(),
+    adoption: "live",
+    materialRefId: randomUUID(),
+    secret: { kind: "secret", namespaceId: namespace.id, id: secret.id },
+    secretDriver: ref(),
+    materialId: randomUUID(),
+    materialVersion: "N",
+    authoritativeObservedAt: new Date().toISOString(),
+    usableUntil: "2099-01-01T00:00:00.000Z",
+    retention: "none",
+  };
+  const input = {
+    sender,
+    instanceId: randomUUID(),
+    useId: randomUUID(),
+    attemptId: randomUUID(),
+    material: evidence,
+    deadlineAt: evidence.usableUntil,
+  };
+  const starts = await Promise.all([receipts.begin(sender, input), receipts.begin(sender, input)]);
+  assert.equal(starts.filter((value) => value.created).length, 1);
+  const rejected = { kind: "provider_rejected", dispatch: "confirmed", status: 401 };
+  const feedback = { classification: "credential_rejected", evidence };
+  // Observation commits the fence but cannot claim that a remote sender applied the decision.
+  const observed = await receipts.observe(sender, input, rejected, feedback);
+  assert.deepEqual(observed.outcome, { kind: "uncertain", dispatch: "possible" });
+  assert.deepEqual(observed.observation, rejected);
+  assert.equal(observed.feedback, "fenced");
+  assert.equal(observed.settled, false);
+  assert.deepEqual(await receipts.observe(sender, input, rejected, feedback), observed);
+  assert.equal((await receipts.begin(sender, input)).created, false);
+  assert.equal(await receipts.recover(sender, { ...input, instanceId: randomUUID() }), undefined);
+  for (const changed of [
+    { ...input, deadlineAt: "2099-01-02T00:00:00.000Z" },
+    { ...input, material: { ...evidence, materialVersion: "N+1" } },
+    { ...input, material: { ...evidence, secretDriver: ref() } },
+    { ...input, material: { ...evidence, value: "forbidden" } },
+    { ...input, operation_handle: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.begin(sender, changed), { name: "ResourceStateConflictError" });
+  }
+  for (const invalid of [
+    { ...rejected, body: "forbidden" },
+    { ...rejected, headers: [] },
+    { ...rejected, key: "forbidden" },
+  ]) {
+    await assert.rejects(receipts.observe(sender, input, invalid, feedback), {
+      name: "ResourceStateConflictError",
+    });
+  }
+  await store.read(async (view) => {
+    assert.equal(await view.credentialSources.isEgressMaterialRejected(evidence), true);
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({
+        ...evidence,
+        materialVersion: "N+1",
+      }),
+      false,
+    );
+    assert.equal(
+      await view.credentialSources.isEgressMaterialRejected({ ...evidence, secretDriver: ref() }),
+      false,
+    );
+    assert.equal(
+      view.egressSendReceipts,
+      undefined,
+      "receipt mutation stays in the transaction owner",
+    );
+  });
+  // Once final uncertainty is recorded, neither a retry nor invented refusal is permitted.
+  await receipts.record(sender, input, { kind: "uncertain", dispatch: "possible" });
+  await assert.rejects(receipts.record(sender, input, rejected, feedback), {
+    name: "ResourceStateConflictError",
+  });
+  await assert.rejects(
+    receipts.record(sender, input, {
+      kind: "refused",
+      dispatched: false,
+      error: { kind: "cancelled" },
+    }),
+    { name: "ResourceStateConflictError" },
+  );
+  const rollback = {
+    ...input,
+    useId: randomUUID(),
+    material: { ...evidence, materialVersion: "rollback" },
+  };
+  await assert.rejects(
+    store.transact(async (unit) => {
+      await unit.egressSendReceipts.insert(rollback);
+      await unit.credentialSources.rejectEgressMaterial(rollback.material);
+      throw new Error("abort receipt and fence");
+    }),
+    /abort receipt and fence/,
+  );
+  assert.equal(await receipts.recover(sender, rollback), undefined);
+  assert.equal(
+    await store.read((view) => view.credentialSources.isEgressMaterialRejected(rollback.material)),
+    false,
+  );
+  const refused = { ...input, useId: randomUUID() };
+  await receipts.begin(sender, refused);
+  const final = await receipts.record(sender, refused, {
+    kind: "refused",
+    dispatched: false,
+    error: { kind: "cancelled" },
+  });
+  assert.equal(final.observation, null);
+  assert.equal(final.feedback, null);
+  await assert.rejects(receipts.reject(sender, refused, evidence), {
+    name: "ResourceStateConflictError",
+  });
 }

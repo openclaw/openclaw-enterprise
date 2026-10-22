@@ -2,29 +2,31 @@ import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
+  PreparedGitHubAppKeyError,
+  startPreparedGitHubGitOwner,
+} from "./backends/repository-credentials/prepared-git-owner.ts";
+import {
+  bindRepositoryGitTransport,
+  repositoryGitAuthority,
+} from "./composition/repository-credentials/transport.ts";
+import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
+  readPublicCaBundle,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
+import { workerEnvironmentSettings } from "./worker/timer-settings.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
+import {
+  startupDependencyFailure,
+  startupConfigurationFailure,
+  startupListenerFailure,
+} from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
-
-function positiveEnvironment(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined) {
-    return fallback;
-  }
-  const value = Number(raw);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error(`${name} must be a positive safe integer.`);
-  }
-  return value;
-}
 
 function configuration() {
   const mode = process.env.NODE_ENV;
@@ -46,12 +48,13 @@ function configuration() {
   return {
     mode,
     databaseUrl,
-    pollIntervalMs: positiveEnvironment("OCC_WORKER_POLL_INTERVAL_MS", 250),
-    leaseDurationMs: positiveEnvironment("OCC_WORKER_LEASE_DURATION_MS", 5_000),
-    maxAttempts: positiveEnvironment("OCC_WORKER_MAX_ATTEMPTS", 5),
-    convergenceTimeoutMs: positiveEnvironment("OCC_WORKER_CONVERGENCE_TIMEOUT_MS", 900_000),
-    databaseTimeoutMs: positiveEnvironment("OCC_WORKER_DATABASE_TIMEOUT_MS", 60_000),
+    ...workerEnvironmentSettings(process.env),
   };
+}
+
+// workerStartupFailureCode maps this message to the setting's code; the path is never logged.
+function markerRefusal(name, cause) {
+  return new Error(`${name} must identify an absolute writable path.`, { cause });
 }
 
 function workerStartupFailureCode(error) {
@@ -59,6 +62,13 @@ function workerStartupFailureCode(error) {
     return "PRESET_FILE_INVALID";
   }
   const message = error instanceof Error ? error.message : "";
+  // Name the health marker setting an unusable path came from (finding 2327).
+  if (/^OCC_WORKER_READINESS_PATH /.test(message)) {
+    return "WORKER_READINESS_PATH_INVALID";
+  }
+  if (/^OCC_WORKER_LIVENESS_PATH /.test(message)) {
+    return "WORKER_LIVENESS_PATH_INVALID";
+  }
   if (/stored Installation name breaks the Name rule/.test(message)) {
     return "INSTALLATION_NAME_INVALID";
   }
@@ -96,6 +106,9 @@ let metricsPool;
 let metricsListener;
 let metricsClosing;
 let receiptServer;
+let repositoryGitTransport;
+let preparedRepositoryGit;
+let preparedGitHub;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -122,20 +135,41 @@ try {
       continue;
     }
     if (!marker.startsWith("/")) {
-      throw new Error(`${name} must identify an absolute writable path.`);
+      throw markerRefusal(name);
     }
     try {
       await unlink(marker);
     } catch (error) {
       if (error?.code !== "ENOENT") {
-        throw error;
+        throw markerRefusal(name, error);
       }
     }
   }
   // Startup (Installation and IAM load, Compute preflight) counts against the liveness
   // bound, and an unwritable path fails here rather than as a restart loop later.
   if (livenessPath !== undefined) {
-    await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    try {
+      await writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 });
+    } catch (cause) {
+      throw markerRefusal("OCC_WORKER_LIVENESS_PATH", cause);
+    }
+  }
+  // The readiness marker appears only once queue health is observed, so its directory is probed
+  // through a sibling file. An unwritable path left the worker running but never Ready
+  // (finding 2311).
+  if (readinessPath !== undefined) {
+    const probe = `${readinessPath}.${process.pid}.probe`;
+    try {
+      await unlink(probe).catch((error) => {
+        if (error?.code !== "ENOENT") {
+          throw error;
+        }
+      });
+      await writeFile(probe, "", { flag: "wx", mode: 0o600 });
+      await unlink(probe);
+    } catch (cause) {
+      throw markerRefusal("OCC_WORKER_READINESS_PATH", cause);
+    }
   }
   const drivers = await loadInstallationConfiguration({ mode, startupConfiguration });
   let computeDriver;
@@ -148,11 +182,33 @@ try {
     }
   }
   pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
-  if (drivers?.repositoryReceipt !== undefined) {
+  const repositoryOwner = drivers?.repositoryOwner;
+  if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
-      ...drivers.repositoryReceipt,
+      ...repositoryOwner,
       state: new PostgresPlatformState(pool),
     });
+  }
+  if (repositoryOwner && drivers.preparedRepositoryGit) {
+    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+    preparedRepositoryGit = await startPreparedGitHubGitOwner({
+      ...repositoryOwner,
+      ...owner,
+      ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+      pool,
+      registry: drivers.repositoryRegistry,
+      ...repositoryGitAuthority(drivers),
+      report: (code, context) =>
+        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+    });
+    repositoryGitTransport = await bindRepositoryGitTransport(
+      drivers,
+      preparedRepositoryGit,
+      pool,
+      (event) => emitOccLogEvent(logger, event),
+    );
+  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+    throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
   if (metricsSettings !== undefined) {
@@ -190,7 +246,10 @@ try {
             writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
+  preparedGitHub = drivers?.preparedGitHub;
+  await preparedGitHub?.connect(pool);
   await worker.start();
+  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
 
   let closing = false;
   async function shutdown() {
@@ -204,11 +263,17 @@ try {
       }
       try {
         try {
+          try {
+            await repositoryGitTransport?.close();
+          } finally {
+            await preparedRepositoryGit?.close();
+          }
           await receiptServer?.close();
         } finally {
           await closeMetrics();
         }
       } finally {
+        await preparedGitHub?.close();
         await worker.stop();
       }
       process.exitCode = 0;
@@ -220,6 +285,9 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
+  await preparedGitHub?.close().catch(() => {});
+  await repositoryGitTransport?.close().catch(() => {});
+  await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
   if (readinessPath !== undefined) {
@@ -246,8 +314,12 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ??
-      startupPolicyNameFailure(error) ?? { code: workerStartupFailureCode(error) }),
+    ...((error instanceof PreparedGitHubAppKeyError
+      ? { code: error.code, reason: error.reason }
+      : undefined) ??
+      startupDependencyFailure(error) ??
+      startupConfigurationFailure(error) ??
+      startupListenerFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });
   process.exitCode = 1;
 }

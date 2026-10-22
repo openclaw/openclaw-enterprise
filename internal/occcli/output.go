@@ -117,17 +117,26 @@ func (app *application) printCredentialSource(value any, collection bool) error 
 	if collection {
 		return app.printItems(value, collection, columns)
 	}
+	columns = append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"})
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			if status, ok := resource["status"].(map[string]any); ok {
-				// Table output shows the live gateway state; structured output keeps the full status.
+				// Table output shows the live gateway state and, when the driver
+				// reported one, the refresh state. Structured output keeps the
+				// full status and is not given these table-only keys.
 				row := maps.Clone(resource)
 				row["gatewayStatus"] = status["state"]
+				if refresh, ok := status["refresh"].(map[string]any); ok {
+					if state, ok := refresh["state"].(string); ok && state != "" {
+						row["refreshStatus"] = state
+						columns = append(columns, column{title: "REFRESH", key: "refreshStatus"})
+					}
+				}
 				value = row
 			}
 		}
 	}
-	return app.printItems(value, collection, append(columns, column{title: "GATEWAY STATUS", key: "gatewayStatus"}))
+	return app.printItems(value, collection, columns)
 }
 
 func (app *application) printCredentialWithdrawal(value any) error {

@@ -38,3 +38,25 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 		})
 	}
 }
+
+// A Pod with one container reports it whatever its name; one container per role is read only
+// when the Pod has several. A Pod entry that is not an object is refused, not skipped.
+func TestAgentRuntimeTableReadsASoleContainerAndRefusesMalformedPods(t *testing.T) {
+	pod := map[string]any{"name": "sbx-0", "role": "sandbox", "containers": []any{
+		map[string]any{"name": "agent", "state": "running", "restartCount": float64(4)},
+	}}
+	var out bytes.Buffer
+	app := &application{out: &out}
+	if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_1", "agt_1", "rev_1"); err != nil {
+		t.Fatal(err)
+	}
+	_, row, _ := strings.Cut(out.String(), "\n")
+	if got := strings.Join(strings.Fields(row), " "); !strings.HasSuffix(got, " running 4 -") {
+		t.Errorf("pod row = %q, want the sole container's state and restarts", got)
+	}
+	out.Reset()
+	err := app.printRuntime(map[string]any{"pods": []any{pod, "sbx-1"}}, "ns_1", "agt_1", "rev_1")
+	if err == nil || err.Error() != "OCC returned an invalid runtime description" || out.Len() != 0 {
+		t.Errorf("malformed Pod: error = %v, output = %q", err, out.String())
+	}
+}

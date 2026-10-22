@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+
+/** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -16,6 +19,16 @@ export const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
+
+// Let the real operation finish, then change only the returned Agent ID. This tests a
+// plausible success that cannot settle the selected Agent's Stop or Delete request.
+export async function replyWithDifferentAgentId(route, agentId, expectedStatus) {
+  const response = await route.fetch();
+  assert.equal(response.status(), expectedStatus);
+  const { data, meta } = await response.json();
+  assert.equal(data.id, agentId);
+  await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
+}
 
 export async function openCreateSecretDialog(scope, label, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
@@ -99,6 +112,20 @@ export function assertRevisionUrl(page, revisionId) {
   assert.equal(url.searchParams.get("revision"), revisionId);
 }
 
+// A failed provisioning job's reason is the form's one error line; the status line under it
+// does not repeat that provisioning failed (finding 2423).
+export async function waitForProvisioningFailure(page) {
+  await page.locator("#create-agent-form ~ p[role=alert]").filter({ hasText: /\S/ }).waitFor();
+  assert.equal(await page.getByText("Provisioning failed.", { exact: true }).count(), 0);
+  // The error line is as wide as the form above it, not the page.
+  const [form, error] = await page.evaluate(() =>
+    ["#create-agent-form", "#create-agent-form ~ p[role=alert]"].map(
+      (selector) => globalThis.document.querySelector(selector).getBoundingClientRect().width,
+    ),
+  );
+  assert.ok(error <= form + 0.5, `error line ${error}px, form ${form}px`);
+}
+
 export function configurationPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/configurations`);
 }
@@ -158,6 +185,51 @@ export async function routeInstallationWithoutProvisioning(page, fixture, capabi
   });
 }
 
+/**
+ * Another create takes `name` after Create Agent's preflight found it free: the form's next
+ * Agent create first creates that Agent, then reaches the real API, which refuses the name with
+ * 409. The preflight refuses a name that is already taken (finding 2420), so only this race
+ * reaches a refusal after the form saved its Secret or Configuration.
+ */
+export async function raceAgentName(page, fixture, namespaceId, name) {
+  const url = `${fixture.origin}/namespaces/${namespaceId}/agents`;
+  const handler = async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    await page.unroute(url, handler);
+    await fixture.createAgent(namespaceId, name);
+    await route.continue();
+  };
+  await page.route(url, handler);
+}
+
+/**
+ * Asserts that the Agent name field shows the API's duplicate-name refusal under it and holds
+ * focus (finding 2420).
+ */
+export async function assertAgentNameTaken(page) {
+  const name = page.getByLabel("Agent name", { exact: true });
+  await page.waitForFunction(() => {
+    const input = globalThis.document.querySelector("#agent-name");
+    return (
+      input?.getAttribute("aria-invalid") === "true" && globalThis.document.activeElement === input
+    );
+  });
+  const describedBy = (await name.getAttribute("aria-describedby")) ?? "";
+  const errors = await Promise.all(
+    describedBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => page.locator(`[id="${id}"]`).textContent()),
+  );
+  assert.ok(
+    errors.includes("Another Agent in this Namespace has this name."),
+    `expected the duplicate-name error under the field, got ${JSON.stringify(errors)}`,
+  );
+}
+
 export function agentPostRequests(requests, namespaceId) {
   return pathRequests(requests, "POST", `/namespaces/${namespaceId}/agents`);
 }
@@ -186,9 +258,13 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
   );
 }
 
+/** @param {import("playwright").Locator} locator */
 export async function optionValues(locator) {
-  return locator.evaluate((node) =>
-    Array.from(node.options).map((option) => ({ value: option.value, text: option.textContent })),
+  return locator.evaluate((element) =>
+    Array.from(/** @type {HTMLSelectElement} */ (element).options).map((option) => ({
+      value: option.value,
+      text: option.textContent,
+    })),
   );
 }
 
@@ -225,6 +301,11 @@ export const repositoryBackendFixture = Object.freeze({
   drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
+ * @param {{ reloadablePolicy?: boolean, controlSocket?: string }} [options]
+ */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
@@ -258,6 +339,7 @@ export async function createRepositoryLaunchFixture(
   return {
     fixture,
     namespace,
+    /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
       currentPolicy = repositoryPolicyDriver(repositories, controlSocket);
@@ -282,7 +364,7 @@ function repositoryPolicyDriver(
     },
     backend.id,
   );
-  return new GitHubRepoDriver(
+  return new GitHubRepositoryPolicy(
     {
       id: backend.id,
       client: new UnixRepositoryCredentialControlClient({ controlSocket }),

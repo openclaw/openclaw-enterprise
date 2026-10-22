@@ -4,7 +4,6 @@ import { domainToASCII } from "node:url";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { APIError, betterAuth, type Auth, type BetterAuthOptions } from "better-auth";
 import { splitSetCookieHeader } from "better-auth/cookies";
-import { hashPassword } from "better-auth/crypto";
 import { memoryAdapter, type MemoryDB } from "better-auth/adapters/memory";
 import { apiKey } from "@better-auth/api-key";
 import type { ApiKey } from "@better-auth/api-key/types";
@@ -47,6 +46,7 @@ import { googleLoginConfiguration, type GoogleSignInConfiguration } from "./goog
 import { oidcLoginConfiguration, oidcProviderId, type OidcSignInConfiguration } from "./oidc.ts";
 import { sessionBindingKey, sessionKeyHeader, sessionKeyMatches } from "./session-binding.ts";
 import { sessionAuthority } from "./session-authority.ts";
+import { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 import { resolveClientAddress, type ClientAddressConfiguration } from "./client-address.ts";
 import {
   SignInRateLimited,
@@ -76,6 +76,7 @@ export {
   type OidcLoginConfiguration,
   type OidcSignInConfiguration,
 } from "./oidc.ts";
+export { scryptPasswordHasher, type PasswordHasher } from "./password-hasher.ts";
 
 /**
  * Who may sign in with a password in the guarded profile: every enrolled account
@@ -222,6 +223,12 @@ export interface ControllerAuthOptions {
    * paced refusals do not wait the full eight seconds, and observe when floors start.
    */
   readonly passwordSlowLaneFloors?: PasswordSlowLaneFloors;
+  /**
+   * Hashes and verifies every local password. Default `scryptPasswordHasher`; the server
+   * leaves it unset. Tests that do not exercise hashing pass a cheap one built in their own
+   * helpers, so fixtures do not spend a full scrypt per account and sign-in.
+   */
+  readonly passwordHasher?: PasswordHasher;
   /**
    * The password-only profile's known-device account state (see known-device.ts). Without
    * it, and without an external provider, entries are bound to the user and a hash of its
@@ -1015,6 +1022,7 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
   if (humanLogin !== undefined && typeof options.database !== "function") {
     throw new Error("The human authentication profile requires its guarded State adapter.");
   }
+  const passwordHasher = options.passwordHasher ?? scryptPasswordHasher;
   const auth = betterAuth<BetterAuthOptions & { plugins: ControllerPlugins }>({
     appName: "OpenClaw Control Plane",
     baseURL: options.baseURL,
@@ -1076,6 +1084,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       requireEmailVerification: false,
       minPasswordLength: LOCAL_PASSWORD_MIN_LENGTH,
       maxPasswordLength: LOCAL_PASSWORD_MAX_LENGTH,
+      password: {
+        hash: (password) => passwordHasher.hash(password),
+        verify: (input) => passwordHasher.verify(input),
+      },
     },
     trustedOrigins: [options.baseURL],
     rateLimit: { enabled: humanLogin === undefined },
@@ -1855,7 +1867,7 @@ export async function hashLocalPassword(password: string): Promise<string> {
       `Passwords must contain ${LOCAL_PASSWORD_MIN_LENGTH} to ${LOCAL_PASSWORD_MAX_LENGTH} characters.`,
     );
   }
-  return hashPassword(password);
+  return scryptPasswordHasher.hash(password);
 }
 
 export async function createPostgresControllerAuth(

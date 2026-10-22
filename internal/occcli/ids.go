@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -86,14 +87,19 @@ func latestRevisionID(client *occclient.Client, namespace, agentID string) (stri
 	return id, err
 }
 
+// errNoReadableRevisions reports an empty revision list. OCC filters the list
+// by revision read, so the Agent has no revisions or the caller may read none.
+var errNoReadableRevisions = errors.New("no readable revisions")
+
 // latestReadableRevision retains the summary number for ordering diagnostics.
+// It returns errNoReadableRevisions when the list is empty.
 func latestReadableRevision(client *occclient.Client, namespace, agentID string) (string, float64, error) {
 	latest, err := client.LatestAgentRevision(namespace, agentID)
 	if err != nil {
 		return "", 0, err
 	}
 	if latest == nil {
-		return "", 0, fmt.Errorf("agent %s has no readable revisions; run \"occ --namespace %s agent deploy %s\" first", agentID, namespace, agentID)
+		return "", 0, errNoReadableRevisions
 	}
 	revision, ok := latest.(map[string]any)
 	if !ok {
@@ -105,4 +111,25 @@ func latestReadableRevision(client *occclient.Client, namespace, agentID string)
 		return "", 0, fmt.Errorf("OCC returned an invalid revision")
 	}
 	return id, number, nil
+}
+
+// noReadableRevisionsError explains an empty revision list. The list cannot
+// tell an Agent that was never deployed from one whose revisions the caller may
+// not read, so deploy advice goes only to a caller whose permission answer
+// allows Agent deploy, and everyone else learns which grant lists revisions
+// (finding 522). alternative names another way in, such as passing an ID.
+func noReadableRevisionsError(client *occclient.Client, namespace, agentID, subject, alternative string) error {
+	grant := "listing revisions needs revision read (ask an administrator to grant it)"
+	if alternative != "" {
+		grant += ", or " + alternative
+	}
+	permissions, err := client.GetAgentCallerPermissions(namespace, agentID)
+	resource, _ := permissions.(map[string]any)
+	if deploy, _ := resource["deploy"].(bool); err == nil && deploy {
+		return fmt.Errorf(
+			"%s; if it was never deployed, run \"occ --namespace %s agent deploy %s\" first; otherwise %s",
+			subject, namespace, agentID, grant,
+		)
+	}
+	return fmt.Errorf("%s; %s", subject, grant)
 }

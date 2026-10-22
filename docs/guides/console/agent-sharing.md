@@ -14,8 +14,8 @@ runtime prerequisites, and limits.
 4. Choose **Share Agent** and read each reported step.
 
 While the share runs, the page stays open until it finishes, usually within
-seconds and at most about 75 s; tabs still switch. Signing out or an expired
-session still leaves.
+seconds and at most about 75 s; tabs still switch. Reloading or closing the tab
+asks first. Signing out or an expired session still leaves.
 
 The person gains Namespace discovery and access to this Agent's native
 conversations, settings, tools and accessible credentials. They do not

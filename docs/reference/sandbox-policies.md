@@ -8,7 +8,29 @@ Drivers opt in explicitly; the `networking` facet alone does not imply support.
 Policy operations require an explicit `facet` in the HTTP path and controller
 argument. The current implementation supports `networking`; `filesystem` and
 `process` requests fail explicitly without reading or changing network additions.
-The console selects `networking`; the CLI exposes `--facet networking`.
+The console discovers the owner’s contextual action URLs; the CLI exposes
+`--facet networking`.
+
+## Discovery and preview
+
+The selected Sandbox implementation contributes the shared definition for
+`(agent, sandbox-network-policy)`, whose value is `{ additions }`. Agent discovery
+returns its schema and contextual read, validate, save, and apply URLs. Policy GET
+includes the same `configuration` descriptor when supported. Discovery requires
+exact-Agent read and filters out contributions whose owner read is denied.
+Unavailable actions remain hints; every invocation rechecks current authority.
+
+`POST /namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate`
+accepts `{ expectedVersion, additions }`. It uses the same `manage_policy` and
+policy `update` checks, editing flag, version, pending-work checks, schema,
+semantics, ceiling, and provider admission as save, without policy or job writes.
+Invalid additions return HTTP 200 with `data.success: false` and `error.details`;
+a malformed envelope returns HTTP 400. Authorization and concurrency refusals
+keep their resource errors. Each detail has a JSON Pointer, code, and safe message.
+Preview success neither saves nor grants authority to a later save or apply.
+Ceiling refusals identify the Installation delegation limit and retain
+`OUTSIDE_CEILING` details at the rejected addition. The CLI prints these field
+details with the error; it does not reduce them to a generic Driver refusal.
 
 ## Authority and admission
 
@@ -63,6 +85,9 @@ Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
 Driver defaults and approved additions into a new immutable AgentRevision;
 deployment retains its usual authorization and interruption behavior.
+In the Console, **Save and apply to current revision** proceeds to application
+only when the save response identifies this policy, its next version, and the
+rules shown in review. An unconfirmed save requires a policy refresh.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable

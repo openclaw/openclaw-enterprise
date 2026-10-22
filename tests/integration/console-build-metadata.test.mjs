@@ -1,17 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 
 test("console image metadata preserves the supplied revision and rejects invalid build inputs", async (t) => {
   // Exercise the same build command and HTML artifact copied into both image targets.
-  const directory = await mkdtemp(join(tmpdir(), "occ-console-build-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-console-build-");
   await mkdir(join(directory, "scripts"));
   await mkdir(join(directory, "apps/controller/src/console"), { recursive: true });
   const script = join(directory, "scripts/build-console-metadata.mjs");

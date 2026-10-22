@@ -67,7 +67,8 @@ and stored ownership before accepting work. With the bundled Kubernetes Compute
 Driver, `drivers.compute.configuration` holds the
 [`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
-digest-pinned gateway and Agent image references, and exactly one in-cluster
+digest-pinned gateway and Agent image references, projected ServicePrincipal
+credentials unless a Sandbox Driver is selected, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
 authenticated, TLS-checked, read-only Kubernetes Namespace access before serving
 requests or claiming work. Installed Drivers validate their own reviewed
@@ -279,11 +280,12 @@ See [chart defaults](../../../deploy/helm/openclaw-enterprise/values.yaml) for
 credential, runtime-export, and workload isolation boundaries.
 
 The chart rejects obvious malformed quantities such as `foo`, `10MiB`, and
-`1K` in top-level `resources`, Collector `resources`, and Collector volume size
-limits, with an error naming the setting. Kubernetes remains responsible for
-complete quantity validation; exponent ranges and numeric parsing edge cases
-are not checked during rendering. A successful render does not prove API
-acceptance. Setting a resource map or Collector size limit to `null` clears its
+`1K` in top-level `resources`, `slackProxy.resources`, Collector `resources`,
+and Collector volume size limits, with an error naming the setting. It also
+rejects a value with a leading `-` (negative) and resource names Kubernetes
+refuses. Kubernetes remains responsible for complete quantity validation;
+exponent ranges, numeric parsing edge cases and a request above its limit are
+not checked during rendering. A successful render does not prove API acceptance. Setting a resource map or Collector size limit to `null` clears its
 chart default; a null size limit leaves that volume unlimited.
 
 ### Private telemetry defaults

@@ -128,9 +128,14 @@ and Agent state stay unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
+  `egress-enrollment` with code `UNAVAILABLE` is a protected execution whose
+  Harness could not enroll with its egress proxy before the model check.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
-  `turn-failed-attempt2`, means the check was retried once, after a timeout or
-  a transient failure, and the second attempt failed that way. An unreachable
+  `turn-failed-attempt2`, means the check was retried once, after a timeout, a
+  transient failure or a network or 5xx exit, and the second attempt failed that
+  way. A failure whose output names a credential, TLS error or limit is never
+  retried. Each failed access-token login attempt logs a `codex.login` line with
+  its number and output class. An unreachable
   model provider is transient: each attempt waits out its 30-second limit, so
   `error-event-attempt2` follows about a minute after the check starts. Codex
   reports a refused port, an unresolvable host and a rejected TLS certificate

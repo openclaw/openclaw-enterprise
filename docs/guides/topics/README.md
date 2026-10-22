@@ -14,6 +14,8 @@ Enterprise, start with [Concepts](../concepts.md) or
   bundled Driver supports.
 - [Harness](../../reference/harness-execution.md): how OpenClaw or Codex runs
   the model and authenticates to it.
+- [Remote Harness](remote-harness.md): how dedicated execution separates Gateway
+  and Harness storage, and how documents, Memory, Skills, and attachments cross that boundary.
 - [Workspace files](workspace-files.md): edit an active Agent's instruction and
   identity files.
 - [Runtime logs](agent-logs.md): read Pod status, restarts, Events and redacted

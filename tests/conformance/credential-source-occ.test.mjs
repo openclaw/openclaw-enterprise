@@ -22,6 +22,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { RESOURCE_NOT_FOUND } from "../helpers/refusal-text.mjs";
 
 const administrator = "principal-source-administrator";
 const deployer = "principal-source-deployer";
@@ -1140,7 +1141,7 @@ test("a cross-Namespace Secret is an invalid request; a Secret the Namespace lac
         {
           status: 404,
           code: "NOT_FOUND",
-          message: "The requested platform resource was not found.",
+          message: RESOURCE_NOT_FOUND,
         },
       ],
     ]) {
@@ -2249,6 +2250,7 @@ test("binding without a Credential Gateway is a 409 after operate, whether or no
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3312,6 +3314,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
       type: "registry",
       config: { host: "registry-stuck.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: gateway.id,
       state: "deleting",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3419,6 +3422,7 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",

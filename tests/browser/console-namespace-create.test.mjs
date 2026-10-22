@@ -2,14 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { apiErrorResponse, proxyErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   apiRequests,
+  expectWriteAsksBeforeUnload,
   fileBrowser,
+  holdRequests,
   login,
   newPage,
+  pathRequests,
   settledView,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
@@ -17,8 +22,7 @@ const REFUSED =
   "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.";
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
-const creates = (requests) =>
-  requests.filter(({ method, path }) => method === "POST" && path === "/namespaces");
+const creates = (requests) => pathRequests(requests, "POST", "/namespaces");
 // After the dialog closes and the list reloads, focus is on the new Create Namespace button
 // (finding 2045). Bounded, so a lost focus fails here rather than at the test timeout.
 const focusReturnsToOpener = (page) =>
@@ -66,17 +70,9 @@ test("create a Namespace from the console, then open its Agent workflow", async 
 
   // Hold the real controller's response: Escape and repeated submission cannot abandon or
   // replay a write while its result is still pending.
-  let release;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
-  await page.route(`${fixture.origin}/namespaces`, async (route) => {
-    if (route.request().method() !== "POST") {
-      return route.continue();
-    }
-    const response = await route.fetch();
-    await held;
-    await route.fulfill({ response });
+  const create = await holdRequests(t, page, `${fixture.origin}/namespaces`, {
+    method: "POST",
+    afterServer: true,
   });
   await name.fill("  Support team  ");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -91,7 +87,7 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   });
   await page.keyboard.press("Escape");
   assert.equal(await dialog.isVisible(), true);
-  release();
+  create.release();
 
   dialog = page.getByRole("dialog", { name: "Namespace created", exact: true });
   await dialog.getByText(/Provisioning is in progress/).waitFor();
@@ -139,7 +135,7 @@ test("a Namespace name conflict keeps the form editable for correction", async (
   // A taken name is the reader's to fix: no request ID beside it (finding 2102).
   assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), "Existing team");
-  assert.equal(await name.isEnabled(), true);
+  await waitForEnabled(name);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await name.fill("New team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -149,6 +145,42 @@ test("a Namespace name conflict keeps the form editable for correction", async (
     .click();
   await page.locator(settledView).getByRole("link", { name: "New team", exact: true }).waitFor();
   await focusReturnsToOpener(page);
+});
+
+// The dialog holds in-app navigation while Namespace creation is in flight; a reload or tab
+// close asks first too, and stops asking once the answer comes, created or refused (finding 2181).
+test("a reload asks first only while Namespace creation is in flight", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Existing team");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+  const name = dialog.getByLabel("Namespace name");
+  const submit = () =>
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const url = `${fixture.origin}/namespaces`;
+  await name.fill("Existing team");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    settled: () =>
+      dialog
+        .getByRole("alert")
+        .filter({ hasText: /Choose a different name/ })
+        .waitFor(),
+  });
+  await name.fill("Reload team");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    settled: () =>
+      page
+        .getByRole("dialog", { name: "Namespace created", exact: true })
+        .getByText(/Provisioning is in progress/)
+        .waitFor(),
+  });
 });
 
 test("the Namespace name is checked at the field with the API's own rule", async (t) => {
@@ -230,17 +262,17 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   const answers = [
-    {
-      status: 429,
-      json: { error: { code: "RATE_LIMITED", message: "Too many requests." }, meta: {} },
-    },
+    // A rate limit in front of the API: the route itself sends no 429.
+    proxyErrorResponse(429),
     // A 201 whose Namespace is not provisioning does not match the creation contract.
-    { status: 201, json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } } },
+    {
+      status: 201,
+      contentType: "application/json",
+      json: { data: { id: "ns_fake", name: "Odd team", status: "ready" } },
+    },
   ];
   await page.route(`${fixture.origin}/namespaces`, (route) =>
-    route.request().method() === "POST"
-      ? route.fulfill({ ...answers.shift(), contentType: "application/json" })
-      : route.continue(),
+    route.request().method() === "POST" ? route.fulfill(answers.shift()) : route.continue(),
   );
   await login(page, fixture, "/console/namespaces");
   await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -253,8 +285,8 @@ test("a rate-limited or malformed creation answer is reported, not shown as crea
     .getByRole("alert")
     .filter({ hasText: "Too many requests. Wait before trying again." })
     .waitFor();
-  assert.equal(await name.isEnabled(), true);
-  assert.equal(await submit.isEnabled(), true);
+  await waitForEnabled(name);
+  await waitForEnabled(submit);
   await submit.click();
   await dialog
     .getByRole("alert")
@@ -327,7 +359,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   // control stays usable, since a role may still grant Namespace creation (finding 2059).
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
   const emptyText = page.locator(settledView).locator(".state-panel p");
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await isPrimary(opener), false);
   assert.equal(
     await emptyText.textContent(),
@@ -365,7 +397,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   // the next refusal also leaves focus on it.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.locator(settledView).locator(".state-panel").waitFor();
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await page.locator("#namespace-create-refused").count(), 0);
   await opener.click();
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
@@ -446,7 +478,7 @@ test("a Refresh after an administrator grants Namespace create offers creation a
     .getByRole("link", { name: /Alpha team/ })
     .waitFor();
   assert.equal(await page.getByText(REFUSED).count(), 0);
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await opener.getAttribute("aria-describedby"), null);
   await submitCreate(page, "Granted team");
   await page.getByRole("dialog", { name: "Namespace created", exact: true }).waitFor();
@@ -462,10 +494,7 @@ test("an unknown administrator answer keeps Create Namespace the primary action"
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await page.route(`${fixture.origin}/observability`, (route) =>
-    route.fulfill({
-      status: 503,
-      json: { error: { code: "UNAVAILABLE", message: "Try again." } },
-    }),
+    route.fulfill(apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again.")),
   );
   const probed = page.waitForResponse(
     (response) => new URL(response.url()).pathname === "/observability",
@@ -518,7 +547,7 @@ test("a refused administrator's refusal stays with that account", async (t) => {
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
-  assert.equal(await opener.isEnabled(), true);
+  await waitForEnabled(opener);
   assert.equal(await page.getByText(REFUSED).count(), 0);
 
   // The refused administrator signs in again: a page built afresh still shows the refusal, and
@@ -577,14 +606,11 @@ test("an unexpected Namespace creation failure shows its request ID", async (t) 
   const { page } = await newPage(t, fixture, { browser });
   await page.route(`${fixture.origin}/namespaces`, (route) =>
     route.request().method() === "POST"
-      ? route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          json: {
-            error: { code: "UNAVAILABLE", message: "Try again later." },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-          },
-        })
+      ? route.fulfill(
+          apiErrorResponse(503, "DEPENDENCY_UNAVAILABLE", "Try again later.", {
+            requestId: "req_00000000-0000-4000-8000-000000000503",
+          }),
+        )
       : route.continue(),
   );
   await login(page, fixture, "/console/namespaces");

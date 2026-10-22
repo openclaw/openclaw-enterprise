@@ -1,243 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
+import { request } from "node:https";
 import { startServiceProcessFixture } from "../fixtures/repository-credentials/service-process.mjs";
-
-function outstandingToken(fixture) {
-  const tokens = fixture.github.tokenState();
-  assert.equal(tokens.length, 1, "the provider accepted exactly one issuance");
-  const [token] = tokens;
-  assert.equal(token.index, 1);
-  assert.equal(token.revoked, false, "service loss does not confirm provider retirement");
-  assert.ok(token.expires > fixture.clock.wallNow(), "provider authority remains unexpired");
-  assert.equal(fixture.github.issuesOfTokens.length, 1);
-  assert.equal(
-    fixture.github.trace.filter((entry) => entry.target.endsWith("/access_tokens")).length,
-    1,
-    "the original issuance was dispatched exactly once",
-  );
-  assert.equal(
-    fixture.github.trace.filter((entry) => entry.method === "DELETE").length,
-    0,
-    "unknown or lost credentials cannot be reported as revoked",
-  );
-  assert.deepEqual(fixture.github.errors, []);
-  return token;
-}
-
-async function assertStaleSessionDenied(fixture, opened) {
-  assert.deepEqual(await fixture.status(opened.session.sessionId), { error: "not-found" });
-  const before = fixture.github.authenticationAttempts.length;
-  const denied = await fixture.request(opened);
-  assert.equal(denied.status, 401);
-  assert.deepEqual(JSON.parse(denied.body), { error: { code: "session-unavailable" } });
-  assert.equal(fixture.github.authenticationAttempts.length, before);
-  outstandingToken(fixture);
-}
-
-// These are current-behavior characterizations. The missing durable accounting
-// boundary is deferred; neither stale-bearer denial nor provider state proves it.
-test(
-  "TEST-001: SIGKILL after confirmed GitHub issuance loses session inventory",
-  { timeout: 20000 },
-  async (t) => {
-    const fixture = await startServiceProcessFixture(t);
-    const opened = await fixture.open();
-    const read = await fixture.request(opened);
-    assert.equal(read.status, 200);
-    assert.equal(JSON.parse(read.body).full_name, "fixture/repository");
-    assert.equal(outstandingToken(fixture).uses, 1);
-    assert.deepEqual(fixture.github.authenticationAttempts, [{ tokenIndex: 1, boundary: "api" }]);
-    assert.equal((await fixture.status(opened.session.sessionId)).cleanup.active, 1);
-
-    const first = fixture.generation();
-    await fixture.kill();
-    assert.equal(outstandingToken(fixture).uses, 1);
-    const replacement = await fixture.start();
-    assert.notEqual(replacement.pid, first.pid);
-    await assertStaleSessionDenied(fixture, opened);
-    t.diagnostic(
-      "safety_pass; characterization_pass: old session absent while provider token remains valid; durable target deferred",
-    );
-  },
-);
-
-test(
-  "TEST-002: lost GitHub issuance response stays charged while service survives",
-  { timeout: 20000 },
-  async (t) => {
-    const fixture = await startServiceProcessFixture(t, { holdIssuance: true });
-    const opened = await fixture.open();
-    const [failed] = await Promise.all([
-      fixture.request(opened),
-      (async () => {
-        await fixture.waitForIssuance();
-        assert.equal(outstandingToken(fixture).uses, 0);
-        fixture.loseIssuanceResponse();
-      })(),
-    ]);
-    assert.equal(failed.status, 503);
-    assert.deepEqual(JSON.parse(failed.body), { error: { code: "unavailable" } });
-    const status = await fixture.status(opened.session.sessionId);
-    assert.equal(status.cleanup.pending, 1);
-    assert.equal(status.cleanup.uncertain, 1);
-    assert.equal(status.cleanup.revoked, 0);
-    assert.equal(status.cleanup.expired, 0);
-
-    // A second caller request cannot retry the original uncertain mint.
-    assert.equal((await fixture.request(opened)).status, 503);
-    outstandingToken(fixture);
-    await fixture.close(opened.session.sessionId);
-    await fixture.advance(30001);
-    const closed = await fixture.status(opened.session.sessionId);
-    assert.equal(closed.state, "CLOSED");
-    assert.equal(closed.cleanup.pending, 1);
-    assert.equal(closed.cleanup.uncertain, 1);
-    assert.equal(closed.cleanup.revoked, 0);
-    assert.equal(closed.cleanup.expired, 0);
-    assert.deepEqual(await fixture.open(), { error: "overloaded" });
-    assert.equal(outstandingToken(fixture).uses, 0);
-    assert.deepEqual(fixture.github.authenticationAttempts, []);
-    t.diagnostic(
-      "safety_pass; characterization_pass: uncertain issuance remains charged and CLOSED is not DISPOSED",
-    );
-  },
-);
-
-test(
-  "TEST-002: SIGKILL before GitHub issuance response loses local reservation",
-  { timeout: 20000 },
-  async (t) => {
-    const fixture = await startServiceProcessFixture(t, { holdIssuance: true });
-    const opened = await fixture.open();
-    const first = fixture.generation();
-    await Promise.all([
-      assert.rejects(fixture.request(opened), { code: "ECONNRESET" }),
-      (async () => {
-        await fixture.waitForIssuance();
-        assert.equal(outstandingToken(fixture).uses, 0);
-        await fixture.kill();
-      })(),
-    ]);
-    fixture.loseIssuanceResponse();
-    const replacement = await fixture.start();
-    assert.notEqual(replacement.pid, first.pid);
-    await assertStaleSessionDenied(fixture, opened);
-    // Admission is observable again despite the surviving upstream obligation.
-    // This documents process-local capacity loss, not a durable target acceptance.
-    const fresh = await fixture.open();
-    assert.equal(fresh.session.state, "OPEN");
-    assert.notEqual(fresh.session.sessionId, opened.session.sessionId);
-    assert.equal(fresh.session.cleanup.pending, 0);
-    assert.equal(fresh.session.cleanup.uncertain, 0);
-    assert.equal(outstandingToken(fixture).uses, 0);
-    assert.deepEqual(fixture.github.authenticationAttempts, []);
-    t.diagnostic(
-      "safety_pass; characterization_pass: restart permits admission with missing local reservation and outstanding provider authority; durable target deferred",
-    );
-  },
-);
-
-test(
-  "a lost revocation response is not proof of disposal across broker loss",
-  { timeout: 20000 },
-  async (t) => {
-    const fixture = await startServiceProcessFixture(t);
-    const opened = await fixture.open();
-    assert.equal((await fixture.request(opened)).status, 200);
-    assert.equal(outstandingToken(fixture).uses, 1);
-
-    // The provider revokes the exact issued token, then loses the 204 response.
-    // Broker cleanup must remain uncertain because it never observed that result.
-    fixture.github.disconnectAfterMutation("DELETE", "/installation/token");
-    await fixture.close(opened.session.sessionId);
-    const deadline = Date.now() + 5000;
-    let status;
-    do {
-      status = await fixture.status(opened.session.sessionId);
-      if (status.cleanup.uncertain === 1) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    } while (Date.now() < deadline);
-    assert.equal(status.state, "CLOSED");
-    assert.equal(status.cleanup.uncertain, 1);
-    assert.equal(status.cleanup.revoked, 0);
-    assert.equal(fixture.github.tokenState()[0].revoked, true);
-    const beforeRestart = fixture.github.trace.filter(
-      (entry) => entry.method === "DELETE" && entry.target === "/installation/token",
-    ).length;
-    assert.equal(beforeRestart, 1);
-
-    // After restart, the provider cannot confirm another retirement and no
-    // cleanup lifetime has elapsed. Neither fact permits a disposal claim.
-    await fixture.kill();
-    fixture.github.setRevokeStatus(503);
-    await fixture.start();
-    const recovered = await fixture.status(opened.session.sessionId);
-    if (recovered.error === undefined) {
-      assert.equal(recovered.sessionId, opened.session.sessionId);
-      assert.equal(recovered.state, "CLOSED");
-    } else {
-      assert.equal(recovered.error, "not-found");
-    }
-    assert.equal(fixture.github.tokenState()[0].revoked, true);
-    assert.deepEqual(fixture.github.errors, []);
-  },
-);
-
-test(
-  "captured GitHub authority expires by elapsed time when revocation is unconfirmed",
-  { timeout: 20000 },
-  async (t) => {
-    const fixture = await startServiceProcessFixture(t, { revokeStatus: 503 });
-    const opened = await fixture.open();
-    assert.equal((await fixture.request(opened)).status, 200);
-    await fixture.close(opened.session.sessionId);
-
-    // A provider error cannot be reported as a successful revocation.
-    const deadline = Date.now() + 5000;
-    let status;
-    do {
-      status = await fixture.status(opened.session.sessionId);
-      if (status.cleanup.uncertain === 1) {
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    } while (Date.now() < deadline);
-    assert.equal(status.state, "CLOSED");
-    assert.equal(status.cleanup.uncertain, 1);
-    assert.equal(status.cleanup.revoked, 0);
-    assert.equal(fixture.github.tokenState()[0].revoked, false);
-
-    // A forward wall-clock jump cannot settle cleanup without monotonic elapsed
-    // time, even if the controlled provider already considers the token expired.
-    await fixture.advance(0, 7200000);
-    status = await fixture.status(opened.session.sessionId);
-    assert.equal(status.state, "CLOSED");
-    assert.equal(status.cleanup.expired, 0);
-
-    // Only the captured token's full elapsed provider lifetime settles cleanup;
-    // a revision deadline or unconfirmed DELETE would not establish that fact.
-    await fixture.advance(3599999, 0);
-    status = await fixture.status(opened.session.sessionId);
-    assert.equal(status.state, "CLOSED");
-    await fixture.advance(1, 0);
-    status = await fixture.status(opened.session.sessionId);
-    assert.equal(status.state, "DISPOSED");
-    assert.equal(status.cleanup.revoked, 0);
-    assert.equal(status.cleanup.expired, 1);
-    assert.equal(fixture.github.tokenState()[0].revoked, false);
-    assert.ok(fixture.github.tokenState()[0].expires <= fixture.clock.wallNow());
-    assert.deepEqual(fixture.github.errors, []);
-  },
-);
+import { fixtureRepository } from "../fixtures/repository-credentials/github.mjs";
 
 // The registry-backed broker must fail closed when its durable journal is absent.
 test(
   "a broker restart cannot accept bound admissions without durable fencing",
   { timeout: 20000 },
   async (t) => {
-    const fixture = await startServiceProcessFixture(t, { bound: true });
+    const fixture = await startServiceProcessFixture(t);
     const admissionId = fixture.admissionId();
 
     // An older caller does not advertise durable admission, and the new caller
@@ -248,6 +21,68 @@ test(
     await fixture.start();
     assert.deepEqual(await fixture.open(admissionId, false, true), { error: "unavailable" });
     assert.deepEqual(fixture.github.tokenState(), []);
+    assert.deepEqual(fixture.github.trace, [], "denied admissions must not contact the provider");
     assert.deepEqual(fixture.github.errors, []);
   },
 );
+
+// The broker process logs each refusal of a request that carried credentials (finding 2411).
+// Unauthenticated requests are Git's challenge round trip and stay silent.
+test("the broker process logs one line per refused credentialed request", async (t) => {
+  const fixture = await startServiceProcessFixture(t);
+  const send = (authorization, host = new URL(fixture.config.gateway.publicOrigin).host) =>
+    new Promise((resolve, reject) => {
+      const outgoing = request(
+        {
+          hostname: "127.0.0.1",
+          port: fixture.generation().port,
+          path: `/${fixtureRepository}.git/info/refs?service=git-upload-pack`,
+          ca: fixture.tls.ca,
+          agent: false,
+          headers: {
+            host,
+            ...(authorization === undefined ? {} : { authorization }),
+          },
+        },
+        (incoming) => {
+          incoming.resume();
+          incoming.once("end", () => resolve(incoming.statusCode));
+        },
+      );
+      outgoing.setTimeout(10000, () => outgoing.destroy(new Error("request timeout")));
+      outgoing.once("error", reject);
+      outgoing.end();
+    });
+  const records = () =>
+    fixture
+      .stderr()
+      .split("\n")
+      .filter((line) => line.startsWith("{"))
+      .map((line) => JSON.parse(line))
+      .filter((record) => record.event === "repository-credentials.denied");
+
+  assert.equal(await send(undefined), 401);
+  // A bearer of the right shape that no open session issued.
+  const bearer = randomBytes(32).toString("base64url");
+  const basic = "Basic " + Buffer.from("gateway-session:" + bearer).toString("base64");
+  // Finding 2429: a head refused before authentication (a wrong Host that the certificate
+  // still names) is logged only when its credential names an open session, so neither of
+  // these writes a line.
+  assert.equal(await send(undefined, "localhost"), 400);
+  assert.equal(await send(basic, "localhost"), 400);
+  const status = await send(basic);
+  assert.equal(status, 401);
+  let logged;
+  for (let i = 0; i < 100 && !(logged = records()).length; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(logged, [
+    {
+      event: "repository-credentials.denied",
+      status: 401,
+      reasonCode: "session-unavailable",
+      reason: "session_unavailable",
+    },
+  ]);
+  assert.ok(!fixture.stderr().includes(bearer), "the bearer is never logged");
+});

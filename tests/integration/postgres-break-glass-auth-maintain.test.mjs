@@ -4,9 +4,9 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { privateBootstrapDirectory } from "../helpers/bootstrap-installation.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
 import {
   assertProviderAttached,
   clientAddresses,
@@ -63,17 +63,6 @@ function maintain(args) {
   });
 }
 
-// Every mutating command refuses while any other client is connected, so the suite
-// opens a pool only for each short read and closes it before the next command.
-async function withPool(work) {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-  try {
-    return await work(pool, new PostgresPlatformState(pool));
-  } finally {
-    await pool.end();
-  }
-}
-
 // A running controller that has run no query for 10 s holds no database connection:
 // its pool closes idle clients (pg's default idleTimeoutMillis), and the maintenance
 // guard, which lists connected clients, then cannot see it. /readyz runs SELECT 1 on
@@ -124,21 +113,26 @@ test(
     const github = await startFakeGitHub(t);
     const address = clientAddresses();
     const directory = await privateBootstrapDirectory(t, "openclaw-break-glass-");
+    // Every mutating command refuses while any other client is connected, so the suite
+    // opens a pool only for each short read and closes it before the next command.
     const {
       admin,
       accounts: { member },
-    } = await withPool((pool, state) =>
-      onboardPasswordAccounts(t, {
-        databaseUrl,
-        state,
-        pool,
-        email: adminEmail,
-        authSecret,
-        secrets,
-        password,
-        remoteAddress: address(),
-        accounts: { member: { email: "break-glass-member@example.test" } },
-      }),
+    } = await withPool(
+      databaseUrl,
+      (pool) =>
+        onboardPasswordAccounts(t, {
+          databaseUrl,
+          state: new PostgresPlatformState(pool),
+          pool,
+          email: adminEmail,
+          authSecret,
+          secrets,
+          password,
+          remoteAddress: address(),
+          accounts: { member: { email: "break-glass-member@example.test" } },
+        }),
+      { max: 2 },
     );
     app = await composeProductionSignIn(t, {
       databaseUrl,
@@ -270,7 +264,7 @@ test(
     );
 
     await t.test("maintenance changes are audited to the migration role", async () => {
-      await withPool(async (pool) => {
+      await withPool(databaseUrl, async (pool) => {
         const audit = await pool.query(
           `SELECT action FROM occ.audit_events WHERE actor_id LIKE 'maintenance:%'
            ORDER BY occurred_at, action`,

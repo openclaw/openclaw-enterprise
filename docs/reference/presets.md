@@ -307,8 +307,9 @@ An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,
 variable syntax and default types, credential-binding structure, known
 cross-Namespace credential references, and credential literals at their native
-use sites. Ordinary launch-field errors, such as an invalid execution mode or
-plugin policy, can remain in a saved Preset. The console checks values needed
+use sites. A literal `agent.name`, `executionMode`, `backendId` or
+`pluginApprovers` that Agent create refuses is refused; plugin selections and
+tokens wait. The console checks values needed
 to populate its form; the existing creation APIs validate completed settings.
 The selected
 [Configuration Driver](drivers/configuration.md#optional-validation) must support

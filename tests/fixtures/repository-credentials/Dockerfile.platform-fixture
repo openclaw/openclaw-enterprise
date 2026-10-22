@@ -1,9 +1,0 @@
-ARG RUNTIME_IMAGE
-FROM ${RUNTIME_IMAGE}
-
-# Only the Harness is synthetic. The image retains the delivered repository
-# clients and is launched by the actual Kubernetes Compute runtime entrypoint.
-USER root
-RUN rm /app/openclaw.mjs
-COPY --chown=node:node platform-harness.mjs /app/openclaw.mjs
-USER node

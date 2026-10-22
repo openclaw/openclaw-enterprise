@@ -22,6 +22,7 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 
 test(
   "ServiceAccount deletion protects draft, queued, claimed, and active references before Driver effects",
@@ -355,20 +356,10 @@ test(
         force: true,
       });
       forced.catch(() => {});
-      const deadline = Date.now() + 15_000;
-      for (;;) {
-        const [{ blocked }] = (
-          await pool.query(
-            "SELECT count(*)::int AS blocked FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))",
-            [pid],
-          )
-        ).rows;
-        if (blocked > 0) {
-          break;
-        }
-        assert.ok(Date.now() < deadline, "the forced delete never waited for the account lock");
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      await waitForLockWaiter(pool, pid, "the forced delete to wait for the account lock", {
+        timeoutMs: 15_000,
+        intervalMs: 50,
+      });
       await issuer.query("UPDATE occ.service_accounts SET credential = $2::jsonb WHERE id = $1", [
         racing.id,
         JSON.stringify({

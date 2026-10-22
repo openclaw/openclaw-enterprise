@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -18,6 +17,8 @@ import {
   providerErrorCodes as helperErrorCodes,
   providerErrorTypes as helperErrorTypes,
 } from "../helpers/local-first-agent-native.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const ready = {
@@ -106,8 +107,7 @@ test(
   "real Node reporter retains only closed probe failure observations",
   { timeout: 10_000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "pr687-probe-report-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "pr687-probe-report-");
     const fixture = join(directory, "failure.test.mjs");
     await writeFile(
       fixture,
@@ -528,9 +528,7 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
         .end(answerBody);
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}/v1/responses`;
+  const url = `http://127.0.0.1:${await listen(t, server)}/v1/responses`;
   const run = (U) =>
     execute(process.execPath, ["-e", source], {
       env: { U, H: JSON.stringify({ authorization: "Bearer fixture-key" }) },
@@ -638,9 +636,7 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
       }
     });
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
-  const url = `http://127.0.0.1:${server.address().port}/v1/responses`;
+  const url = `http://127.0.0.1:${await listen(t, server)}/v1/responses`;
   const run = (body) => {
     answerBody = body;
     return execute(process.execPath, ["-e", source], {

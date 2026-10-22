@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFile, chmod, writeFile } from "node:fs/promises";
+import { readFile, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { credentialDriverModule } from "../fixtures/repository-credentials/runtime.mjs";
@@ -13,12 +13,12 @@ import {
 import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 
 test(
-  "authorized live provider smoke runs through the deployed gateway with bounded cleanup",
+  "authorized live development-token smoke runs through the native sender with bounded cleanup",
   { timeout: 180000 },
   async (t) => {
     if (process.env.REPOSITORY_CREDENTIALS_LIVE !== "1") {
       t.skip(
-        "live provider evidence unavailable: set REPOSITORY_CREDENTIALS_LIVE=1 with an authorized disposable repository and deployed gateway",
+        "live provider evidence unavailable: set REPOSITORY_CREDENTIALS_LIVE=1 with an authorized disposable repository and explicit development-token sender",
       );
       return;
     }
@@ -56,14 +56,14 @@ test(
       return response.stdout ? JSON.parse(response.stdout) : undefined;
     };
     try {
+      assert.deepEqual(opened.client.pushRefAllowlist, ["refs/heads/credential-smoke/*"]);
       const parent = await temporaryDirectory(t, "repository-credentials-live-");
       await chmod(parent, 0o700);
       clientDirectory = join(parent, "session");
       await writeClientConfiguration(opened, clientDirectory, await readFile(caFile));
       const client = await runPinnedClients(t, { clientDirectory }, { signal: workSignal });
       const checkout = join(client.directory, "checkout");
-      const branch = `credential-smoke-${randomBytes(16).toString("hex")}`;
-      const nativeBranch = `${branch}-native`;
+      const branch = `credential-smoke/${randomBytes(16).toString("hex")}`;
       const prefix = `repos/${opened.client.repository}`;
       const marker = (kind) => `<!-- ${branch}:${kind} -->`;
       const register = (kind, uniqueMarker, extra = {}) =>
@@ -89,11 +89,8 @@ test(
       });
       // A failed response can follow an accepted push. Register cleanup first,
       // then reconcile the remote refs instead of assuming either outcome.
-      cleanup.push(() => removeRemoteBranches(cleanupClient, checkout, [branch, nativeBranch]));
-      await client.git(
-        ["push", "origin", `HEAD:refs/heads/${branch}`, `HEAD:refs/heads/${nativeBranch}`],
-        { cwd: checkout },
-      );
+      cleanup.push(() => removeRemoteBranches(cleanupClient, checkout, [branch]));
+      await client.git(["push", "origin", `HEAD:refs/heads/${branch}`], { cwd: checkout });
       const pullInput = await client.json("pull.json", {
         title: "Credential gateway smoke",
         body: marker("pull"),
@@ -145,25 +142,6 @@ test(
       );
       assert.ok(comment.id > 0);
       await client.gh(["api", "--paginate", `${prefix}/issues/${issue.number}/comments`]);
-      const bodyFile = join(client.directory, "body.md");
-      await writeFile(bodyFile, marker("native"));
-      register("pulls", marker("native"), { head: nativeBranch });
-      const native = await client.gh([
-        "pr",
-        "create",
-        "-R",
-        `github.com/${opened.client.repository}`,
-        "--base",
-        base,
-        "--head",
-        nativeBranch,
-        "--title",
-        "Credential native smoke",
-        "--body-file",
-        bodyFile,
-      ]);
-      const nativeNumber = /\/pull\/(\d+)/.exec(native.stdout)?.[1];
-      assert.ok(nativeNumber, "native PR creation returned no PR identity");
     } finally {
       const failures = [];
       // Work cancellation kills its command tree. Cleanup gets a separate finite

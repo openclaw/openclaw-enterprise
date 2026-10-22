@@ -192,6 +192,7 @@ async function fixture(
         type,
         config: { base_url: baseUrl },
         secrets: { api_key: secret.ref },
+        ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "registering",
         createdAt: new Date(now - 71_000).toISOString(),
@@ -237,6 +238,7 @@ async function fixture(
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
           type === "openai" ? { api_key: secret.ref } : { [SECRET_FIELD[type]]: toolSecret.ref },
+        ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "ready",
         createdAt: new Date().toISOString(),
@@ -414,15 +416,32 @@ test("OpenShell custom and default credential profiles keep independent ownershi
     source,
     signal: AbortSignal.timeout(5000),
   };
-  // Native OpenClaw cannot use a custom endpoint. Codex can attach only the source's profile.
-  await assert.rejects(
-    f.driver.attachForRevision({
-      ...context,
-      sources: [source],
-      revision: { harness: { id: "openclaw", mode: "dedicated" } },
-    }),
-    /default OpenAI endpoint/,
+  // Native inference uses the source's exact endpoint, including a custom prefix.
+  const nativeRevision = {
+    harness: { id: "openclaw", mode: "dedicated" },
+    configuration: {
+      models: {
+        providers: {
+          openai: { baseUrl: custom.data.config.base_url, models: [{ id: "model" }] },
+        },
+      },
+    },
+  };
+  assert.deepEqual(
+    await f.driver.attachForRevision({ ...context, sources: [source], revision: nativeRevision }),
+    [{ sourceId: custom.data.id, ref: provider.name }],
   );
+  for (const model of [{ id: "model", baseUrl: "https://other.example.test/v1" }, {}]) {
+    const revision = structuredClone(nativeRevision);
+    revision.configuration.models.providers.openai.models = [model];
+    if (!model.baseUrl) {
+      delete revision.configuration.models.providers.openai.baseUrl;
+    }
+    await assert.rejects(
+      f.driver.attachForRevision({ ...context, sources: [source], revision }),
+      /must match the bound credential source endpoint/,
+    );
+  }
   assert.deepEqual(
     await f.driver.attachForRevision({
       ...context,
