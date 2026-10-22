@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
 import { listen } from "./listen.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { APIError, betterAuth } = await import(require.resolve("better-auth"));
@@ -189,11 +189,7 @@ export function cookiePairs(response) {
 }
 
 export async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
+  await waitUntil("the transport observation", predicate, { timeoutMs: 2_000, intervalMs: 10 });
 }
 
 // Sends only the provider's fixed URLs to `target`. Real fetch, cancellation, stream
