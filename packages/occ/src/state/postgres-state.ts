@@ -62,7 +62,7 @@ import {
   validPluginRevisionState,
   validPluginApprovers,
 } from "@openclaw-enterprise/contracts";
-import { immutableCopy, immutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { freezeSnapshot, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/utils";
 import {
   AuthorizationDeniedError,
   AGENT_NAME_CONFLICT,
@@ -1192,7 +1192,8 @@ function permissions(value: unknown): readonly Permission[] {
       ) {
         throw new DependencyUnavailableError("Persisted IAM permissions are invalid.");
       }
-      return immutableCopy({
+      // A new object of two strings: freezing it is all a copy would add.
+      return Object.freeze({
         action: permission.action as Permission["action"],
         resourceKind: permission.resourceKind as Permission["resourceKind"],
       });
@@ -1413,9 +1414,11 @@ export class PostgresPlatformState implements PlatformStateStore {
 
     const state = { identities, groups, memberships, roles, bindings, restrictions };
     this.validateIAMState(state, true);
-    // One copy makes the whole policy immutable, so the rows above need none of their own.
-    // An immutable snapshot also lets the IAM Driver validate and index it once per unit.
-    const policy = immutableSnapshot(state);
+    // Everything above was built from this query's rows and is shared with nobody, so freezing
+    // it in place makes the whole policy immutable without a copy (permissions and restrictions
+    // come back already frozen all the way down). An immutable snapshot also lets the IAM
+    // Driver validate and index it once per unit.
+    const policy = freezeSnapshot(state);
     context.nativeIAM = { state: policy, statement };
     return policy;
   }
