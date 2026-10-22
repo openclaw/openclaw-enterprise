@@ -5,7 +5,7 @@ export const configurationSchema = Object.freeze({
   additionalProperties: false,
   required: ["provisionPath"],
   properties: {
-    provisionPath: { type: "string", const: "/tmp/local-test" },
+    provisionPath: { type: "string", pattern: "^/" },
     revisionStages: { type: "boolean" },
   },
 });

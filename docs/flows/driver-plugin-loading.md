@@ -176,8 +176,8 @@ their existing Harness-owned runtime topology.
 
 - Run `node --test tests/integration/driver-plugin-installation.test.mjs` for
   real installed IAM, Compute, and Configuration packages; production admission;
-  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of
-  `/tmp/local-test`.
+  IAM allow/deny evidence; Configuration CRUD; and OCC provisioning of an
+  evidence file in a per-run temporary directory.
 - Startup failures emit `startup-error` or `worker.startup-error`; inspect
   Driver identity, persisted policy, capability contracts, and lifecycle stages.
 - The integration uses `InMemoryPlatformState`; it does not prove a running
@@ -196,6 +196,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22: The installed Compute fixture provisions into a per-run temporary directory instead of a fixed `/tmp/local-test`. (harden-1022c)
 
 - 2026-10-20 05:56: Assign structural validation and accepted input ownership to the platform; Driver semantic callbacks return only field errors. (authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e - 01ee10b27e1de60faccccf2f386cff394c1afedc)
 
