@@ -25,10 +25,8 @@ const runtimeDefaultBaseline = Object.freeze({
   ],
 });
 
-async function fixture(t) {
-  const root = await temporaryDirectory(t, "codex-seccomp-profile-test-");
-  await mkdir(root, { recursive: true });
-  return root;
+function fixture(t) {
+  return temporaryDirectory(t, "codex-seccomp-profile-test-");
 }
 
 async function writeJson(path, value) {

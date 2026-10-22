@@ -534,9 +534,8 @@ function releasedInstallation({ reclaimPolicy = "Delete" } = {}) {
   return cluster;
 }
 
-async function withArchive(t) {
-  const archive = await temporaryDirectory(t, "split-layout-adopt-");
-  return archive;
+function withArchive(t) {
+  return temporaryDirectory(t, "split-layout-adopt-");
 }
 
 const fast = { sleep: async () => {}, timeoutMs: 50 };
