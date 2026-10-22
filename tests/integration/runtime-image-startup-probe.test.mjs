@@ -35,16 +35,16 @@ import {
 // wrapper line its assertions read.
 
 // The endpoint reads status and runs readiness in parallel, so readiness can
-// pass before the same poll's status read shows it: wait until both have, and
-// for the native-spawn phase the wrapper logs before it starts the process.
+// pass before the same poll's status read shows it: wait until both have. The
+// wrapper logs native-spawn before it starts the native process.
 const readyOrFailed = ({ events, phases }) =>
   events.some(isRuntimeFailure) ||
   (events.some(observedValue("ready", true)) &&
     events.some(observedValue("plugin", "ready")) &&
     phaseAt(phases, "native-spawn") !== undefined);
 
-// A held failure's last wrapper line, which it writes before the endpoint can
-// read the failure.
+// A held failure's last wrapper line, written in the same synchronous step that
+// publishes the failure.
 const heldFailureLine = /Harness model authentication probe failed\./;
 const heldAuthenticationFailure = (snapshot) =>
   heldFailure("AUTHENTICATION_FAILED")(snapshot) && heldFailureLine.test(snapshot.output);
