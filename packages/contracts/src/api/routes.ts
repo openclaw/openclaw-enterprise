@@ -1333,13 +1333,19 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections and initial workspace files against the Configuration and Agent create rules that need nothing saved, without saving anything",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
-      response: { 204: Type.Null(), ...createErrors },
+      response: {
+        204: Type.Null({
+          description:
+            "The request passed every check this call runs: the Namespace's state, Configuration create's size and content rules and its Configuration Driver's check (such as credential references), then Agent create's plugin, execution-mode and initial-workspace-files rules. A refusal carries the message those creates would send. Not checked here: Secret bindings, model authentication and credential sources, live repository policy and an adopted Namespace's readiness; Configuration and Agent create check those when they save.",
+        }),
+        ...createErrors,
+      },
     },
   },
   {

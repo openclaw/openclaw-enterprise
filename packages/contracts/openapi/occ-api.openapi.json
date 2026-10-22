@@ -16275,7 +16275,9 @@
           "required": true
         },
         "responses": {
-          "204": { "description": "Default Response" },
+          "204": {
+            "description": "The request passed every check this call runs: the Namespace's state, Configuration create's size and content rules and its Configuration Driver's check (such as credential references), then Agent create's plugin, execution-mode and initial-workspace-files rules. A refusal carries the message those creates would send. Not checked here: Secret bindings, model authentication and credential sources, live repository policy and an adopted Namespace's readiness; Configuration and Agent create check those when they save."
+          },
           "400": {
             "content": {
               "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
@@ -16331,7 +16333,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files against the Configuration and Agent create rules that need nothing saved, without saving anything",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }

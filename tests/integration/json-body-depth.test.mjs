@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { tooDeepJsonPath } from "../../apps/controller/src/http/json-depth.ts";
+import { checkJsonValue, tooDeepJsonPath } from "../../apps/controller/src/http/json-depth.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
@@ -75,6 +75,17 @@ const routes = (namespaceId) => [
     base: 5,
     prefix: `/values${KNOWLEDGE}`,
     body: (inner) => ({ kind: "agent", values: knowledge(inner) }),
+  },
+  // Create Agent's preflight carries the same values one level further down, at
+  // /configuration/values, and admits them to the same depth (issue #2831): `base` counts the
+  // wrapper's extra level as free.
+  {
+    name: "Agent create preflight",
+    path: `/namespaces/${namespaceId}/agents/validate`,
+    status: 204,
+    base: 5,
+    prefix: `/configuration/values${KNOWLEDGE}`,
+    body: (inner) => ({ configuration: { kind: "agent", values: knowledge(inner) } }),
   },
   {
     name: "Preset create",
@@ -183,6 +194,53 @@ test("JSON bodies nested past the depth bound get 400 TOO_DEEP before schema val
   assert.deepEqual(created.data.values, values);
 });
 
+// The preflight's extra level holds only inside /configuration/values: a sibling, before or
+// after it in the text, keeps the ordinary bound, so the allowance cannot be carried over
+// from one subtree to the next.
+test("the Agent create preflight's extra level stays inside its Configuration values", async (t) => {
+  const fixture = await createFixture(t);
+  const path = `/namespaces/${fixture.namespace.id}/agents/validate`;
+  // Configuration values whose deepest leaf is at the preflight's bound (25 below the root).
+  const values = knowledge(nested(MAX_DEPTH - 5, "leaf"));
+  const configuration = { kind: "agent", values };
+  // Plugin selections one level past the ordinary bound: the depth check refuses them before
+  // the schema reads them.
+  const deepPlugins = { "occ-plugin:diffs": { enabled: true, toolDefaults: nested(22, "leaf") } };
+  const deepPath = pointer("/plugins/occ-plugin:diffs/toolDefaults", 22);
+  for (const body of [
+    { configuration, plugins: deepPlugins },
+    { plugins: deepPlugins, configuration },
+  ]) {
+    const refused = await sendRaw(fixture, "POST", path, JSON.stringify(body));
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, TOO_DEEP(deepPath), Object.keys(body).join());
+  }
+  // Inside configuration but outside values, and a second values key elsewhere, keep it too.
+  for (const [body, refusedAt] of [
+    [
+      { configuration: { kind: "agent", values: {}, extra: nested(MAX_DEPTH - 1, "leaf") } },
+      pointer("/configuration/extra", MAX_DEPTH - 1),
+    ],
+    [
+      { configuration, plugins: { values: nested(MAX_DEPTH - 1, "leaf") } },
+      pointer("/plugins/values", MAX_DEPTH - 1),
+    ],
+  ]) {
+    const refused = await sendRaw(fixture, "POST", path, JSON.stringify(body));
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.error, TOO_DEEP(refusedAt));
+  }
+  // The same values alone are admitted, and Configuration create stores them.
+  const accepted = await fixture.request("POST", path, { body: { configuration } });
+  assert.equal(accepted.status, 204, JSON.stringify(accepted.body));
+  const created = await fixture.request(
+    "POST",
+    `/namespaces/${fixture.namespace.id}/configurations`,
+    { body: configuration },
+  );
+  assert.equal(created.status, 201, JSON.stringify(created.body).slice(0, 300));
+});
+
 test("a 6 MB deeply nested Configuration is refused quickly without parsing it", async (t) => {
   const fixture = await createFixture(t);
   const path = routes(fixture.namespace.id)[0].path;
@@ -255,6 +313,48 @@ test("the depth scan reads raw JSON text in one pass", () => {
   assert.equal(tooDeepJsonPath(`${"[".repeat(24)}1${"]".repeat(24)}`), undefined);
   assert.equal(tooDeepJsonPath(`${"[".repeat(25)}${"]".repeat(25)}`), undefined);
   assert.equal(tooDeepJsonPath(`${"[".repeat(25)}1${"]".repeat(25)}`), "/0".repeat(25));
+  // One extra level below a named two-key path, only while that value is open. The parsed-body
+  // walk gives every valid case the same answer.
+  const below = ["c", "v"];
+  const parsedPath = (text, maxDepth) => {
+    try {
+      checkJsonValue(JSON.parse(text), maxDepth, below);
+      return undefined;
+    } catch (error) {
+      assert.equal(error.details?.[0]?.code, "TOO_DEEP", text);
+      return error.details[0].path;
+    }
+  };
+  for (const [text, expected] of [
+    ['{"c":{"v":[[1]]}}', undefined],
+    ['{"c":{"v":[[[1]]]}}', "/c/v/0/0/0"],
+    // The allowance lasts until that value closes, not its first entry.
+    ['{"c":{"v":[[1],[1]]}}', undefined],
+    // Escaped keys name the same path.
+    [String.raw`{"\u0063":{"\u0076":[[1]]}}`, undefined],
+    [String.raw`{"\u0063":{"\u0076":[[[1]]]}}`, "/c/v/0/0/0"],
+    // Its siblings, before and after it, and other paths keep the bound.
+    ['{"c":{"v":[[1]],"w":[[1]]}}', "/c/w/0/0"],
+    ['{"c":{"w":[[1]],"v":[[1]]}}', "/c/w/0/0"],
+    ['{"c":{"v":[[1]]},"d":[[[1]]]}', "/d/0/0/0"],
+    ['{"d":[[[1]]],"c":{"v":[[1]]}}', "/d/0/0/0"],
+    ['{"c":{},"x":{"v":[[1]]}}', "/x/v/0/0"],
+    ['{"c":1,"x":{"v":[[1]]}}', "/x/v/0/0"],
+    ['{"x":{"v":[[1]]}}', "/x/v/0/0"],
+    ['{"c":{"x":{"v":[1]}}}', "/c/x/v/0"],
+    // Only at the root: the same keys deeper down, or inside the value itself, add nothing.
+    ['{"x":{"c":{"v":[[1]]}}}', "/x/c/v/0"],
+    ['{"c":{"v":{"v":[[1]]}}}', "/c/v/v/0/0"],
+    ['{"c":{"v":{"c":{"v":[1]}}}}', "/c/v/c/v/0"],
+    ['[{"v":[[1]]}]', "/0/v/0/0"],
+    ['{"c":[{"v":1}]}', undefined],
+    ['{"c":[[[1]]]}', "/c/0/0/0"],
+    // A repeated key: the later value keeps the bound (the parser keeps only that one).
+    ['{"c":{"v":1},"c":[[[1]]]}', "/c/0/0/0"],
+  ]) {
+    assert.equal(tooDeepJsonPath(text, 3, below), expected, text);
+    assert.equal(parsedPath(text, 3), expected, `parsed ${text}`);
+  }
   // Keys are cut to 1024 characters, more than a 512-character detail path shows.
   const longKey = `${"~".repeat(1023)}\u{1F600}${"k".repeat(1_000_000)}`;
   assert.equal(tooDeepJsonPath(JSON.stringify({ [longKey]: [1] }), 1), `/${"~0".repeat(1023)}?/0`);

@@ -4,9 +4,14 @@ import test from "node:test";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
+import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
-import { assertWriteAuthorizationDenial } from "../helpers/partial-write-authorization.mjs";
+import {
+  assertWriteAuthorizationDenial,
+  partialWrite,
+} from "../helpers/partial-write-authorization.mjs";
 
 // The real controller over HTTP: OCC, Native IAM, the bundled OpenClaw Plugin Driver and the
 // fixture's test Kubernetes Compute Driver, whose workspace rule Agent create applies.
@@ -26,9 +31,9 @@ const roster = {
   },
 };
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
-  const fixture = await createConsoleAppFixture(t, { auditSink: audit });
+  const fixture = await createConsoleAppFixture(t, { ...options, auditSink: audit });
   await fixture.bootstrap();
   const driver = new OCCPluginDriver();
   fixture.controller.registerDriver(driver);
@@ -163,4 +168,143 @@ test("Agent create preflight refuses a caller without Agent create as Agent crea
       action,
     );
   }
+});
+
+// Sends `text` as the exact request body, without re-encoding it.
+async function sendRaw(fixture, path, text) {
+  const session = await fixture.signIn();
+  const response = await fetch(new URL(path, fixture.origin), {
+    method: "POST",
+    headers: {
+      ...authenticatedHeaders(session, { origin: fixture.origin }),
+      "content-type": "application/json",
+    },
+    body: text,
+    signal: AbortSignal.timeout(30_000),
+  });
+  return { status: response.status, body: response.status === 204 ? null : await response.json() };
+}
+
+// The preflight carries the whole unsaved Configuration, yet it had Agent create's 448 KiB body
+// limit, so a Configuration both creates accept was refused 413 and Create Agent could never
+// save it (finding 1869). Its limit is Configuration create's plus Agent create's.
+test("Agent create preflight admits every Configuration that Configuration and Agent create accept", async (t) => {
+  const f = await setup(t);
+  // About 600 KiB of plain JSON: over Agent create's 448 KiB limit.
+  const values = { meta: { notes: "n".repeat(600 * 1024) } };
+  assert.ok(Buffer.byteLength(JSON.stringify(values)) > 448 * 1024);
+  const checked = await f.validate({
+    configuration: { kind: "agent", values },
+    plugins,
+    initialWorkspaceFiles: files,
+  });
+  assert.equal(checked.status, 204, JSON.stringify(checked.body)?.slice(0, 500));
+  const created = await f.create(values, {
+    plugins,
+    initialWorkspaceFiles: files,
+    workspaceDefaultsId: WORKSPACE_DEFAULTS_ID,
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body).slice(0, 500));
+
+  // Just under the 1 MiB of values Configuration create admits, saved as plain JSON, then sent to
+  // the preflight with Agent create's largest initial workspace files, every character of both a
+  // six-byte escape: over 6 MiB, more than Configuration create's body limit alone.
+  const largest = { meta: { notes: "x".repeat(1024 * 1024 - 128) } };
+  const saved = await f.createConfiguration(f.namespace.id, largest);
+  assert.equal(saved.values.meta.notes.length, largest.meta.notes.length);
+  const fullFiles = Object.fromEntries(
+    ["AGENTS.md", "IDENTITY.md", "SOUL.md", "USER.md"].map((name) => [name, "x".repeat(16 * 1024)]),
+  );
+  const escaped = JSON.stringify({
+    configuration: { kind: "agent", values: largest },
+    initialWorkspaceFiles: fullFiles,
+  }).replaceAll("x", String.raw`\u0078`);
+  assert.ok(Buffer.byteLength(escaped) > 6 * 1024 * 1024);
+  const checkedLargest = await sendRaw(f, `${f.agents}/validate`, escaped);
+  assert.equal(checkedLargest.status, 204, JSON.stringify(checkedLargest.body)?.slice(0, 500));
+
+  // One byte over the route limit is still refused before the body is parsed.
+  const limit = 6 * (1024 * 1024 + 32 * 1024) + 448 * 1024;
+  const body = JSON.stringify({ configuration: { kind: "agent", values: {} } });
+  const oversized = await sendRaw(
+    f,
+    `${f.agents}/validate`,
+    body + " ".repeat(limit + 1 - Buffer.byteLength(body)),
+  );
+  assert.equal(oversized.status, 413, JSON.stringify(oversized.body));
+  assert.equal(oversized.body.error.code, "PAYLOAD_TOO_LARGE");
+});
+
+// Configuration create runs its Configuration Driver's check, which refuses credentials written
+// into the values; the preflight skipped it, so the console saved the model Secret before
+// Configuration create refused (finding 1870).
+test("Agent create preflight runs the Configuration Driver's check as Configuration create does", async (t) => {
+  const f = await setup(t, { filesystemConfiguration: true });
+  const mutationsBefore = f.audit.events.filter((event) => event.kind === "mutation").length;
+  const provider = (fields) => ({
+    models: { providers: { openai: { baseUrl: "https://api.openai.com/v1", ...fields } } },
+  });
+  for (const [label, values] of [
+    ["literal API key", provider({ apiKey: "literal-preflight-value" })],
+    [
+      "URL user name and password",
+      provider({
+        baseUrl: syntheticCredentialUrl({
+          username: "preflight-user",
+          password: "preflight-password",
+          host: "api.openai.com",
+          pathname: "/v1",
+        }),
+        apiKey: "${OPENAI_API_KEY}",
+      }),
+    ],
+  ]) {
+    const refused = await f.validate({ configuration: { kind: "agent", values } });
+    assert.equal(refused.status, 400, `${label}: ${JSON.stringify(refused.body)}`);
+    const saved = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(saved.status, 400, `${label}: ${JSON.stringify(saved.body)}`);
+    assert.deepEqual(refused.body.error, saved.body.error, label);
+  }
+  assert.equal(f.audit.events.filter((event) => event.kind === "mutation").length, mutationsBefore);
+});
+
+// Like Configuration writes, the preflight's body may be about 6 MiB, so a caller without
+// `agent:create` is refused before the controller reads it.
+test("Agent create preflight refuses a caller without Agent create before reading the body", async (t) => {
+  const f = await setup(t);
+  const member = await f.createAccountWithPolicy("preflight-reader", (principal) => {
+    grantRole(f.policy, principal.id, {
+      id: "preflight-agent-reader",
+      namespaceId: f.namespace.id,
+      permissions: { namespace: ["read"], agent: ["read"] },
+    });
+  });
+  const session = await f.signIn(member.credentials);
+  const auditStart = f.audit.events.length;
+  const refused = await partialWrite({
+    origin: f.origin,
+    method: "POST",
+    path: `${f.agents}/validate`,
+    session,
+    declaredBytes: 6 * 1024 * 1024,
+    bodyPrefix: '{"configuration":{"kind":"agent","values":{"notes":"',
+  });
+  assert.notEqual(refused, null, "the controller waited for the unread body");
+  assert.equal(refused.status, 403, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error, {
+    code: "FORBIDDEN",
+    message: "The exact platform operation was not authorized.",
+  });
+  assertWriteAuthorizationDenial(
+    f.audit.events.slice(auditStart),
+    {
+      principalId: member.principal.id,
+      action: "openclaw.agents.validate",
+      grant: "create",
+      resource: { kind: "agent", id: f.namespace.id, namespaceId: f.namespace.id },
+    },
+    "validate",
+  );
 });

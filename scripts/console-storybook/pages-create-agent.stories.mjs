@@ -230,6 +230,10 @@ export const CreatePluginPreflightRefusal = {
   ...story("createPluginPreflightRefusal"),
   name: "Plugin refusal before anything is saved",
 };
+export const CreatePreflightConflict = {
+  ...story("createPreflightConflict"),
+  name: "Preflight conflict with the API's reason",
+};
 export const CreatePluginRefusal = {
   ...story("createPluginRefusal"),
   name: "Plugin refusal after the Configuration is saved",

@@ -256,6 +256,155 @@ test("Create Agent refuses a roster that initial workspace files cannot reach be
   assert.equal(response.status(), 201, await response.text());
 });
 
+// The preflight carries the whole Configuration, yet it had Agent create's 448 KiB body limit:
+// a Configuration both creates accept got 413 on every try, so the form could never create it
+// (finding 1869).
+test("Create Agent creates an Agent whose Configuration is over Agent create's body limit", async (t) => {
+  const form = await filledCreateForm(t, "Large preflight", {}, { selected: "{}" });
+  const { page, configuration, values, isPreflight, isAgentPost } = form;
+  values.meta = { notes: "n".repeat(600 * 1024) };
+  await configuration.fill(JSON.stringify(values));
+  const checked = page.waitForResponse(isPreflight);
+  const created = page.waitForResponse(isAgentPost);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await checked).status(), 204);
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  await page.waitForURL(/\/console\/agents\/agt_/);
+});
+
+// After each refused or failed preflight: the save is blocked with `expected` in the focused
+// alert, the form stays editable, and nothing but preflights reached the API.
+async function assertPreflightBlocked(form, expected) {
+  const { fixture, audit, namespace, page, configuration, pluginJson, writes, since } = form;
+  const alert = page.getByRole("alert").filter({ hasText: expected });
+  await alert.waitFor();
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  const text = await alert.textContent();
+  assert.ok(text.startsWith(expected), text);
+  assert.equal(await alert.evaluate((node) => globalThis.document.activeElement === node), true);
+  assert.equal(await configuration.isDisabled(), false);
+  assert.equal(await pluginJson.isDisabled(), false);
+  const sent = writes.slice(since.writes);
+  assert.ok(sent.length > 0);
+  assert.deepEqual(
+    sent.filter((write) => write !== `POST /namespaces/${namespace.id}/agents/validate`),
+    [],
+  );
+  assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data, []);
+  assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data, []);
+  assert.deepEqual(
+    audit.events.slice(since.audit).filter((event) => event.kind === "mutation"),
+    [],
+  );
+}
+
+// Answers the next preflight with `answer` (an API error envelope's status, code and message, a
+// status with a plain-text body as a proxy sends, or "abort"), submits, and checks the save is
+// blocked with `expected`.
+async function refusePreflight(form, answer, expected) {
+  const { page, agentsUrl, isPreflight } = form;
+  await page.route(
+    `${agentsUrl}/validate`,
+    (route) =>
+      answer === "abort"
+        ? route.abort("failed")
+        : route.fulfill(
+            answer.text === undefined
+              ? {
+                  status: answer.status,
+                  contentType: "application/json",
+                  body: JSON.stringify({
+                    error: { code: answer.code, message: answer.message },
+                    meta: { requestId: "req_test_preflight" },
+                  }),
+                }
+              : { status: answer.status, contentType: "text/plain", body: answer.text },
+          ),
+    { times: 1 },
+  );
+  // Settles once this try's preflight has its answer or failed; the form then shows the result.
+  const settled =
+    answer === "abort"
+      ? page.waitForEvent("requestfailed", (request) =>
+          isPreflight({ url: () => request.url(), request: () => request }),
+        )
+      : page.waitForResponse(isPreflight);
+  await submitWithKeyboard(page);
+  await settled;
+  await assertPreflightBlocked(form, expected);
+}
+
+// The preflight saved nothing and reads no Agent name, but a 409 showed "conflicts with the
+// saved state. Check for an existing Agent name" and dropped the API's reason (finding 1871).
+test("Create Agent shows the API's reason when the preflight refuses, then creates", async (t) => {
+  const form = await filledCreateForm(t, "Preflight reasons", {}, { selected: "{}" });
+  const workspaceRule =
+    "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.";
+  for (const answer of [
+    { status: 409, code: "RESOURCE_CONFLICT", message: workspaceRule },
+    { status: 400, code: "INVALID_REQUEST", message: "Configuration setting x is invalid." },
+    {
+      status: 413,
+      code: "PAYLOAD_TOO_LARGE",
+      message: "The request body exceeds the permitted size.",
+    },
+  ]) {
+    await refusePreflight(form, answer, answer.message);
+  }
+  // The catch-all conflict names nothing, so the form keeps its own text for it.
+  await refusePreflight(
+    form,
+    {
+      status: 409,
+      code: "RESOURCE_CONFLICT",
+      message: "The requested platform resource already exists.",
+    },
+    "The request conflicts with the saved state.",
+  );
+  const created = form.page.waitForResponse(form.isAgentPost);
+  await form.page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+});
+
+// The preflight fails closed: a failed check blocks the save with a retryable error and saves
+// nothing, and the next try runs the check again (finding 1872). A 413 shows the API's reason,
+// above.
+test("Create Agent blocks the save when the preflight fails, and a retry checks again", async (t) => {
+  const form = await filledCreateForm(t, "Preflight failures", {}, { selected: "{}" });
+  const unavailable = "Service unavailable. The read could not be completed. Try again.";
+  for (const [answer, expected] of [
+    ["abort", "Request interrupted. Retry to check current access and saved state."],
+    [
+      {
+        status: 500,
+        code: "INTERNAL_ERROR",
+        message: "The platform request could not be completed.",
+      },
+      unavailable,
+    ],
+    [
+      {
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+      },
+      unavailable,
+    ],
+    // A proxy in front of the controller may limit requests; the API itself sends no 429 here.
+    [{ status: 429, text: "Too Many Requests" }, "Too many requests. Wait before trying again."],
+  ]) {
+    await refusePreflight(form, answer, expected);
+  }
+  const checked = form.page.waitForResponse(form.isPreflight);
+  const created = form.page.waitForResponse(form.isAgentPost);
+  await form.page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await checked).status(), 204);
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+});
+
 // A plugin refusal after Create Agent saved its Configuration (a retry, which has no
 // preflight) landed under the fold, below a "Configuration saved" line that read as progress
 // (finding 1862). Its own fixes edit the Configuration, which the form no longer can, and the

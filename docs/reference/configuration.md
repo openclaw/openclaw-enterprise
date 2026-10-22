@@ -198,6 +198,19 @@ permission for the exact Configuration. Authentication failures return `401`,
 malformed inputs `400`, denied operations `403`, missing resources `404`,
 dependency conflicts `409`, and unavailable authorization or storage `503`.
 
+### Checking a Configuration before Create Agent saves
+
+`POST /namespaces/:namespaceId/agents/validate` takes an unsaved
+`configuration: {kind, values}` with the Agent create fields it checks, and
+saves nothing. Its body may be as large as a Configuration write plus Agent
+create's 448 KiB, and its values may nest as deep as Configuration create's.
+The `agent:create` grant is checked before the body is read, then again with
+the checks, in this order: Namespace state, Configuration create's size and
+content rules, the Configuration Driver's `validate` (credential references),
+then Agent create's plugin, execution-mode and initial-workspace-files rules.
+Secret bindings, model authentication, credential sources and repository policy
+are checked only when Create Agent saves.
+
 ## Credentials and channels
 
 Never put plaintext credentials in Configuration values. Use unresolved native SecretRefs and authorized same-Namespace Secret bindings for gateway credentials; select model credentials through Agent `harnessAuth`. See [Configuration secrets and channels](configuration/secrets.md) for binding permissions, complete examples, runtime delivery, and supported Slack/Teams settings.

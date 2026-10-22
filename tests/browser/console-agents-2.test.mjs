@@ -1881,9 +1881,12 @@ test("Agent creation names the Configuration field that holds an inline model cr
     providers: { ...edited.models?.providers, openai: { apiKey: sentinel } },
   };
   await configuration.fill(JSON.stringify(edited, null, 2));
+  // Create Agent's preflight runs the Configuration Driver's check, so the key is refused
+  // before the Configuration is saved (finding 1870).
+  const secretsBefore = secretPostRequests(requests, namespace.id).length;
   const rejected = page.waitForResponse(
     (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate` &&
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent" }).click();
@@ -1895,6 +1898,8 @@ test("Agent creation names the Configuration field that holds an inline model cr
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
   assert.equal((await feedback.textContent()).includes(sentinel), false);
+  assert.equal(secretPostRequests(requests, namespace.id).length, secretsBefore);
+  assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await waitForEnabled(configuration);
 });

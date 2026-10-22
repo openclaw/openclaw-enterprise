@@ -87,8 +87,8 @@ access, and Secret references to [provisioning](../agent-provisioning.md), even 
 a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version.
 
-Ordinary drafts first check values and plugins with
-`POST /namespaces/:namespaceId/agents/validate`, then post
+Ordinary drafts first [check](../../reference/configuration.md#checking-a-configuration-before-create-agent-saves)
+values, plugins and workspace files with `.../agents/validate`, then post
 `{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
 plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
 Success opens `revision=draft`.

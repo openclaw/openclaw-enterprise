@@ -3642,6 +3642,31 @@ export const scenarios = {
     ],
     gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
   },
+  createPreflightConflict: {
+    group: "Pages/Create Agent",
+    name: "Preflight conflict with the API's reason",
+    path: create,
+    unsupportedProvisioning: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/validate",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.",
+        once: true,
+      },
+    ],
+    actions: [...readyForm, { ...click("Create Agent"), focus: true }],
+    description:
+      "Create Agent asks the API first whether it would refuse this Agent, and the API answers 409 with its reason: the selected Compute Driver cannot deliver initial workspace files. Nothing is saved, so the alert shows the API's reason, not a conflict with saved state or an existing Agent name, and every field stays editable.",
+    steps: [
+      "At 360-390 px, confirm the focused alert shows the API's reason, with no Secret or Configuration saved line and no sideways scroll.",
+      "Select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
+  },
   createPluginRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal after the Configuration is saved",

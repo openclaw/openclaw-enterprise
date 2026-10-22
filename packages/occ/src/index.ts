@@ -4520,6 +4520,20 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The grant check that opens validateAgentCreate, alone: Agent create's `agent:create` on the
+   * Namespace. The HTTP layer runs it before it reads the preflight's body (an unsaved
+   * Configuration, up to about 6 MiB), as for Configuration writes. The preflight repeats it.
+   */
+  async authorizeAgentCreate(principalId: string, namespaceId: string): Promise<void> {
+    this.namespaceIdentity(namespaceId);
+    await this.authorize(principalId, "create", {
+      kind: "agent",
+      id: namespaceId,
+      namespaceId,
+    });
+  }
+
   async updatePreset(principalId: string, input: UpdatePresetInput): Promise<Readonly<Preset>> {
     if (input.name !== undefined && !isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
@@ -7539,11 +7553,12 @@ export class OpenClawController {
 
   /**
    * Create Agent's preflight, for a Configuration the caller has not saved yet: createConfiguration's
-   * content rules, then createAgent's checks of plugin selections and initial workspace files
-   * against those values, with their messages, under createAgent's `agent:create` check. A
-   * refusal is reported before the caller saves its Secret or Configuration. It writes nothing.
-   * Checks that need saved resources (Secret bindings, Harness authentication and credential
-   * sources) or live repository policy stay with those writes.
+   * size and content rules and its Configuration Driver's `validate`, then createAgent's checks of
+   * plugin selections and initial workspace files against those values, with their messages,
+   * under createAgent's `agent:create` check. A refusal is reported before the caller saves its
+   * Secret or Configuration. It writes nothing. Checks that need saved resources (Secret
+   * bindings, Harness authentication and credential sources), live repository policy and the
+   * readiness of an adopted Namespace stay with those writes.
    * `resolveHarness` as in createAgent.
    */
   async validateAgentCreate(
@@ -7578,21 +7593,26 @@ export class OpenClawController {
         throw new ScopeViolationError("The Configuration kind must identify an Agent.");
       }
       const values = frozenValues(input.configuration.values);
-      // The form saves the Configuration first, so its content rules answer first, in
-      // createConfiguration's order.
-      await this.configurationDriver().validateSize?.(values);
+      // Shaped like the Configuration createConfiguration would store and createAgent reads;
+      // only its values are checked.
+      const unsaved: Readonly<Configuration> = Object.freeze({
+        id: "cfg_00000000-0000-4000-8000-000000000000",
+        namespaceId: namespace.id,
+        kind: "agent" as const,
+        generation: 1,
+        values,
+        createdAt: this.timestamp(),
+      });
+      // The form saves the Configuration first, so its rules answer first, in
+      // createConfiguration's order: size, content, then the Configuration Driver's own check
+      // (credential references, finding 1870). This relies on `validate` only checking, as both
+      // bundled Drivers' do; the Configuration passed is never stored.
+      const driver = this.configurationDriver();
+      await driver.validateSize?.(values);
       this.validateConfigurationContent(values);
+      await driver.validate(unsaved);
       this.validatePluginPolicies(plugins, pluginApprovers);
-      // Shaped like the saved Configuration createAgent reads; only its values are checked.
-      const configuration: () => Promise<Readonly<Configuration>> = async () =>
-        Object.freeze({
-          id: "cfg_00000000-0000-4000-8000-000000000000",
-          namespaceId: namespace.id,
-          kind: "agent" as const,
-          generation: 1,
-          values,
-          createdAt: this.timestamp(),
-        });
+      const configuration = async () => unsaved;
       await this.validateSavedPluginConfiguration(plugins, configuration);
       await this.validateSavedAgentTopology(
         state,
