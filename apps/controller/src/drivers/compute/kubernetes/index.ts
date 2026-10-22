@@ -8242,7 +8242,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Its Pods are gone, so drop the revision's credential copies and snapshots.
     // Preparing the revision again re-projects them from the canonical sources.
     await this.deleteRetiredRevisionArtifacts(revision, namespace);
-    if (revision.repositoryCredentials !== undefined) {
+    if (this.projectsRepositoryMaterial(revision)) {
       await this.removeRepositoryMaterial(revision, namespace);
     }
   }
@@ -8287,7 +8287,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.shutdownRevisionRuntime(revision, namespace);
     await this.retireLegacyWorkspaceNode(revision, namespace);
     await this.removeRetiredGateway(revision, namespace);
-    if (revision.repositoryCredentials !== undefined) {
+    if (this.projectsRepositoryMaterial(revision)) {
       await this.waitForRevisionPodsToTerminate(
         revision,
         namespace,
@@ -8924,6 +8924,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       },
       { mutating: true },
+    );
+  }
+
+  /**
+   * Whether this Compute may hold Kubernetes repository material Secrets for the revision. Only
+   * a configured repository credential endpoint projects them. With a repository-access Sandbox
+   * the worker delivers material to the Sandbox instead and no Secret exists, and the chart then
+   * does not grant the worker Secret list, so cleanup there would never finish (finding 2201).
+   * Namespace deletion applies the same condition.
+   */
+  private projectsRepositoryMaterial(revision: AgentRevision): boolean {
+    return (
+      revision.repositoryCredentials !== undefined &&
+      this.options.network.repositoryCredentials !== undefined
     );
   }
 
