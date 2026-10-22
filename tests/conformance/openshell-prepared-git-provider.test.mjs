@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { readFile, mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -9,6 +8,7 @@ import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -30,8 +30,7 @@ const token = (suffix = "first") => ({
 const signal = () => AbortSignal.timeout(5_000);
 
 async function wire(t) {
-  const directory = await mkdtemp(join(tmpdir(), "prepared-git-wire-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "prepared-git-wire-");
   // Independent pinned v0.1.5 oracle, extended with fields from upstream
   // openshell.proto at bdb956f2cd65a635f1294fccf1d138d263bf650f; never load the client schema.
   let proto = await readFile(

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -23,10 +22,10 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function fixture(t, contents) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-common-logging-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-common-logging-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, contents, "utf8");
   return path;
