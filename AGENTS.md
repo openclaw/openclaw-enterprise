@@ -486,6 +486,9 @@ controls:
 
 ## TypeScript style and verification
 
+- Use TypeScript for all new code in the JavaScript/TypeScript ecosystem,
+  including tests and scripts. Keep Go code in Go. This does not require migrating
+  existing JavaScript files.
 - Separate imports from following code with a blank line, declare one variable
   per declaration, and use braces for control-flow bodies. Apply these rules with
   `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.

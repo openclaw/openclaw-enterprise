@@ -18,7 +18,7 @@ with the service key.
 ## Entry Points
 
 - Trigger: Run `scripts/prepare-bootstrap-volume`, then
-  `helm upgrade --install oce deploy/helm/openclaw-enterprise`.
+  `helm install oce deploy/helm/openclaw-enterprise`.
 - Source: `scripts/prepare-bootstrap-volume:53`,
   `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`, and
   `apps/controller/src/composition/production.ts:28`.
@@ -133,15 +133,18 @@ rejects invalid Kubernetes peer maps, preserving null/empty semantics and accept
 
 On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
 Installation without database/Kubernetes access; refusal stops migration and API
-replacement. The check uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
+replacement. It uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
 diagnostics, without submitted values.
 
-The hook keeps the release name and bounds its suffix to 63 characters. Both
-database containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use. `installation.key`
-and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
-not `.` or a `..` prefix.
+The Job name includes the release, capped at 63 characters. Database
+containers can mount the CA. Helm requires distinct, valid application and migration
+Secret keys. `installation.key` and `executionCluster.kubeconfigKey` allow up to 253
+characters, excluding `.` and the `..` prefix.
+
+For [handoff](../guides/deploy/production-handoff.md#resume-an-installation-in-progress),
+record the Job UID: Helm reuses names. Terminal status proves neither execution
+nor runtime readiness.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 

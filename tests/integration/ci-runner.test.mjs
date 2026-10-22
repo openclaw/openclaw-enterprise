@@ -183,12 +183,13 @@ test("run resolves lane documents relative to the manifest and preserves ordered
     ].join("\n"),
   );
   await writeFile(
-    join(root, "tests/integration/second.test.mjs"),
+    join(root, "tests/integration/second.test.ts"),
     [
       'import assert from "node:assert/strict";',
       'import test from "node:test";',
       'test("second file does not inherit scoped env", () => {',
-      "  assert.equal(process.env.CI_RUNNER_SCOPED_VALUE, undefined);",
+      "  const scopedValue: string | undefined = process.env.CI_RUNNER_SCOPED_VALUE;",
+      "  assert.equal(scopedValue, undefined);",
       "});",
       "",
     ].join("\n"),
@@ -208,7 +209,7 @@ test("run resolves lane documents relative to the manifest and preserves ordered
         expectedTests: ["first file sees scoped env"],
       },
       {
-        path: "tests/integration/second.test.mjs",
+        path: "tests/integration/second.test.ts",
         expectedTests: ["second file does not inherit scoped env"],
       },
     ],
@@ -249,7 +250,7 @@ test("run resolves lane documents relative to the manifest and preserves ordered
   assert.equal(summary.counts.skipped, 0);
   assert.deepEqual(
     summary.files.map((file) => file.path),
-    ["tests/integration/first.test.mjs", "tests/integration/second.test.mjs"],
+    ["tests/integration/first.test.mjs", "tests/integration/second.test.ts"],
   );
   assert.equal(summary.files[0].cleanup.status, "passed");
   assert.ok(
@@ -3987,7 +3988,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
   await writeFile(join(root, "tests/integration/mapped.test.mjs"), "import 'node:test';\n");
   await writeFile(join(root, "tests/integration/unmapped.test.ts"), "import 'node:test';\n");
   await mkdir(join(root, "tests/docs"), { recursive: true });
-  await writeFile(join(root, "tests/docs/unmapped.test.mjs"), "import 'node:test';\n");
+  await writeFile(join(root, "tests/docs/unmapped.test.ts"), "import 'node:test';\n");
   await writeJson(join(root, "manifest.json"), {
     version: 1,
     lanes: {
@@ -4028,7 +4029,7 @@ test("audit requires current discovered test files and rejects duplicate ownersh
       .filter((entry) => entry.code === "unmapped-file")
       .map((entry) => entry.file)
       .sort(),
-    ["tests/docs/unmapped.test.mjs", "tests/integration/unmapped.test.ts"],
+    ["tests/docs/unmapped.test.ts", "tests/integration/unmapped.test.ts"],
   );
 });
 

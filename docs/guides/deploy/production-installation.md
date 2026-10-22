@@ -21,12 +21,11 @@ Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
 `ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
 [published-image procedure](published-images.md), which checks the image source commits and sets
 `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
-chart. Complete it before generating configuration; then skip the build section.
+chart. Complete it before configuration; skip the build section.
 
-Public GHCR pulls need no pull Secret. For private registry copies, give every node
-that runs control-plane or tenant Pods its own pull access; see
-[private registry delivery](private-registry-images.md#configure-node-pull-access).
-Workstation `docker login` does not authenticate cluster nodes.
+Public GHCR pulls need no pull Secret. For private copies, grant pull access to
+every control-plane and tenant node; workstation `docker login` does not authenticate
+nodes. See [private registry delivery](private-registry-images.md#configure-node-pull-access).
 
 ## Build and publish production images
 
@@ -84,8 +83,7 @@ fi
 ```
 
 Before installation, [check each digest](../../testing/docker.md#check-published-images)
-on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
-them.
+on native hosts for every target architecture, without skips. Configure pull credentials when the registry requires them.
 
 ## Configure the Installation
 
@@ -116,10 +114,9 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24+ on the operator host (and `pnpm install` with
-native admin). Manual YAML does not, but
-the later Agent transport-provisioning example does; without Node, provision
-transports in the console.
+Generation requires Node.js 24+ on the operator host (`pnpm install` for native
+admin). Manual YAML does not; the later Agent transport example does, so provision
+transports in the console without Node.
 
 Create `$OCC_INPUT_DIRECTORY/profile-input.json` from the schema in
 [Render installation profiles](installation-profiles.md#prepare-inputs). Set
@@ -148,9 +145,8 @@ export OCC_PROFILE_INPUT="${OCC_PROFILE_INPUT:-$OCC_INPUT_DIRECTORY/profile-inpu
 )
 ```
 
-If rendering fails, stop, fix the input, and rerender; never substitute example
-or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
-`controlPlane.installationChecksum` paired.
+If rendering fails, stop, fix the input, and rerender; do not substitute example
+or manual YAML. Keep `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` paired.
 
 ### Advanced: copy manual YAML examples
 
@@ -192,9 +188,9 @@ chmod 600 "$OCC_INPUT_DIRECTORY/values.yaml" \
   "$OCC_INPUT_DIRECTORY/bootstrap-pvc.yaml"
 ```
 
-For profile installs, change `$OCC_PROFILE_INPUT` and rerender instead of editing
+For profiles, change `$OCC_PROFILE_INPUT` and rerender instead of editing
 `values.yaml` or `installation.yaml`. For manual installs, edit the copied YAML
-before running the checks:
+before the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
@@ -219,11 +215,10 @@ before running the checks:
   `presets.includeDefaults: false` disables the
   [bundled Presets](../../reference/presets.md#installation-defaults).
 
-For every install, set `bootstrap-pvc.yaml` name, namespace, size, and
-protected `storageClassName`.
+Set `bootstrap-pvc.yaml` name, namespace, size, and protected `storageClassName`.
 
 For `logging.level`, see [Choose the log level](../observability.md#1-choose-the-log-level).
-Configure native admin domains through [native admin setup](native-admin.md#steps).
+[Configure native admin domains](native-admin.md#steps).
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
@@ -396,20 +391,22 @@ labels, one option per label, so preparation and initialization share volume
 topology. Helm refuses keys and values that helper refuses; values may be
 empty, as in `--node-selector node-role.kubernetes.io/infra=`.
 
-The helper refuses any nonfresh mounted root except `lost+found`, schedules with
-the supplied node selector before storage binds, reports `Prepared bootstrap
-volume claim ... with UID/GID 1000 mode 0700.`, and retains failed Pods for
-diagnosis. If policy forbids the preparation Pod, have the storage administrator
-create the same root state.
+The helper refuses nonfresh roots except `lost+found`, schedules before storage
+binds, reports `Prepared bootstrap volume claim ... with UID/GID 1000 mode 0700.`,
+and retains failed Pods. If policy forbids the Pod, have the storage administrator
+prepare the same root state.
 
-Install the chart with native values:
+[Prepare to record the initialization Job UID](production-handoff.md#record-the-initialization-job-for-handoff), then install once:
 
 ```bash
-helm upgrade --install oce deploy/helm/openclaw-enterprise \
+helm install oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m
 ```
+
+After a lost response or refused release name, [resume this installation](production-handoff.md#resume-an-installation-in-progress).
+Do not retry or switch to upgrade. An unused release name does not prove the database, identity or storage is fresh.
 
 For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
@@ -522,9 +519,9 @@ Loopback tests do not qualify production stop/drain, cookies, logging, or GitHub
 
 ## Related
 
-Use the [production image upgrade](production-upgrade.md) for an existing release. For failed
+For existing releases, use [production image upgrade](production-upgrade.md). For failed
 initialization, preserve state and follow [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap)
-and the [production startup flow](../../flows/production-startup.md).
+and the [startup flow](../../flows/production-startup.md).
 
-[Connect default metrics and logs](../observability.md) to your collectors. The
-[optional demo stack](../observability/demo.md) is not recommended for production.
+Connect [metrics and logs](../observability.md) to your collectors. The
+[demo stack](../observability/demo.md) is not recommended for production.

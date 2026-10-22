@@ -2,8 +2,10 @@
 
 <a id="occ-cli"></a>
 
-Use `occ` to manage OpenClaw Control Plane (OCC) resources from a terminal. You
-need your Installation's OCC endpoint and a protected service-key response file.
+Use `occ` to manage OpenClaw Control Plane (OCC) resources from a terminal. Commands
+that access the OCC API need your Installation's endpoint and a protected
+service-key response file. To inspect an initialization Job without the OCC API,
+see [Resume an installation in progress](deploy/production-handoff.md#resume-an-installation-in-progress).
 For all commands and flags, see the [CLI command reference](../reference/cli.md).
 To deploy through the browser, see [Create and deploy Agents in the console](../reference/console/create-and-deploy.md).
 
@@ -76,7 +78,7 @@ occ namespace list
 ```
 
 `occ` has no human sign-in: a service key authenticates a non-Agent
-ServicePrincipal, not a person. Without a key, use the
+ServicePrincipal, not a person. For OCC API access without a key, use the
 [console](../reference/console.md).
 
 Replace both example values with your own. These commands require an
@@ -97,7 +99,7 @@ export OCC_NAMESPACE='<namespace-id>'
 
 ## Give a member or automation CLI access
 
-People sign in to the console; the CLI authenticates only with a service key.
+People sign in to the console; the CLI authenticates to the OCC API with a service key.
 An Installation administrator gives someone CLI access to one Namespace by
 issuing a key for a Namespace service principal that holds only the grants
 you bind. With an administrator key file and `OCC_NAMESPACE` set:

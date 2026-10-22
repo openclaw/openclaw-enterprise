@@ -248,7 +248,7 @@ jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document "$OCC_INPUT_DIRECTORY
     patch secret "$OCC_INSTALLATION_SECRET" --type merge --patch-file /dev/stdin
 helm template oce deploy/helm/openclaw-enterprise --namespace openclaw-system \
   -f "$OCC_INPUT_DIRECTORY/values.yaml" > /tmp/oce-rendered.yaml
-helm upgrade --install oce deploy/helm/openclaw-enterprise \
+helm upgrade oce deploy/helm/openclaw-enterprise \
   --kubeconfig "$KUBECONFIG_FILE" --kube-context "$CONTEXT" \
   --namespace openclaw-system -f "$OCC_INPUT_DIRECTORY/values.yaml" \
   --wait --timeout 5m

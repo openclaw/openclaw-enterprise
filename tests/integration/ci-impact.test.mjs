@@ -1920,6 +1920,7 @@ test("event inspection failures in actual bootstrap and selector are unavailable
 // lanes, the separate fixture job and one manual (non-CI) lane.
 const suiteLanes = {
   "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs"],
+  "checks-baseline-2": [],
   postgres: ["tests/integration/postgres-a.test.mjs", "tests/integration/postgres-b.test.mjs"],
   "k3d-fixture-state": ["tests/integration/k3d-a.test.mjs"],
   "runtime-image-fixture": ["tests/integration/fixture-image.test.mjs"],
@@ -1941,7 +1942,13 @@ function suiteFiles(base = policy) {
           Object.keys(suiteLanes).map((lane) => [lane, `./test-suites/${lane}.json`]),
         ),
         groups: {
-          ci: ["checks-baseline-1", "postgres", "k3d-fixture-state", "runtime-image-fixture"],
+          ci: [
+            "checks-baseline-1",
+            "checks-baseline-2",
+            "postgres",
+            "k3d-fixture-state",
+            "runtime-image-fixture",
+          ],
           full: Object.keys(suiteLanes),
         },
       },
@@ -1981,6 +1988,16 @@ test("a test-only change selects the lanes that list its files", async (t) => {
     [
       [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
       [
+        ({ put }) => {
+          put("tests/integration/postgres-types.test.ts", "export const value: number = 1;\n");
+          put(
+            "scripts/ci/test-suites/postgres.json",
+            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-types.test.ts"]),
+          );
+        },
+        ["checks-baseline-2", "postgres"],
+      ],
+      [
         withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
           put("docs/testing.md", "Notes on tests/integration/postgres-b.test.mjs.\n"),
         ),
@@ -2004,17 +2021,6 @@ test("a test-only change selects the lanes that list its files", async (t) => {
       [
         postgresEdit(({ put }) => put("tests/conformance/lint-rules.test.mjs", "// edited\n")),
         ["checks-baseline-1", "postgres"],
-      ],
-      // The owning lane runs a new TypeScript test; baseline 2 type-checks it.
-      [
-        ({ put }) => {
-          put("tests/integration/postgres-c.test.ts", "// new\n");
-          put(
-            "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
-          );
-        },
-        ["checks-baseline-2", "postgres"],
       ],
       // A deleted file and its manifest entry.
       [
@@ -2072,6 +2078,7 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
       "tests/integration/support.mjs",
       "tests/integration/nested/deep.test.mjs",
       "tests/unknown/other.test.mjs",
+      "tests/integration/postgres-a.test.js",
       "tests/integration/support.ts",
     ],
     async (path) => {
@@ -2158,6 +2165,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
       [({ put }) => put("tests/integration/unlisted.test.ts", "// new\n")],
+      [postgresEdit(({ put }) => put("tests/integration/postgres-a.test.ts", "// changed\n"))],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.

@@ -168,7 +168,7 @@ func (app *application) installationCommand() *cobra.Command {
 			})
 		},
 	}
-	command.AddCommand(get, deploymentInventory)
+	command.AddCommand(get, deploymentInventory, app.installationHandoffCommand("doctor"), app.installationHandoffCommand("plan"))
 	return command
 }
 

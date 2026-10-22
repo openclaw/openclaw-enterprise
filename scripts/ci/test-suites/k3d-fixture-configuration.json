@@ -16,7 +16,8 @@
   "fileConcurrency": 2,
   "parallelFiles": [
     "tests/integration/kubernetes-compute-real.test.mjs",
-    "tests/integration/kubernetes-plugin-status-real.test.mjs"
+    "tests/integration/kubernetes-plugin-status-real.test.mjs",
+    "tests/integration/installation-handoff-k3d-real.test.ts"
   ],
   "files": [
     {
@@ -30,6 +31,16 @@
       "path": "tests/integration/kubernetes-compute-real.test.mjs",
       "expectedTests": [
         "authenticated PostgreSQL OCC API and worker deploy real Agent-owned gateways, Secret bindings, and revisions"
+      ]
+    },
+    {
+      "path": "tests/integration/installation-handoff-k3d-real.test.ts",
+      "prepare": {
+        "postgres": false,
+        "verifyFixtureStorage": false
+      },
+      "expectedTests": [
+        "installation handoff distinguishes replaced Helm Jobs with only named get access"
       ]
     }
   ]

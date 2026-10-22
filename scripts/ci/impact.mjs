@@ -88,6 +88,7 @@ const laneName = /^[a-z0-9-]+$/;
 // Static Checks lints, format-checks and builds documentation in every mode.
 // Test-only changes run the owning lanes. TypeScript tests also need part 2's
 // typecheck. Part 1 supplies the matrix lane when only the image fixture would run.
+const typecheckLane = "checks-baseline-2";
 const fallbackLane = "checks-baseline-1";
 const fixtureLane = "runtime-image-fixture";
 
@@ -215,7 +216,8 @@ function suiteIndex(commit) {
   if (
     !Array.isArray(ci) ||
     !ci.every((name) => typeof name === "string" && lanes.has(name)) ||
-    !ci.includes(fallbackLane)
+    !ci.includes(fallbackLane) ||
+    !ci.includes(typecheckLane)
   ) {
     throw new InspectionError("suite index has an unexpected shape", "manifest_unavailable");
   }
@@ -293,7 +295,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
       selected.add(name);
     }
     if (path.endsWith(".ts")) {
-      selected.add("checks-baseline-2");
+      selected.add(typecheckLane);
     }
     // Other files may read, copy or run a test file; then its lanes are not enough.
     const name = path.slice(path.lastIndexOf("/") + 1);

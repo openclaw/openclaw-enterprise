@@ -109,19 +109,16 @@ For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
 deployment status null for an unreadable version and names it on stderr; if
 the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
-`service-key create --out FILE` sets the new file to `0600` before requesting a
-key, including under a restrictive umask. Existing files and symlinks are refused.
+`service-key create --out FILE` creates a new file at `0600` before requesting
+the key, even under a restrictive umask. Existing files and symlinks are refused.
+`--expires-in-days N` accepts 1–365 (default 30); zero fails before file or key creation.
 
-`service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
-explicit zero is refused before output-file creation or API issuance.
+Commands take IDs, not names. If the expected prefix (such as `ns_` or
+`agt_`) is missing, the error names the command that lists valid IDs.
 
-Commands take IDs, not names. The CLI rejects a value without the expected
-prefix, such as `ns_` or `agt_`, and names the list command that shows the ID.
-
-The `installation get`, `installation deployment-inventory`, and `namespace
-list` commands require an Installation-scoped service key. With a
-Namespace-scoped key, use `namespace get ID` to read that exact Namespace
-instead.
+`installation get`, `installation deployment-inventory` and `namespace list`
+require an Installation-scoped service key. With a Namespace-scoped key, use
+`namespace get ID` for that Namespace.
 
 `installation deployment-inventory` requires Installation `administer`, exact
 `read` access to every Namespace and Agent, exact `read` access to each selected
@@ -130,6 +127,11 @@ eligible for coordinated deployment. It fails instead of silently omitting an
 unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, selected version, and whether deployment work is queued or
 claimed.
+
+## Installation handoff
+
+`occ installation doctor` and `plan` report the named Job, not release or workload readiness.
+[Resume with the original Job UID](../guides/deploy/production-handoff.md#resume-an-installation-in-progress).
 
 ## Runtime status and logs
 
