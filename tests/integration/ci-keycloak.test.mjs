@@ -10,9 +10,8 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
 
-async function fixture(t) {
-  const root = await temporaryDirectory(t, "ci-keycloak-test-");
-  return root;
+function fixture(t) {
+  return temporaryDirectory(t, "ci-keycloak-test-");
 }
 
 test("the Keycloak realm fixture holds no secret", async () => {

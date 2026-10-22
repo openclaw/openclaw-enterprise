@@ -25,9 +25,8 @@ const controllerRequire = createRequire(
 const { fetch: undiciFetch } = controllerRequire("undici");
 const sdk = controllerRequire("@kubernetes/client-node");
 
-async function scratch(t) {
-  const dir = await temporaryDirectory(t, "occ-bounded-");
-  return dir;
+function scratch(t) {
+  return temporaryDirectory(t, "occ-bounded-");
 }
 
 /** Sends `bytes` of body after `status` (200 by default) and never ends the response. */
