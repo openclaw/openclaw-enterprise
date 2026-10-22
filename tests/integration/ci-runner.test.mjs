@@ -815,8 +815,9 @@ waitingTest(
       }
     });
 
-    // The runner's clock stops a second in until the file has recorded its pids and printed its
-    // line, so its timeout comes five seconds after that however long the host takes to get there.
+    // The runner's clock stands still from the start until the file has recorded its pids and
+    // printed its line, so its timeout comes five seconds after that however long the host takes
+    // to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
@@ -833,7 +834,7 @@ waitingTest(
         join(root, "results/orphan.json"),
       ],
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000", CI_RUNNER_ORPHAN_RECORD: recordPath },
-      { timeout: 60_000, execArgv: heldClock(started + 1_000, [waiting]) },
+      { timeout: 60_000, execArgv: heldClock(started, [waiting]) },
     );
 
     assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
@@ -2627,8 +2628,8 @@ waitingTest(
       groups: { ci: ["hang"] },
     });
 
-    // The runner's clock stops a second in until the file has printed everything, so its timeout
-    // comes five seconds after that however long the host takes to get there.
+    // The runner's clock stands still from the start until the file has printed everything, so its
+    // timeout comes five seconds after that however long the host takes to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
@@ -2645,7 +2646,7 @@ waitingTest(
         resultsPath,
       ],
       { CI_RUNNER_TEST_TIMEOUT_MS: "5000" },
-      { timeout: 60_000, execArgv: heldClock(started + 1_000, [printed]) },
+      { timeout: 60_000, execArgv: heldClock(started, [printed]) },
     );
 
     assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
@@ -2937,15 +2938,15 @@ waitingTest("a runner timeout while no test was running says so", async (t) => {
     groups: { ci: ["hook"] },
   });
 
-  // The runner's clock stops a second in until "passes" is done and the hook has started, so the
-  // timeout comes three seconds after that however long the host takes to get there. The hook
-  // outlasts it.
+  // The runner's clock stands still from the start until "passes" is done and the hook has
+  // started, so the timeout comes three seconds after that however long the host takes to get
+  // there. The hook outlasts it.
   const started = Date.now();
   const result = await runAsync(
     root,
     laneArgs(root, "hook", statePath, resultsPath),
     { CI_RUNNER_TEST_TIMEOUT_MS: "3000" },
-    { timeout: 60_000, execArgv: heldClock(started + 1_000, [inHook]) },
+    { timeout: 60_000, execArgv: heldClock(started, [inHook]) },
   );
 
   assert.equal(result.error, undefined, `the runner timed the file out: ${result.stderr}`);
@@ -3018,15 +3019,15 @@ waitingTest(
       groups: { ci: ["prepare"] },
     });
 
-    // The runner's clock stops a second in until the preparation has started, so the deadline
-    // comes at least two seconds after that however long the host takes to get there.
+    // The runner's clock stands still from the start until the preparation has started, so the
+    // deadline comes three seconds after that however long the host takes to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
       laneArgs(root, "prepare", statePath, resultsPath),
       { CI_RUNNER_DEADLINE_MS: String(started + 3_000) },
       // Without a limit the preparation would hold the runner forever.
-      { timeout: 60_000, execArgv: heldClock(started + 1_000, [preparing]) },
+      { timeout: 60_000, execArgv: heldClock(started, [preparing]) },
     );
 
     assert.equal(
@@ -3041,9 +3042,9 @@ waitingTest(
       hung.issues.map(({ code, file, step }) => ({ code, file, step })),
       [{ code: "prepare-timeout", file: "tests/integration/hung.test.mjs", step: "prepare" }],
     );
-    // Its limit is what was left before the deadline when it started.
-    const { timeoutMs } = hung.issues[0];
-    assert(timeoutMs >= 2_000 && timeoutMs <= 3_000, String(timeoutMs));
+    // Its limit is what was left before the deadline when it started: all of it, as the clock
+    // stood still.
+    assert.equal(hung.issues[0].timeoutMs, 3_000);
     // Its tests never started. What the preparation made is left to the job's Cleanup lane step.
     assert.equal(hung.nodeExitCode, null);
     assert.equal(hung.counts.total, 0);
@@ -3148,15 +3149,15 @@ waitingTest(
       groups: { ci: ["cleanup"] },
     });
 
-    // The runner's clock stops a second in until the command and its descendant are on record,
-    // so the cleanup's allowance ends at least two seconds after that however long the host takes
+    // The runner's clock stands still from the start until the command and its descendant are on
+    // record, so the cleanup's allowance ends two seconds after that however long the host takes
     // to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
       laneArgs(root, "cleanup", statePath, resultsPath),
       { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
-      { timeout: 60_000, execArgv: heldClock(started + 1_000, [pidsPath]) },
+      { timeout: 60_000, execArgv: heldClock(started, [pidsPath]) },
     );
     pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
 
