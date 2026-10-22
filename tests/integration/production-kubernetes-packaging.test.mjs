@@ -3158,6 +3158,23 @@ test(
 );
 
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
+  const authorityValues = {
+    "egressAuthority.enabled": "true",
+    "egressAuthority.tlsSecretName": "authority-server-tls",
+    "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+    "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+  };
+  const custodyValues = {
+    ...authorityValues,
+    "preparedGitHub.custodySecretName": "prepared-github-custody",
+    "preparedGitHub.issuerCidrs[0]": "192.0.2.3/32",
+  };
+  const issuerCaValues = {
+    ...custodyValues,
+    "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
+  };
   const optionalFeatures = {
     ...repositoryCredentialValues,
     ...gatewayRoutingValues,
@@ -3170,6 +3187,7 @@ test("database CA mounts stay distinct from active production volume mounts", to
   for (const features of [
     {},
     optionalFeatures,
+    { ...issuerCaValues, "backend.openshell.clientSecretName": "dedicated-openshell-admin" },
     { "bootstrap.password.mountPath": "/custom/bootstrap" },
   ]) {
     const objects = await resources((await render(features)).stdout);
@@ -3221,6 +3239,11 @@ test("database CA mounts stay distinct from active production volume mounts", to
   }
   // Paths reserved by optional features remain available when those features are disabled.
   for (const mountPath of [
+    "/etc/openclaw/openshell",
+    "/etc/openclaw/egress/tls",
+    "/etc/openclaw/egress/issuer",
+    "/etc/openclaw/prepared-github",
+    "/etc/openclaw/prepared-github-issuer",
     "/etc/openclaw/execution",
     "/etc/openclaw/repository-registry",
     "/etc/openclaw/repository-ca",
@@ -3237,6 +3260,12 @@ test("database CA mounts stay distinct from active production volume mounts", to
   ]) {
     await render({ ...databaseCaValues, "database.caMountPath": mountPath });
   }
+  // Custody does not reserve an issuer CA directory unless the issuer CA is mounted.
+  await render({
+    ...custodyValues,
+    ...databaseCaValues,
+    "database.caMountPath": "/etc/openclaw/prepared-github-issuer",
+  });
   const ordinary = (await render()).stdout;
   await render({
     ...externalGatewayRoutingValues,

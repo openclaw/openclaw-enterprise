@@ -450,6 +450,18 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- if .Values.backend.openshell.clientSecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell" -}}
+{{- end -}}
+{{- if .Values.egressAuthority.enabled -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/egress/tls" "/etc/openclaw/egress/issuer") -}}
+{{- end -}}
+{{- if .Values.preparedGitHub.custodySecretName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github" -}}
+{{- if .Values.preparedGitHub.issuerCaConfigMapName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-github-issuer" -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.openshellGit.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell-git" -}}
 {{- end -}}
