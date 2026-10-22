@@ -17,7 +17,7 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 
 const adminEmail = "activation-admin@example.test";
 const password = "activation-member-password";
@@ -237,15 +237,10 @@ test(
             settledPolicy = response;
             return response;
           });
-        const protectedPid = await waitFor(
+        const protectedPid = await waitForLockWaiter(
+          pool,
+          pid,
           "the guarded policy transaction waiting for its Namespace",
-          async () => {
-            const waiting = await pool.query(
-              "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-              [pid],
-            );
-            return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
-          },
         );
         // The retained session must not impose authentication's five-second
         // lock limit on an otherwise valid Namespace policy transaction.
@@ -271,13 +266,11 @@ test(
           headers: revoking,
           payload: { expectedVersion: account.json().data.version },
         });
-        await waitFor("guarded account revocation waiting for the policy holder", async () => {
-          const waiting = await pool.query(
-            "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-            [protectedPid],
-          );
-          return waiting.rowCount > 0 ? true : undefined;
-        });
+        await waitForLockWaiter(
+          pool,
+          protectedPid,
+          "guarded account revocation waiting for the policy holder",
+        );
         await blocker.query("COMMIT");
         released = true;
         const committed = await policy;

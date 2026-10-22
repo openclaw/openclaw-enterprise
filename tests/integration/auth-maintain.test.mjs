@@ -5,7 +5,6 @@ import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import {
@@ -27,6 +26,7 @@ import {
   outputSink,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
@@ -121,17 +121,16 @@ async function settled(work) {
   }
   const before = new Set(await backendPids());
   const result = await work();
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    const left = (await backendPids()).filter((pid) => !before.has(pid));
-    if (left.length === 0) {
-      return result;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`Backends ${left.join(", ")} were still connected 5 s after the step.`);
-    }
-    await delay(10);
-  }
+  let left = [];
+  await waitUntil(
+    () => `backends ${left.join(", ")} to leave after the step`,
+    async () => {
+      left = (await backendPids()).filter((pid) => !before.has(pid));
+      return left.length === 0;
+    },
+    { timeoutMs: 5_000, intervalMs: 10 },
+  );
+  return result;
 }
 
 // Most runs call authMaintain (what scripts/auth-maintain.mjs runs) in this process, with the

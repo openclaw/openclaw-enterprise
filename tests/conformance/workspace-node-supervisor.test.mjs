@@ -15,12 +15,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   AGENT_WITH_NODE_ENTRYPOINT,
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { availablePort } from "../helpers/available-port.mjs";
+import { waitFor as waitForValue, waitUntil } from "../helpers/wait-for.mjs";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 
 // Reads a JSON-lines file; a file that does not exist yet has no rows. Children append
@@ -54,15 +54,8 @@ function pidGone(pid) {
 }
 
 // Polls pidGone for at most five seconds.
-async function processGone(description, pid) {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (pidGone(pid)) {
-      return;
-    }
-    await delay(25);
-  }
-  assert.fail(description);
+function processGone(description, pid) {
+  return waitUntil(description, () => pidGone(pid), { timeoutMs: 5_000, intervalMs: 25 });
 }
 
 // Stub lines for a saved-identity probe that appends a "probe" row to the events
@@ -141,18 +134,19 @@ async function startSupervisor(
   });
   // Polls `read` (the events by default) until `predicate` accepts the rows, failing at
   // once if the supervisor exits.
-  const waitFor = async (description, predicate, read = events) => {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const observed = await read();
-      if (await predicate(observed)) {
-        return observed;
-      }
-      assert.equal(supervisor.exitCode, null, output);
-      await delay(25);
-    }
-    assert.fail(description + ": " + output);
-  };
+  const waitFor = (description, predicate, read = events, timeoutMs = 5_000) =>
+    waitForValue(
+      () => `${description}: ${output}`,
+      async () => {
+        const observed = await read();
+        if (await predicate(observed)) {
+          return observed;
+        }
+        assert.equal(supervisor.exitCode, null, output);
+        return undefined;
+      },
+      { timeoutMs, intervalMs: 25 },
+    );
   return { supervisor, exited, events, waitFor, output: () => output };
 }
 
@@ -695,7 +689,7 @@ test(
   async (t) => {
     const directory = await mkdtemp(join(tmpdir(), "oce-node-identity-retry-"));
     // The saved identity exists throughout; only the first probe fails.
-    const { supervisor, exited, events, output } = await startSupervisor(t, directory, {
+    const { supervisor, exited, events, waitFor, output } = await startSupervisor(t, directory, {
       child: [
         'const { appendFileSync } = require("node:fs");',
         "const [events, kind, args] = process.argv.slice(2);",
@@ -714,14 +708,12 @@ test(
       ],
       env: { OPENCLAW_NODE_SETUP_PATH: join(directory, "setup", "setup-code") },
     });
-    const deadline = Date.now() + 8_000;
-    let rows = [];
-    while (!rows.some(({ kind }) => kind === "node")) {
-      assert.ok(Date.now() < deadline, "node never started after a failed probe: " + output());
-      assert.equal(supervisor.exitCode, null, output());
-      await delay(50);
-      rows = await events();
-    }
+    const rows = await waitFor(
+      "node to start after a failed probe",
+      (observed) => observed.some(({ kind }) => kind === "node"),
+      events,
+      8_000,
+    );
     const probes = rows.filter(({ kind }) => kind === "probe");
     assert.equal(probes.length, 2, "one failed probe, one retry");
     const node = rows.find(({ kind }) => kind === "node");

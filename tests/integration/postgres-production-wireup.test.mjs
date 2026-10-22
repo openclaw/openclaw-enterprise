@@ -26,7 +26,8 @@ import {
   BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
@@ -525,17 +526,10 @@ test(
       });
       try {
         await worker.start();
-        const deadline = Date.now() + 10000;
-        while (Date.now() < deadline) {
-          const current = await request("GET", `/namespaces/${defaultNamespace[0].id}`);
-          if (current.data.status === "ready") {
-            break;
-          }
-          await delay(20);
-        }
-        assert.equal(
-          (await request("GET", `/namespaces/${defaultNamespace[0].id}`)).data.status,
-          "ready",
+        await waitUntil(
+          "the default Namespace to become ready",
+          async () =>
+            (await request("GET", `/namespaces/${defaultNamespace[0].id}`)).data.status === "ready",
         );
       } finally {
         await worker.stop();
@@ -1189,15 +1183,10 @@ test(
                   namespaceId,
                 ]);
                 pendingGrant = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-                const protectedPid = await waitFor(
+                const protectedPid = await waitForLockWaiter(
+                  pool,
+                  pid,
                   "the protected sharing write waiting for the Namespace",
-                  async () => {
-                    const waiting = await pool.query(
-                      "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                      [pid],
-                    );
-                    return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
-                  },
                 );
                 // Another API instance has no shared JavaScript lock. PostgreSQL must
                 // keep logout from deleting the assigning session before this commit.
@@ -1205,13 +1194,11 @@ test(
                   method: "POST",
                   headers: authenticatedHeaders(assigning, { origin: authBaseURL }),
                 });
-                await waitFor("cross-replica logout waiting on the held session", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [protectedPid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  protectedPid,
+                  "cross-replica logout waiting on the held session",
+                );
                 await blocker.query("COMMIT");
                 released = true;
                 const committed = await pendingGrant;
@@ -1323,13 +1310,11 @@ test(
                 });
                 // Arm only after the IAM unit holds the session and waits for its
                 // Namespace, so authentication's earlier transactions are unaffected.
-                await waitFor("the policy transaction waiting for its Namespace", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [pid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  pid,
+                  "the policy transaction waiting for its Namespace",
+                );
                 proxy.arm({ pauseCommit: true });
                 await blocker.query("COMMIT");
                 released = true;
@@ -1430,13 +1415,11 @@ test(
                   namespaceId,
                 ]);
                 pending = request("POST", `${policyPath}/access-bindings`, grant, assigning);
-                await waitFor("the expiring sharing write waiting for the Namespace", async () => {
-                  const waiting = await pool.query(
-                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
-                    [pid],
-                  );
-                  return waiting.rowCount > 0 ? true : undefined;
-                });
+                await waitForLockWaiter(
+                  pool,
+                  pid,
+                  "the expiring sharing write waiting for the Namespace",
+                );
                 await delay(3_100);
                 await blocker.query("COMMIT");
                 released = true;

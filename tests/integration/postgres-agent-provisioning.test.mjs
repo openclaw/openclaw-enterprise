@@ -38,6 +38,7 @@ import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -5189,14 +5190,11 @@ test(
       stopping = fixture.request("POST", `${agentPath}/stop`);
       // Surface an early failure through the await below instead of an unhandled rejection.
       stopping.catch(() => {});
-      await waitFor("Stop to wait on the handoff's Namespace lock", async () => {
-        const waiting = await fixture.pool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [handoffPid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
+      await waitForLockWaiter(
+        fixture.pool,
+        handoffPid,
+        "Stop to wait on the handoff's Namespace lock",
+      );
       releaseAdmission();
       const stopped = await stopping;
       assert.equal(stopped.status, 202, JSON.stringify(stopped.body));

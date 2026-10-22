@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
@@ -31,25 +32,27 @@ async function commandTreeFixture(t) {
   async function waitForTermination(timeoutMs, pidPath = descendantPidPath) {
     const pid = Number(await readFile(pidPath, "utf8"));
     assert.ok(Number.isInteger(pid) && pid > 1);
-    const deadline = Date.now() + timeoutMs;
-    while (true) {
-      const observation = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
-        encoding: "utf8",
-        timeout: 1000,
-      });
-      assert.equal(observation.error, undefined, "could not observe fixture descendant");
-      const status = observation.stdout.trim();
-      if (
-        (observation.status === 1 && status === "" && observation.stderr.trim() === "") ||
-        /^Z/.test(status)
-      ) {
-        t.diagnostic(`fixture process ${pid}: ${status === "" ? "absent" : "terminated (zombie)"}`);
-        break;
-      }
-      assert.equal(observation.status, 0, "fixture process observation failed");
-      assert.ok(Date.now() < deadline, `fixture descendant ${pid} still running`);
-      await delay(50);
-    }
+    const status = await waitFor(
+      `fixture descendant ${pid} to stop running`,
+      () => {
+        const observation = spawnSync("ps", ["-p", String(pid), "-o", "stat="], {
+          encoding: "utf8",
+          timeout: 1000,
+        });
+        assert.equal(observation.error, undefined, "could not observe fixture descendant");
+        const state = observation.stdout.trim();
+        if (
+          (observation.status === 1 && state === "" && observation.stderr.trim() === "") ||
+          /^Z/.test(state)
+        ) {
+          return state;
+        }
+        assert.equal(observation.status, 0, "fixture process observation failed");
+        return undefined;
+      },
+      { timeoutMs, intervalMs: 50 },
+    );
+    t.diagnostic(`fixture process ${pid}: ${status === "" ? "absent" : "terminated (zombie)"}`);
   }
   t.after(async () => {
     for (const path of pidPaths) {
@@ -398,9 +401,7 @@ require("node:fs").appendFileSync(${JSON.stringify(dropLog)}, process.argv.at(-1
   // Another process holds the lock, as the runner does while it prepares a file.
   let release;
   const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
-  while (!release) {
-    await delay(10);
-  }
+  await waitUntil("the test to hold the state lock", () => release, { intervalMs: 10 });
   const child = spawn(
     process.execPath,
     [
@@ -419,11 +420,12 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const exited = new Promise((resolve) => child.on("close", resolve));
-  const deadline = Date.now() + 20_000;
-  while (!(await readFile(dropLog, "utf8").catch(() => ""))) {
-    assert.ok(Date.now() < deadline, "the drop waited for the lock");
-    await delay(10);
-  }
+  // The drop must run while the lock is still held by this test.
+  await waitUntil(
+    "the drop to run without waiting for the lock",
+    () => readFile(dropLog, "utf8").catch(() => ""),
+    { timeoutMs: 20_000, intervalMs: 10 },
+  );
   assert.equal(
     await readFile(dropLog, "utf8"),
     'DROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)\n',
@@ -709,18 +711,18 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
   assert.equal((await stat(clusterDirectory)).isDirectory(), true);
 });
 
-async function waitForFile(path) {
-  const deadline = Date.now() + 5000;
-  while (true) {
-    try {
-      return await readFile(path, "utf8");
-    } catch (error) {
-      if (error.code !== "ENOENT" || Date.now() >= deadline) {
-        throw error;
-      }
-      await delay(25);
-    }
-  }
+function waitForFile(path) {
+  return waitFor(
+    path,
+    () =>
+      readFile(path, "utf8").catch((error) => {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+        return undefined;
+      }),
+    { timeoutMs: 5000, intervalMs: 25 },
+  );
 }
 
 for (const scenario of [

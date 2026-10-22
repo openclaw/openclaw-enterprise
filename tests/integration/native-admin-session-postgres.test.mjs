@@ -27,7 +27,7 @@ import {
 } from "../helpers/bootstrap-installation.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
-import { waitFor } from "../helpers/wait-for.mjs";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const databaseUrl = process.env.OCC_TEST_DATABASE_URL;
 const adminEmail = "postgres-admin@openclaw.local";
@@ -481,10 +481,10 @@ async function openNativeWebSocket(port, native, cookie, path = "/session/socket
     received += chunk.toString("latin1");
   };
   socket.on("data", onData);
-  const deadline = Date.now() + 5_000;
-  while (!received.includes("\r\n\r\n") && Date.now() < deadline) {
-    await delay(25);
-  }
+  await waitUntil("the WebSocket upgrade response", () => received.includes("\r\n\r\n"), {
+    timeoutMs: 5_000,
+    intervalMs: 25,
+  });
   assert.match(received, /^HTTP\/1\.1 101 /);
   return socket;
 }
@@ -548,30 +548,27 @@ async function assertSocketClosesAfterMutation(socket, mutate) {
 }
 
 async function waitForAuditActions(pool, namespaceId, agentId, actions) {
-  const remaining = new Set(actions);
-  const deadline = Date.now() + 5_000;
+  let remaining = actions;
   let rows = [];
-  while (Date.now() < deadline) {
-    const result = await pool.query(
-      `SELECT action, actor_id, outcome, details
+  await waitUntil(
+    () => `audit actions ${remaining.join(", ")}`,
+    async () => {
+      const result = await pool.query(
+        `SELECT action, actor_id, outcome, details
          FROM occ.audit_events
         WHERE namespace_id = $1
           AND resource_kind = 'agent'
           AND resource_id = $2
           AND action = ANY($3::text[])
         ORDER BY occurred_at, id`,
-      [namespaceId, agentId, actions],
-    );
-    rows = result.rows;
-    for (const row of rows) {
-      remaining.delete(row.action);
-    }
-    if (remaining.size === 0) {
-      break;
-    }
-    await delay(50);
-  }
-  assert.deepEqual([...remaining], [], `missing audit actions: ${[...remaining].join(", ")}`);
+        [namespaceId, agentId, actions],
+      );
+      rows = result.rows;
+      remaining = actions.filter((action) => !rows.some((row) => row.action === action));
+      return remaining.length === 0;
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
   for (const action of actions) {
     const row = rows.find((candidate) => candidate.action === action);
     assert.ok(row, `${action} audit row must exist`);
@@ -589,11 +586,11 @@ async function waitForAuthorizationDenialAudit(
   actorId,
   options = {},
 ) {
-  const deadline = Date.now() + 5_000;
-  let row;
-  while (Date.now() < deadline) {
-    const result = await pool.query(
-      `SELECT id, kind, action, actor_id, outcome, details
+  const row = await waitFor(
+    `${action} authorization-denial audit row`,
+    async () => {
+      const result = await pool.query(
+        `SELECT id, kind, action, actor_id, outcome, details
          FROM occ.audit_events
         WHERE namespace_id = $1
           AND resource_kind = 'agent'
@@ -605,22 +602,19 @@ async function waitForAuthorizationDenialAudit(
           AND ($6::boolean IS NULL OR (details->'nativeAdmin' ? 'revisionId') = $6)
         ORDER BY occurred_at DESC, id DESC
         LIMIT 1`,
-      [
-        namespaceId,
-        agentId,
-        action,
-        actorId ?? null,
-        options.excludeId ?? null,
-        options.leaseRenewal ?? null,
-      ],
-    );
-    row = result.rows[0];
-    if (row !== undefined) {
-      break;
-    }
-    await delay(50);
-  }
-  assert.ok(row, `${action} authorization-denial audit row must exist`);
+        [
+          namespaceId,
+          agentId,
+          action,
+          actorId ?? null,
+          options.excludeId ?? null,
+          options.leaseRenewal ?? null,
+        ],
+      );
+      return result.rows[0];
+    },
+    { timeoutMs: 5_000, intervalMs: 50 },
+  );
   assert.equal(row.kind, "authorization_denial");
   assert.equal(row.outcome, "denied");
   assert.equal(row.details?.__occAuditMetadata?.reasonCode, "AUTHORIZATION_DENIED");

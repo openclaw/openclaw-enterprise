@@ -6,7 +6,6 @@ import { createRequire } from "node:module";
 import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 import { loadTestSuites } from "../../scripts/ci/test-suites.mjs";
@@ -29,6 +28,7 @@ import {
   spawnResult,
   writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const preparePath = join(repositoryRoot, "scripts/ci/prepare.mjs");
@@ -1431,18 +1431,16 @@ for (let index = 0; index < Number(times); index += 1) {
         String(times),
       ]);
     // Each waiter holds a ticket next to the lock while it waits.
-    const waiting = async (count) => {
-      const deadline = Date.now() + 20_000;
-      while ((await readdir(root)).filter((name) => name.endsWith(".ticket")).length < count) {
-        assert.ok(Date.now() < deadline, `${count} waiters never queued`);
-        await delay(10);
-      }
-    };
+    const waiting = (count) =>
+      waitUntil(
+        `${count} waiters to queue`,
+        async () =>
+          (await readdir(root)).filter((name) => name.endsWith(".ticket")).length >= count,
+        { timeoutMs: 20_000, intervalMs: 10 },
+      );
     let release;
     const holding = withStateLock(statePath, () => new Promise((resolve) => (release = resolve)));
-    while (!release) {
-      await delay(10);
-    }
+    await waitUntil("the test to hold the state lock", () => release, { intervalMs: 10 });
     // The contenders queue one at a time, behind this process's hold. "first" asks again as
     // soon as it releases: before tickets, its process re-took the lock at once, and a
     // waiter that had backed off to 100 ms polls lost to newer ones (finding 2179).

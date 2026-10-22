@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { startupDependencyFailure } from "../../apps/controller/src/startup-failure.ts";
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
 const { Client } = requireOcc("pg");
@@ -204,11 +205,9 @@ test(
       const { rows } = await killer.query("SELECT pg_terminate_backend($1) AS ok", [pid]);
       assert.equal(rows[0].ok, true);
       // pg-pool discards the broken idle client after emitting its error.
-      const deadline = Date.now() + 5000;
-      while (pool.idleCount !== 0) {
-        assert.ok(Date.now() < deadline, "the terminated idle client was not discarded");
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await waitUntil("the terminated idle client to be discarded", () => pool.idleCount === 0, {
+        timeoutMs: 5000,
+      });
       const next = await pool.query("SELECT pg_backend_pid() AS pid");
       assert.notEqual(next.rows[0].pid, pid);
     } finally {
