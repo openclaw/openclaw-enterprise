@@ -1084,7 +1084,10 @@ export function createControllerAuth(options: ControllerAuthOptions): Controller
       requireEmailVerification: false,
       minPasswordLength: LOCAL_PASSWORD_MIN_LENGTH,
       maxPasswordLength: LOCAL_PASSWORD_MAX_LENGTH,
-      password: { hash: passwordHasher.hash, verify: passwordHasher.verify },
+      password: {
+        hash: (password) => passwordHasher.hash(password),
+        verify: (input) => passwordHasher.verify(input),
+      },
     },
     trustedOrigins: [options.baseURL],
     rateLimit: { enabled: humanLogin === undefined },
