@@ -28,6 +28,7 @@ import { createTestResourceScope } from "../fixtures/repository-credentials/reso
 import { run, temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
 import { appRoot, appExtension } from "../fixtures/repository-credentials/runtime.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 function requestGitDiscovery(fixture, opened) {
   return new Promise((resolve, reject) => {
@@ -342,14 +343,14 @@ test(
       outgoing.once("error", reject);
       outgoing.end();
     });
-    let confirmed;
-    for (let i = 0; i < 100; i++) {
-      confirmed = await driver.status(sessionId, signal);
-      if (confirmed?.state === "DISPOSED") {
-        break;
-      }
-      await delay(20);
-    }
+    const confirmed = await waitFor(
+      "the broker to confirm disposal after the lost close response",
+      async () => {
+        const status = await driver.status(sessionId, signal);
+        return status?.state === "DISPOSED" ? status : undefined;
+      },
+      2000,
+    );
     assert.equal(confirmed?.state, "DISPOSED");
     const beforeRestart = await state.read((view) =>
       view.repositorySessions.findBrokerReceipt(admissionId),
@@ -480,17 +481,16 @@ test(
         restartCompleted = true;
       });
       void restarting.catch(() => {});
-      let blocked = false;
-      for (let i = 0; i < 100; i++) {
-        const result = await pool.query(
-          "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%repository_broker_receipts%') AS blocked",
-        );
-        if (result.rows[0].blocked) {
-          blocked = true;
-          break;
-        }
-        await delay(20);
-      }
+      const blocked = await waitFor(
+        "the terminal receipt write to reach PostgreSQL",
+        async () => {
+          const result = await pool.query(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%repository_broker_receipts%') AS blocked",
+          );
+          return result.rows[0].blocked ? true : undefined;
+        },
+        2000,
+      );
       assert.equal(blocked, true, "the terminal receipt write must reach PostgreSQL");
       assert.equal(restartCompleted, false, "broker shutdown must wait for receipt commit");
     } finally {
@@ -823,17 +823,16 @@ test(
             completed = true;
           });
           void stopping.catch(() => {});
-          let blocked = false;
-          for (let i = 0; i < 100; i++) {
-            const result = await pool.query(
-              "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%repository_broker_receipts%') AS blocked",
-            );
-            if (result.rows[0].blocked) {
-              blocked = true;
-              break;
-            }
-            await delay(20);
-          }
+          const blocked = await waitFor(
+            "the original broker to attempt the terminal write",
+            async () => {
+              const result = await pool.query(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%repository_broker_receipts%') AS blocked",
+              );
+              return result.rows[0].blocked ? true : undefined;
+            },
+            2000,
+          );
           assert.equal(blocked, true, "the original broker must attempt the terminal write");
           await delay(300);
           assert.equal(

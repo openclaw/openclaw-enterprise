@@ -44,6 +44,11 @@ spec:
             items:
               - key: {{ .Values.installation.key | quote }}
                 path: installation.yaml
+        {{- if .Values.api.consoleTheme.configMapName }}
+        - name: console-theme
+          configMap:
+            name: {{ .Values.api.consoleTheme.configMapName | quote }}
+        {{- end }}
         {{- if $repositoryGit }}
         - name: repository-registry
           configMap:
@@ -92,10 +97,19 @@ spec:
               value: production
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- if .Values.api.consoleTheme.configMapName }}
+            - name: OCC_CONSOLE_THEME_DIR
+              value: /etc/openclaw/console-theme
+            {{- end }}
           volumeMounts:
             - name: installation-startup
               mountPath: /etc/openclaw/installation
               readOnly: true
+            {{- if .Values.api.consoleTheme.configMapName }}
+            - name: console-theme
+              mountPath: /etc/openclaw/console-theme
+              readOnly: true
+            {{- end }}
             {{- if $repositoryGit }}
             - name: repository-registry
               mountPath: /etc/openclaw/repository-registry

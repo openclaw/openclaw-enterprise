@@ -3,12 +3,18 @@
   "compilerOptions": {
     "allowJs": true,
     "composite": false,
-    "noEmit": true,
     "declaration": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": false,
-    "allowImportingTsExtensions": true
+    "erasableSyntaxOnly": true,
+    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
   },
-  "include": ["**/*.test.ts", "helpers/credential-source-owner-upgrade.ts"],
+  "include": [
+    "**/*.test.ts",
+    "../scripts/console-storybook/*.stories.ts",
+    "helpers/credential-source-owner-upgrade.ts"
+  ],
   "references": [
     {
       "path": "../packages/utils"

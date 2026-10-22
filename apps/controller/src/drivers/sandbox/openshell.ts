@@ -8,6 +8,12 @@ import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import {
+  requireConfiguration,
+  SandboxNetworkPolicyConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
 import { openShellLogDecision } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
@@ -480,7 +486,7 @@ function environment(
     if ("valueFrom" in entry) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-        `OpenShell v0.1.4 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
+        `OpenShell v0.1.5 cannot receive secretKeyRef environment ${entry.name}; upstream Secret projection support is required.`,
       );
     }
     // Account claims are opaque data, not paths inside the Harness filesystem.
@@ -2169,17 +2175,25 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     );
   }
   const networkPolicyNames = new Set<string>();
-  for (const policy of options.policy.networkPolicies) {
+  for (const [index, policy] of options.policy.networkPolicies.entries()) {
     const name = nonempty(policy.name, "OpenShell network policy name");
     if (name === "workspace-node-enrollment") {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell network policy name workspace-node-enrollment is reserved.",
-      );
+      throw new ConfigurationValidationError([
+        {
+          path: `/policy/networkPolicies/${index}/name`,
+          code: "INVALID_VALUE",
+          message: "This policy name is reserved for platform networking.",
+        },
+      ]);
     }
     if (networkPolicyNames.has(name)) {
-      throw new OpenShellSandboxConfigurationFailure(
-        `OpenShell network policy name ${name} must be unique.`,
-      );
+      throw new ConfigurationValidationError([
+        {
+          path: `/policy/networkPolicies/${index}/name`,
+          code: "INVALID_VALUE",
+          message: "Network policy names must be unique.",
+        },
+      ]);
     }
     networkPolicyNames.add(name);
   }
@@ -2211,13 +2225,39 @@ export const configurationSchema = Object.freeze({
   required: ["gateway", "kubernetes", "policy"],
   additionalProperties: false,
   properties: {
-    gateway: { type: "object" },
-    kubernetes: { type: "object" },
+    gateway: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        workspaceMode: { type: "string", enum: ["managed", "operator"] },
+        operatorNamespaceLabels: { type: "object" },
+        operatorWorkspaceResources: { type: "array" },
+        networkPolicyResources: { type: "array" },
+        readiness: {
+          type: "object",
+          required: ["serviceName", "podSelector", "timeoutMs"],
+          properties: {
+            serviceName: { type: "string" },
+            podSelector: { type: "object" },
+            timeoutMs: { type: "integer", minimum: 1 },
+            pollIntervalMs: { type: "integer", minimum: 1 },
+          },
+        },
+      },
+    },
+    kubernetes: {
+      type: "object",
+      properties: {
+        serviceAccount: { type: "object", properties: { mode: { const: "gatewayConfigured" } } },
+      },
+    },
     policy: {
       type: "object",
       properties: {
+        landlockCompatibility: { const: "hard_requirement" },
         networkPolicies: {
           type: "array",
+          minItems: 1,
           items: {
             type: "object",
             additionalProperties: false,
@@ -2226,6 +2266,7 @@ export const configurationSchema = Object.freeze({
               name: { type: "string" },
               binaries: {
                 type: "array",
+                minItems: 1,
                 items: {
                   type: "object",
                   additionalProperties: false,
@@ -2243,9 +2284,9 @@ export const configurationSchema = Object.freeze({
                     host: { type: "string" },
                     ports: { type: "array", items: { type: "integer" } },
                     protocol: { type: "string" },
-                    tls: { type: "string" },
-                    enforcement: { type: "string" },
-                    access: { type: "string" },
+                    tls: { type: "string", enum: Object.keys(NETWORK_TLS_MODES) },
+                    enforcement: { type: "string", enum: Object.keys(NETWORK_ENFORCEMENT_MODES) },
+                    access: { type: "string", enum: Object.keys(NETWORK_ACCESS_PRESETS) },
                   },
                 },
               },
@@ -2542,13 +2583,34 @@ function verifyExistingSandbox(
   }
 }
 
-export function validateConfiguration(configuration: unknown): void {
+function checkStartupConfiguration(configuration: unknown): void {
   const options = asRecord(configuration);
   if (options === undefined) {
     throw new OpenShellSandboxConfigurationFailure("OpenShell configuration is required.");
   }
   validateOptions(options as unknown as OpenShellSandboxDriverOptions);
 }
+
+export function validateConfiguration(
+  configuration: Readonly<OpenShellSandboxDriverOptions>,
+): readonly ErrorDetail[] {
+  try {
+    checkStartupConfiguration(configuration);
+    return [];
+  } catch (error) {
+    return error instanceof ConfigurationValidationError
+      ? error.error.details
+      : [
+          {
+            path: "",
+            code: "INVALID_VALUE",
+            message: "Configuration violates the Driver's constraints.",
+          },
+        ];
+  }
+}
+
+export const configurationContributions = Object.freeze([SandboxNetworkPolicyConfiguration]);
 
 export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationSchema = configurationSchema;
@@ -2559,6 +2621,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
+  static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
@@ -2566,12 +2629,14 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private readonly openShellGit: OpenShellGitRuntime | undefined;
   readonly repositoryAccess?: NonNullable<SandboxDriver["repositoryAccess"]>;
 
-  static validateConfiguration(configuration: unknown): void {
-    validateConfiguration(configuration);
+  static validateConfiguration(
+    configuration: Readonly<OpenShellSandboxDriverOptions>,
+  ): readonly ErrorDetail[] {
+    return validateConfiguration(configuration);
   }
 
   constructor(options: OpenShellSandboxDriverOptions, selection: OpenShellSandboxDriverSelection) {
-    validateOptions(options);
+    requireConfiguration(OpenShellSandboxDriver, options);
     this.id = nonempty(selection.id ?? "sandbox-openshell-local", "OpenShell Sandbox Driver ID");
     this.implementation = nonempty(
       selection.implementation ?? "openshell",
@@ -2874,7 +2939,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (context.requirements.workloadIdentity !== undefined) {
       throw new SandboxRevisionUnsupportedError(
         "SANDBOX_HARNESS_UNSUPPORTED",
-        "OpenShell v0.1.4 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
+        "OpenShell v0.1.5 cannot preserve an Agent ServiceAccount and projected identity token; disable ServicePrincipal credentials or select another Sandbox Driver.",
       );
     }
     labels(context.requirements.labels, "Harness workload labels");
@@ -3147,7 +3212,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return result;
   }
 
-  /** Stock 0.1.4 labels the supervisor and workload Pods as one boundary pair. Keep both
+  /** OpenShell labels the supervisor and workload Pods as one boundary pair. Keep both
    * exact Pod UIDs, container IDs and restart counts, not just the aggregate Ready status. */
   private gitContinuity(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
     const { revision } = context;
@@ -3798,7 +3863,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         throw new SandboxNetworkPolicyConflictError(gitRouteOverlapMessage(overlap));
       }
     }
-    openShellAgentNetworkRules(additions);
+    requireConfiguration(SandboxNetworkPolicyConfiguration, { additions });
+    try {
+      openShellAgentNetworkRules(additions);
+    } catch {
+      throw new ConfigurationValidationError([
+        {
+          path: "/additions",
+          code: "INVALID_VALUE",
+          message: "OpenShell cannot represent these network grants.",
+        },
+      ]);
+    }
     if (Object.keys(rules).some((name) => name.startsWith(AGENT_POLICY_PREFIX))) {
       throw new Error("Default policy uses a reserved Agent policy name.");
     }

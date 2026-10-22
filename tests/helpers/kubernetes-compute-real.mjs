@@ -25,6 +25,7 @@ import {
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -62,6 +63,10 @@ export function hash(value, length = 12) {
 }
 
 export async function kubectl(...args) {
+  const answered = await kubectlGetJson({ kubeconfigPath, kubernetesContext }, args);
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute(
     "kubectl",
     ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args],

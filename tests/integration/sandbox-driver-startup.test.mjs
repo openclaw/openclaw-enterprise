@@ -1,4 +1,5 @@
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
@@ -323,11 +324,23 @@ function codexPlugin(appServer) {
   };
 }
 
+const structuralRefusal = (path, keyword, code = "INVALID_VALUE") => [
+  { path, code, message: `Configuration does not satisfy ${keyword}.` },
+];
+
 /** Startup refuses the installation `change` makes to a fresh `base()` with `expected`. */
 async function rejectsAtStartup(t, change, expected, base = sandboxInstallation) {
   const configuration = base();
   change(configuration);
-  await assert.rejects(loadInstallationFile(t, configuration), expected);
+  if (expected instanceof RegExp) {
+    await assert.rejects(loadInstallationFile(t, configuration), expected);
+    return;
+  }
+  await assert.rejects(loadInstallationFile(t, configuration), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.deepEqual(error.error.details, expected);
+    return true;
+  });
 }
 
 /** An installation whose OpenShell Backend dials `endpoint` over a declared NetworkPolicy. */
@@ -627,11 +640,23 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
       (c) => delete c.drivers.credential_gateway,
       /drivers\.credential_refresh requires drivers\.credential_gateway/,
     ],
-    [(c) => (c.drivers.credential_refresh.configuration = { interval: 60 }), /configuration/],
+    [
+      (c) => (c.drivers.credential_refresh.configuration = { interval: 60 }),
+      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
+    ],
   ]) {
     await rejectsAtStartup(t, change, expected, refreshing);
   }
 });
+
+test("startup identifies the rejected Credential Gateway executable", (t) =>
+  rejectsAtStartup(
+    t,
+    (c) => {
+      c.drivers.credential_gateway.configuration.toolBinaries = ["bin/curl"];
+    },
+    structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+  ));
 
 test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
   await rejectsAtStartup(
@@ -648,7 +673,7 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   await rejectsAtStartup(
     t,
     (c) => (c.drivers.sandbox.configuration.gateway.endpoint = "http://127.0.0.1:1"),
-    /OpenShell gateway option endpoint belongs to the openshell Backend/,
+    structuralRefusal("/gateway", "additionalProperties", "UNKNOWN_FIELD"),
   );
 });
 
@@ -2495,8 +2520,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(providerCreate[1].credentials, {});
   assert.deepEqual(providerCreate[1].credentialExpirationTimes, {});
   const runtimeProfile = gatewayClient.profiles.get("oce-codex-runtime").profile;
-  // OpenShell v0.1.4 hashes protobuf maps without canonical ordering. Keeping
-  // ownership and content identity in one entry prevents startup revision churn.
+  // One annotation identifies the owner and the managed content.
   assert.deepEqual(Object.keys(runtimeProfile.annotations), ["openclaw.dev/managed-by"]);
   assert.match(
     runtimeProfile.annotations["openclaw.dev/managed-by"],
@@ -3459,10 +3483,14 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
     },
   };
 
-  await assert.rejects(
-    loadInstallationFile(t, configuration, options),
-    /drivers\.sandbox\.configuration does not match its Driver configuration schema/,
-  );
+  await assert.rejects(loadInstallationFile(t, configuration, options), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.deepEqual(
+      error.error.details,
+      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
+    );
+    return true;
+  });
   assert.equal(invokedFactory, false);
   // Control: the same factory is reached once the configuration is valid.
   await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
@@ -3470,9 +3498,9 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
 });
 
 // Each test below changes settings of a valid installation, and startup refuses each change.
-const TLS_MODE = /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/;
-const LANDLOCK = /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/;
-const READINESS = /OpenShell gateway readiness timeout must be a positive safe integer/;
+const TLS_MODE = structuralRefusal("/policy/networkPolicies/0/endpoints/0/tls", "enum");
+const LANDLOCK = structuralRefusal("/policy/landlockCompatibility", "const");
+
 const sandboxOf = (c) => c.drivers.sandbox.configuration;
 const policiesOf = (c) => sandboxOf(c).policy.networkPolicies;
 const endpointOf = (c) => policiesOf(c)[0].endpoints[0];
@@ -3494,15 +3522,30 @@ test("startup rejects OpenShell network policies without binary identities", (t)
   rejectsAtStartup(
     t,
     (c) => (policiesOf(c)[0].binaries = []),
-    /OpenShell network policy model-egress requires at least one binary path/,
+    structuralRefusal("/policy/networkPolicies/0/binaries", "minItems"),
   ));
 
 test("startup rejects duplicate OpenShell network policy names", async (t) => {
   for (const [name, expected] of [
-    ["model-egress", /OpenShell network policy name model-egress must be unique/],
+    [
+      "model-egress",
+      [
+        {
+          path: "/policy/networkPolicies/1/name",
+          code: "INVALID_VALUE",
+          message: "Network policy names must be unique.",
+        },
+      ],
+    ],
     [
       "workspace-node-enrollment",
-      /OpenShell network policy name workspace-node-enrollment is reserved/,
+      [
+        {
+          path: "/policy/networkPolicies/1/name",
+          code: "INVALID_VALUE",
+          message: "This policy name is reserved for platform networking.",
+        },
+      ],
     ],
   ]) {
     await rejectsAtStartup(t, (c) => policiesOf(c).push({ ...policiesOf(c)[0], name }), expected);
@@ -3510,12 +3553,16 @@ test("startup rejects duplicate OpenShell network policy names", async (t) => {
 });
 
 test("startup rejects inherited OpenShell network enum property names", async (t) => {
-  for (const [field, value, expected] of [
-    ["tls", "toString", /TLS mode must be one of: skip, terminate/],
-    ["enforcement", "constructor", /enforcement mode must be one of: enforce, audit/],
-    ["access", "__proto__", /access preset must be one of: read_only, read_write, full/],
+  for (const [field, value] of [
+    ["tls", "toString"],
+    ["enforcement", "constructor"],
+    ["access", "__proto__"],
   ]) {
-    await rejectsAtStartup(t, (c) => (endpointOf(c)[field] = value), expected);
+    await rejectsAtStartup(
+      t,
+      (c) => (endpointOf(c)[field] = value),
+      structuralRefusal(`/policy/networkPolicies/0/endpoints/0/${field}`, "enum"),
+    );
   }
 });
 
@@ -3526,12 +3573,27 @@ test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", (t
   rejectsAtStartup(
     t,
     (c) => (sandboxOf(c).kubernetes.serviceAccount.mode = "driverConfig"),
-    /OpenShell serviceAccount mode must be gatewayConfigured/,
+    structuralRefusal("/kubernetes/serviceAccount/mode", "const"),
   ));
 
 test("startup rejects an invalid OpenShell gateway readiness wait", async (t) => {
-  for (const readiness of [{ ...readinessWait, timeoutMs: 0 }, { ...readinessWait }]) {
-    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), READINESS);
+  for (const [readiness, expected] of [
+    [
+      { ...readinessWait, timeoutMs: 0 },
+      structuralRefusal("/gateway/readiness/timeoutMs", "minimum"),
+    ],
+    [
+      { ...readinessWait },
+      [
+        {
+          path: "/gateway/readiness/timeoutMs",
+          code: "REQUIRED",
+          message: "This configuration field is required.",
+        },
+      ],
+    ],
+  ]) {
+    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), expected);
   }
 });
 
@@ -3577,8 +3639,15 @@ test("shipped startup names a rejected OpenShell policy without logging its name
     { ...template, name: planted },
   ]);
   const duplicateEvent = diagnostic(duplicate);
-  assert.equal(duplicateEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
-  assert.equal(duplicateEvent.reason, "rename-or-merge");
+  assert.equal(duplicateEvent.code, "DRIVER_CONFIGURATION_INVALID");
+  assert.deepEqual(duplicateEvent.details, [
+    {
+      path: "/policy/networkPolicies/1/name",
+      code: "INVALID_VALUE",
+      message: "Network policy names must be unique.",
+    },
+  ]);
+  assert.equal(duplicateEvent.reason, undefined);
   assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
 
   const reserved = await start([
@@ -3586,8 +3655,15 @@ test("shipped startup names a rejected OpenShell policy without logging its name
     { ...template, name: "workspace-node-enrollment" },
   ]);
   const reservedEvent = diagnostic(reserved);
-  assert.equal(reservedEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
-  assert.equal(reservedEvent.reason, "rename-or-merge");
+  assert.equal(reservedEvent.code, "DRIVER_CONFIGURATION_INVALID");
+  assert.deepEqual(reservedEvent.details, [
+    {
+      path: "/policy/networkPolicies/1/name",
+      code: "INVALID_VALUE",
+      message: "This policy name is reserved for platform networking.",
+    },
+  ]);
+  assert.equal(reservedEvent.reason, undefined);
   assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
 });
 
@@ -4042,7 +4118,14 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
           },
         },
       ),
-    /toolBinaries must be a nonempty list of absolute paths/,
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.deepEqual(
+        error.error.details,
+        structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+      );
+      return true;
+    },
   );
 
   const { calls, context, deletedProfiles, driver, input, profiles, providers } =
@@ -4609,11 +4692,95 @@ test("OpenShell startup admits exactly the endpoints both consumers can parse an
   }
 });
 
+// These codecs test the stock/product boundary, not installed supervisor capabilities.
+test("stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence", async () => {
+  const loader = controllerRequire("@grpc/proto-loader");
+  const options = { keepCase: true, longs: String, enums: String, defaults: false };
+  const stock = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    options,
+  );
+  const product = await loader.load(
+    join(
+      import.meta.dirname,
+      "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+    ),
+    options,
+  );
+  const message = "openshell.v1.ProviderReadinessStatus";
+  const evidence = {
+    state: "PROVIDER_READINESS_STATE_READY",
+    network_instance_id: "network-one",
+    receipt: {
+      provider: "provider-one",
+      workspace: "workspace-one",
+      kind: "PROVIDER_MUTATION_KIND_OBSERVE",
+      desired: { sandbox_id: "sandbox-one", attachment_epoch: "epoch-one" },
+    },
+    observed: {
+      session_id: "session-one",
+      sequence: "1",
+      attachment_epoch: "epoch-one",
+      credentials_installed: true,
+      policy_active: true,
+      launch_environment_installed: true,
+      process_instance_id: "process-one",
+    },
+    observed_time: { seconds: "100" },
+    evaluated_time: { seconds: "101" },
+  };
+  const readinessBytes = product[message].serialize(evidence);
+  assert.deepEqual(product[message].deserialize(readinessBytes), evidence);
+  const stockDecoded = stock[message].deserialize(readinessBytes);
+  assert.equal(stockDecoded.state, evidence.state);
+  assert.equal(stockDecoded.network_instance_id, evidence.network_instance_id);
+  assert.equal(stockDecoded.receipt.provider, evidence.receipt.provider);
+  assert.equal(stockDecoded.receipt.workspace, evidence.receipt.workspace);
+  assert.equal(stockDecoded.receipt.kind, 4, "unknown enum number is not negotiated support");
+  assert.equal(stockDecoded.receipt.desired, undefined);
+  for (const key of ["observed", "observed_time", "evaluated_time"]) {
+    assert.equal(stockDecoded[key], undefined, key);
+  }
+  const received = product[message].deserialize(stock[message].serialize(stockDecoded));
+  assert.equal(received.state, evidence.state);
+  assert.equal(received.network_instance_id, evidence.network_instance_id);
+  assert.equal(received.receipt.provider, evidence.receipt.provider);
+  assert.equal(received.receipt.workspace, evidence.receipt.workspace);
+  assert.equal(received.receipt.desired, undefined);
+  assert.equal(received.observed, undefined);
+  assert.equal(received.observed_time, undefined);
+  assert.equal(received.evaluated_time, undefined);
+  const policyStatus = "openshell.v1.GetSandboxPolicyStatusResponse";
+  const enforcement = {
+    sandbox_id: "sandbox-one",
+    enforced_capabilities: ["test-only-capability"],
+  };
+  const policyEvidence = {
+    active_version: 1,
+    loaded_enforcement: enforcement,
+    loaded_policy_observation: { source_policy_hash: "policy-one", enforcement },
+  };
+  const policyBytes = product[policyStatus].serialize(policyEvidence);
+  assert.deepEqual(product[policyStatus].deserialize(policyBytes), policyEvidence);
+  const stockPolicy = stock[policyStatus].deserialize(policyBytes);
+  assert.deepEqual(stockPolicy, { active_version: 1 });
+  assert.deepEqual(product[policyStatus].deserialize(stock[policyStatus].serialize(stockPolicy)), {
+    active_version: 1,
+  });
+  const spec = "openshell.v1.SandboxSpec";
+  const epoch = { provider_attachment_epoch: "epoch-one" };
+  const specBytes = product[spec].serialize(epoch);
+  assert.deepEqual(product[spec].deserialize(specBytes), epoch);
+  const stockSpec = stock[spec].deserialize(specBytes);
+  assert.deepEqual(stockSpec, {});
+  assert.deepEqual(product[spec].deserialize(stock[spec].serialize(stockSpec)), {});
+});
+
 test("OpenShell startup admits bracketed IPv6 endpoints the native gRPC consumer can reach", async (t) => {
   const grpc = controllerRequire("@grpc/grpc-js");
   const loader = controllerRequire("@grpc/proto-loader");
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
     { keepCase: true, enums: String },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -5467,7 +5634,8 @@ test(
         },
       };
     };
-    // Select the same stock driver through both typed capabilities. No broker configuration,
+    // Select the same driver through both typed capabilities with the extended gateway mock.
+    // This does not establish stock signed-send or live-reduction support. No broker configuration,
     // generic exchange service, issuer call or second Git lifecycle is needed to load it.
     const gitId = configuration.drivers.sandbox.id;
     configuration.backend[0].drivers.credential_proxy = gitId;

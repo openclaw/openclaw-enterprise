@@ -295,7 +295,18 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   configuration.drivers.credential_proxy.id = id;
   configuration.drivers.sandbox.configuration.endpoint = endpoint.replace("https:", "http:");
   await writeFile(path, JSON.stringify(configuration));
-  await assert.rejects(load(), /Fixture peer must use TLS/);
+  await assert.rejects(load(), {
+    name: "ConfigurationValidationError",
+    error: {
+      details: [
+        {
+          path: "",
+          code: "INVALID_VALUE",
+          message: "Fixture peer requires a valid TLS configuration.",
+        },
+      ],
+    },
+  });
   // Direct factory callers retain their object; deferred TLS reads must use the
   // original validated primitives even after mutation or through changing getters.
   trusted = true;
@@ -303,7 +314,7 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   const mutable = { endpoint: boundEndpoint, ca };
   let endpointReads = 0;
   let caReads = 0;
-  const registrations = [
+  for (const candidate of [
     mutable,
     {
       get endpoint() {
@@ -313,31 +324,33 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
         return ++caReads === 1 ? ca : "invalid changed CA";
       },
     },
-  ].map((candidate) => createDriver({ id, implementation: id, configuration: candidate }));
-  mutable.endpoint = `${endpoint}/changed`;
-  mutable.ca = "invalid changed CA";
-  const requestsBefore = requestedPaths.length;
-  try {
-    for (const registration of registrations) {
-      const proxy = registration.capabilities.credential_proxy;
-      assert.ok(proxy);
+  ]) {
+    const before = { ...calls };
+    const registration = createDriver({
+      id,
+      implementation: "release-fixture",
+      configuration: candidate,
+    });
+    assert.deepEqual(calls, { ...before, create: before.create + 1 });
+    mutable.endpoint = `${endpoint}/changed`;
+    mutable.ca = "invalid changed CA";
+    const proxy = registration.capabilities.credential_proxy;
+    assert.ok(proxy);
+    const requestsBefore = requestedPaths.length;
+    try {
       await proxy.sourceControl.assertAvailable(t.signal);
+      assert.deepEqual(requestedPaths.slice(requestsBefore), ["/bound-supervisor"]);
+    } finally {
+      await registration.close?.();
     }
-    assert.deepEqual(requestedPaths.slice(requestsBefore), [
-      "/bound-supervisor",
-      "/bound-supervisor",
-    ]);
-    assert.equal(endpointReads, 1);
-    assert.equal(caReads, 1);
-  } finally {
-    await Promise.all(registrations.map((registration) => registration.close?.()));
   }
+  assert.equal(endpointReads, 1);
+  assert.equal(caReads, 1);
 
   // Direct construction must refuse unsafe targets without waiting for the first request.
   for (const candidate of [
     { endpoint: "https://remote.invalid/supervisor", ca },
     { endpoint: "https://127.1/supervisor", ca },
-    { endpoint: "https://[::1]:443/supervisor", ca },
     { endpoint: "https://127.0.0.1/allow\\changed", ca },
     { endpoint: "https://\\user@127.0.0.1/supervisor", ca },
     { endpoint: "https://127.0.0.1\t@remote.invalid/supervisor", ca },
@@ -347,7 +360,7 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
     const invalid = candidate as Parameters<typeof createDriver>[0]["configuration"];
     assert.throws(
       () => createDriver({ id, implementation: id, configuration: invalid }),
-      /Fixture peer must use TLS with a literal loopback endpoint and string CA/,
+      /Fixture peer requires a valid TLS configuration\./,
     );
   }
 });

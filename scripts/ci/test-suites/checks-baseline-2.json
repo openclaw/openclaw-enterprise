@@ -7,6 +7,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
@@ -23,6 +24,8 @@
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/console-provisioning-request.test.ts",
+    "tests/integration/console-theme.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -100,7 +103,8 @@
     "tests/integration/container-promote.test.mjs",
     "tests/conformance/controller-stop-yields.test.mjs",
     "tests/integration/dev-up-model-provider.test.mjs",
-    "tests/integration/egress-connected-preflight.test.mjs"
+    "tests/integration/egress-connected-preflight.test.mjs",
+    "tests/integration/credential-proxy-configuration.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -304,6 +308,12 @@
       ]
     },
     {
+      "path": "tests/integration/console-provisioning-request.test.ts"
+    },
+    {
+      "path": "tests/integration/console-theme.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
@@ -311,6 +321,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/startup-environment-boundary.test.mjs"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"
@@ -497,6 +510,17 @@
         "connected adversarial wire carries split and nested-JSON material without raw reflection",
         "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
         "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-configuration.test.ts",
+      "expectedTests": [
+        "external fixture factories enforce structured validation before any peer or file access",
+        "external-release-fixture registers its real structured validator and rejects malformed input safely",
+        "external-repository-fixture registers its real structured validator and rejects malformed input safely",
+        "github registers its real structured validator and rejects malformed input safely",
+        "openshell registers its real structured validator and rejects malformed input safely",
+        "OpenShell direct construction and policy rendering still enforce configuration validation"
       ]
     }
   ]

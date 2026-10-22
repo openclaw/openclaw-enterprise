@@ -90,6 +90,7 @@ export async function staticEgressFixture(
   t,
   {
     appFactory = createConsoleAppFixture,
+    driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     protectedSourceOnly = false,
     proxyDriverId = "openshell-egress",
@@ -485,6 +486,15 @@ export async function staticEgressFixture(
     now,
     provisionedPeople: [],
     preparedTokens,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandbox.id,
+        implementation: sandbox.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+      ...driverConfigurations,
+    ],
     preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
     secretDriver,
     computeDriver: {

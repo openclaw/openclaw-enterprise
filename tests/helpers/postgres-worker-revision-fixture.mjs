@@ -11,6 +11,7 @@ import {
   requiresPostgres,
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
+import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
@@ -165,8 +166,9 @@ export function createWorkerRevisionFixtures(
     // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
     // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
     // CI state lock briefly, but a file's first test still waits for that lock while the runner
-    // migrates the files that start with it. Before, each file migrated a template of its own
-    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    // prepares the files that start with it. Those are copies of one migrated lane template
+    // since finding 2178; a migration per file there made a 4 s first test take 10-26 s on CI.
+    // Before that, each file also migrated a template of its own (findings 1209, 1270).
     assert.ok(
       process.env.OCC_TEST_DATABASE_URL,
       "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",
@@ -229,6 +231,7 @@ export function createWorkerRevisionFixtures(
       onProgress,
       metrics,
       repoDriver,
+      driverSelections = {},
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -303,7 +306,13 @@ export function createWorkerRevisionFixtures(
           }),
     };
     const secretDriver = createBackendWorkerDrivers(compute, []).secretDriver;
-    const controller = createBackendController({ installation, state }, { backends: [] });
+    const controller = createBackendController(
+      { installation, state },
+      {
+        backends: [],
+        driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
+      },
+    );
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
     const secretRoleId = `role-${randomUUID()}`;
@@ -691,6 +700,10 @@ export function createWorkerRevisionFixtures(
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
       const drivers = transformDrivers({
         ...configuredDrivers,
+        installation: {
+          ...configuredDrivers.installation,
+          drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
+        },
         secretDriver,
         ...(repoDriver === undefined
           ? {}

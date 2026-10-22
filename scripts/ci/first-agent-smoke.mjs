@@ -48,7 +48,41 @@ export const workDirectory = resolve(
   process.env.OCC_FIRST_AGENT_SMOKE_DIRECTORY ??
     join(process.env.RUNNER_TEMP ?? "/tmp", "first-agent-smoke"),
 );
-const registry = "127.0.0.1:5000";
+// OCC_FIRST_AGENT_SMOKE_SLOT (0-31, default 0) picks this run's host-wide names,
+// port and subnet, so concurrent smokes on one Docker host do not collide.
+// Unset, empty and 0 keep the names CI uses.
+export function smokeSlotNames(value) {
+  value ||= "0";
+  if (!/^(?:0|[1-9][0-9]?)$/.test(value) || Number(value) > 31) {
+    throw new Error(
+      `OCC_FIRST_AGENT_SMOKE_SLOT must be an integer from 0 to 31, got ${JSON.stringify(value)}`,
+    );
+  }
+  const slot = Number(value);
+  if (slot === 0) {
+    return {
+      cluster: "occ-dev-first-agent-smoke",
+      registryContainer: "oce-first-agent-smoke-registry",
+      registry: "127.0.0.1:5000",
+      model: "oce-first-agent-smoke-model",
+      subnet: "11.111.0.0/29",
+      modelAddress: "11.111.0.2",
+      nodeModelAddress: "11.111.0.3",
+    };
+  }
+  const base = 8 * slot;
+  return {
+    cluster: `occ-dev-smoke-s${slot}`,
+    registryContainer: `oce-smoke-s${slot}-registry`,
+    registry: `127.0.0.1:${15000 + slot}`,
+    model: `oce-smoke-s${slot}-model`,
+    subnet: `11.111.0.${base}/29`,
+    modelAddress: `11.111.0.${base + 2}`,
+    nodeModelAddress: `11.111.0.${base + 3}`,
+  };
+}
+const slotNames = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+const registry = slotNames.registry;
 // Pinned like tests/integration/container-registry-real.test.mjs.
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
@@ -58,10 +92,10 @@ const nodeBaseImage =
 // and OpenClaw refuses provider addresses in private or special-use ranges. The
 // stand-in provider therefore uses a globally routable address, reachable only
 // on this host's Docker network; nothing outside the runner is contacted.
-const modelNetwork = { name: "oce-first-agent-smoke-model", subnet: "11.111.0.0/29" };
-const modelAddress = "11.111.0.2";
-const nodeModelAddress = "11.111.0.3";
-export const modelContainer = "oce-first-agent-smoke-model";
+const modelNetwork = { name: slotNames.model, subnet: slotNames.subnet };
+const modelAddress = slotNames.modelAddress;
+const nodeModelAddress = slotNames.nodeModelAddress;
+export const modelContainer = slotNames.model;
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
 // Both stop requests share one serial worker. Per Agent, allow the selected
@@ -314,7 +348,7 @@ async function buildImages({ preparedGit = false } = {}) {
       "run",
       "--detach",
       "--name",
-      "oce-first-agent-smoke-registry",
+      slotNames.registryContainer,
       "--publish",
       `${registry}:5000`,
       registryImage,
@@ -471,7 +505,7 @@ export function createApi(origin, key) {
   };
 }
 
-const clusterName = "occ-dev-first-agent-smoke";
+const clusterName = slotNames.cluster;
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the

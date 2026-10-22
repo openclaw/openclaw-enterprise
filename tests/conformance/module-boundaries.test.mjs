@@ -8,7 +8,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, test } from "node:test";
 import ts from "typescript-compiler-api";
-import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
+import {
+  runModuleBoundaryCli,
+  verifyModuleBoundaries,
+} from "../../scripts/verify-module-boundaries.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
@@ -34,6 +39,29 @@ async function node(args, options) {
   }
 }
 
+// Runs the CLI in this process. Like a child run, it resolves to { stdout, stderr } on exit
+// 0 and otherwise rejects with an error carrying the exit `code`, `stdout` and `stderr`.
+// Real child runs stay where the process matters: exit statuses and stream output in
+// "requires explicit valid policy...", an unreadable policy file, an unknown option,
+// NODE_PATH, and tests that resolve with Node in this process before running the CLI (its
+// resolution caches).
+async function cliInProcess(args) {
+  let stdout = "";
+  let stderr = "";
+  const code = await runModuleBoundaryCli(args, {
+    stdout: { write: (text) => (stdout += text) },
+    stderr: { write: (text) => (stderr += text) },
+  });
+  if (code !== 0) {
+    throw Object.assign(new Error(`module boundary CLI exited with ${code}`), {
+      code,
+      stdout,
+      stderr,
+    });
+  }
+  return { stdout, stderr };
+}
+
 // Awaits a rejected child run, requires exit `code`, and returns the error.
 async function failure(promise, code) {
   let caught;
@@ -43,16 +71,6 @@ async function failure(promise, code) {
   });
   assert.equal(caught.code, code, caught.stderr);
   return caught;
-}
-
-// Awaits every case, then rethrows the first failure, so no case outlives its test.
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
 }
 
 const dynamic = "unresolved-dynamic-import";
@@ -119,7 +137,9 @@ async function workspace(t, overrides = {}) {
       assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
       return { item, exceptions };
     },
-    cli: (extra = [], options) => node([cli, ...args, ...extra], options),
+    cli: (extra = []) => cliInProcess([...args, ...extra]),
+    // A real child, for exit statuses, streams, env and Node's per-process caches.
+    cliProcess: (extra = [], options) => node([cli, ...args, ...extra], options),
     // Installs a workspace package directory at `at`, as a package manager would.
     link: async (path = "packages/library", at = "node_modules/@fixture/library") => {
       await mkdir(dirname(join(root, at)), { recursive: true });
@@ -211,7 +231,7 @@ describe("module boundaries", { concurrency: true }, () => {
         const space = await workspace(t);
         await space.write(path, marker);
         for (const error of await settle(
-          [[], ["--json"]].map((json) => failure(node([cli, ...options(space), ...json]), 2)),
+          [[], ["--json"]].map((json) => failure(cliInProcess([...options(space), ...json]), 2)),
         )) {
           const output = error.stdout + error.stderr;
           assert.match(output, /Invalid JSON/);
@@ -223,7 +243,7 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("uses Node ESM lookup without CommonJS global search paths", async (t) => {
-    const { root, write, cli: verify } = await workspace(t);
+    const { root, write, cliProcess: verify } = await workspace(t);
     const global = join(root, "global-modules");
     await write(
       "global-modules/@fixture/library/package.json",
@@ -741,8 +761,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("rejects symbolic links in configured source roots and their ancestors", async (t) => {
     const { root, write, check } = await workspace(t);
-    const outside = await mkdtemp(join(tmpdir(), "module-outside-"));
-    t.after(() => rm(outside, { recursive: true, force: true }));
+    const outside = await temporaryDirectory(t, "module-outside-");
     await writeFile(join(outside, "outside.mjs"), "export const outside = true;");
     await mkdir(join(outside, "nested"));
     await writeFile(join(outside, "nested", "outside.mjs"), "export const outside = true;");
@@ -760,7 +779,7 @@ describe("module boundaries", { concurrency: true }, () => {
         );
         await write(`policy-${index}.json`, JSON.stringify(invalid));
         const error = await failure(
-          node([cli, "--root", root, "--policy", join(root, `policy-${index}.json`), "--json"]),
+          cliInProcess(["--root", root, "--policy", join(root, `policy-${index}.json`), "--json"]),
           2,
         );
         assert.match(error.stderr, /Source roots cannot traverse symbolic links/);
@@ -1201,7 +1220,7 @@ describe("module boundaries", { concurrency: true }, () => {
       root,
       write,
       link,
-      cli: verify,
+      cliProcess: verify,
     } = await workspace(t, {
       packages: ["apps/app", "packages/legacy", "packages/outside"],
       sourceRoots: ["apps/app/src", "packages/legacy/src"],
@@ -2016,22 +2035,33 @@ describe("module boundaries", { concurrency: true }, () => {
   });
 
   test("requires explicit valid policy and reports CLI success, violations and configuration failures", async (t) => {
-    const { root, write, check, args, cli: verify } = await workspace(t, { diagnosticLimit: 1 });
-    const passed = await verify(["--json"]);
+    const {
+      root,
+      write,
+      check,
+      args,
+      cli: verify,
+      cliProcess,
+    } = await workspace(t, {
+      diagnosticLimit: 1,
+    });
+    // Success and violations through a real child: its exit status and output streams.
+    const passed = await cliProcess(["--json"]);
     assert.equal(passed.stderr, "");
     assert.deepEqual(JSON.parse(passed.stdout), await check());
     await write("apps/app/src/invalid.mjs", 'import "./missing-a.mjs"; import "./missing-b.mjs";');
     await write("malformed.json", "{");
     await write("invalid.json", JSON.stringify({ ...policy, diagnosticLimit: 0 }));
     const [text, json, ...configuration] = await settle([
-      failure(verify(), 1),
+      failure(cliProcess(), 1),
       failure(verify(["--json"]), 1),
       ...[
         ["--root", root],
         ["--root", root, "--policy", join(root, "malformed.json")],
         ["--root", root, "--policy", join(root, "invalid.json")],
-        [...args, "--unknown"],
-      ].map((options) => failure(node([cli, ...options]), 2)),
+      ].map((options) => failure(cliInProcess(options), 2)),
+      // A configuration failure without an error code, through a real child.
+      failure(node([cli, ...args, "--unknown"]), 2),
     ]);
     assert.match(text.stderr, /1 additional violations/);
     assert.equal(

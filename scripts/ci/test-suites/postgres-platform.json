@@ -70,7 +70,7 @@
     {
       "path": "tests/integration/postgres-bootstrap-failures.test.mjs",
       "expectedTests": [
-        "concurrent development bootstrap subprocesses reject the loser and reload the committed winner",
+        "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
         "fresh production bootstrap refuses either retained credential output before creating credentials",
         "known bootstrap failures preserve created artifacts and report safe diagnostics",
@@ -389,6 +389,8 @@
     {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
       "expectedTests": [
+        "policy admission cannot acquire grants from a Driver snapshot",
+        "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]

@@ -23,7 +23,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
+const profileTestDigest = "sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -314,9 +314,9 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 			// Fixed source pins guard the released default; candidate digests deliberately
 			// differ from the containerd manifests returned by the import fixture.
 			sources := []string{
-				"ghcr.io/nvidia/openshell/gateway:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8",
-				"ghcr.io/nvidia/openshell/sandbox:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070",
-				"ghcr.io/nvidia/openshell/supervisor:5a7728c304b5528e954e9ae900cf21f84e1a12b1@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290",
+				"ghcr.io/nvidia/openshell/gateway:0.1.5@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6",
+				"ghcr.io/nvidia/openshell/sandbox:0.1.5@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851",
+				"ghcr.io/nvidia/openshell/supervisor:0.1.5@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161",
 			}
 			selection := candidateOpenShellEnvironment()
 			if candidate {
@@ -393,6 +393,8 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 				"--set=supervisor.image.pullPolicy=Never",
 				"--set=workspaceResources.enabled=false",
 				"--set=server.drivers.kubernetes.allowDriverConfig=true",
+				// Harness labels must remain admitted for both image selections.
+				openShellAllowedPodLabelsValue,
 				"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 				"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 				"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",
@@ -873,6 +875,65 @@ func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
 					}
 				}
 				t.Fatalf("rendered API must receive Console origin %s", test.origin)
+			}
+		})
+	}
+}
+
+func TestKubernetesOnlyPostgresReadinessUsesSelectedDatabaseOverLoopback(t *testing.T) {
+	for _, selected := range []string{"", "openclaw_k8s_readiness_2487"} {
+		t.Run("database="+selected, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", t.TempDir())
+			commands := fakeProfileCommands(t, map[string]string{
+				"kubectl": `"apply -f "*) ;;
+` + controlPlaneKubectlCases,
+				"docker": controlPlaneNetworkCase,
+				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+			})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+			delete(r.env, "OCC_DEVELOPMENT_DATABASE_NAME")
+			want := "openclaw_enterprise"
+			if selected != "" {
+				r.env["OCC_DEVELOPMENT_DATABASE_NAME"] = selected
+				want = selected
+			}
+			var err error
+			state.DatabaseName, err = r.selectedDevelopmentDatabase("kubernetes")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Installation must honor the original selection saved by upK3d.
+			r.env["OCC_DEVELOPMENT_DATABASE_NAME"] = "openclaw_k8s_later_selection"
+			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, developmentPostgres, false, time.Minute); err != nil {
+				t.Fatalf("%v\n%v", err, commands())
+			}
+			postgres := readJSONFile(t, filepath.Join(state.directory, "postgres.json"))
+			container := postgres["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+			probe := container["readinessProbe"].(map[string]any)
+			if !reflect.DeepEqual(probe, jsonValue(t, map[string]any{
+				"exec":                map[string]any{"command": []string{"pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", want}},
+				"initialDelaySeconds": 2, "periodSeconds": 2,
+			})) {
+				t.Fatalf("readiness must use loopback TCP and the original database: %#v", probe)
+			}
+			if !reflect.DeepEqual(container["env"].([]any)[0], jsonValue(t, map[string]string{"name": "POSTGRES_DB", "value": want})) {
+				t.Fatal("PostgreSQL database differs from readiness database")
+			}
+			bootstrap := readJSONFile(t, filepath.Join(state.directory, "postgres-bootstrap.json"))
+			if !strings.Contains(bootstrap["stringData"].(map[string]any)["init.sql"].(string), "GRANT CREATE ON DATABASE "+want+" TO occ_migrator;") {
+				t.Fatal("bootstrap SQL uses a different database")
+			}
+			secrets := readJSONFile(t, filepath.Join(state.directory, "oce-secrets.json"))
+			database := secrets["items"].([]any)[1].(map[string]any)["stringData"].(map[string]any)
+			for _, key := range []string{"application-url", "migration-url"} {
+				if !strings.HasSuffix(database[key].(string), "@postgres.oce-system.svc.cluster.local:5432/"+want) {
+					t.Fatalf("%s uses a different database", key)
+				}
 			}
 		})
 	}

@@ -1,3 +1,4 @@
+import type { InstallationStartupConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
 import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -24,10 +25,14 @@ export async function standingExecutionFixture(
     credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
     modelConfig?: { base_url: string };
     activePredecessor?: boolean;
-    requestedBinding?: { repositoryRef: string; profile: "github-installation" };
+    requestedBinding?: {
+      repositoryRef: string;
+      profile: "github-installation";
+    };
   }>,
+  driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
 ) {
-  const f = await standingExecutionPlatform(t, testUrl);
+  const f = await standingExecutionPlatform(t, testUrl, driverSelections);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
   const registry =
     external?.registry ??
@@ -84,6 +89,8 @@ export async function standingExecutionFixture(
           ...d,
           credentialGatewayDriver: external!.credentialGateway,
           protectedDriver: external!.protectedDriver,
+          sandboxDriver: external!.protectedDriver?.require("sandbox"),
+          proxyDriver: external!.protectedDriver?.require("credential_proxy"),
           installation: {
             ...d.installation,
             drivers: {
@@ -99,7 +106,10 @@ export async function standingExecutionFixture(
     }
   }
   const bindings = [
-    external?.requestedBinding ?? { repositoryRef: "source", profile: "git-write" },
+    external?.requestedBinding ?? {
+      repositoryRef: "source",
+      profile: "git-write",
+    },
   ];
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
@@ -110,7 +120,10 @@ export async function standingExecutionFixture(
     JSON.stringify(bindings),
     owner.id,
   ]);
-  const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;
+  const scope = driver.standingApprovalScope({
+    namespaceId: f.namespace.id,
+    binding,
+  })!;
   const fingerprint = repositoryApprovalFingerprint({
     namespaceId: f.namespace.id,
     agentId: owner.id,
@@ -137,7 +150,10 @@ export async function standingExecutionFixture(
     standingApprovalGeneration: approval.generation,
     standingApprovalScopeFingerprint: fingerprint,
   };
-  const revisionOptions = { actorId: f.actor.id, repositoryCredentials: credentials };
+  const revisionOptions = {
+    actorId: f.actor.id,
+    repositoryCredentials: credentials,
+  };
   if (external?.protectedDriver && external.credentialGateway) {
     const gateway = external.credentialGateway;
     f.controller.installDriver(external.protectedDriver, ["sandbox", "credential_proxy"]);
@@ -146,9 +162,15 @@ export async function standingExecutionFixture(
   }
   const revision = (await f.revision(owner, predecessor ? 2 : 1, {
     ...revisionOptions,
-    ...(external?.protectedDriver && { protectedRepositoryDriver: external.protectedDriver }),
+    ...(external?.protectedDriver && {
+      protectedRepositoryDriver: external.protectedDriver,
+    }),
   })) as AgentRevision;
-  const key = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
+  const key = {
+    namespaceId: f.namespace.id,
+    agentId: owner.id,
+    revisionId: revision.id,
+  };
   if (!external) {
     await f.state.transact((u) =>
       u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
@@ -169,12 +191,20 @@ export async function standingExecutionFixture(
   };
 }
 
-export async function standingExecutionPlatform(t: TestContext, testUrl: string) {
+export async function standingExecutionPlatform(
+  t: TestContext,
+  testUrl: string,
+  driverSelections: Partial<InstallationStartupConfiguration["drivers"]> = {},
+) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
     authSecret: "standing-execution-local-test-secret-32",
   });
-  const database = { url: databaseUrl!, pools: new Set<Pool>(), workers: new Set() };
+  const database = {
+    url: databaseUrl!,
+    pools: new Set<Pool>(),
+    workers: new Set(),
+  };
   t.after(async () => {
     for (const pool of database.pools) {
       if (!("ending" in pool && pool.ending)) {
@@ -182,6 +212,6 @@ export async function standingExecutionPlatform(t: TestContext, testUrl: string)
       }
     }
   });
-  const setupOptions = { database, leaseDurationMs: 30_000 };
+  const setupOptions = { database, leaseDurationMs: 30_000, driverSelections };
   return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

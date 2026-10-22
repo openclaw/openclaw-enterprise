@@ -204,6 +204,8 @@ const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.fr
   INVALID_VALUE: "has an unsupported value",
   TOO_LONG: "is too long",
   TOO_DEEP: "is nested too deeply",
+  INVALID_RANGE: "has an invalid range",
+  OUTSIDE_CEILING: "exceeds the delegation ceiling",
 });
 
 // A path that lost segments to the cap names an ancestor of the offending field, which may
@@ -216,6 +218,8 @@ const SHORTENED_PATH_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = O
   INVALID_VALUE: "contains a field that has an unsupported value",
   TOO_LONG: "contains a field that is too long",
   TOO_DEEP: "contains a field that is nested too deeply",
+  INVALID_RANGE: "contains an invalid range",
+  OUTSIDE_CEILING: "contains a grant exceeding the delegation ceiling",
 });
 
 // The error contract caps messages at 256 characters.
@@ -824,7 +828,7 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(409, "SANDBOX_POLICY_PROTECTED_EXECUTION", error.message);
   }
   if (error instanceof ResourceStateConflictError) {
-    return failure(409, "RESOURCE_CONFLICT", error.message);
+    return failure(409, "RESOURCE_CONFLICT", error.message, error.details);
   }
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");

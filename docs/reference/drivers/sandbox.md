@@ -87,6 +87,17 @@ restart). A first start is plain `starting`. Diagnostics report a restarting
 Harness as a failed `sandbox` check. Only Sandboxes created before that policy
 existed report `HARNESS_EXITED`.
 
+### Harness Sandbox status
+
+`GET /namespaces/:namespaceId/agents/:agentId/harness-status` requires Agent
+`read`. For a running Agent whose selected version has a dedicated Harness
+Sandbox, OCC calls `observeHarness` on each request and answers `observed` with
+that `revisionId` and its `harness` state. Otherwise it answers `unobserved`.
+`lost` means that the Sandbox does not serve the version, for example after a
+node restart stopped it. OCC does not restart it: deploy a new version. A record
+that OCC cannot read is `unknown`, never `lost`. `occ agent get` and the
+Console's **Live serving** show this status; Agent lists do not.
+
 ### Containment facets
 
 | Facet        | What the Driver enforces                                                           |
@@ -135,7 +146,12 @@ retirement must find the provider resource even if that Pod is already gone.
 
 ## Optional network policy operations
 
-`networkPolicy` declares `wildcards`, `portRanges`, and `live` support.
+`networkPolicy` declares `wildcards`, `portRanges`, and `live` support. An
+implementation advertising it must declare the configuration contribution
+`{ scope: "agent", key: "sandbox-network-policy" }` for `{ additions }`, using the
+[shared definition contract](selection.md#configuration-definitions-and-discovery).
+OCC resolves it through the registry before admission. Expected provider refusals
+throw the shared `ConfigurationValidationError` with safe `error.details`.
 `admitNetworkPolicy(additions, version, defaults?, scope?)` validates every requested
 constraint and returns a detached snapshot of Driver identity, version, defaults,
 and additions. The snapshot is consumed by provisioning; changed startup defaults

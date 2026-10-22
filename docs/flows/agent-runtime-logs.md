@@ -196,7 +196,7 @@ reject reserved `content`. Container headers label `instance` without Pods. Cons
 take `-previous.log` from the request; current and Sandbox names stay unchanged.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
-`console/agents/logs.mjs` clears output when status selects another source, Pod or instance.
+`console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
 Filters use loaded rows; debug is opt-in. Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 

@@ -272,7 +272,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 - [API integration](../../tests/integration/credential-source-api.test.mjs) covers Fastify,
   IAM, OCC and the OpenShell Driver; storage and Compute are doubles.
 - [Wire conformance](../../tests/conformance/openshell-gateway-wire.test.mjs) checks provider,
-  profile, update, detach and recheck RPCs against the `v0.1.4` fixture.
+  profile, update, detach and recheck RPCs against the `v0.1.5` fixture.
 - [Worker integration](../../tests/integration/postgres-worker-agent-revision.test.mjs)
   exercises withdrawals, retries, replays and late creates with PostgreSQL and a Compute double.
 - [Real OpenShell cases](../testing/openshell.md#openshell-sandbox) register, inspect, update

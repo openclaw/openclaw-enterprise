@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import { createDriver as releaseDriver } from "./index.ts";
 import type {
   DriverRegistration,
+  ErrorDetail,
   EgressInstallation,
   ProtectedRepositoryGitAuthority as Authority,
   ProtectedRepositoryGitMaterial as Material,
@@ -132,11 +133,71 @@ type Config = {
   policyReduction?: boolean;
   controlSecretFile?: string;
 };
-export function validateConfiguration({ origin }: Config) {
-  const { protocol, hostname, origin: expectedOrigin } = new URL(origin);
-  assert.equal(protocol, "https:");
-  assert.equal(hostname, "127.0.0.1", "fixture Git must never leave loopback");
-  assert.equal(origin, expectedOrigin, "expected an origin without a path");
+export function validateConfiguration(config: Readonly<Config>): readonly ErrorDetail[] {
+  try {
+    if (
+      !config ||
+      typeof config !== "object" ||
+      Array.isArray(config) ||
+      Object.keys(config).some(
+        (key) =>
+          ![
+            "origin",
+            "certFile",
+            "peerOrigin",
+            "capabilityOrigin",
+            "releaseKey",
+            "installationApiOrigin",
+            "policyReduction",
+            "controlSecretFile",
+          ].includes(key),
+      ) ||
+      [
+        config.origin,
+        config.certFile,
+        config.peerOrigin,
+        config.capabilityOrigin,
+        config.releaseKey,
+      ].some((value) => typeof value !== "string") ||
+      (config.installationApiOrigin !== undefined &&
+        typeof config.installationApiOrigin !== "string") ||
+      (config.controlSecretFile !== undefined && typeof config.controlSecretFile !== "string") ||
+      (config.policyReduction !== undefined && typeof config.policyReduction !== "boolean")
+    ) {
+      throw new Error("Invalid fixture configuration");
+    }
+    for (const origin of [
+      config.origin,
+      config.peerOrigin,
+      config.capabilityOrigin,
+      config.installationApiOrigin,
+    ]) {
+      if (origin === undefined) {
+        continue;
+      }
+      const parsed = new URL(origin);
+      if (
+        parsed.protocol !== "https:" ||
+        parsed.hostname !== "127.0.0.1" ||
+        parsed.origin !== origin
+      ) {
+        throw new Error("Invalid fixture origin");
+      }
+    }
+    if (config.capabilityOrigin === config.peerOrigin) {
+      throw new Error("Invalid fixture scope");
+    }
+    return [];
+  } catch {
+    return [
+      {
+        path: "",
+        code: "INVALID_VALUE",
+        message:
+          "Protected Git fixture requires distinct, exact loopback TLS origins and valid configuration.",
+      },
+    ];
+  }
 }
 
 // The test has the workload's credential-free endpoint and can drive ordinary installer work.
@@ -192,11 +253,12 @@ export function createDriver(options: {
   configuration: Config;
 }): DriverRegistration {
   const config = options.configuration;
-  validateConfiguration(config);
-  const { origin, installationApiOrigin } = config;
-  if (installationApiOrigin) {
-    validateConfiguration({ ...config, origin: installationApiOrigin });
+  if (validateConfiguration(config).length > 0) {
+    throw new Error(
+      "Protected Git fixture requires distinct, exact loopback TLS origins and valid configuration.",
+    );
   }
+  const { origin, installationApiOrigin } = config;
   const base = releaseDriver({
     ...options,
     configuration: { endpoint: origin, ca: "unused" },
@@ -220,13 +282,6 @@ export function createDriver(options: {
     loseReply: false,
     hideObservation: false,
   };
-  validateConfiguration({ ...config, origin: config.peerOrigin });
-  validateConfiguration({ ...config, origin: config.capabilityOrigin });
-  assert.notEqual(
-    config.capabilityOrigin,
-    config.peerOrigin,
-    "capability and protected listeners must differ",
-  );
   const capabilityUrl = new URL("/capability", config.capabilityOrigin);
   const url = new URL(config.peerOrigin);
   const ca = readFileSync(config.certFile);

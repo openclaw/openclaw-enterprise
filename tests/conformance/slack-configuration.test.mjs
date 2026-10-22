@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { slack } from "../../apps/controller/src/console/channels/slack.mjs";
+import { slack } from "../../apps/controller/src/console/channels/slack.mts";
 import { missingChannelCredentialGroups } from "../../apps/controller/src/console/agents/credentials.mjs";
 
 // These are form inputs, not a replacement for configuration or threading logic.

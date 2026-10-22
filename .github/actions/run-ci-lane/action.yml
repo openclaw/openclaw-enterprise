@@ -130,9 +130,9 @@ runs:
       shell: bash
       run: pnpm cli:check && pnpm cli:test
     - name: Typecheck and build workspace output
-      # Build workspace output, then check the test TypeScript project.
-      # Some part 2 tests read apps/controller/dist. CI Impact includes this
-      # lane for TypeScript test changes; helper and source changes run full CI.
+      # This one compiler run builds the workspace (some part 2 tests read
+      # apps/controller/dist) and checks TypeScript tests without emitting them.
+      # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
       run: pnpm typecheck
@@ -140,6 +140,14 @@ runs:
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
+    - name: Precompile controller route schemas
+      # Most of these lanes' test files build the API in process. Each build then loads the
+      # route validators and serializers from apps/controller/dist/route-compilers.cjs instead
+      # of compiling every schema (http/route-compilers.ts). Other lanes build too few apps
+      # to repay the 2-4 CPU-s it takes.
+      if: inputs.lane == 'checks-baseline-1' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'postgres-auth' || inputs.lane == 'postgres-platform'
+      shell: bash
+      run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
       if: startsWith(inputs.lane, 'k3d-observability') && runner.environment == 'github-hosted'
       shell: bash

@@ -18,6 +18,7 @@ test(
     await fixture.start();
     assert.deepEqual(await fixture.open(admissionId, false, true), { error: "unavailable" });
     assert.deepEqual(fixture.github.tokenState(), []);
+    assert.deepEqual(fixture.github.trace, [], "denied admissions must not contact the provider");
     assert.deepEqual(fixture.github.errors, []);
   },
 );

@@ -22,6 +22,7 @@ import {
   reduceCredentialPolicy,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import type { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
@@ -41,6 +42,14 @@ test(
     let reductionVersion: 1 | 2 = 1;
     const fixtureOptions = {
       admitRevision: false,
+      driverConfigurations: [
+        {
+          capability: "sandbox" as const,
+          driverId: "policy-reduction-fixture",
+          implementation: "policy-reduction-fixture",
+          definition: OpenShellSandboxDriver,
+        },
+      ],
       appFactory: async (context: TestContext, options: object = {}) => {
         const app = await postgresApp(context, options);
         api = app.request;

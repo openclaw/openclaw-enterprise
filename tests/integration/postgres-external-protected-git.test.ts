@@ -201,7 +201,18 @@ test("production composition separates repository policy from protected and expl
         configuration: { sessionDurationSeconds: 180, controlSocket: "/unselected/control.sock" },
       },
     }),
-    /repository.configuration.*controlSocket/,
+    {
+      name: "ConfigurationValidationError",
+      error: {
+        details: [
+          {
+            path: "",
+            code: "UNKNOWN_FIELD",
+            message: "Configuration does not satisfy additionalProperties.",
+          },
+        ],
+      },
+    },
   );
   await assert.rejects(
     load({
@@ -250,7 +261,7 @@ test("production composition separates repository policy from protected and expl
   });
   assert.ok(native.nativeRepositorySender);
   assert.equal(native.repositoryGitDriver, undefined);
-  assert.equal(native.installation.drivers.repo, undefined);
+  assert.equal(Object.hasOwn(native.installation.drivers, "repo"), false);
   assert.deepEqual(
     native.repositoryPolicy!.resolve({
       namespaceId,
@@ -423,18 +434,16 @@ function externalGitJourney(
     let modelCustody: ComputeRevisionContext | undefined;
     let modelClient: Awaited<ReturnType<typeof gitExpiryGateway>>["client"];
     const modelSourceId = "cs_" + randomUUID();
+    const modelGatewayConfiguration = { binaries: [codex!] };
     const modelGateway = conversation
-      ? new OpenShellCredentialGatewayDriver(
-          { binaries: [codex!] },
-          {
+      ? new OpenShellCredentialGatewayDriver(modelGatewayConfiguration, {
+          id: "external-journey-model",
+          backend: {
             id: "external-journey-model",
-            backend: {
-              id: "external-journey-model",
-              drivers: { credential_gateway: "external-journey-model" },
-              client: { placement: () => undefined, clientForNamespace: () => modelClient },
-            } as never,
-          },
-        )
+            drivers: { credential_gateway: "external-journey-model" },
+            client: { placement: () => undefined, clientForNamespace: () => modelClient },
+          } as never,
+        })
       : undefined;
     if (modelGateway && conversation) {
       // A ready gateway-held model source is the same state ordinary registration commits.
@@ -522,7 +531,8 @@ function externalGitJourney(
               credential_gateway: {
                 id: modelGateway.id,
                 implementation: modelGateway.implementation,
-                configuration: {},
+                configuration: modelGatewayConfiguration,
+                definition: OpenShellCredentialGatewayDriver,
               },
             },
           },
@@ -531,7 +541,7 @@ function externalGitJourney(
     const { repositoryOwner, repositoryRegistry, repositoryGitDriver: owner } = drivers;
     assert.ok(owner && repositoryOwner && repositoryRegistry && drivers.preparedRepositoryGit);
     assert.equal(repositoryOwner.controlSocket, undefined);
-    assert.equal(drivers.installation.drivers.repo, undefined);
+    assert.equal(Object.hasOwn(drivers.installation.drivers, "repo"), false);
     assert.equal(drivers.nativeRepositorySender, undefined);
     assert.equal("open" in drivers.repositoryPolicy!, false);
     assert.equal(drivers.repositoryTransport, undefined);

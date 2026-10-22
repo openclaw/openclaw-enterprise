@@ -1,3 +1,4 @@
+import { DriverConfigurationDescriptorSchema } from "./driver-configurations.ts";
 import { Type } from "typebox";
 import { AgentId, NamespaceId, RevisionId, Meta } from "./common.ts";
 import { SandboxNetworkGrantSchema, SandboxNetworkGrantsSchema } from "../sandbox-policy.ts";
@@ -64,6 +65,7 @@ export const SandboxPolicyViewResponse = Type.Object(
     data: Type.Object(
       {
         policy: SandboxPolicySchema,
+        configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
         protectedExecution: Type.Boolean({
           description:
@@ -86,8 +88,14 @@ export const SandboxPolicyViewResponse = Type.Object(
   },
   { additionalProperties: false },
 );
+export type SandboxPolicyViewWire = Type.Static<typeof SandboxPolicyViewResponse>["data"];
+
 export const SandboxPolicyUpdateBody = Type.Object(
   { expectedVersion: SandboxPolicyVersion, additions: SandboxNetworkGrantsSchema },
+  { additionalProperties: false },
+);
+export const SandboxPolicyValidateBody = Type.Object(
+  { expectedVersion: SandboxPolicyVersion, additions: Type.Unknown() },
   { additionalProperties: false },
 );
 export const SandboxPolicyApplyBody = Type.Object(

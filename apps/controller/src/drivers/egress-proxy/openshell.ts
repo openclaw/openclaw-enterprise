@@ -2,9 +2,10 @@ import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
 import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
-import { repositoryGitDeliveryProfile } from "@openclaw-enterprise/contracts";
+import { repositoryGitDeliveryProfile, requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   CredentialProviderDefinition,
+  ErrorDetail,
   RepositoryGitDeliveryProfile,
 } from "@openclaw-enterprise/contracts";
 import { credentialFreeMetadataProvider } from "./github-metadata.ts";
@@ -167,7 +168,7 @@ export function openShellEgressConfiguration(
   if (new Set(plan.routes.map((route) => route.binding.binding.id)).size > 1) {
     throw new Error("The protected execution permits at most one binding.");
   }
-  OpenShellCredentialProxyDriver.validateConfiguration(options);
+  requireConfiguration(OpenShellCredentialProxyDriver, options);
   const hosts = [...new Set(plan.routes.map((route) => new URL(route.origin).hostname))];
   // Keep the authority installed for a zero-route plan. The selector names no
   // reachable rule: network_policies below remains empty, never a wildcard.
@@ -252,7 +253,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     },
   };
 
-  static validateConfiguration(configuration: unknown): void {
+  static validateConfiguration(configuration: unknown): readonly ErrorDetail[] {
     const value = asRecord(configuration);
     if (
       !value ||
@@ -272,8 +273,15 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
           !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(value.observedHookPreviewWorkspace))) ||
       value.authorityScope !== "execution"
     ) {
-      throw new Error("Invalid protected OpenShell egress configuration.");
+      return [
+        {
+          path: "",
+          code: "INVALID_VALUE",
+          message: "Invalid protected OpenShell egress configuration.",
+        },
+      ];
     }
+    return [];
   }
 
   constructor(
@@ -288,7 +296,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
   ) {
-    OpenShellCredentialProxyDriver.validateConfiguration(options);
+    requireConfiguration(OpenShellCredentialProxyDriver, options);
     if (selection.sandbox.harnessResource === undefined) {
       throw new Error("Invalid protected OpenShell egress configuration.");
     }

@@ -1,3 +1,4 @@
+import type { SelectedDriverConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { driverHasCapabilityContract } from "../../packages/occ/src/driver-contract.ts";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
@@ -142,16 +143,30 @@ export function protectedRepositoryGitRelease(
       client: { clientForNamespace: () => client },
     } as never,
   });
-  Object.defineProperty(proxy, "implementation", { value: sandbox.implementation });
+  Object.defineProperty(proxy, "implementation", {
+    value: sandbox.implementation,
+  });
   assert.equal(driverHasCapabilityContract(sandbox), true, "sandbox contract");
   assert.equal(driverHasCapabilityContract(proxy), true, "proxy contract");
-  const owner = new InstalledDriver(
-    { id, implementation: sandbox.implementation, configuration: opts },
-    { capabilities: { sandbox, credential_proxy: proxy } },
-  );
+  // This fixture owns proxy startup options and the real Sandbox agent-policy contract.
+  // Keep the definition with its selected identity for both API and worker composition.
+  const sandboxConfiguration: SelectedDriverConfiguration = {
+    id,
+    implementation: sandbox.implementation,
+    configuration: opts,
+    definition: {
+      configurationSchema: OpenShellCredentialProxyDriver.configurationSchema,
+      validateConfiguration: (input) => OpenShellCredentialProxyDriver.validateConfiguration(input),
+      configurationContributions: OpenShellSandboxDriver.configurationContributions,
+    },
+  };
+  const owner = new InstalledDriver(sandboxConfiguration, {
+    capabilities: { sandbox, credential_proxy: proxy },
+  });
   const release = new ProtectedExecutionDriver(owner);
   return {
     owner,
+    sandboxConfiguration,
     publicKey: computeReleasePublicKey(privateKey),
     async releaseStartup(startupId: string, custody: ComputeRevisionContext) {
       return signComputeExecutionRelease(

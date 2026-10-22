@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: 2026-10-16
-last_updated_session: authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272
+updated: 2026-10-22
+last_updated_session: 01a162e5-0e51-7b41-915c-00017912b787
 ---
 
 # Credential source refresh Flow
@@ -132,12 +132,21 @@ marks the source `ready` with its audit event.
 `packages/occ/src/index.ts:startAgentDeviceAuthorization`,
 `pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
 
-A type declaring `deviceAuthorization.harnessId` registers an empty provider and
-defers the first mint. OCC selects the paired Refresh Driver's start/poll hooks,
-storing only its opaque handle plus actor, source, Gateway ID, and Refresh ID in
-the login-session Secret. Compare-and-swap permits one poll; OCC rechecks scope
-and both Driver selections before accepting completion. An uncertain exchange
-closes the handle without removing the source or replaying its grant.
+For a type declaring `deviceAuthorization.harnessId`, OCC registers the empty
+source before asking the paired Refresh Driver to start device login. It then
+stores the opaque handle, actor, source, and Driver IDs in the session Secret.
+The HTTP handler in `apps/controller/src/index.ts` records the successful start
+before sending the session reference. The audit event identifies the Agent or
+Namespace, not the session Secret.
+
+`apps/controller/src/console/agents/device-login.mts:createDeviceLogin` keeps
+`start_unconfirmed` in the form draft if the start has no response status or its
+successful response is unusable. The form blocks another start. Without a
+confirmed session reference, it also cannot poll or cancel. See
+[interrupted sign-in recovery](../guides/deploy/credential-lifecycle.md#recover-an-interrupted-codex-sign-in).
+For a known session, compare-and-swap permits one poll at a time. OCC rechecks scope and
+both Driver selections before accepting completion. An uncertain exchange closes
+the handle without removing the source or repeating the exchange.
 
 `apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
 starts the issuer request from the API Pods. The start, poll, and token-exchange
@@ -299,6 +308,8 @@ own their detached warm reads. Clearing a local buffer does not revoke a provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 09:48: Distinguish a start the Console cannot confirm from an uncertain exchange on a known session. (01a162e5-0e51-7b41-915c-00017912b787 - 9a6b9c3e69a9fce4a859d70307257c0319fbdfda)
 
 - 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from background GitHub App preparation. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 

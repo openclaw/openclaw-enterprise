@@ -2,6 +2,7 @@ import type { RepositoryGitDeliveryResolver } from "../credentials/delivery.ts";
 import { hasControlCharacter } from "../credentials/client-contracts.ts";
 import type {
   Backend,
+  ErrorDetail,
   JSONSchema,
   RepositoryPolicyDriver,
   RepositoryBindingRequest,
@@ -33,19 +34,28 @@ export class GitHubRepositoryPolicy implements RepositoryPolicyDriver {
       },
     },
   };
-  static validateConfiguration(configuration: unknown): void {
-    const value = configuration as Record<string, unknown> | null;
+  static validateConfiguration(configuration: unknown): readonly ErrorDetail[] {
+    const value = configuration;
     if (
       !value ||
       typeof value !== "object" ||
       Array.isArray(value) ||
       Object.keys(value).some((key) => key !== "sessionDurationSeconds") ||
+      !("sessionDurationSeconds" in value) ||
+      typeof value.sessionDurationSeconds !== "number" ||
       !Number.isSafeInteger(value.sessionDurationSeconds) ||
-      (value.sessionDurationSeconds as number) < 1 ||
-      (value.sessionDurationSeconds as number) > Math.floor(Number.MAX_SAFE_INTEGER / 1000)
+      value.sessionDurationSeconds < 1 ||
+      value.sessionDurationSeconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000)
     ) {
-      throw new Error("Repository policy configuration is invalid.");
+      return [
+        {
+          path: "",
+          code: "INVALID_VALUE",
+          message: "Repository policy configuration is invalid.",
+        },
+      ];
     }
+    return [];
   }
   readonly capability = "repo" as const;
   readonly implementation = "github";

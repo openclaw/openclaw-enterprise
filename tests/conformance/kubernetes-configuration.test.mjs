@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test, { mock } from "node:test";
@@ -141,7 +145,7 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
   assert.equal(schema.additionalProperties, false);
   assert.deepEqual(schema.required, ["authentication"]);
   assert.doesNotThrow(() =>
-    KubernetesConfigurationDriver.validateConfiguration({ authentication: { mode: "inCluster" } }),
+    requireConfiguration(KubernetesConfigurationDriver, { authentication: { mode: "inCluster" } }),
   );
 
   const injected = /Injected clients and unknown Kubernetes configuration options/;
@@ -179,15 +183,25 @@ test("Kubernetes configuration implementations expose a closed preconstruction s
     [{ authentication: { mode: "inCluster" }, token: "not-allowed" }, injected],
     [{ authentication: { mode: "inCluster" }, clients: {} }, injected],
   ]) {
-    assert.throws(() => KubernetesConfigurationDriver.validateConfiguration(invalid), refusal);
-    assert.throws(() => new KubernetesConfigurationDriver(invalid), refusal);
+    assert.throws(
+      () => requireConfiguration(KubernetesConfigurationDriver, invalid),
+      SharedConfigurationValidationError,
+    );
+    assert.throws(
+      () => new KubernetesConfigurationDriver(invalid),
+      SharedConfigurationValidationError,
+      String(refusal),
+    );
   }
 
   // Inherited client injection must not evade the closed own-property schema.
   const inheritedClients = Object.assign(Object.create({ clients: {} }), {
     authentication: { mode: "inCluster" },
   });
-  assert.throws(() => new KubernetesConfigurationDriver(inheritedClients), /client/i);
+  assert.throws(
+    () => new KubernetesConfigurationDriver(inheritedClients),
+    SharedConfigurationValidationError,
+  );
 });
 
 test("configuration Driver selection is explicit and cannot switch implementations", () => {

@@ -20,6 +20,7 @@ import {
   bootstrapConfiguration,
   bootstrapFailureCode,
 } from "../../scripts/lib/bootstrap-configuration.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {
@@ -108,16 +109,6 @@ function resolveSecrets(settings) {
         : secrets[`${value.secretKeyRef.name}/${value.secretKeyRef.key}`],
     ]),
   );
-}
-
-// Waits for every promise, then throws the first failure, so no child outlives its test.
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
 }
 
 // At most one child process per CPU (and at least two) across the whole file; a render holds

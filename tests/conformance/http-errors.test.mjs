@@ -13,7 +13,7 @@ import {
 import {
   PROVISIONING_REFUSAL_CODES,
   preAdmissionRefusal,
-} from "../../apps/controller/src/console/agents/list.mjs";
+} from "../../apps/controller/src/console/agents/list.mts";
 import { ERROR_CODES, PresetValidationError } from "../../packages/contracts/src/index.ts";
 import { normalizeRequestSecretBindings } from "../../packages/occ/src/agent-provisioning.ts";
 import {

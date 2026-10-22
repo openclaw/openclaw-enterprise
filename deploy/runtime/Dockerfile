@@ -175,7 +175,7 @@ COPY --from=openclaw-source /source/ ./
 # Exercise the original caller through the public RPC before and after the
 # placement acknowledgment, including revocation, against this exact bridge.
 COPY deploy/runtime/openclaw-required-worker-authority-regression.patch /tmp/openclaw-required-worker-authority-regression.patch
-RUN echo 'dde334c27082042a5bbbe9bbe4409a62c16eff89b7e4662c8b4e06b45f31c623  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
+RUN echo '1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189  /tmp/openclaw-required-worker-authority-regression.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-required-worker-authority-regression.patch
 RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \
     node --import ./scripts/tsx.mjs scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts

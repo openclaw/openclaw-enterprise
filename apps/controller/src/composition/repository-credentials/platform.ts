@@ -1,3 +1,4 @@
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type { RepositoryGitDeliveryResolver } from "../../drivers/repo/credentials/delivery.ts";
 import {
   githubRepositoryAuthorityIdentity,
@@ -44,11 +45,15 @@ export async function composeRepositoryAccess(input: {
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
     throw new Error("The repository credential Driver must match its owning Backend.");
   }
-  (input.protectedGit
-    ? GitHubRepositoryPolicy
-    : GitHubNativeRepositorySender
-  ).validateConfiguration(selection.configuration);
-  const configuration = selection.configuration as Readonly<{
+  // Native sending has its own transport validation; it is not a Repo Driver.
+  if (!input.protectedGit) {
+    GitHubNativeRepositorySender.validateConfiguration(selection.configuration);
+  }
+  const configuration = (
+    input.protectedGit
+      ? requireConfiguration(GitHubRepositoryPolicy, selection.configuration)
+      : selection.configuration
+  ) as Readonly<{
     controlSocket?: string;
     sessionDurationSeconds: number;
     publicCaPath?: string;

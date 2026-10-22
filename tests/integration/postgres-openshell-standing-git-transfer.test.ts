@@ -100,23 +100,34 @@ test(
         backend: {
           id: "fixture-gateway",
           drivers: { credential_gateway: gatewayId },
-          client: { placement: () => undefined, clientForNamespace: () => client },
+          client: {
+            placement: () => undefined,
+            clientForNamespace: () => client,
+          },
         } as never,
       },
     );
     const { f, key, driver, revision, predecessor, registry, owner, approval, credentials } =
-      await standingExecutionFixture(t, import.meta.url, async (pool, ns) => ({
-        ...(peer = await preparedStandingGitPeer(t, pool, ns, {
-          beforeIssue,
-          driver: protectedGit.owner.ref,
-          installationAccess: true,
-        })),
-        requestedBinding: { repositoryRef: "team-installation", profile: "github-installation" },
-        activePredecessor: true,
-        protectedDriver: protectedGit.owner,
-        credentialGateway: gateway,
-        ...(modelConfig && { modelConfig }),
-      }));
+      await standingExecutionFixture(
+        t,
+        import.meta.url,
+        async (pool, ns) => ({
+          ...(peer = await preparedStandingGitPeer(t, pool, ns, {
+            beforeIssue,
+            driver: protectedGit.owner.ref,
+            installationAccess: true,
+          })),
+          requestedBinding: {
+            repositoryRef: "team-installation",
+            profile: "github-installation",
+          },
+          activePredecessor: true,
+          protectedDriver: protectedGit.owner,
+          credentialGateway: gateway,
+          ...(modelConfig && { modelConfig }),
+        }),
+        { sandbox: protectedGit.sandboxConfiguration },
+      );
     const { prepared, registrationName, gh, send, input } = peer;
     const authority = prepared.protectedGit!;
     await protectedGit.owner.requireRepositoryGitTransport()(authority);
@@ -139,7 +150,12 @@ test(
     const deadline = credentials.deadlineWallMs;
     const cwd = await temporaryDirectory(t, "standing-private-git-destination-");
     const git = (args: string[], pack?: Buffer) =>
-      spawnSync("git", args, { cwd, env: cleanEnvironment(), input: pack, timeout: 5000 });
+      spawnSync("git", args, {
+        cwd,
+        env: cleanEnvironment(),
+        input: pack,
+        timeout: 5000,
+      });
     const { client, world } = await gitExpiryGateway(t, {
       model,
       workspace,
@@ -410,10 +426,15 @@ test(
           credentialGatewayDriver: gateway,
           installation: {
             ...d.installation,
-            drivers: { ...d.installation.drivers, credential_gateway: { id: gatewayId } },
+            drivers: {
+              ...d.installation.drivers,
+              credential_gateway: { id: gatewayId },
+            },
           },
           repositoryPolicy: driver,
           protectedDriver: protectedGit.owner,
+          sandboxDriver: protectedGit.owner.require("sandbox"),
+          proxyDriver: protectedGit.owner.require("credential_proxy"),
         }),
       });
     const { client: wire, keys } = await openShellOnlineGitWire(t, {
@@ -521,7 +542,11 @@ test(
       const route = (await routes.standing(revision))!.route;
       assert.deepEqual(
         await authority.readMaterial(
-          { revisionId: revision.id, fence: route.fence, observed: route.observed },
+          {
+            revisionId: revision.id,
+            fence: route.fence,
+            observed: route.observed,
+          },
           t.signal,
         ),
         { absent: "unprepared" },

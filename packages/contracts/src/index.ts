@@ -45,22 +45,81 @@ export type {
   CredentialSourceControl,
   CredentialProxyDriver,
 } from "./credential-proxy.ts";
-export type * from "./credential-proxy-exchange.ts";
+export type {
+  CredentialProxyBinding,
+  CredentialProxyExchange,
+  EgressPeer,
+  CapturedEgressUse,
+  EgressExchangeOwner,
+  AcceptedEgressAssociation,
+  AuthorizedSend,
+  EgressResolution,
+  EgressSendDecision,
+  EgressStreamProgress,
+  EgressStreamLease,
+} from "./credential-proxy-exchange.ts";
 export { egressAssociationInstallation } from "./credential-proxy-exchange.ts";
-export * from "./prepared-token.ts";
-export * from "./prepared-github-egress.ts";
-export * from "./credential-free-metadata.ts";
+export type {
+  PreparedTokenGrant,
+  PreparedTokenSource,
+  PreparedTokenSelection,
+  PreparedTokenEvidence,
+  PreparedTokenCurrentProof,
+  PreparedTokenIssuer,
+  PreparedTokenService,
+} from "./prepared-token.ts";
+export {
+  preparedGitHubType,
+  preparedGitHubProviderRef,
+  preparedGitHubSourceFromRoute,
+  githubMetadataGrant,
+} from "./prepared-github-egress.ts";
+export type {
+  GitHubMetadataGrant,
+  PreparedGitHubEgressSource,
+  PreparedGitHubUseRequest,
+  PreparedGitHubInstallationUseRequest,
+  PreparedGitHubUseResponse,
+  PreparedGitHubPullScope,
+  PreparedGitHubPullProjection,
+  PreparedGitHubPullResult,
+} from "./prepared-github-egress.ts";
+export {
+  credentialFreeMetadataType,
+  credentialFreeProviderRef,
+  credentialFreeMetadataGrant,
+} from "./credential-free-metadata.ts";
+export type {
+  CredentialFreeMetadataGrant,
+  CredentialFreeEgressSource,
+  NoMaterialSelection,
+} from "./credential-free-metadata.ts";
 export {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   repositoryGitRecipientFields,
   validRepositoryGitRecipient,
-  repositoryGitDeliveryProfile,
   repositoryGitAuthorization,
   repositoryGitProfileAvailable,
   protectedRepositoryGitAdmission,
 } from "./credential-proxy.ts";
+import type { ConfigurationDefinition } from "./configuration-definition.ts";
+
+export type {
+  ConfigurationDefinition,
+  ConfigurationResult,
+  ConfigurationContribution,
+  DriverConfigurationDescriptor,
+  ConfigurationContext,
+} from "./configuration-definition.ts";
+export {
+  ConfigurationValidationError,
+  assertConfigurationSchema,
+  validateConfiguration,
+  requireConfiguration,
+} from "./configuration-definition.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
+export type { SandboxPolicyViewWire } from "./api/sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
 import type {
   SandboxNetworkGrant,
@@ -81,6 +140,7 @@ export type {
 export {
   SandboxNetworkGrantSchema,
   SandboxNetworkGrantsSchema,
+  SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
@@ -132,6 +192,7 @@ export type {
   AgentRuntimePodStatus,
   AgentRuntimeLogSource,
   AgentRuntimeHarnessStatus,
+  AgentHarnessStatusRead,
   AgentRuntimeDescription,
   AgentRuntimeDescribeOptions,
   AgentRuntimeLogRequest,
@@ -172,7 +233,11 @@ export type {
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
 } from "./repo.ts";
-export { githubInstallationProfile, isInstallationRepositoryProfile } from "./repo.ts";
+export {
+  githubInstallationProfile,
+  isInstallationRepositoryProfile,
+  repositoryGitDeliveryProfile,
+} from "./repo.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
   "iam",
@@ -1413,9 +1478,8 @@ export interface ComputeLifecycleHooks {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export interface DriverImplementation {
-  readonly configurationSchema: JSONSchema;
-  validateConfiguration(configuration: unknown): void;
+export interface DriverImplementation<T = unknown> extends ConfigurationDefinition<T> {
+  readonly configurationContributions?: readonly import("./configuration-definition.ts").ConfigurationContribution[];
 }
 
 export interface IAMDriver extends Driver {
@@ -2418,6 +2482,7 @@ export {
   validatePresetTemplate,
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
+  requiredPresetVariables,
 } from "./preset-variables.mjs";
 
 export {

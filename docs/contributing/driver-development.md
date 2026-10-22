@@ -31,11 +31,19 @@ IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composit
 
 For an installed implementation, export a closed `configurationSchema`,
 `validateConfiguration`, and `createDriver` from a precompiled JavaScript ESM
-entry point. Return the selected `id` and `implementation`, the expected
-`capability`, and its required methods. For paired capabilities, return one
-`DriverRegistration` with shared lifecycle hooks instead of independent instances.
-The controller must declare the package as a direct production dependency at an
-exact version; update the lockfile with it. For a bundled implementation, follow the existing capability directory and
+entry point. The platform validates structure before calling the semantic validator,
+which returns a readonly field-error list (empty on success), as described in
+[configuration definitions](../reference/drivers/selection.md#configuration-definitions-and-discovery);
+factories consume the original validated input. Callbacks receive an isolated,
+frozen copy and cannot replace configuration values. Declare runtime contributions only when a
+resource-owner binding supplies their authorization and lifecycle. A Sandbox
+advertising `networkPolicy` must contribute `(agent, sandbox-network-policy)`.
+Return the selected `id` and `implementation`, the expected
+`capability`, and its required methods on each capability object. For paired
+capabilities, return one `DriverRegistration` with shared lifecycle hooks
+instead of independent instances. The controller must declare the package
+as a direct production dependency at an exact version; update the lockfile with
+it. For a bundled implementation, follow the existing capability directory and
 wire it into controller composition. Consult the [package and factory contract](../reference/drivers/selection.md#package-identity-and-factory-exports)
 for the complete loader rules.
 

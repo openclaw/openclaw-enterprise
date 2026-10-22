@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-19"
-last_updated_session: "authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3"
+updated: "2026-10-20"
+last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
 ---
 
 # Production image upgrade flow
@@ -95,7 +95,11 @@ copies each rendered API and worker Pod template (selected controller image, env
 mounts, service account) into a one-shot Pod whose Installation volume reads a
 temporary Secret holding the candidate. The Pod runs `loadStartupConfigurationSnapshot`
 and `loadInstallationConfiguration`, which resolve Drivers and Preset files
-without the database. With the bundled Kubernetes Compute Driver it then runs
+without the database. On a typed configuration refusal,
+`apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure` prints
+at most 32 filtered field diagnostics, using the API/worker log filter. The
+helper preserves these paths and messages in its component logs before stopping
+any writer. With the bundled Kubernetes Compute Driver it then runs
 `KubernetesComputeDriver.preflight` with the Pod's Kubernetes credentials (its
 service account in `inCluster` mode), as API and worker startup do; that check refuses, for example, single-cluster
 [split-layout Gateway storage](../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
@@ -283,6 +287,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
+- 2026-10-20 01:48: Preserve field diagnostics before quiescence. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 - 2026-10-19 22:34: Document that pending repository cleanup does not block upgrade preparation. (authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3 - 57acafe81482a890b02ae530793246f2c2e7be79)
 
 - 2026-10-18: The initialization hook checks the Installation before migration.
