@@ -19,8 +19,8 @@ import {
   failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  eachSettled,
 } from "../helpers/runtime-image-startup.mjs";
+import { eachSettled } from "../helpers/child-processes.mjs";
 
 // The loopback provider owns all possible requests; no model turn is sent.
 const countingProvider = String.raw`

@@ -49,16 +49,6 @@ export async function runDocker(args, options = {}, input) {
   return result;
 }
 
-// Like Promise.all over a case's scenarios, but waits for every one so no
-// container outlives the test's cleanup, then rethrows the first failure.
-export async function eachSettled(items, each) {
-  const results = await Promise.allSettled(items.map(each));
-  const failed = results.find(({ status }) => status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-}
-
 export async function waitForDockerLog(containerName, pattern) {
   const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
   const logs = followContainer(undefined, containerName, { docker, exit: false });

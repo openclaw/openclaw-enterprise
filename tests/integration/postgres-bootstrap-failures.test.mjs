@@ -14,6 +14,8 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
 import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
@@ -101,15 +103,6 @@ function validatedFailureDatabaseUrl() {
     );
   }
   return parsed;
-}
-
-async function withPool(databaseUrl, operation) {
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 4 });
-  try {
-    return await operation(pool);
-  } finally {
-    await pool.end();
-  }
 }
 
 async function resetFailureDatabase() {
@@ -244,13 +237,6 @@ async function runBootstrap(environment) {
 
 async function runBootstrapScript(environment) {
   return runBootstrapInstallation(environment);
-}
-
-function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .filter((line) => line.trim().startsWith("{"))
-    .map((line) => JSON.parse(line));
 }
 
 async function bootstrapWithLostCommitAcknowledgement(environment) {

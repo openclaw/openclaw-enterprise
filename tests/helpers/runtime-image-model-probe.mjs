@@ -15,6 +15,7 @@ import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
+import { jsonLines } from "./json-lines.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
@@ -46,19 +47,6 @@ export async function runDocker(args, options = {}) {
     maxBuffer: 4_000_000,
     ...options,
   });
-}
-
-export function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((entry) => entry !== null && typeof entry === "object");
 }
 
 async function waitForLog(containerName, pattern) {
@@ -292,11 +280,18 @@ export async function runEmbeddedGatewayProbe(
     const wrapper = gatewayLogs.read();
     const output = `${wrapper.stdout}\n${wrapper.stderr}`;
     return {
-      events: jsonLines(endpoint.stdout).map((event) => ({ ...event, ms: event.at - startedAt })),
+      events: jsonLines(endpoint.stdout, { lenient: true }).map((event) => ({
+        ...event,
+        ms: event.at - startedAt,
+      })),
       output,
-      phases: jsonLines(output).filter(({ event }) => event === "runtime.startup_phase"),
-      probe: jsonLines(output).find(({ event }) => event === "openclaw.model_probe"),
-      probeStage: jsonLines(output)
+      phases: jsonLines(output, { lenient: true }).filter(
+        ({ event }) => event === "runtime.startup_phase",
+      ),
+      probe: jsonLines(output, { lenient: true }).find(
+        ({ event }) => event === "openclaw.model_probe",
+      ),
+      probeStage: jsonLines(output, { lenient: true })
         .filter(({ event }) => event === "openclaw.model_probe_stage")
         .at(-1)?.stage,
       running: wrapper.running,

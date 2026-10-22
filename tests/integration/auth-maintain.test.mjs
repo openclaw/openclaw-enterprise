@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
@@ -26,6 +25,7 @@ import {
   outputSink,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { withPool } from "../helpers/postgres-database.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -184,19 +184,7 @@ test("auth:maintain rejects undeclared commands before configuration", async () 
   }
 });
 
-// Short-lived pools: every mutating command refuses while any other client is connected.
-// Pool.end() does not wait for its connections to close, so wait for each client's own end.
-async function withPool(url, work) {
-  const pool = new pg.Pool({ connectionString: url, max: 4 });
-  const closed = [];
-  pool.on("connect", (client) => closed.push(once(client, "end")));
-  try {
-    return await work(pool);
-  } finally {
-    await pool.end();
-    await Promise.all(closed);
-  }
-}
+// Short-lived pools (withPool): every mutating command refuses while any other client is connected.
 
 function sessionRecord(userId) {
   return { id: randomUUID(), token: randomBytes(32).toString("hex"), userId };

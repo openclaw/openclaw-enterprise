@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { describe, test } from "node:test";
 import ts from "typescript-compiler-api";
 import { verifyModuleBoundaries } from "../../scripts/verify-module-boundaries.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = new URL("../fixtures/module-boundaries/", import.meta.url);
@@ -43,16 +44,6 @@ async function failure(promise, code) {
   });
   assert.equal(caught.code, code, caught.stderr);
   return caught;
-}
-
-// Awaits every case, then rethrows the first failure, so no case outlives its test.
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
 }
 
 const dynamic = "unresolved-dynamic-import";
