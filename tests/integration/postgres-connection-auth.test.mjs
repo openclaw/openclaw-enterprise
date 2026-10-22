@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createServer as createTlsServer, rootCertificates } from "node:tls";
@@ -11,6 +10,7 @@ import { startupDependencyFailure } from "../../apps/controller/src/startup-fail
 import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 
 const requireOcc = createRequire(new URL("../../packages/occ/package.json", import.meta.url));
@@ -101,8 +101,7 @@ test("the real pg client retains the Azure token callback and verified TLS after
 
     // libpq-compatible require/verify-ca can trust a CA while disabling hostname
     // checks. Reject those parsed options before acquiring a bearer token.
-    const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ca-"));
-    context.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(context, "occ-postgres-ca-");
     const certificate = join(directory, "root.crt");
     await writeFile(certificate, rootCertificates[0]);
     for (const sslmode of ["require", "verify-ca"]) {
@@ -221,8 +220,7 @@ test(
 );
 
 test("verify-full checks the server certificate against an IP database host", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-tls-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-postgres-ip-tls-");
   const pki = await databaseCertificates(directory);
   const caPath = join(directory, "ca.pem");
   const servers = { v4: await tlsServer(context, "127.0.0.1", pki.dnsLocalhost) };
@@ -343,8 +341,7 @@ test("verify-full checks the server certificate against an IP database host", as
 });
 
 test("the IP host identity check leaves other connection configurations unchanged", async (context) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-postgres-ip-config-"));
-  context.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(context, "occ-postgres-ip-config-");
   const certificate = join(directory, "root.crt");
   await writeFile(certificate, rootCertificates[0]);
   const unchanged = [
