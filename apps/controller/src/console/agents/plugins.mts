@@ -4,7 +4,6 @@ import type {
   Configuration,
   PluginApprovers,
   PluginDeploymentWarning,
-  PluginDesiredState,
   PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
@@ -66,10 +65,8 @@ interface PluginEditorOptions {
   onState(
     state: Pick<PluginDraft, "dirty" | "outcomeUnknown" | "reloadRequired"> & { saving: boolean },
   ): void;
-  onSaved(settings: {
-    plugins: PluginDesiredState;
-    pluginApprovers: PluginApprovers | undefined;
-  }): void;
+  /** Receives the confirmed PATCH response. */
+  onSaved(savedAgent: Readonly<Record<string, unknown>>): void;
   onReload(): void;
   savedNotice?: string;
   updateAllowed?: Promise<boolean | undefined> | null;
@@ -419,7 +416,7 @@ export function renderAgentPlugins(
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
         feedback.textContent = "Plugin selections saved.";
         context.drafts.forget("plugins");
-        void onSaved({ plugins: savedPlugins, pluginApprovers: submittedApprovers });
+        void onSaved(savedAgent);
       }
     } catch (cause) {
       if (!context.isCurrent()) {

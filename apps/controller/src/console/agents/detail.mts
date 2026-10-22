@@ -3282,20 +3282,16 @@ export async function renderAgentDetail(
         savedNotice,
         updateAllowed: agentUpdateAllowed,
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
-        onSaved: ({ plugins, pluginApprovers }) => {
+        onSaved: (savedAgent) => {
           if (!data.draft || agent.configurationReadError) {
             return;
           }
-          // Stop and deployment polls update `currentAgent`, not `agent`: rebuild from the newer
-          // read, unless it lost Configuration access, which this save has just disproved.
-          const latest = currentAgent.configurationReadError ? agent : currentAgent;
-          const updated = { ...latest, plugins };
-          if (pluginApprovers === undefined) {
-            delete updated.pluginApprovers;
-          } else {
-            updated.pluginApprovers = pluginApprovers;
-          }
-          return refreshDraftInPlace({ agent: updated, saved: "Plugin selections saved." });
+          // Rebuild from the save response: the editor confirmed its identity and settings, and
+          // it carries the Agent's lifecycle, which a Stop or deployment since page load changed.
+          return refreshDraftInPlace({
+            agent: agentForPage(savedAgent),
+            saved: "Plugin selections saved.",
+          });
         },
         onReload: () => {
           context.drafts.forget("plugins");

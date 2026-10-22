@@ -120,8 +120,8 @@ and authentication editors; Configuration saves get no such hint.
 Namespace, Configuration, selections, or approvers differ from the editor's
 baseline, it sends no write. This read does not lock the Agent. The editor clears
 the draft only when the response confirms that identity and the submitted settings.
-The page then rebuilds from its newest Agent read, so a Stop or deployment seen
-since the page loaded stays shown, with the saved settings applied.
+The page then rebuilds from that response, which also carries a Stop or
+deployment made since the page loaded.
 **Reload plugin selections** discards the local draft and reads the Agent without
 repeating the PATCH. A successful read rebuilds the editor from saved settings.
 If the read fails, the Console opens the draft page again. The Plugin Driver
@@ -336,7 +336,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
-- 2026-10-22 13:00: Rebuild after a plugin save from the newest Agent read, so a Stop requested on the page stays shown. (bughunt-1022b)
+- 2026-10-22 13:00: Rebuild after a plugin save from the save response, so a Stop requested on the page stays shown. (bughunt-1022b)
 - 2026-10-22 10:28: Distinguish a missing workspace file from an unavailable Agent, on first read and after an uncertain save. (01a162e5-4303-7a21-81d4-bb51cec37c66 - 596fdb088)
 - 2026-10-22 10:14: Trace plugin save confirmation and recovery when the response is incomplete or identifies different settings. (01a162ec-b748-7c42-9034-1f0a92b05703 - 345d9f63d)
 - 2026-10-20 05:00: Move steps 7 and 8 (stop, deletion) to [their own trace](agent-stop-and-deletion.md). (docs-split-1020)

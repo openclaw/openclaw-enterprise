@@ -1585,9 +1585,9 @@ test("Agent detail saves plugin changes for the next revision without changing a
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
-// A plugin save rebuilds the page from the saved settings. Stop and deployment polls update the
-// page's live Agent, not the draft it loaded, so the rebuild must start from the live Agent or it
-// shows a stopped Agent as running again.
+// A plugin save rebuilds the page. Rebuilding from the Agent the draft loaded, instead of the save
+// response, showed a Stop requested on the same page as running again. A deployment that finished
+// since page load takes the same path; this case covers Stop.
 test("a plugin save keeps a Stop requested on the same page", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Plugin save after stop");
   const pluginDriver = new CodexPluginDriver();
