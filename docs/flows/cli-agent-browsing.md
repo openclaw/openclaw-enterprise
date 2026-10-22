@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
 updated: 2026-10-22
-last_updated_session: authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77
+last_updated_session: fix-2152a
 ---
 
 # CLI Agent metadata browsing flow
@@ -114,9 +114,10 @@ For one Agent in table output, `cli.go:agentCommand` then reads
 `occclient.Client.GetAgentHarnessStatus`, and
 `internal/occcli/agent_runtime_output.go:printAgentHarness` prints the
 [Harness Sandbox status](../reference/drivers/sandbox.md#harness-sandbox-status) under
-the table as a `Harness Sandbox:` line, as `occ agent runtime` does. A `lost`
-line tells the operator to deploy the Agent again. An `unobserved` answer prints
-nothing, and a failed read prints `unknown`, never `lost`. `agent list` reads no
+the table as a `Harness Sandbox:` line, as `occ agent runtime` does. It reads only a running Agent with an active revision, and names that revision
+in the Sandbox logs hint. A `lost` line tells the operator to deploy the Agent
+again. An `unobserved` answer prints nothing, and a failed read prints
+`unknown`, never `lost`. `agent list` reads no
 Sandbox, so a list costs no Sandbox Driver call per Agent. JSON and YAML print
 the Agent resource only.
 
@@ -163,7 +164,7 @@ historical version, and that `--cursor` continues the history. See the PostgreSQ
 
 ## Changelog
 
-- 2026-10-22: `occ agent get` adds the Harness Sandbox line of a running dedicated Agent (finding 2152). (fix-2152a)
+- 2026-10-22 02:40: `occ agent get` adds the Harness Sandbox line of a running dedicated Agent (finding 2152). (fix-2152a - 912a25bb9879)
 
 - 2026-10-20 02:20: Keep same-origin CLI redirect guidance when host letter case differs. (authoring-run/b4678129-6e54-4f19-a084-b62c9396cf77 - d331d24fdddc269c12900327733be0ae1ffc441e)
 

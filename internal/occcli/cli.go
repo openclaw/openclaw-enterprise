@@ -749,7 +749,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if app.output != "table" {
 				return nil
 			}
-			return app.printAgentHarness(client, namespace, args[0])
+			return app.printAgentHarness(client, namespace, args[0], agent)
 		},
 	}
 

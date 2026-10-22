@@ -310,17 +310,33 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
       .getByRole("region", { name: "Agent state at a glance" })
       .locator(".stat")
       .filter({ hasText: "Live serving" });
-  async function openOverview(viewport) {
+  async function openOverview(viewport, { statusFailure = false } = {}) {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const harnessReads = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/harness-status")) {
+        harnessReads.push(request.url());
+      }
+    });
     // The fixture has no worker; the deployment that made v1 current succeeded.
     await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
       route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
     );
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
+    await page.waitForLoadState("networkidle");
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent.
+    assert.deepEqual(harnessReads, []);
     // The Sandbox read lands after the page shows, as on a gateway that takes a moment.
     await page.route(`${fixture.origin}/namespaces/**/harness-status`, async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 700));
+      if (statusFailure) {
+        await route.fulfill({
+          status: 503,
+          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
+        });
+        return;
+      }
       await route.fallback().catch(() => {});
     });
     await page.addInitScript(recordLayoutShifts);
@@ -328,15 +344,16 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
     await expectDeploymentOutcome(page, "Completed");
-    return page;
+    return { page, harnessReads };
   }
 
-  // The node-restart case: OpenShell keeps the Sandbox record, stopped.
+  // The node-restart case: OpenShell keeps the Sandbox record, stopped. Beside the sidebar
+  // (900 wide) the Live serving column is narrowest; its note still fits the reserved line.
   state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
-  for (const viewport of consoleViewports) {
-    const page = await openOverview(viewport);
+  for (const viewport of [...consoleViewports, { width: 900, height: 900 }]) {
+    const { page, harnessReads } = await openOverview(viewport);
     const badge = liveServing(page).locator(".badge");
-    await liveServing(page).getByText("Deploy a new version to replace it.").waitFor();
+    await liveServing(page).getByText("Deploy a new version.", { exact: true }).waitFor();
     assert.equal(await badge.textContent(), "Sandbox lost");
     assert.equal(await badge.getAttribute("data-tone"), "danger");
     await page.evaluate(() => globalThis.document.fonts.ready);
@@ -350,16 +367,25 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
       .flatMap((entry) => entry.sources)
       .filter((source) => !/stat-value|stat-help/.test(source.node));
     assert.deepEqual(moved, [], `${viewport.width}x${viewport.height}`);
+    // One read for the page's serving state, not a poll.
+    assert.equal(harnessReads.length, 1);
   }
 
-  // A healthy Sandbox and an unreadable one leave Live serving unverified, with no warning.
-  for (const [harness, harnessError, note] of [
-    [{ state: "running" }, undefined, "Sandbox running."],
-    [undefined, new Error("gateway refused sandbox:read token-secret"), "Sandbox status unknown."],
+  // A healthy Sandbox, one the Driver cannot read and a status read that fails leave Live
+  // serving unverified, with no warning.
+  for (const [harness, harnessError, statusFailure, note] of [
+    [{ state: "running" }, undefined, false, "Sandbox running."],
+    [
+      undefined,
+      new Error("gateway refused sandbox:read token-secret"),
+      false,
+      "Sandbox status unknown.",
+    ],
+    [{ state: "lost", code: "SANDBOX_STOPPED" }, undefined, true, "Sandbox status unknown."],
   ]) {
     state.harness = harness;
     state.harnessError = harnessError;
-    const page = await openOverview(consoleViewports[0]);
+    const { page } = await openOverview(consoleViewports[0], { statusFailure });
     await liveServing(page).getByText(note, { exact: true }).waitFor();
     const badge = liveServing(page).locator(".badge");
     assert.equal(await badge.textContent(), "Not verified");

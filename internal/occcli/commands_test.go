@@ -132,6 +132,8 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 		{"healthy", observed(`{"state":"running"}`), "Harness Sandbox: running"},
 		{"observation failed", observed(`{"state":"unknown","code":"UNAVAILABLE"}`), "Harness Sandbox: unknown (UNAVAILABLE)"},
 		{"read failed", `raw:503 {"error":{"code":"DEPENDENCY_UNAVAILABLE","message":"unavailable"}}`, "Harness Sandbox: unknown (the status could not be read)."},
+		// The logs hint names the observed revision, so a later deployment cannot redirect it.
+		{"restarting", observed(`{"state":"starting","code":"HARNESS_RESTARTING","exitCode":1,"restarts":2}`), "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace " + testNamespaceID + " agent logs " + testAgentID + " --source sandbox --revision " + testRevision1ID + ")."},
 		// A stopped Agent, an embedded Harness or a Driver without a Sandbox record adds nothing.
 		{"unobserved", `{"status":"unobserved"}`, ""},
 	} {
@@ -151,10 +153,21 @@ func TestAgentGetShowsTheObservedHarnessSandbox(t *testing.T) {
 			t.Errorf("a healthy Harness Sandbox must carry no warning:\n%s", out)
 		}
 	}
-	// Structured output is the Agent resource alone, so the status is not read.
-	out, requested, err := runOCC(t, map[string]string{"GET " + agentPath: agent}, "--namespace", testNamespaceID, "-o", "json", "agent", "get", testAgentID)
-	if err != nil || strings.Contains(out, "Harness") || len(requested) != 1 {
-		t.Fatalf("json: err = %v, requests = %q:\n%s", err, requested, out)
+	// Structured output is the Agent resource alone, and a stopped Agent has no Sandbox to
+	// read, so neither reads the status.
+	stopped := strings.Replace(agent, `"running"`, `"stopped"`, 1)
+	for _, test := range []struct {
+		name, agent string
+		args        []string
+	}{
+		{"json", agent, []string{"-o", "json"}},
+		{"stopped", stopped, nil},
+	} {
+		args := append(append([]string{"--namespace", testNamespaceID}, test.args...), "agent", "get", testAgentID)
+		out, requested, err := runOCC(t, map[string]string{"GET " + agentPath: test.agent}, args...)
+		if err != nil || strings.Contains(out, "Harness") || len(requested) != 1 {
+			t.Fatalf("%s: err = %v, requests = %q:\n%s", test.name, err, requested, out)
+		}
 	}
 }
 

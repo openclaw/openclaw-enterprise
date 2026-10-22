@@ -1438,20 +1438,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // step. A status that cannot be read is unknown, never lost.
   let harnessRead = null;
   let harnessReads = 0;
-  // Only a running dedicated Agent's current version has a Sandbox to read. Its note line is
-  // reserved from the first paint (console.css), so the answer moves nothing below.
+  // The current version the read in flight or answered is for, or null when none is wanted.
+  let harnessRequested = null;
+  // Only a running Agent's dedicated current version has a Sandbox to read. The version's own
+  // mode decides once the version list shows it; the Agent's saved mode can differ from it.
+  // The note line is reserved from the first paint (console.css), so the answer moves nothing.
   const harnessExpected = () =>
-    currentAgent.executionMode === "dedicated" &&
+    !deleting &&
     currentRuntimeState === "running" &&
-    Boolean(currentRevisionId);
-  function readHarnessStatus() {
-    const read = ++harnessReads;
-    harnessRead = null;
-    renderLiveServing();
-    if (!harnessExpected()) {
+    Boolean(currentRevisionId) &&
+    (visibleRevisions.find((revision) => revision.id === currentRevisionId)?.harness?.mode ??
+      currentAgent.executionMode) === "dedicated";
+  function syncHarnessRead() {
+    const wanted = harnessExpected() ? currentRevisionId : null;
+    if (wanted === harnessRequested) {
       return;
     }
-    const revisionId = currentRevisionId;
+    // A stop, a new current version or a deletion drops any answer for the old state.
+    const read = ++harnessReads;
+    harnessRequested = wanted;
+    harnessRead = null;
+    if (wanted === null) {
+      return;
+    }
     void request(`${path}/harness-status`)
       .then(
         (status) => status,
@@ -1462,11 +1471,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           return;
         }
         // A read that failed is kept as null: the note then says the status is unknown.
-        harnessRead = { revisionId, status };
+        harnessRead = { revisionId: wanted, status };
         renderLiveServing();
       });
   }
   function renderLiveServing() {
+    syncHarnessRead();
     const expected = harnessExpected();
     const answer = harnessRead?.revisionId === currentRevisionId ? harnessRead : null;
     const harness =
@@ -1491,14 +1501,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!expected) {
       setText(liveServingNote, "");
     } else if (answer === null) {
-      setDelayedText(liveServingNote, "", "Checking the Sandbox…");
+      setDelayedText(liveServingNote, "", "Checking Sandbox…");
     } else if (lost) {
-      // OCC does not restart a lost Sandbox; one line keeps the reserved row (console.css).
-      setText(liveServingNote, "Deploy a new version to replace it.");
+      // OCC does not restart a lost Sandbox. The notes stay short enough for one line in the
+      // narrowest column (beside the sidebar), so the reserved line never grows.
+      setText(liveServingNote, "Deploy a new version.");
     } else if (answer.status === null || harness?.state === "unknown") {
       setText(liveServingNote, "Sandbox status unknown.");
     } else if (harness?.code === "HARNESS_RESTARTING") {
-      setText(liveServingNote, "The Harness exited and is restarting.");
+      setText(liveServingNote, "Harness restarting.");
     } else if (harness?.state === "running") {
       setText(liveServingNote, "Sandbox running.");
     } else if (harness?.state === "starting") {
@@ -1536,7 +1547,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     stat("Latest visible deployment", latestDeploymentValue, latestDeploymentNote),
     stat("Live serving", liveServingValue, liveServingNote),
   );
-  readHarnessStatus();
+  renderLiveServing();
   const pageDisclosure = element(
     "details",
     { className: "disclosure" },
@@ -2615,7 +2626,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     currentAgent = freshAgent;
     stopPanel.updateAgent(freshAgent);
     if (servingChanged) {
-      readHarnessStatus();
+      renderLiveServing();
       retainedTabs.clear();
       if (mountedTab) {
         // Leaving must not put a tab built for the old serving state back in the cache.
