@@ -30,7 +30,10 @@ while the catalog list and plugin details scroll within the picker.
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment details** follows the newest readable deployment. Routine completion
-starts folded; pending work, warnings, and cleanup are expanded.
+starts folded; pending work, warnings, and cleanup are expanded. When the page shows
+before the first record arrives (a read slower than about 2 s), that record fills the
+folded row instead, and the summary above shows its outcome; cleanup and warnings still
+expand it, as does every later change.
 The viewed version retains its own result. Unreadable outcomes remain unknown.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 

@@ -13,6 +13,7 @@ import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   asksBeforeUnload,
+  consoleViewports,
   deploymentStatusResponse,
   detailUrl,
   fileBrowser,
@@ -20,15 +21,25 @@ import {
   login,
   nativeValues,
   newPage,
+  nextFrames,
   persistedDeploymentError,
   recordLayoutShifts,
   routeFailedDeployment,
   settledFetches,
+  settledView,
   takeLayoutShifts,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  deploymentActivity,
+  deploymentDetailsOpen,
+  deploymentRecordUrl,
+  expectDeploymentOutcome,
+  expectVersionRecord,
+  openDeploymentActivity,
+} from "./console-deployment-activity-helpers.mjs";
 import { fileReadyNamespace } from "./console-ready-namespace.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
@@ -39,18 +50,6 @@ const browser = fileBrowser();
 // One app for the tests that pass no fixture options; each makes its own Namespace.
 const overviewApp = fileConsoleApp();
 const readyNamespace = fileReadyNamespace(overviewApp);
-
-// Resolves after the page has painted twice more and run a task after that, so a layout shift
-// from work that has already settled has been reported.
-const nextFrames = (page) =>
-  page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        globalThis.requestAnimationFrame(() =>
-          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
-        );
-      }),
-  );
 
 async function agentPage(t, namespaceName, agentName, fixtureOptions) {
   const { fixture, namespace } = await readyNamespace(t, namespaceName, fixtureOptions);
@@ -66,9 +65,6 @@ function runtimeLogs() {
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
   };
 }
-
-const deploymentUrl = (fixture, namespace, agent, revision) =>
-  `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
 
 // The API's message for the model probe failure the recovery tests below record.
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
@@ -95,9 +91,14 @@ function routeFailedRecord(
 test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Quiet summary", "Quiet Summary");
   const revision = await fixture.deployAgent(namespace.id, agent.id);
-  const record = await holdRequests(t, page, deploymentUrl(fixture, namespace, agent, revision), {
-    fulfill: deploymentStatusResponse(revision, { status: "succeeded" }),
-  });
+  const record = await holdRequests(
+    t,
+    page,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    {
+      fulfill: deploymentStatusResponse(revision, { status: "succeeded" }),
+    },
+  );
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
@@ -458,8 +459,9 @@ test("A succeeded version says when the current version is on no loaded page", a
   // earlier, and v1 is on the next history page.
   const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
   denyRevisionRead(fixture, namespace, third.revision);
-  await page.route(deploymentUrl(fixture, namespace, agent, second.revision), (route) =>
-    route.fulfill(deploymentStatusResponse(second.revision, { status: "succeeded" })),
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, second.revision.id),
+    (route) => route.fulfill(deploymentStatusResponse(second.revision, { status: "succeeded" })),
   );
   await routeOneVersionPerPage(page, fixture, namespace, agent);
 
@@ -1089,7 +1091,7 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
     // The runtime status read settles after the page has scrolled to the Logs tab, as on a
     // live cluster where it takes about a second.
     await page.route(
-      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      `${deploymentRecordUrl(fixture, namespace.id, agent.id, active.revision.id)}/runtime`,
       async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 700));
         await route.continue().catch(() => {});
@@ -1137,7 +1139,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     // The status read settles well after the click's 500 ms input window, as on a live cluster.
     await page.route(
-      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      `${deploymentRecordUrl(fixture, namespace.id, agent.id, active.revision.id)}/runtime`,
       async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await route.continue().catch(() => {});
@@ -1238,6 +1240,149 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     await plugins.click();
     await page.locator('.agent-tabs [aria-selected="true"]', { hasText: "Plugins" }).waitFor();
     assert.equal(await leadsOverview(), true, "a tab change keeps the card above the overview");
+  }
+});
+
+// When Deployment activity's first read outlasts FIRST_ACTIVITY_WAIT_MS the page shows without
+// it, and the record landing later moved the version tabs: down 227 px for a running deploy, up
+// 65 px for a completed one (finding 2163). The stand-in is now the folded panel's one row, and a
+// late first record fills it without opening it, since the summary above shows the outcome. The
+// summary's note and the viewed version's record keep their rows, so nothing above the tabs moves
+// at desktop or phone width. Only a failure's card, which leads the page (finding 2094), and the
+// viewed version's own failure or read error, which its record states in full, may move them.
+test("a late first deployment read moves nothing above the version tabs", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Late activity");
+  const agent = await fixture.createAgent(namespace.id, "Late Activity", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: consoleViewports[0] },
+  });
+  // Each load's first read of the record waits for the case's answer.
+  let answer = null;
+  let requested = null;
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    async (route) => {
+      requested?.();
+      await route.fulfill(await answer);
+    },
+  );
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.clock.install();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const activity = deploymentActivity(page);
+  const record = page.locator(".version-deployment-record");
+  // Positions in the page at each width: the version tabs, the overview (the facts and
+  // Deployment activity) and the viewed version's record.
+  const measure = async () => {
+    const sizes = [];
+    for (const viewport of consoleViewports) {
+      await page.setViewportSize(viewport);
+      await nextFrames(page);
+      sizes.push(
+        await page.evaluate(() => {
+          const box = (selector) => {
+            const node = globalThis.document.querySelector(selector);
+            const rect = node?.getBoundingClientRect();
+            return node ? { top: rect.top + globalThis.scrollY, height: rect.height } : null;
+          };
+          return {
+            tabs: box(".agent-tabs").top,
+            overview: box(".agent-overview-status"),
+            record: box(".version-deployment-record")?.height ?? 0,
+          };
+        }),
+      );
+    }
+    await page.setViewportSize(consoleViewports[0]);
+    return sizes;
+  };
+  const unavailable = {
+    status: 503,
+    json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." } },
+  };
+  for (const c of [
+    { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
+    { status: "running", label: "In progress", stillOn: ["draft", "version"] },
+    { status: "failed", label: "Failed", stillOn: [] },
+    { status: "read error", label: "Unavailable", stillOn: ["draft"] },
+  ]) {
+    for (const view of ["draft", "version"]) {
+      const name = `${c.status} on the ${view}`;
+      let respond;
+      answer = new Promise((resolve) => {
+        respond = resolve;
+      });
+      const read = new Promise((resolve) => {
+        requested = resolve;
+      });
+      const selected = view === "draft" ? "draft" : revision.id;
+      await page.goto(detailUrl(fixture, namespace.id, agent.id, selected, "configuration").href);
+      await read;
+      // The held read keeps the page hidden until the overview's bounded wait runs out; run it
+      // out rather than wait for it.
+      await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
+      await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
+      await page.locator(settledView).waitFor();
+      await page.evaluate(() => globalThis.document.fonts.ready);
+      // The stand-in is one panel without controls: no empty panel, Refreshing… or "has not
+      // loaded" comes first.
+      assert.equal(await activity.count(), 1);
+      await activity.getByText("Loading the most recent visible deployment…").waitFor();
+      assert.equal(await activity.getByRole("button").count(), 0);
+      const before = await measure();
+
+      respond(
+        c.status === "read error"
+          ? unavailable
+          : deploymentStatusResponse(revision, {
+              status: c.status,
+              error:
+                c.status === "failed"
+                  ? persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED")
+                  : null,
+            }),
+      );
+      await summary.getByText(`v1 · ${c.label}`, { exact: true }).waitFor();
+      await activity.getByRole("button", { name: "Refresh deployment" }).waitFor();
+      if (c.status === "read error") {
+        // Folded, so hidden.
+        await activity.getByRole("alert", { includeHidden: true }).waitFor({ state: "attached" });
+      } else {
+        await expectDeploymentOutcome(page, c.label, { folded: true });
+      }
+      if (c.status === "failed") {
+        await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+      }
+      if (view !== "draft") {
+        await (c.status === "read error"
+          ? record.getByRole("alert").waitFor()
+          : expectVersionRecord(page, c.label));
+      }
+      await waitForIdleFetches(page);
+      assert.equal(await deploymentDetailsOpen(page), false, `${name}: the details stay folded`);
+      assert.equal(await activity.count(), 1);
+      const after = await measure();
+      t.diagnostic(`${name}: ${JSON.stringify({ before, after })}`);
+      for (const [index, { width }] of consoleViewports.entries()) {
+        const [was, is] = [before[index], after[index]];
+        // The overview keeps its height; the tabs move only as far as a card above it pushes it
+        // and the viewed version's record grows.
+        const near = (actual, expected, what) =>
+          assert.ok(Math.abs(actual - expected) < 1, `${name} at ${width}: ${what}`);
+        near(is.overview.height, was.overview.height, "the overview keeps its height");
+        near(
+          is.tabs - was.tabs,
+          is.overview.top - was.overview.top + (is.record - was.record),
+          "only the card and the record move the tabs",
+        );
+        if (c.stillOn.includes(view)) {
+          near(is.tabs, was.tabs, "the tabs stay");
+        }
+      }
+    }
   }
 });
 
@@ -1397,11 +1542,11 @@ async function pendingDeploy(t, viewport, name) {
   const pending = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
-  const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
   const open = async () => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "access"));
-    await page.getByText("Recorded status: In progress").waitFor();
+    await expectDeploymentOutcome(page, "In progress");
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     await waitForIdleFetches(page);
@@ -1511,7 +1656,7 @@ for (const viewport of [
     // The deploy settles.
     record = { status: "succeeded" };
     await poll();
-    await page.getByText("Recorded status: Completed").waitFor();
+    await expectDeploymentOutcome(page, "Completed", { folded: false });
     await waitForIdleFetches(page);
     const settledTop = await shareTop();
     t.diagnostic(`${size} Share Agent at ${firstTop}, ${attemptTop}, ${settledTop}`);
@@ -1551,8 +1696,8 @@ for (const viewport of [
     await page.clock.pauseAt(new Date(now + 1000));
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     assert.equal(await recovery.isVisible(), false);
-    const details = page.locator(".deployment-status > details");
-    assert.equal(await details.evaluate((node) => node.open), true, "a running deploy shows");
+    // open() left the running deploy's details open, as the reader sees them before it fails.
+    assert.equal(await deploymentDetailsOpen(page), true);
     const background = (locator) =>
       locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
     const admin = page.getByRole("link", { name: "Open admin console" });
@@ -1616,8 +1761,8 @@ for (const viewport of [
       "the card's action is above the fold",
     );
     // Folded once, the details stay open when the reader opens them.
-    await details.locator("summary").click();
-    assert.equal(await details.evaluate((node) => node.open), true);
+    await openDeploymentActivity(page);
+    assert.equal(await deploymentDetailsOpen(page), true);
   });
 }
 
@@ -2503,7 +2648,7 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await fixture.deployAgent(namespace.id, agent.id);
   const latest = await fixture.deployAgent(namespace.id, agent.id);
-  const recordUrl = deploymentUrl(fixture, namespace, agent, latest);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, latest.id);
   let record = deploymentStatusResponse(latest, { status: "queued" });
   await page.route(recordUrl, (route) => route.fulfill(record));
   await page.setViewportSize({ width: 1200, height: 800 });

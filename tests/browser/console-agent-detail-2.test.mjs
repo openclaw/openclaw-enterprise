@@ -37,6 +37,11 @@ import {
   waitForSettledFetches,
   statusTone,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  deploymentActivity,
+  deploymentRecordUrl,
+  expectDeploymentOutcome,
+} from "./console-deployment-activity-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
   expectNativeAdminHidden,
@@ -1176,33 +1181,30 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // Deployment activity reads a recorded status the worker would write; the native admin
   // reads stay on the real API so the card reflects the Agent's actual active revision.
   let deploymentStatus = "running";
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${pending.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: pending.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: deploymentStatus,
-            error: null,
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_native_admin_follow" },
-        }),
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          deploymentId: pending.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: deploymentStatus,
+          error: null,
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_test_native_admin_follow" },
       }),
+    }),
   );
   await page.clock.install({ time: new Date("2026-10-03T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Native admin follow Agent" }).waitFor();
-  const activity = page.locator(".deployment-status");
+  const activity = await expectDeploymentOutcome(page, "In progress");
   const card = page.locator(".native-admin-access");
-  await activity.getByText("Recorded status: In progress").waitFor();
   await card
     .getByText(
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
@@ -1214,7 +1216,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await fixture.activateRevision(namespace.id, agent.id, pending.id);
   deploymentStatus = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Recorded status: Completed").waitFor();
+  await expectDeploymentOutcome(page, "Completed", { folded: false });
   await card
     .getByText(
       "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
@@ -2788,25 +2790,23 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   let status = "running";
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${second.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: second.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status,
-            error: null,
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_workspace_poll" },
-        }),
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, second.id), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          deploymentId: second.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status,
+          error: null,
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_test_workspace_poll" },
       }),
+    }),
   );
   await page.clock.install({ time: new Date("2026-10-18T12:00:00Z") });
   await login(
@@ -2823,10 +2823,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   // The reread of USER.md is held until the reader has typed in it.
   const userPath = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
   const userReread = await holdRequests(t, page, `${fixture.origin}${userPath}`, { once: true });
-  await page
-    .locator(".deployment-status")
-    .getByText("Recorded status: In progress")
-    .waitFor({ state: "attached" });
+  await expectDeploymentOutcome(page, "In progress");
 
   // The reader is typing in AGENTS.md with a selection in the middle of the text.
   const file = page.getByLabel("AGENTS.md", { exact: true });
@@ -2850,10 +2847,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   await fixture.activateRevision(namespace.id, agent.id, second.id, first.revision.id);
   status = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await page
-    .locator(".deployment-status")
-    .getByText("Recorded status: Completed")
-    .waitFor({ state: "attached" });
+  await expectDeploymentOutcome(page, "Completed", { folded: false });
   await waitForInputValue(soul, `# SOUL.md served by ${second.id}\n`);
   await userReread.requested;
 
@@ -2936,9 +2930,9 @@ async function openWorkspaceVersions(t, name, workspaceFilesAccess, count = 2) {
         versions[current].id,
       );
       current += 1;
-      const refresh = page
-        .locator(".deployment-status")
-        .getByRole("button", { name: "Refresh deployment" });
+      const refresh = deploymentActivity(page).getByRole("button", {
+        name: "Refresh deployment",
+      });
       await (keepFocus ? refresh.evaluate((button) => button.click()) : refresh.click());
     },
   };

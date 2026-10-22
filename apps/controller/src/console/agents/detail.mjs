@@ -550,7 +550,16 @@ function rovingVersions(list, items) {
   return focusItem;
 }
 
-function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
+function createDeploymentStatusPanel(
+  context,
+  path,
+  revision,
+  onAgentChange,
+  onStatusChange,
+  // Whether the page already shows; given only to the panel that replaces the page's loading
+  // stand-in (finding 2163).
+  pageShown = () => false,
+) {
   const refresh = button(
     "Refresh deployment",
     () => {
@@ -779,7 +788,8 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
 
   function render() {
     // Keep both controls mounted during reads. Only a routine completed record starts folded;
-    // a new outcome, read error, cleanup or startup warning is visible without opening details.
+    // a new outcome, read error, cleanup or startup warning is visible without opening details,
+    // except a first read that lands after the page showed (below).
     const busy = String((state.loading && !state.polling) || state.refreshQueued);
     if (refresh.getAttribute("aria-disabled") !== busy) {
       refresh.setAttribute("aria-disabled", busy);
@@ -791,9 +801,15 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
     const { cleanup, warnings } = state.status ?? {};
     const evidence = [outcome, cleanup?.status, warnings?.length, state.overviewError].join("/");
     if (evidence !== previousEvidence) {
+      // A first read that lands after the bounded reveal showed the page fills the folded panel
+      // without opening it, so the tab strip below does not move: the Agent summary above shows
+      // its outcome or read failure, and a failure's card leads the page. Evidence only these
+      // details show (cleanup, startup warnings, an overview error) still opens them, as does
+      // every later change (finding 2163).
+      const late = previousEvidence === undefined && pageShown();
       details.open = Boolean(
         previousEvidence !== undefined ||
-        outcome !== "succeeded" ||
+        (outcome !== "succeeded" && !late) ||
         state.overviewError ||
         cleanup ||
         warnings?.length,
@@ -953,7 +969,14 @@ function createVersionDeploymentRecord(
                   )
                 : null,
             )
-          : element("p", { className: "muted" }, "Loading this version’s recorded outcome…"),
+          : // The two rows a recorded outcome fills, so it lands without moving the version's
+            // tab strip below (finding 2163).
+            element(
+              "div",
+              {},
+              element("p", {}, "Recorded outcome: Loading…"),
+              element("p", { className: "muted" }, "Reading this version’s deployment record."),
+            ),
     ]);
   }
 
@@ -1383,7 +1406,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
   }
   const latestDeploymentValue = element("strong", { className: "stat-value" });
-  const latestDeploymentNote = element("p", { className: "stat-help" });
+  // The note keeps its line while empty (console.css), so the loading text giving way to a
+  // recorded outcome moves nothing below it (finding 2163).
+  const latestDeploymentNote = element("p", { className: "stat-help stat-help-line" });
   setDelayedText(latestDeploymentValue, "", "Loading…");
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   // A recorded outcome is the version and a status badge (spec 3.5). The separator stays in the
@@ -1596,10 +1621,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     detailPane,
   );
   setLayoutShape();
-  const deploymentStatus = element("section", { className: "agent-card deployment-status" });
-  deploymentStatus.append(
-    element("h2", {}, "Deployment activity"),
-    element("p", { className: "muted" }, "Loading the most recent visible deployment…"),
+  // The stand-in has the folded panel's one row, so the panel that replaces it moves nothing
+  // when the bounded reveal shows the page before the latest record is read (finding 2163).
+  const deploymentStatus = element(
+    "section",
+    { className: "deployment-status deployment-evidence", "aria-label": "Deployment activity" },
+    element(
+      "p",
+      { className: "deployment-evidence-loading muted" },
+      "Loading the most recent visible deployment…",
+    ),
   );
   const tabControls = new Map();
   const revisionControls = new Map();
@@ -1879,6 +1910,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
   view.classList.add("agent-detail-pending");
   let revealTimer = null;
+  // Set once the page shows, whether its first deployment record is in or the wait ran out.
+  let detailShown = false;
   let markRevealed;
   const revealed = new Promise((resolve) => {
     markRevealed = resolve;
@@ -1999,6 +2032,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   });
   function showDetail() {
     clearTimeout(revealTimer);
+    detailShown = true;
     const shown = () => {
       if (view.classList.contains("agent-detail-pending")) {
         view.classList.remove("agent-detail-pending");
@@ -2983,6 +3017,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               }
               refreshDeployControls();
             },
+            // A newer version found later is one the reader is following: its first record
+            // opens the details as any new outcome does.
+            firstLoad ? () => detailShown : undefined,
           )
         : element(
             "section",

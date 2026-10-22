@@ -5052,7 +5052,7 @@ export const scenarios = {
     name: "Deployment activity loading",
     path: candidateVersion,
     deployed: true,
-    candidateDeploymentStatus: "succeeded",
+    candidateDeploymentStatus: "running",
     rules: [
       {
         prefix:
@@ -5061,9 +5061,10 @@ export const scenarios = {
       },
     ],
     description:
-      "Deployment status reads take 4 s. Deployment activity keeps its loading placeholder until the newest version's status arrives, then shows it in one step.",
+      "Deployment status reads take 4 s, longer than the page waits for them (about 2 s). The page shows with Deployment activity as one loading row; the in-progress record then fills that row as folded Deployment details, and Latest visible deployment reads v7 · In progress. Nothing above the version tabs moves.",
     steps: [
-      "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
+      "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
+      "Open Deployment details to read the in-progress stages.",
     ],
   },
   deploymentUnavailable: {

@@ -34,6 +34,12 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  deploymentRecordUrl,
+  expectDeploymentOutcome,
+  expectVersionRecord,
+  openFailureDetails,
+} from "./console-deployment-activity-helpers.mjs";
+import {
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
@@ -65,7 +71,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     [pending.id, "queued"],
   ]) {
     await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+      deploymentRecordUrl(fixture, namespace.id, agent.id, revisionId),
       async (route) => {
         await route.fulfill({
           status: 200,
@@ -119,9 +125,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
-  const activity = page.locator(".deployment-status");
+  const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
-  await activity.getByText("Recorded status: Queued").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
   await activity.getByText("No reconciliation result is available yet.").waitFor();
   // Simulate a subsequent status read. Persistence and attribution are proved
@@ -140,9 +145,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByText("Since", { exact: true }).waitFor();
   assert.equal(await activity.getByText("Waiting for a worker claim.").count(), 0);
   await activity.getByText("Successful completion is not recorded yet.").waitFor();
-  const versionRecord = page.locator(".version-deployment-record");
+  const versionRecord = await expectVersionRecord(page, "Completed");
   await versionRecord.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
-  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
   // D331: a startup warning says what happened to the plugin, not only its code.
   await versionRecord
     .getByText(
@@ -290,8 +294,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // That run started by dropping the earlier result's description, and nothing described the
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
-  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
-  await activity.getByText("Recorded status: Queued").waitFor();
+  await expectVersionRecord(page, "Completed");
+  await expectDeploymentOutcome(page, "Queued", { folded: false });
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
   assert.ok(
     pathRequests(
@@ -311,7 +315,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   const newer = await fixture.deployAgent(namespace.id, agent.id);
   let newerStatus = "queued";
   await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${newer.id}`,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, newer.id),
     async (route) => {
       await route.fulfill({
         status: 200,
@@ -346,10 +350,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await overview.nth(0).getByText("v3", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Failed").waitFor();
-  // The failure's card leads the page and folds Deployment details (finding 2094); open them.
-  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
-  await activity.getByText("Deployment details", { exact: true }).click();
-  await activity.getByText("Recorded status: Failed").waitFor();
+  await openFailureDetails(page);
+  await expectDeploymentOutcome(page, "Failed", { folded: false });
   await activity
     .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
     .waitFor();

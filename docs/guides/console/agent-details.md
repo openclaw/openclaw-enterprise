@@ -34,7 +34,10 @@ configurable settings. Sign out ends your console session.
 
 **Deployment activity** follows the latest readable version while viewing
 another version or the draft. Routine completions and failures fold, a failure
-under its leading card; pending work, warnings and cleanup stay open.
+under its leading card; pending work, warnings and cleanup stay open. On a slow
+connection the page can show before the first record arrives; that record then stays
+folded and **Latest visible deployment** shows its outcome. Open **Deployment details**
+to read it.
 Milestones show the saved record:
 
 | Milestone               | Evidence                                                                          |

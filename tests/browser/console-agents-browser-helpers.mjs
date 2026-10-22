@@ -594,6 +594,18 @@ export async function takeLayoutShifts(page) {
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
 
+// Resolves after the page has painted twice more and run a task after that, so work that has
+// already settled has rendered and any layout shift from it has been reported.
+export const nextFrames = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() =>
+          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
+        );
+      }),
+  );
+
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 

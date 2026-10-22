@@ -14,9 +14,14 @@ import {
   login,
   nativeValues,
   newPage,
+  nextFrames,
   persistedDeploymentError,
   routeFailedDeployment,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  deploymentDetailsOpen,
+  deploymentRecordUrl,
+} from "./console-deployment-activity-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
@@ -26,18 +31,6 @@ import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
-
-// Resolves after the page has painted twice more and run a task after that, so work that has
-// already settled has rendered.
-const nextFrames = (page) =>
-  page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        globalThis.requestAnimationFrame(() =>
-          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
-        );
-      }),
-  );
 
 // An Agent whose v1 keeps serving while its v2 redeploy failed with DEPENDENCY_UNAVAILABLE.
 async function failedRedeploy(
@@ -494,33 +487,30 @@ async function deployingVersion(t, name, { status = "running", older = false } =
         ? route.fulfill(UNAVAILABLE)
         : route.fallback(),
   );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
-    (route) => {
-      record.recordReads += 1;
-      return record.fail
-        ? route.fulfill(failure(record.fail))
-        : route.fulfill({
-            status: 200,
-            contentType: "application/json",
-            body: JSON.stringify({
-              data: {
-                deploymentId: next.id,
-                namespaceId: namespace.id,
-                agentId: agent.id,
-                status: record.status,
-                error:
-                  record.status === "failed"
-                    ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
-                    : null,
-                warnings: [],
-                progress: null,
-              },
-              meta: { requestId: "req_test_deploying_label" },
-            }),
-          });
-    },
-  );
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, next.id), (route) => {
+    record.recordReads += 1;
+    return record.fail
+      ? route.fulfill(failure(record.fail))
+      : route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              deploymentId: next.id,
+              namespaceId: namespace.id,
+              agentId: agent.id,
+              status: record.status,
+              error:
+                record.status === "failed"
+                  ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
+                  : null,
+              warnings: [],
+              progress: null,
+            },
+            meta: { requestId: "req_test_deploying_label" },
+          }),
+        });
+  });
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
@@ -705,25 +695,23 @@ test("A failed reread leaves the newest readable version Historical under a hidd
         ? route.fulfill(UNAVAILABLE)
         : route.fallback(),
   );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: next.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: "succeeded",
-            error: null,
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_hidden_current" },
-        }),
+  await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, next.id), (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          deploymentId: next.id,
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          status: "succeeded",
+          error: null,
+          warnings: [],
+          progress: null,
+        },
+        meta: { requestId: "req_test_hidden_current" },
       }),
+    }),
   );
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
@@ -756,8 +744,7 @@ test("A failure read by a refresh that cannot reread the Agent keeps its warning
   // The panel renders the warning and the card folds the details in one task, so once the
   // warning is in the page the details' state is settled.
   await warning.waitFor({ state: "attached" });
-  const details = page.locator(".deployment-status > details");
-  assert.equal(await details.evaluate((node) => node.open), true);
+  assert.equal(await deploymentDetailsOpen(page), true);
   assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
 });
 
