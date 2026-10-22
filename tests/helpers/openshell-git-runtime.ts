@@ -351,3 +351,23 @@ export function openShellGitRuntimeFixture({
     revision,
   });
 }
+
+export async function reconciledOpenShellGitRuntimeFixture(
+  options?: Parameters<typeof openShellGitRuntimeFixture>[0],
+) {
+  const fixture = openShellGitRuntimeFixture(options);
+  await fixture.reconcile();
+  return fixture;
+}
+
+export function openShellGitRuntimeWorkerAfterRestart(
+  previous?: ReturnType<typeof openShellGitRuntimeFixture>,
+) {
+  const options = previous
+    ? { world: previous, ...(previous.store === undefined ? {} : { store: previous.store }) }
+    : {};
+  const fixture = openShellGitRuntimeFixture(options);
+  fixture.runtime["entries"].clear();
+  fixture.runtime["states"].clear();
+  return fixture;
+}

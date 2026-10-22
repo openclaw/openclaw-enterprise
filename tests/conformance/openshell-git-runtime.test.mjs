@@ -15,6 +15,8 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
   openShellGitRuntimeFixture as fixture,
+  openShellGitRuntimeWorkerAfterRestart as workerAfterRestart,
+  reconciledOpenShellGitRuntimeFixture as reconciledFixture,
   registry,
 } from "../helpers/openshell-git-runtime.ts";
 import {
@@ -26,31 +28,33 @@ import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 // The worker-local runtime's reconcile and lookup, driven at the class boundary with a fake
 // gateway client, provider and material owner: no OpenShell wire, no database. The provider's
 // own wire behaviour is covered by openshell-prepared-git-provider.test.mjs.
-/**
- * A new worker process finding the Sandbox and persisted route of `f`: the same gateway,
- * supervisor and owner, an empty runtime and the shared route store (finding 2128). The
- * entry the adoption builds gets the fixture's fake provider and the driver's bind().
- */
-async function restarted(f) {
-  const g = fixture({ store: f.store, world: f });
-  g.runtime.entries.clear();
-  g.runtime.states.clear();
-  await g.prepare();
-  const entry = await g.runtime.entries.get(f.revision.id);
-  entry.provider = g.provider;
-  await g.runtime.bind(f.revision.id, f.entry.verify);
-  g.entry = entry;
-  return g;
+async function prepareAndBind(f, verify = f.entry.verify) {
+  await f.prepare();
+  const entry = await f.runtime.entries.get(f.revision.id);
+  entry.provider = f.provider;
+  await f.runtime.bind(f.revision.id, verify);
+  f.entry = entry;
+  return f;
 }
+
+// A new worker shares the Sandbox, gateway, supervisor, owner and route store, then adopts
+// the persisted route with an empty local runtime (finding 2128).
+const restarted = (f) => prepareAndBind(workerAfterRestart(f), f.entry.verify);
 
 const restorations = (f) =>
   f.events.filter(
     (event) => event.event === "worker.openshell-git-route" && event.status === "restored",
   );
+const warnings = (f) =>
+  f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
+
+async function expectDenied(f, reason, message) {
+  assert.equal(await f.lookup(), undefined, message);
+  assert.equal(f.denials().at(-1).reason, reason, message);
+}
 
 test("a gateway that does not answer closes the Git route and restores it without a tombstone", async () => {
-  const f = fixture();
-  await f.reconcile();
+  const f = await reconciledFixture();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1);
   assert.equal((await f.lookup())?.executionId, f.revision.id);
@@ -66,23 +70,19 @@ test("a gateway that does not answer closes the Git route and restores it withou
     failure: "gateway_unavailable",
   });
   assert.deepEqual(f.errors(), []);
-  assert.deepEqual(
-    f.events.filter((event) => event.event === "worker.openshell-git-route-warning"),
-    [
-      {
-        event: "worker.openshell-git-route-warning",
-        status: "unobserved",
-        reason: "gateway_unavailable",
-        namespaceId: "namespace-a",
-        agentId: "agent-one",
-        revisionId: "rev-one",
-        repositoryRef: "application",
-      },
-    ],
-  );
+  assert.deepEqual(warnings(f), [
+    {
+      event: "worker.openshell-git-route-warning",
+      status: "unobserved",
+      reason: "gateway_unavailable",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      revisionId: "rev-one",
+      repositoryRef: "application",
+    },
+  ]);
   // Closed: a request is denied, and the denial says why.
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_unobserved");
+  await expectDenied(f, "route_unobserved");
   assert.equal(f.denials().at(-1).sandboxId, f.sandbox.id);
   assert.equal(f.denials().at(-1).revisionId, "rev-one");
 
@@ -95,10 +95,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
   await f.reconcile();
   assert.equal(f.entry.unobserved.failures, 2);
   assert.ok(f.entry.nextObserveAt - performance.now() > 1_500);
-  assert.equal(
-    f.events.filter((event) => event.event === "worker.openshell-git-route-warning").length,
-    1,
-  );
+  assert.equal(warnings(f).length, 1);
 
   // The gateway answers again and the same installation verifies: the route is back, with
   // no new provider write and no token replay.
@@ -107,9 +104,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1);
   assert.equal((await f.lookup())?.executionId, f.revision.id);
-  const restored = f.events.filter(
-    (event) => event.event === "worker.openshell-git-route" && event.status === "restored",
-  );
+  const restored = restorations(f);
   assert.equal(restored.length, 1);
   assert.ok(Number.isFinite(restored[0].durationMs) && restored[0].durationMs >= 0);
   assert.equal(restored[0].revisionId, "rev-one");
@@ -151,8 +146,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
 
   // A request arriving while the gateway is away closes the route too, and nothing more.
   f.faults.gateway = new SandboxGatewayUnavailableError("OpenShell GetSandbox failed.");
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_unobserved");
+  await expectDenied(f, "route_unobserved");
   assert.equal(f.entry.blocked, undefined);
   f.faults.gateway = undefined;
   await f.reconcile();
@@ -161,9 +155,7 @@ test("a gateway that does not answer closes the Git route and restores it withou
 
   // A request whose own budget runs out mid-read is denied, and the route it could not
   // observe stays as reconcile left it: no closure, no warning.
-  const warnings = () =>
-    f.events.filter((event) => event.event === "worker.openshell-git-route-warning").length;
-  const before = warnings();
+  const before = warnings(f).length;
   const controller = new AbortController();
   f.faults.onRead = () => {
     controller.abort();
@@ -173,20 +165,16 @@ test("a gateway that does not answer closes the Git route and restores it withou
   f.faults.onRead = undefined;
   assert.equal(f.denials().at(-1).reason, "lookup_aborted");
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
-  assert.equal(warnings(), before);
+  assert.equal(warnings(f).length, before);
 
   // A plain material rotation is not an outage: it installs the new version and reports no
   // restoration.
-  const restorations = () =>
-    f.events.filter(
-      (event) => event.event === "worker.openshell-git-route" && event.status === "restored",
-    ).length;
-  const restoredBefore = restorations();
+  const restoredBefore = restorations(f).length;
   f.owner.material = { ...f.owner.material, materialVersion: "version-two" };
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 2);
-  assert.equal(restorations(), restoredBefore);
+  assert.equal(restorations(f).length, restoredBefore);
   assert.deepEqual(f.errors(), []);
 });
 
@@ -241,8 +229,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
   // A replaced Gateway Pod: the read fails, then the same process reconnects to the new Pod
   // under a new control session. The route reopens on the next verified read, with no new
   // version, no provider write and no token replay (finding 2136, owner decision 10-20).
-  let f = fixture();
-  await f.reconcile();
+  let f = await reconciledFixture();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   f.faults.gateway = new SandboxGatewayUnavailableError("OpenShell GetSandbox failed.");
   await f.reconcile();
@@ -279,11 +266,9 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
 
   // The reconnect is first seen by a request: that request is denied as a changed
   // installation, and the worker's own reconcile adopts the session and reopens the route.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.supervisor.supervisorSessionId = "session-two";
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "installation_changed");
+  await expectDenied(f, "installation_changed");
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
   assert.deepEqual(f.errors(), []);
   await f.reconcile();
@@ -295,8 +280,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
 
   // The new session is adopted only once its observation verifies: while the provider
   // status does not, the route waits (no adoption, no tombstone); then it reopens.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.faults.gateway = new SandboxGatewayUnavailableError("OpenShell GetSandbox failed.");
   await f.reconcile();
   f.faults.gateway = undefined;
@@ -305,8 +289,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
   assert.equal(f.entry.supervisor.supervisorSessionId, "session-one");
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_pending");
+  await expectDenied(f, "route_pending");
   assert.deepEqual(f.errors(), []);
   f.faults.observe = undefined;
   await f.reconcile();
@@ -321,8 +304,7 @@ test("the same supervisor process reconnecting with a new session re-adopts the 
   // generation, its verifying read lagged, then the supervisor reconnected. The adopted
   // observation carries the generation this worker wrote (observe() pins it to the binding),
   // not the one read before the rotation, so the route reopens instead of closing for good.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   assert.equal(f.entry.supervisor.providerResourceVersion, "12");
   f.owner.material = { ...f.owner.material, materialVersion: "version-two" };
   f.faults.observeAfterRotate = true;
@@ -385,8 +367,7 @@ test("another Agent's deploy leaves a running Agent's Git route open", async () 
 
   // Before the supervisor installs the moved environment, observe() answers the verified
   // installation (it is handed the one the route admitted), for a bounded time.
-  const lag = fixture();
-  await lag.reconcile();
+  const lag = await reconciledFixture();
   const admittedInstall = lag.entry.installed;
   lag.faults.environmentLag = true;
   assert.equal((await lag.lookup())?.executionId, lag.revision.id);
@@ -404,11 +385,8 @@ test("another Agent's deploy leaves a running Agent's Git route open", async () 
   );
   await lag.reconcile();
   assert.deepEqual(lag.runtime.route(lag.revision.id), { state: "pending", reason: "unverified" });
-  const warnings = lag.events.filter(
-    (event) => event.event === "worker.openshell-git-route-warning",
-  );
   assert.deepEqual(
-    warnings.map((event) => [event.status, event.reason, event.revisionId]),
+    warnings(lag).map((event) => [event.status, event.reason, event.revisionId]),
     [["pending", "environment_not_installed", "rev-one"]],
   );
   lag.faults.environmentLag = undefined;
@@ -416,17 +394,14 @@ test("another Agent's deploy leaves a running Agent's Git route open", async () 
   assert.deepEqual(lag.runtime.route(lag.revision.id), { state: "installed" });
   assert.equal(lag.entry.environmentLag, undefined);
   // The outage is reported as restored, like any other closed route.
-  const restored = lag.events.filter(
-    (event) => event.event === "worker.openshell-git-route" && event.status === "restored",
-  );
+  const restored = restorations(lag);
   assert.equal(restored.length, 1);
   assert.ok(restored[0].durationMs >= 0);
   assert.deepEqual(lag.errors(), []);
 
   // A close that lands while a read is in flight (a request's lookup past the limit) cannot
   // make the reconcile's read look fresh and restart the window.
-  const race = fixture();
-  await race.reconcile();
+  const race = await reconciledFixture();
   race.faults.environmentLag = true;
   const since = performance.now() - 61_000;
   race.entry.environmentLag = { since };
@@ -442,8 +417,7 @@ test("another Agent's deploy leaves a running Agent's Git route open", async () 
   assert.equal(race.entry.environmentLag?.since, since);
 
   // A credential rotation's verifying read is never handed the old installation.
-  const rotation = fixture();
-  await rotation.reconcile();
+  const rotation = await reconciledFixture();
   rotation.owner.material = { ...rotation.owner.material, materialVersion: "version-two" };
   rotation.calls.observedWith.length = 0;
   await rotation.reconcile();
@@ -462,8 +436,7 @@ test("another Agent's deploy leaves a running Agent's Git route open", async () 
     await g.reconcile();
     g.supervisor[field] = value;
     g.supervisor.providerEnvRevision = "env-two";
-    assert.equal(await g.lookup(), undefined, field);
-    assert.equal(g.denials().at(-1).reason, "installation_changed", field);
+    await expectDenied(g, "installation_changed", field);
   }
 });
 
@@ -474,8 +447,6 @@ test("an open Git route that loses its material says so once and names it in eac
   // version, and the restoration reports the outage's length (finding 2135). A version
   // superseded by a newer one loses its material too, a moment before it is withdrawn, and
   // no request asks for it: the close alone is not reported.
-  const warnings = (f) =>
-    f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
   const f = fixture();
   const material = f.owner.material;
   await f.reconcile();
@@ -512,8 +483,7 @@ test("an open Git route that loses its material says so once and names it in eac
   assert.equal(f.denials().at(-1).revisionId, "rev-one");
   // Still unavailable: no second warning, the same denial.
   await f.reconcile();
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "material_unavailable");
+  await expectDenied(f, "material_unavailable");
   assert.equal(warnings(f).length, 1);
   assert.deepEqual(f.errors(), []);
   // Material again (a new preparation after recovery): the route reopens and reports it.
@@ -521,25 +491,21 @@ test("an open Git route that loses its material says so once and names it in eac
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal((await f.lookup())?.executionId, f.revision.id);
-  const restored = f.events.filter(
-    (event) => event.event === "worker.openshell-git-route" && event.status === "restored",
-  );
+  const restored = restorations(f);
   assert.equal(restored.length, 1);
   assert.equal(restored[0].reason, undefined);
   assert.ok(Number.isFinite(restored[0].durationMs) && restored[0].durationMs >= 0);
 
   // Lost because the session ended (the binding was removed, or the version replaced): the
   // denial and the warning say access was withdrawn, not that the credential is unavailable.
-  const w = fixture();
-  await w.reconcile();
+  const w = await reconciledFixture();
   w.owner.material = { absent: "withdrawn" };
   await w.reconcile();
   assert.deepEqual(w.runtime.route(w.revision.id), {
     state: "pending",
     reason: "material_unavailable",
   });
-  assert.equal(await w.lookup(), undefined);
-  assert.equal(w.denials().at(-1).reason, "material_unavailable");
+  await expectDenied(w, "material_unavailable");
   assert.equal(w.denials().at(-1).reasonCode, "access_withdrawn");
   assert.equal(warnings(w).at(-1).reasonCode, "access_withdrawn");
   w.owner.material = { absent: "unprepared" };
@@ -556,8 +522,7 @@ test("an open Git route that loses its material says so once and names it in eac
 
   // Material lost while the route is closed by a failed read: once the Gateway answers, the
   // route reads as material_unavailable, and the first refused request reports it.
-  const h = fixture();
-  await h.reconcile();
+  const h = await reconciledFixture();
   h.faults.gateway = new SandboxGatewayUnavailableError("OpenShell GetSandbox failed.");
   await h.reconcile();
   h.owner.material = undefined;
@@ -567,8 +532,7 @@ test("an open Git route that loses its material says so once and names it in eac
     state: "pending",
     reason: "material_unavailable",
   });
-  assert.equal(await h.lookup(), undefined);
-  assert.equal(h.denials().at(-1).reason, "material_unavailable");
+  await expectDenied(h, "material_unavailable");
   assert.equal(warnings(h).filter((event) => event.reason === "material_unavailable").length, 1);
 
   // A version that never had material (deploying; it is issued once the version is active)
@@ -580,8 +544,7 @@ test("an open Git route that loses its material says so once and names it in eac
     state: "pending",
     reason: "awaiting_material",
   });
-  assert.equal(await g.lookup(), undefined);
-  assert.equal(g.denials().at(-1).reason, "route_pending");
+  await expectDenied(g, "route_pending");
   assert.equal(g.denials().at(-1).reasonCode, "route_not_ready");
   assert.deepEqual(warnings(g), []);
 });
@@ -604,8 +567,7 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
     f.faults.gateway = undefined;
     await f.reconcile();
     assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason });
-    assert.equal(await f.lookup(), undefined);
-    assert.equal(f.denials().at(-1).reason, "route_blocked");
+    await expectDenied(f, "route_blocked");
     // The Agent is told a new version is needed (finding 2149).
     assert.equal(f.denials().at(-1).reasonCode, "route_blocked");
     assert.equal(f.errors().length, 1);
@@ -618,64 +580,41 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
   };
 
   // The gateway answered and refused this worker's identity: never retried.
-  let f = fixture();
-  await f.reconcile();
+  let f = await reconciledFixture();
   assert.equal(f.runtime.route(f.revision.id).state, "installed");
   f.faults.gateway = Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
   await f.reconcile();
   await expectBlocked(f, "gateway_unauthorized");
 
   // The sandbox restarted under the same name.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.sandbox.restartCount = 1;
   await f.reconcile();
   await expectBlocked(f, "execution_replaced");
 
-  // Another supervisor process reports the installation under a new session.
-  f = fixture();
-  await f.reconcile();
-  f.supervisor.supervisorSessionId = "session-two";
-  f.supervisor.processInstanceId = "process-two";
-  await f.reconcile();
-  await expectBlocked(f, "supervisor_replaced");
-
-  // The same process under a new session, but on another network instance.
-  f = fixture();
-  await f.reconcile();
-  f.supervisor.supervisorSessionId = "session-two";
-  f.supervisor.networkInstanceId = "network-two";
-  await f.reconcile();
-  await expectBlocked(f, "supervisor_replaced");
-
-  // A changed process or network instance within the same session.
-  for (const key of ["processInstanceId", "networkInstanceId"]) {
-    f = fixture();
-    await f.reconcile();
-    f.supervisor[key] = `${key}-two`;
+  for (const supervisorChange of [
+    // A new session with a different process or network instance.
+    { supervisorSessionId: "session-two", processInstanceId: "process-two" },
+    { supervisorSessionId: "session-two", networkInstanceId: "network-two" },
+    // A changed process or network instance within the same session.
+    ...["processInstanceId", "networkInstanceId"].map((key) => ({ [key]: `${key}-two` })),
+    // A new session whose verified installation differs from the previous observation.
+    { supervisorSessionId: "session-two", attachmentEpoch: "epoch-two" },
+  ]) {
+    f = await reconciledFixture();
+    Object.assign(f.supervisor, supervisorChange);
     await f.reconcile();
     await expectBlocked(f, "supervisor_replaced");
   }
 
-  // A new session whose verified observation differs from the installation observed before
-  // (here the provider attachment epoch): adopted only when everything else reads the same.
-  f = fixture();
-  await f.reconcile();
-  f.supervisor.supervisorSessionId = "session-two";
-  f.supervisor.attachmentEpoch = "epoch-two";
-  await f.reconcile();
-  await expectBlocked(f, "supervisor_replaced");
-
   // The sandbox no longer matches the admitted create request.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.sandbox.name = "another-sandbox";
   await f.reconcile();
   await expectBlocked(f, "sandbox_mismatch");
 
   // A genuine substitution before the deadline stays a grant conflict, not ordinary expiry.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   const [original] = f.revision.repositoryCredentials.bindings;
   f.revision.repositoryCredentials.bindings[0] = {
     ...original,
@@ -715,21 +654,18 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
   assert.equal(f.calls.rotate, 2);
 
   // Material that no longer matches the admitted grant.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.owner.material = { ...f.owner.material, pushRef: "refs/heads/main" };
   await f.reconcile();
   await expectBlocked(f, "material_mismatch");
 
   // Withdrawal closes the route without a reconciliation report of its own.
-  f = fixture();
-  await f.reconcile();
+  f = await reconciledFixture();
   f.runtime.withdraw(f.revision.id);
   await Promise.resolve();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
   assert.deepEqual(f.errors(), []);
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_blocked");
+  await expectDenied(f, "route_blocked");
   assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
 });
 
@@ -756,8 +692,7 @@ test("the Git route reports bootstrap, material and binding states for Compute r
     reason: "awaiting_material",
   });
   assert.equal(f.calls.rotate, 0);
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_pending");
+  await expectDenied(f, "route_pending");
   // A request from a sandbox that is not the admitted one, with this entry's binding.
   f.owner.material = fixture().owner.material;
   await f.reconcile();
@@ -864,9 +799,7 @@ test("a restarted worker names why it cannot adopt a revision's Sandbox, once pe
   // Finding 2140: after a worker restart the Sandbox survives, but this worker never prepared
   // it. Each later pass rethrows the retained failure; the cause is logged once, with the
   // Agent, revision and repositoryRef, so the operator knows a new revision is required.
-  const f = fixture();
-  f.runtime.entries.clear();
-  f.runtime.states.clear();
+  const f = workerAfterRestart();
   for (let pass = 0; pass < 3; pass += 1) {
     await assert.rejects(f.prepare(), /requires a new revision after worker restart/);
   }
@@ -1025,8 +958,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
     ],
   );
   assert.deepEqual(g.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
-  assert.equal(await g.lookup(), undefined, "nothing is admitted before the route verifies");
-  assert.equal(g.denials().at(-1).reason, "route_pending");
+  await expectDenied(g, "route_pending", "nothing is admitted before the route verifies");
   await g.reconcile();
   assert.deepEqual(g.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1, "the same material version is not written again");
@@ -1042,8 +974,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
 
   // Material rotated by the owner while the worker was down (or a lagging restart): the
   // normal rotation installs the new version, and the generation it writes is recorded.
-  const h0 = fixture({ store: routeStore() });
-  await h0.reconcile();
+  const h0 = await reconciledFixture({ store: routeStore() });
   h0.owner.material = { ...h0.owner.material, materialVersion: "version-two" };
   const h = await restarted(h0);
   await h.reconcile();
@@ -1073,8 +1004,7 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
 
   // A restart that overlapped a Gateway restart: the supervisor reconnected under a new
   // session, the same process. Adopted as a reconnect is, reported as the restart.
-  const r0 = fixture({ store: routeStore() });
-  await r0.reconcile();
+  const r0 = await reconciledFixture({ store: routeStore() });
   r0.supervisor.supervisorSessionId = "session-two";
   const r = await restarted(r0);
   await r.reconcile();
@@ -1085,11 +1015,8 @@ test("a restarted worker re-adopts a persisted Git route without a provider writ
 
   // Without a route store, or for a Sandbox whose route was never persisted, a restart
   // still requires a new revision, with the reason logged once (finding 2140).
-  const u0 = fixture({ store: routeStore() });
-  await u0.reconcile();
-  const u = fixture({ store: u0.store, world: u0 });
-  u.runtime.entries.clear();
-  u.runtime.states.clear();
+  const u0 = await reconciledFixture({ store: routeStore() });
+  const u = workerAfterRestart(u0);
   u.store.rows.clear();
   await assert.rejects(u.prepare(), /requires a new revision after worker restart/);
   assert.equal(u.errors()[0]?.reason, "worker_restarted");
@@ -1106,8 +1033,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
     ["networkInstanceId", "network-two", "supervisor_replaced"],
     ["attachmentEpoch", "epoch-two", "supervisor_replaced"],
   ]) {
-    const f = fixture({ store: routeStore() });
-    await f.reconcile();
+    const f = await reconciledFixture({ store: routeStore() });
     f.supervisor[key] = value;
     const g = await restarted(f);
     await g.reconcile();
@@ -1117,13 +1043,10 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
     assert.equal(g.errors()[0].revisionId, "rev-one");
     assert.equal(f.store.rows.get(f.revision.id).blocked, reason, "the tombstone persists");
     assert.equal(f.calls.rotate, 1, "no provider write for a route that does not verify");
-    assert.equal(await g.lookup(), undefined);
-    assert.equal(g.denials().at(-1).reason, "route_blocked");
+    await expectDenied(g, "route_blocked");
     // A third worker finds the tombstone: refused at once, logged once, no fence moved.
     const blockedFence = f.store.rows.get(f.revision.id).fence;
-    const h = fixture({ store: f.store, world: f });
-    h.runtime.entries.clear();
-    h.runtime.states.clear();
+    const h = workerAfterRestart(f);
     await assert.rejects(h.prepare(), { name: "OpenShellGitRouteBlockedError", reason });
     await assert.rejects(h.prepare(), { name: "OpenShellGitRouteBlockedError", reason });
     assert.deepEqual(h.runtime.route(f.revision.id), { state: "blocked", reason });
@@ -1132,8 +1055,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
   }
 
   // A replaced Sandbox under the persisted name.
-  const f = fixture({ store: routeStore() });
-  await f.reconcile();
+  const f = await reconciledFixture({ store: routeStore() });
   f.sandbox.id = "sandbox-id-two";
   const g = await restarted(f);
   await g.reconcile();
@@ -1145,8 +1067,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
 
   // A provider write still pending when the previous worker stopped: its outcome is
   // unknown, never resumed or replayed. Refused at adoption, before any gateway read.
-  const w0 = fixture({ store: routeStore() });
-  await w0.reconcile();
+  const w0 = await reconciledFixture({ store: routeStore() });
   const pendingMaterial = { materialVersion: "version-two", preparationAttemptId: "attempt-two" };
   const pendingFence = await w0.store.writing(
     w0.revision.id,
@@ -1155,9 +1076,7 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
     pendingMaterial,
   );
   assert.equal(pendingFence, w0.entry.fence + 1);
-  const w = fixture({ store: w0.store, world: w0 });
-  w.runtime.entries.clear();
-  w.runtime.states.clear();
+  const w = workerAfterRestart(w0);
   const reads = w0.calls.getSandbox;
   await assert.rejects(w.prepare(), {
     name: "OpenShellGitRouteBlockedError",
@@ -1188,23 +1107,17 @@ test("a persisted Git route whose installation no longer verifies tombstones wit
   assert.equal(w.errors()[0]?.reason, "write_unknown");
 
   // A withdrawn revision's route is a persisted tombstone too.
-  const x0 = fixture({ store: routeStore() });
-  await x0.reconcile();
+  const x0 = await reconciledFixture({ store: routeStore() });
   x0.runtime.withdraw(x0.revision.id);
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(x0.store.rows.get(x0.revision.id).blocked, "withdrawn");
-  const x = fixture({ store: x0.store, world: x0 });
-  x.runtime.entries.clear();
-  x.runtime.states.clear();
+  const x = workerAfterRestart(x0);
   await assert.rejects(x.prepare(), { name: "OpenShellGitRouteBlockedError", reason: "withdrawn" });
 
   // A store that does not answer is a failed read: the adoption is retried on the next
   // pass, never retained as a failed bootstrap.
-  const s0 = fixture({ store: routeStore() });
-  await s0.reconcile();
-  const s = fixture({ store: s0.store, world: s0 });
-  s.runtime.entries.clear();
-  s.runtime.states.clear();
+  const s0 = await reconciledFixture({ store: routeStore() });
+  const s = workerAfterRestart(s0);
   s0.store.fault = new Error("connection terminated");
   await assert.rejects(s.prepare(), /could not be observed: read_failed/);
   assert.deepEqual(s.runtime.route(s.revision.id), { state: "none" });
@@ -1222,16 +1135,14 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   // the previous holder's next reconcile, lookup and provider write all find it stale. It
   // drops its copy of the route as worker_replaced without touching the row, admits nothing
   // more and writes nothing; the adopter serves (finding 2128).
-  const f = fixture({ store: routeStore() });
-  await f.reconcile();
+  const f = await reconciledFixture({ store: routeStore() });
   assert.equal((await f.lookup())?.executionId, f.revision.id);
   const installedFence = f.store.rows.get(f.revision.id).fence;
   const g = await restarted(f);
   assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 1);
 
   // The stale worker's request lookup is fenced before it admits anything.
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "route_blocked");
+  await expectDenied(f, "route_blocked");
   // Not a tombstone in this process: the revision is fine, the adopter serves it.
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
   assert.deepEqual(f.errors(), []);
@@ -1251,11 +1162,7 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   // The previous worker holds the claim again (the adopter lost it): its next prepare()
   // re-adopts through the store with the full verification, moving the fence once more, and
   // the adopter is the one that stops.
-  await f.prepare();
-  const again = await f.runtime.entries.get(f.revision.id);
-  again.provider = f.provider;
-  await f.runtime.bind(f.revision.id, f.entry.verify);
-  f.entry = again;
+  await prepareAndBind(f);
   assert.equal(f.store.rows.get(f.revision.id).fence, installedFence + 2);
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
@@ -1268,16 +1175,14 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
   // A store that does not answer a request's fence check denies that request only: the
   // route stays as the worker's reconcile left it.
   f.store.fault = new Error("connection refused");
-  assert.equal(await f.lookup(), undefined);
-  assert.equal(f.denials().at(-1).reason, "store_unavailable");
+  await expectDenied(f, "store_unavailable");
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   f.store.fault = undefined;
   assert.equal((await f.lookup())?.executionId, f.revision.id);
 
   // A stale worker whose reconcile would rotate: fenced at the top of the pass, before the
   // provider write, so the new material is installed by the adopter only.
-  const p = fixture({ store: routeStore() });
-  await p.reconcile();
+  const p = await reconciledFixture({ store: routeStore() });
   const q = await restarted(p);
   p.owner.material = { ...p.owner.material, materialVersion: "version-two" };
   const writes = p.calls.rotate;
@@ -1291,8 +1196,7 @@ test("only the worker that adopted a persisted Git route holds it: a stale fence
 
   // The fence is checked right before the write too: a route adopted between the pass's
   // first check and its rotation refuses the write.
-  const a = fixture({ store: routeStore() });
-  await a.reconcile();
+  const a = await reconciledFixture({ store: routeStore() });
   a.owner.material = { ...a.owner.material, materialVersion: "version-two" };
   const before = a.calls.rotate;
   a.faults.onRead = () => {
@@ -1309,11 +1213,8 @@ test("an adoption the gateway refuses tombstones the route instead of retrying i
   // A worker whose identity the Gateway refuses while adopting a persisted route: nothing
   // is read again on the next pass (an authorization failure is never retried); the route
   // is closed with that reason, in this process and in the store (finding 2128).
-  const f = fixture({ store: routeStore() });
-  await f.reconcile();
-  const g = fixture({ store: f.store, world: f });
-  g.runtime.entries.clear();
-  g.runtime.states.clear();
+  const f = await reconciledFixture({ store: routeStore() });
+  const g = workerAfterRestart(f);
   g.faults.gateway = Object.assign(new Error("permission denied"), { code: 7 });
   await assert.rejects(g.prepare(), { reason: "gateway_unauthorized" });
   assert.deepEqual(g.runtime.route(f.revision.id), {
@@ -1330,8 +1231,7 @@ test("an adoption the gateway refuses tombstones the route instead of retrying i
 });
 
 test("the periodic Git reader crossing the admitted deadline does not report grant replacement", async () => {
-  const f = fixture({ store: routeStore() });
-  await f.reconcile();
+  const f = await reconciledFixture({ store: routeStore() });
   assert.ok(await f.lookup(), "Git was usable before expiry");
   f.faults.duringObserve = () => {
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
@@ -1348,7 +1248,7 @@ test("the periodic Git reader crossing the admitted deadline does not report gra
 });
 
 test("Git expiry observes the original model in the reduced stock installation, including response loss", async (t) => {
-  async function exercise(fault) {
+  async function exercise(fault, expectedFirst, expectedCold = "withdrawn") {
     const store = routeStore();
     const f = fixture({ store });
     const { revision: r, sandbox: box, entry, client, supervisor: sv } = f;
@@ -1543,29 +1443,11 @@ test("Git expiry observes the original model in the reduced stock installation, 
       f.runtime,
       fault === "replacement Pod" ? { ...owner, workload: async () => "other-pod" } : owner,
     );
-    if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
-      assert.equal(first, "retire-runtime");
-      assert.equal(sends, 0);
-      return;
-    }
-    const pending = [
-      "version churn",
-      "intent without effect",
-      "lost reply",
-      "profile unavailable",
-      "model rotates during profile check",
-    ].includes(fault);
-    const unsafe = [
-      "no-op",
-      "unimplemented detach",
-      "unsupported stock",
-      "other process",
-      "failed model",
-      "different generation",
-      "model profile belongs to another workspace",
-    ].includes(fault);
-    assert.equal(first, unsafe ? "retire-runtime" : pending ? "pending" : "withdrawn", fault);
-    if (unsafe) {
+    assert.equal(first, expectedFirst, fault);
+    if (expectedFirst === "retire-runtime") {
+      if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
+        assert.equal(sends, 0);
+      }
       return;
     }
     assert.equal(sends, fault === "version churn" ? 0 : 1);
@@ -1578,40 +1460,34 @@ test("Git expiry observes the original model in the reduced stock installation, 
     );
     cold.routes = store;
     cold.owner = f.owner;
-    const expected =
-      fault === "intent without effect"
-        ? "pending"
-        : fault === "overlap after confirmation"
-          ? "retire-runtime"
-          : "withdrawn";
-    assert.equal(await cleanup(cold), expected);
+    assert.equal(await cleanup(cold), expectedCold);
     if (fault === "lost reply") {
       assert.deepEqual(trace, ["OBSERVE"], "prove current absence without replay");
     }
-    assert.equal(await cleanup(cold), expected);
+    assert.equal(await cleanup(cold), expectedCold);
     assert.equal(sends, 1, "repeated cold maintenance never resends detach");
     assert.equal(f.calls.rotate, 1, "no provider reattachment or renewal");
   }
-  for (const fault of [
-    "success",
-    "version churn",
-    "lost reply",
-    "pending",
-    "intent without effect",
-    "replacement Pod",
-    "Git profile scope changed",
-    "model profile belongs to another workspace",
-    "no-op",
-    "unimplemented detach",
-    "different generation",
-    "profile unavailable",
-    "model rotates during profile check",
-    "overlap after confirmation",
-    "unsupported stock",
-    "other process",
-    "failed model",
+  for (const [fault, first, cold] of [
+    ["success", "withdrawn"],
+    ["version churn", "pending"],
+    ["lost reply", "pending"],
+    ["pending", "withdrawn"],
+    ["intent without effect", "pending", "pending"],
+    ["replacement Pod", "retire-runtime"],
+    ["Git profile scope changed", "retire-runtime"],
+    ["model profile belongs to another workspace", "retire-runtime"],
+    ["no-op", "retire-runtime"],
+    ["unimplemented detach", "retire-runtime"],
+    ["different generation", "retire-runtime"],
+    ["profile unavailable", "pending"],
+    ["model rotates during profile check", "pending"],
+    ["overlap after confirmation", "withdrawn", "retire-runtime"],
+    ["unsupported stock", "retire-runtime"],
+    ["other process", "retire-runtime"],
+    ["failed model", "retire-runtime"],
   ]) {
-    await t.test(fault, () => exercise(fault));
+    await t.test(fault, () => exercise(fault, first, cold));
   }
 });
 
