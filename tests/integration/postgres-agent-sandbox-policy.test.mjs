@@ -432,7 +432,7 @@ test(
     const { namespace, agent } = await deployAgent("Lax policy Driver");
     const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
     assert.equal((await inject("PATCH", `${base}/editing`, { enabled: true })).statusCode, 200);
-    // No port range names no port, so an unlisted destination is not inside the ceiling.
+    // The shared rules refuse an empty port list before ceiling coverage is considered.
     const empty = await inject("POST", `${base}/validate`, {
       expectedVersion: 1,
       additions: [{ ...grant, host: "outside.example.net", ports: [] }],

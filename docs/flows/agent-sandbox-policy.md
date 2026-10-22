@@ -58,9 +58,9 @@ schema/semantic validation, the Driver contribution (which can only narrow it), 
 current ceiling/provider admission. An empty or reversed port range is never inside
 the ceiling. It returns a configuration result without entering a mutation
 transaction. Schema and semantic refusals carry safe `error.details`; stale or
-unauthorized requests retain their resource errors. Every later mutation repeats these checks. Ceiling refusal keeps
-its Installation-delegation cause; unsupported wildcard/range refusal names the
-Driver capability limit. Both retain field details.
+unauthorized requests retain their resource errors. Every later mutation repeats
+these checks. Ceiling refusal keeps its Installation-delegation cause; unsupported
+wildcard/range refusal names the Driver capability limit. Both retain field details.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
 records as escaped JSON and omits records with Unicode control characters, so
 CLI callers retain the same field and cause without terminal controls.
@@ -178,7 +178,7 @@ waiting for a policy request that never starts.
 
 ## Changelog
 
-- 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at preview, save and worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
+- 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
 
 - 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
 
