@@ -72,7 +72,10 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
 version's persisted status, not live health. Routine completion folds; pending work,
-read errors, warnings, and cleanup stay visible. Failed deployments show the API's message
+read errors, warnings, and cleanup stay visible. A first read that lands after the
+`FIRST_ACTIVITY_WAIT_MS` reveal fills the folded one-row stand-in without opening it (the
+summary shows its outcome); cleanup, warnings, and overview errors still open it, so nothing
+above the version tabs moves. Failed deployments show the API's message
 (logs advice if it names no step) and offer Logs unless log text or version access was
 denied this sign-in. **Open Configuration** needs Agent `update` and no known Configuration
 read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the

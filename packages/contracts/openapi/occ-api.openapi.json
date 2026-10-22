@@ -21034,6 +21034,157 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/harness-status": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "getAgentHarnessStatus",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "harness": {
+                          "additionalProperties": false,
+                          "description": "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+                          "properties": {
+                            "code": {
+                              "anyOf": [
+                                { "const": "SANDBOX_MISSING", "type": "string" },
+                                { "const": "SANDBOX_DELETING", "type": "string" },
+                                { "const": "SANDBOX_STOPPED", "type": "string" },
+                                { "const": "SANDBOX_FAILED", "type": "string" },
+                                { "const": "HARNESS_EXITED", "type": "string" },
+                                { "const": "HARNESS_RESTARTING", "type": "string" },
+                                { "const": "UNAVAILABLE", "type": "string" }
+                              ]
+                            },
+                            "exitCode": {
+                              "description": "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+                              "maximum": 2147483647,
+                              "minimum": -2147483648,
+                              "type": "integer"
+                            },
+                            "restarts": {
+                              "description": "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+                              "maximum": 4294967295,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "running", "type": "string" },
+                                { "const": "starting", "type": "string" },
+                                { "const": "lost", "type": "string" },
+                                { "const": "unknown", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["state"],
+                          "type": "object"
+                        },
+                        "revisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "status": {
+                          "anyOf": [
+                            { "const": "observed", "type": "string" },
+                            { "const": "unobserved", "type": "string" }
+                          ],
+                          "description": "`observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record."
+                        }
+                      },
+                      "required": ["status"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
         "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",

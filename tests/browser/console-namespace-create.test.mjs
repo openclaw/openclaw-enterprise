@@ -6,6 +6,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   apiRequests,
+  expectWriteAsksBeforeUnload,
   fileBrowser,
   login,
   newPage,
@@ -149,6 +150,42 @@ test("a Namespace name conflict keeps the form editable for correction", async (
     .click();
   await page.locator(settledView).getByRole("link", { name: "New team", exact: true }).waitFor();
   await focusReturnsToOpener(page);
+});
+
+// The dialog holds in-app navigation while Namespace creation is in flight; a reload or tab
+// close asks first too, and stops asking once the answer comes, created or refused (finding 2181).
+test("a reload asks first only while Namespace creation is in flight", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Existing team");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+  const name = dialog.getByLabel("Namespace name");
+  const submit = () =>
+    dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const url = `${fixture.origin}/namespaces`;
+  await name.fill("Existing team");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    settled: () =>
+      dialog
+        .getByRole("alert")
+        .filter({ hasText: /Choose a different name/ })
+        .waitFor(),
+  });
+  await name.fill("Reload team");
+  await expectWriteAsksBeforeUnload(t, page, url, {
+    method: "POST",
+    start: submit,
+    settled: () =>
+      page
+        .getByRole("dialog", { name: "Namespace created", exact: true })
+        .getByText(/Provisioning is in progress/)
+        .waitFor(),
+  });
 });
 
 test("the Namespace name is checked at the field with the API's own rule", async (t) => {

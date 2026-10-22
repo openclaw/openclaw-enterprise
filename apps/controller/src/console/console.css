@@ -1547,11 +1547,14 @@ select:not([multiple])[size="1"] {
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
+/* A value is as tall as its badge, so a recorded outcome's badge replacing loading text moves
+   nothing (finding 2163). */
 .stat-value {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height) + 2 * var(--space-1));
   color: var(--color-text-strong);
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
@@ -1566,6 +1569,10 @@ select:not([multiple])[size="1"] {
 }
 .stat-help:empty {
   display: none;
+}
+.stat-help.stat-help-line:empty {
+  display: block;
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height));
 }
 /* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
 @media (max-width: 1100px) {
@@ -1729,6 +1736,16 @@ select:not([multiple])[size="1"] {
 }
 .deployment-evidence-content {
   padding-bottom: var(--space-3);
+}
+/* Deployment activity's stand-in before the latest record is read: one row as tall as the
+   folded summary, so the panel that replaces it moves nothing (finding 2163). */
+.deployment-evidence-loading {
+  margin: 0;
+  padding: var(--space-3) 0;
+  line-height: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .native-admin-heading {
   display: flex;

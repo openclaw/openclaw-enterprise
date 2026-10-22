@@ -1553,6 +1553,48 @@ export const RuntimeLogRecordSchema = Type.Union([
   ),
 ]);
 
+export const AgentHarnessStatusSchema = Type.Object(
+  {
+    state: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("starting"),
+      Type.Literal("lost"),
+      Type.Literal("unknown"),
+    ]),
+    code: Type.Optional(
+      Type.Union([
+        Type.Literal("SANDBOX_MISSING"),
+        Type.Literal("SANDBOX_DELETING"),
+        Type.Literal("SANDBOX_STOPPED"),
+        Type.Literal("SANDBOX_FAILED"),
+        Type.Literal("HARNESS_EXITED"),
+        Type.Literal("HARNESS_RESTARTING"),
+        Type.Literal("UNAVAILABLE"),
+      ]),
+    ),
+    exitCode: Type.Optional(
+      Type.Integer({
+        minimum: -2147483648,
+        maximum: 2147483647,
+        description: "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+      }),
+    ),
+    restarts: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 4294967295,
+        description:
+          "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+  },
+);
+
 export const AgentRuntimeDescriptionSchema = Type.Object(
   {
     revisionId: RevisionId,
@@ -1641,50 +1683,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
       ),
       { maxItems: 4 },
     ),
-    harness: Type.Optional(
-      Type.Object(
-        {
-          state: Type.Union([
-            Type.Literal("running"),
-            Type.Literal("starting"),
-            Type.Literal("lost"),
-            Type.Literal("unknown"),
-          ]),
-          code: Type.Optional(
-            Type.Union([
-              Type.Literal("SANDBOX_MISSING"),
-              Type.Literal("SANDBOX_DELETING"),
-              Type.Literal("SANDBOX_STOPPED"),
-              Type.Literal("SANDBOX_FAILED"),
-              Type.Literal("HARNESS_EXITED"),
-              Type.Literal("HARNESS_RESTARTING"),
-              Type.Literal("UNAVAILABLE"),
-            ]),
-          ),
-          exitCode: Type.Optional(
-            Type.Integer({
-              minimum: -2147483648,
-              maximum: 2147483647,
-              description:
-                "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
-            }),
-          ),
-          restarts: Type.Optional(
-            Type.Integer({
-              minimum: 1,
-              maximum: 4294967295,
-              description:
-                "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
-            }),
-          ),
-        },
-        {
-          additionalProperties: false,
-          description:
-            "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
-        },
-      ),
-    ),
+    harness: Type.Optional(AgentHarnessStatusSchema),
   },
   { additionalProperties: false },
 );
@@ -1692,6 +1691,24 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
 export const AgentRuntimeResponse = Type.Object(
   { data: AgentRuntimeDescriptionSchema, meta: Meta },
   { $id: "AgentRuntimeResponse", additionalProperties: false },
+);
+
+export const AgentHarnessStatusResponse = Type.Object(
+  {
+    data: Type.Object(
+      {
+        status: Type.Union([Type.Literal("observed"), Type.Literal("unobserved")], {
+          description:
+            "`observed` when OCC read the Sandbox record of the running Agent's active revision. `unobserved` when there is nothing to read: the Agent is stopped, deleting or has no active revision, its Harness is not dedicated, or the selected Sandbox Driver keeps no lifecycle record.",
+        }),
+        revisionId: Type.Optional(RevisionId),
+        harness: Type.Optional(AgentHarnessStatusSchema),
+      },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
 );
 
 export const AgentRuntimeLogPageSchema = Type.Object(

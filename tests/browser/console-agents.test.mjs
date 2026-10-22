@@ -48,16 +48,10 @@ import {
   createRepositoryLaunchFixture,
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
-
-// A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
-// opens them for the record's evidence.
-async function openFoldedDetails(page) {
-  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
-  const details = page.locator(".deployment-status > details");
-  if (!(await details.evaluate((node) => node.open))) {
-    await details.locator("summary").click();
-  }
-}
+import {
+  expectDeploymentOutcome,
+  openFailureDetails,
+} from "./console-deployment-activity-helpers.mjs";
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -1520,13 +1514,12 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
     );
   });
   // Creation must hand off to the detail page while deployment is still queued.
-  const deploymentPanel = page.locator(".deployment-status");
-  await deploymentPanel.getByText("Recorded status: Queued", { exact: true }).waitFor();
+  const deploymentPanel = await expectDeploymentOutcome(page, "Queued");
   assert.equal(await page.getByRole("heading", { name: "Create Agent", exact: true }).count(), 0);
   deploymentStatus = "failed";
   await deploymentPanel.getByRole("button", { name: "Refresh deployment", exact: true }).click();
-  await openFoldedDetails(page);
-  await deploymentPanel.getByText("Recorded status: Failed", { exact: true }).waitFor();
+  await openFailureDetails(page);
+  await expectDeploymentOutcome(page, "Failed", { folded: false });
   await deploymentPanel
     .getByText("DEPENDENCY_UNAVAILABLE: Deployment reconciliation failed.", { exact: true })
     .waitFor();

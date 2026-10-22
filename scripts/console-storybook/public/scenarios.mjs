@@ -4785,6 +4785,38 @@ export const scenarios = {
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
   },
+  sandboxLost: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox lost",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "lost", code: "SANDBOX_STOPPED" },
+    description:
+      "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
+    steps: [
+      'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version." The line was reserved while the Sandbox was read, so nothing below moved.',
+      "At 390 and 900 wide the note stays on one line under the badge.",
+    ],
+    gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",
+  },
+  sandboxRunning: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox running",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "running" },
+    description:
+      "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+  },
+  sandboxStatusUnknown: {
+    group: "Pages/Agent detail",
+    name: "Sandbox status unknown",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "unknown", code: "UNAVAILABLE" },
+    description:
+      "The Sandbox Driver could not read the Sandbox record. Live serving stays Not verified and says the Sandbox status is unknown; it never reports a Sandbox it could not read as lost.",
+  },
   agentHeader: {
     group: "Pages/Agent detail",
     name: "Page header with a long name",
@@ -5052,7 +5084,7 @@ export const scenarios = {
     name: "Deployment activity loading",
     path: candidateVersion,
     deployed: true,
-    candidateDeploymentStatus: "succeeded",
+    candidateDeploymentStatus: "running",
     rules: [
       {
         prefix:
@@ -5061,9 +5093,10 @@ export const scenarios = {
       },
     ],
     description:
-      "Deployment status reads take 4 s. Deployment activity keeps its loading placeholder until the newest version's status arrives, then shows it in one step.",
+      "Deployment status reads take 4 s, longer than the page waits for them (about 2 s). The page shows with Deployment activity as one loading row; the in-progress record then fills that row as folded Deployment details, and Latest visible deployment reads v7 · In progress. Nothing above the version tabs moves.",
     steps: [
-      "Reload and watch Deployment activity: it shows its loading line until the recorded status arrives, never an empty panel first. The sharing panel and version tabs below move once.",
+      "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
+      "Open Deployment details to read the in-progress stages.",
     ],
   },
   deploymentUnavailable: {

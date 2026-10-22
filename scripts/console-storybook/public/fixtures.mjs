@@ -1660,6 +1660,18 @@ export function installFixture(scenario, evidence) {
               "/storybook-fixtures/native-admin.html",
           });
         }
+        if (suffix === "/harness-status" && method === "GET") {
+          // A scenario's harness answers for the current version, as OCC reads it.
+          return response(
+            scenario.harness === undefined || !saved.activeRevisionId
+              ? { status: "unobserved" }
+              : {
+                  status: "observed",
+                  revisionId: saved.activeRevisionId,
+                  harness: scenario.harness,
+                },
+          );
+        }
         if (suffix === "/runtime-images" && method === "GET") {
           return response(scenario.runtimeImages ?? { status: "unsupported", images: [] });
         }

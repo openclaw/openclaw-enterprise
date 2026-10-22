@@ -1789,7 +1789,8 @@ function processParents() {
     });
     for (const line of listed.stdout?.split("\n") ?? []) {
       const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-      if (pid > 0) {
+      // ps itself is this process's child, gone by now.
+      if (pid > 0 && pid !== listed.pid) {
         parents.set(pid, ppid);
       }
     }
@@ -1807,23 +1808,45 @@ function processParents() {
   return parents;
 }
 
-// Every process this runner started that is still running, with their descendants. The whole
-// tree is listed before any is killed: a killed parent's children move to another parent.
+// Every process this runner started that is still running, with their descendants. Each is
+// stopped (SIGSTOP) before any is killed: a stopped process starts no child, and it keeps its
+// children in this tree, where a killed parent's children would move to another parent. A
+// child started before its parent's stop is found by the next listing, so the listing repeats
+// until it finds no process it has not stopped (finding 2182); then all of them are killed. A
+// process that starts a child and exits on its own before its stop still loses that child.
 function killDescendants() {
   // Stop owned cleanup groups before the snapshot can kill their supervisors
   // alone. A command's already-orphaned descendants are absent from this tree.
   stopCleanupCommands();
-  const children = new Map();
-  for (const [pid, ppid] of processParents()) {
-    children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+  const stopped = new Set();
+  // Each pass that finds a new process is another generation started after the last listing;
+  // the bound only keeps a process that forks without end from holding the runner.
+  for (let pass = 0; pass < 100; pass += 1) {
+    const children = new Map();
+    for (const [pid, ppid] of processParents()) {
+      children.set(ppid, [...(children.get(ppid) ?? []), pid]);
+    }
+    const found = [];
+    for (let queue = [process.pid]; queue.length > 0;) {
+      const next = children.get(queue.shift()) ?? [];
+      found.push(...next.filter((pid) => !stopped.has(pid)));
+      queue.push(...next);
+    }
+    if (found.length === 0) {
+      break;
+    }
+    for (const pid of found) {
+      // Recorded even when the stop fails, so a process that refuses it cannot keep the listing
+      // going.
+      stopped.add(pid);
+      try {
+        process.kill(pid, "SIGSTOP");
+      } catch {
+        // It has exited.
+      }
+    }
   }
-  const descendants = [];
-  for (let queue = [process.pid]; queue.length > 0;) {
-    const next = children.get(queue.shift()) ?? [];
-    descendants.push(...next);
-    queue.push(...next);
-  }
-  for (const pid of descendants) {
+  for (const pid of stopped) {
     try {
       process.kill(pid, "SIGKILL");
     } catch {

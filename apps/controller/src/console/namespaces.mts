@@ -10,7 +10,8 @@ export interface NamespacePageContext {
   navigate: ReturnType<typeof createNavigation>["navigate"];
   isCurrent(): boolean;
   onExpired(): void;
-  setLeaveGuard(guard: () => boolean): void;
+  /** While `writing()`: `held` says why the page stayed; `released` runs when leaving goes ahead. */
+  holdWhileWriting(hold: { writing(): boolean; held(): void; released?(): void }): void;
 }
 
 // The API's Name rule, mirrored because the console loads no contracts code: PLAIN_TEXT_PATTERN
@@ -199,13 +200,12 @@ export function renderNamespaces(
       }
     }
 
-    context.setLeaveGuard(() => {
-      if (pending) {
+    context.holdWhileWriting({
+      writing: () => pending,
+      held: () =>
         feedback.replaceChildren(
           statusBlock("info", null, "Wait for Namespace creation to finish before leaving."),
-        );
-      }
-      return pending;
+        ),
     });
     form.addEventListener("submit", async (event) => {
       event.preventDefault();

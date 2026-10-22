@@ -338,6 +338,11 @@ func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Val
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
 }
 
+// GetAgentHarnessStatus reads the Sandbox record of a running Agent's active dedicated Harness.
+func (client *Client) GetAgentHarnessStatus(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "harness-status")
+}
+
 // GetAgentRuntimeCredentials fetches runtime credential metadata for an Agent.
 func (client *Client) GetAgentRuntimeCredentials(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID, "runtime-credentials")

@@ -50,6 +50,7 @@ import type {
   AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
   AgentRuntimeHarnessStatus,
+  AgentHarnessStatusRead,
   ComputeAgentRevisionBinding,
   AgentRevision,
   AgentRuntimeCredentialsInput,
@@ -2424,6 +2425,69 @@ export class OpenClawController {
     } catch {
       throw new DependencyUnavailableError("Runtime image metadata is unavailable.");
     }
+  }
+
+  /**
+   * The Sandbox Driver's record of the running Agent's active dedicated Harness Sandbox, read
+   * on request with Agent `read`, as runtime images are. A lost Sandbox is not recovered
+   * (finding 2152), so this is what tells a reader that the Agent needs a new deployment.
+   * Observation never fails the read: a record OCC cannot read is `unknown`, never `lost`.
+   */
+  async getAgentHarnessStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentHarnessStatusRead>> {
+    const agent = await this.getAgent(principalId, namespaceId, agentId);
+    const unobserved = Object.freeze({ status: "unobserved" as const });
+    const revisionId = agent.activeRevisionId;
+    // Only a running Agent's active revision is expected to have a serving Sandbox.
+    if (
+      agent.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      !isNonEmptyString(revisionId)
+    ) {
+      return unobserved;
+    }
+    const unknown = Object.freeze({
+      status: "observed" as const,
+      revisionId,
+      harness: Object.freeze({ state: "unknown" as const, code: "UNAVAILABLE" as const }),
+    });
+    const binding = await this.read(async (state) => {
+      const namespace = await this.exactNamespace(state, namespaceId);
+      const revision = await state.revisions.findRevision(namespace.id, agent.id, revisionId);
+      return revision === undefined ? undefined : { namespace, agent, revision };
+    });
+    if (binding === undefined) {
+      return unknown;
+    }
+    if (
+      binding.revision.harness.mode !== "dedicated" ||
+      binding.revision.sandboxDriverId === undefined
+    ) {
+      return unobserved;
+    }
+    let compute: ComputeDriver;
+    try {
+      compute = this.selectedDriver("compute");
+    } catch {
+      return unknown;
+    }
+    if (
+      compute.id !== binding.revision.compute.id ||
+      compute.implementation !== binding.revision.compute.implementation
+    ) {
+      return unknown;
+    }
+    const harness = await this.observedHarness(
+      compute,
+      binding,
+      AbortSignal.timeout(HARNESS_OBSERVATION_TIMEOUT_MS),
+    );
+    return harness === undefined
+      ? unobserved
+      : Object.freeze({ status: "observed" as const, revisionId, harness });
   }
 
   async getAgentRuntimeCredentialStatus(

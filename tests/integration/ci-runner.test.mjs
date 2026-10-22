@@ -125,6 +125,16 @@ function heldClock(holdAt, gates) {
   return ["--import", preload.href];
 }
 
+// Node arguments that hold the runner just after it lists /proc, the first time it ends its
+// descendants, until the `forked` path exists. It creates the `window` path when
+// the hold starts (tests/helpers/ci-runner-kill-window.mjs, finding 2182).
+function killWindow(window, forked) {
+  const preload = new URL("../helpers/ci-runner-kill-window.mjs", import.meta.url);
+  preload.searchParams.set("window", window);
+  preload.searchParams.set("forked", forked);
+  return ["--import", preload.href];
+}
+
 function currentSha() {
   const result = spawnSync("git", ["rev-parse", "HEAD"], {
     cwd: repositoryRoot,
@@ -3071,17 +3081,30 @@ waitingTest(
     // The hung cleanup waits for a command that started one of its own (as `docker compose`
     // or `pnpm` would). Both record their pids, in one rename.
     const pidsPath = join(root, "state/command-pids");
+    // The command starts another child while the runner is ending it: after the runner has listed
+    // its processes and before it kills them (killWindow). That child records its pid too.
+    const windowPath = join(root, "state/kill-window");
+    const latePath = join(root, "state/late-pid");
     const commandPath = join(root, "command.cjs");
+    const writeOnce = (path, value) =>
+      `writeFileSync(${JSON.stringify(`${path}.partial`)}, ${value}); ` +
+      `renameSync(${JSON.stringify(`${path}.partial`)}, ${JSON.stringify(path)});`;
     await writeFile(
       commandPath,
       [
         'const { spawn } = require("node:child_process");',
-        'const { renameSync, writeFileSync } = require("node:fs");',
-        'const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
+        'const { existsSync, renameSync, writeFileSync } = require("node:fs");',
+        'const forever = () => spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], {',
         '  stdio: "ignore",',
         "});",
-        `writeFileSync(${JSON.stringify(`${pidsPath}.partial`)}, process.pid + "\\n" + descendant.pid + "\\n");`,
-        `renameSync(${JSON.stringify(`${pidsPath}.partial`)}, ${JSON.stringify(pidsPath)});`,
+        "const descendant = forever();",
+        writeOnce(pidsPath, 'process.pid + "\\n" + descendant.pid + "\\n"'),
+        "const poll = setInterval(() => {",
+        `  if (existsSync(${JSON.stringify(windowPath)})) {`,
+        "    clearInterval(poll);",
+        `    ${writeOnce(latePath, 'forever().pid + "\\n"')}`,
+        "  }",
+        "}, 10);",
         "setInterval(() => {}, 1_000);",
         "",
       ].join("\n"),
@@ -3157,9 +3180,16 @@ waitingTest(
       root,
       laneArgs(root, "cleanup", statePath, resultsPath),
       { CI_RUNNER_CLEANUP_TIMEOUT_MS: "2000", CI_RUNNER_CLEANUP_MARKER: cleaned },
-      { timeout: 60_000, execArgv: heldClock(started, [pidsPath]) },
+      {
+        timeout: 60_000,
+        execArgv: [...heldClock(started, [pidsPath]), ...killWindow(windowPath, latePath)],
+      },
     );
     pids.push(...(await readFile(pidsPath, "utf8")).split("\n").filter(Boolean).map(Number));
+    const late = Number(await readFile(latePath, "utf8").catch(() => ""));
+    if (late > 1) {
+      pids.push(late);
+    }
 
     assert.equal(result.error, undefined, `the runner gave up on the cleanup: ${result.stderr}`);
     assert.equal(result.status, 1, result.stderr);
@@ -3186,9 +3216,10 @@ waitingTest(
     );
     assert.equal(later.counts.total, 0);
     await assert.rejects(readFile(cleaned), { code: "ENOENT" });
-    // The runner ended the abandoned cleanup's command and its descendant before it exited, so
-    // neither is left running as an orphan (finding 1225).
-    assert.equal(pids.length, 2, "the command recorded itself and its descendant");
+    // The runner ended the abandoned cleanup's command and its descendants before it exited, so
+    // none is left running as an orphan (finding 1225), not even the one the command started
+    // after the runner had listed its processes (finding 2182).
+    assert.equal(pids.length, 3, "the command recorded itself and both descendants");
     for (let attempt = 0; pids.some(running) && attempt < 50; attempt += 1) {
       await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
     }

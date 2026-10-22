@@ -594,6 +594,18 @@ export async function takeLayoutShifts(page) {
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
 
+// Resolves after the page has painted twice more and run a task after that, so work that has
+// already settled has rendered and any layout shift from it has been reported.
+export const nextFrames = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() =>
+          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
+        );
+      }),
+  );
+
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
@@ -737,6 +749,25 @@ export function asksBeforeUnload(page) {
     globalThis.dispatchEvent(event);
     return event.defaultPrevented;
   });
+}
+
+// Checks that a write which holds the page also makes a reload or tab close ask first, only while
+// it is in flight (finding 2181). It holds the next `method` request to `url`, which `start`
+// sends, until the page is shown to ask; then it lets the answer through, waits for `settled`
+// and checks the page no longer asks. The real server answers the write; only its answer waits.
+export async function expectWriteAsksBeforeUnload(t, page, url, { method, start, settled }) {
+  assert.equal(await asksBeforeUnload(page), false, "the page asked before the write started");
+  const held = await holdRequests(t, page, url, {
+    method,
+    once: true,
+    afterServer: true,
+  });
+  await start();
+  await held.requested;
+  assert.equal(await asksBeforeUnload(page), true, "a reload during the write would not ask");
+  held.release();
+  await settled();
+  assert.equal(await asksBeforeUnload(page), false, "the page still asks after the write");
 }
 
 // Whether the locator's element holds focus.
