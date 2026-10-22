@@ -113,7 +113,7 @@ value, and all-healthy tables retain their existing columns.
 For one Agent in table output, `cli.go:agentCommand` then reads
 `occclient.Client.GetAgentHarnessStatus`, and
 `internal/occcli/agent_runtime_output.go:printAgentHarness` prints the
-[Harness Sandbox status](../reference/agents/deployment.md#harness-sandbox-status) under
+[Harness Sandbox status](../reference/drivers/sandbox.md#harness-sandbox-status) under
 the table as a `Harness Sandbox:` line, as `occ agent runtime` does. A `lost`
 line tells the operator to deploy the Agent again. An `unobserved` answer prints
 nothing, and a failed read prints `unknown`, never `lost`. `agent list` reads no
