@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-20
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-22
+last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
 ---
 
 # Console Agent editing and runtime requests
@@ -247,23 +247,29 @@ Pickers switch references; rotating shared Secret values is separate.
 
 ### 6. Read and replace live workspace files
 
-`apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
+`apps/controller/src/console/agents/workspace.mts:renderWorkspaceFiles` opens from
 `tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or version history.
 With no selected version, files stay unavailable and no file request is sent. Another current version
 keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
 
-The editor GETs each supported filename and normalizes textareas to LF. An
-untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
-The response reauthorizes access before restoring retained text, including empty
-edits. Drafts keep their baseline; Reload replaces them. A 404 without an unknown
-write permits an explicit create, including an empty file; other failures disable
-Save. Save PUTs `{ content }` on the exact-Agent route. It neither patches
-Configuration nor admits a version. The [workspace flow](../workspace-files.md)
-owns authorization and native transport. Results are per file. An unknown write
-waits for explicit Reload. Current contents, or the formal missing-file 404,
-settle it and open an empty editor for a deliberate create. Another 404, a
-denial, or an unavailable read stays guarded. The editor never retries or creates
-a file.
+The editor reads each supported file by name. A successful response must name
+that file and include its contents. For an existing file, **Save** becomes available
+when the text differs from that baseline. The comparison uses LF line endings, so
+it does not rewrite an untouched CRLF file. A fresh read checks access before
+restoring a draft, including an empty edit. **Reload** replaces those edits.
+
+On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
+and message `The requested workspace file was not found.` confirms the file is
+missing. The operator can then choose **Save** to create it, even as an empty file.
+A generic resource `404`, a denial, or an unavailable read keeps the editor and
+**Save** disabled. **Reload** checks again without writing.
+
+**Save** sends `PUT` with `{ content }` for that file and checks the returned filename.
+The result applies to that file. Saving neither patches Configuration nor admits
+a version. If the outcome is unknown, **Save** stays disabled until the operator chooses
+**Reload** and the controller returns the file contents or that same missing-file
+response. The editor never repeats the write automatically. See the
+[workspace flow](../workspace-files.md) for authorization and native transport.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
@@ -314,6 +320,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-22 10:28: Distinguish a missing workspace file from an unavailable Agent, on first read and after an uncertain save. (01a162e5-4303-7a21-81d4-bb51cec37c66 - 596fdb088)
 - 2026-10-20 05:00: Move steps 7 and 8 (stop, deletion) to [their own trace](agent-stop-and-deletion.md). (docs-split-1020)
 - 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
