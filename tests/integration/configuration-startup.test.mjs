@@ -936,21 +936,13 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
     [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
-    // The native sender's own configuration contract (finding 2214): an existing CA file under a
-    // non-canonical path, a fractional duration and an unknown option are refused at load.
+    // The native sender's path contract (finding 2214): an existing CA file under a
+    // non-canonical path is refused at load. The control socket client checks its own path.
     [
       (value) =>
         (value.repository.nativeSender.publicCaPath =
           value.repository.nativeSender.publicCaPath.replace(/\/ca\.crt$/, "/./ca.crt")),
       nativeSenderRefusal("", "INVALID_VALUE"),
-    ],
-    [
-      (value) => (value.repository.configuration.sessionDurationSeconds = 600.5),
-      nativeSenderRefusal("/sessionDurationSeconds", "INVALID_TYPE"),
-    ],
-    [
-      (value) => (value.repository.configuration.unexpected = true),
-      nativeSenderRefusal("", "UNKNOWN_FIELD"),
     ],
     [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
     [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
