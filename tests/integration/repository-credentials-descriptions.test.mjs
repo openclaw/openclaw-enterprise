@@ -13,7 +13,6 @@ import {
   controlRequest,
   startCredentialServiceFixture,
 } from "../fixtures/repository-credentials/service.mjs";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
   createGitHubDriverFactory,
@@ -21,6 +20,7 @@ import {
 } from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
 import { validateServiceConfig } from "../../apps/controller/src/drivers/repo/credentials/configuration.ts";
 import { createCredentialService } from "../../apps/controller/src/drivers/repo/credentials/service.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 function descriptions(socketPath, payload) {
   return controlRequest(socketPath, "POST", "/v1/repository-descriptions", payload);

@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 // the state that was still wrong.
 export async function waitFor(description, read, options = {}) {
   const { timeoutMs = 10_000, intervalMs = 20 } =
-    typeof options === "number" ? { timeoutMs: options } : options;
+    typeof options === "number" ? { timeoutMs: options } : (options ?? {});
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await read();

@@ -281,7 +281,7 @@ test(
     // The group kill also ends the Codex grandchild, but its new parent reaps it a
     // moment later, and until then kill(pid, 0) still finds it.
     for (const { pid } of recorded.filter(({ kind }) => kind === "grandchild")) {
-      await processGone(`Codex grandchild ${pid} still running 5 s after stop`, pid);
+      await processGone(`Codex grandchild ${pid} to exit after stop`, pid);
     }
   },
 );

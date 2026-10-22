@@ -417,6 +417,7 @@ test(
             attach(adminHeaders, member.id, racedSubject, before[0].version),
             attach(secondHeaders, third.id, racedSubject, before[1].version),
           ]);
+          // Only the two attaches run this INSERT, so at least two waiters means both.
           await waitForLockWaiter(pool, blockerPid, "both attaches to reach the identity insert", {
             count: 2,
             queryLike: "INSERT INTO occ.account %",

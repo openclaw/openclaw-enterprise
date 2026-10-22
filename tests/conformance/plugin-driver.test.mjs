@@ -20,9 +20,9 @@ import {
   openClawToolDenialMessage,
 } from "../../apps/controller/src/drivers/plugin/openclaw-tool-denial.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
-import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
+import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -1068,7 +1068,11 @@ setInterval(() => {}, 1_000);
   listed.catch(() => {});
   pid = await waitFor(
     "the Codex fixture to start",
-    () => readFile(pidFile, "utf8").then(Number, () => undefined),
+    () =>
+      readFile(pidFile, "utf8").then(
+        (text) => Number(text) || undefined,
+        () => undefined,
+      ),
     30_000,
   );
   assert.ok(pid > 0, "the Codex fixture did not start");

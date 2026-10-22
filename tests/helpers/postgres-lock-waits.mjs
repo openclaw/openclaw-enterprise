@@ -3,11 +3,13 @@ import { waitFor } from "./wait-for.mjs";
 // Lock-order and race tests hold a row lock on one connection and need to know that the code
 // under test really waits for it before they move on. These poll PostgreSQL's own lock graph
 // (pg_blocking_pids) through `pool`, which must not be the holding or waiting connection.
+// pg_blocking_pids is non-empty only for a backend waiting on a heavyweight lock, so no
+// wait_event_type filter is needed.
 // `options` are waitFor's ({ timeoutMs, intervalMs }) plus the extras below.
 
-// Waits until a backend waits for a lock that `holderPid` holds and returns the first such
-// waiter's pid. With `count`, waits until at least that many do; with `queryLike`, counts only
-// waiters whose current statement matches that LIKE pattern.
+// Waits until a backend waits for a lock that `holderPid` holds and returns the lowest waiting
+// pid (callers expect one waiter). With `count`, waits until at least that many do; with
+// `queryLike`, counts only waiters whose current statement matches that LIKE pattern.
 export function waitForLockWaiter(
   pool,
   holderPid,
