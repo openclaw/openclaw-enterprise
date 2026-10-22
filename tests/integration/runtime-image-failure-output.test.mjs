@@ -3,16 +3,15 @@
 // as a Doctor stall: the wrapper's stderr and the real failure came after the
 // cut. These cases drive the helper against a stand-in docker binary.
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { inspect } from "node:util";
-import test, { after } from "node:test";
+import test from "node:test";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const reporterMessageLimit = 16_384;
 
-const root = await mkdtemp(join(tmpdir(), "oce-runtime-image-failure-output-"));
-after(() => rm(root, { recursive: true, force: true }));
+const root = fileTemporaryDirectory("oce-runtime-image-failure-output-");
 const fakeDocker = join(root, "docker");
 await writeFile(
   fakeDocker,
