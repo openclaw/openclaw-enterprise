@@ -69,6 +69,11 @@ Compute validates admission for OCC and rechecks it with the worker before launc
 PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Older workers refuse v3;
 upgrade all writers before admitting it. Qualify release and installed deny-all behavior.
 
+Bundled OpenShell qualifies no `git-write` sender:
+`apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
+refuses deploy (409 `REPOSITORY_GIT_SENDER_UNQUALIFIED`). Preparation repeats it, so
+older admitted revisions fail permanently.
+
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway
 attachment; they receive no Gateway authentication environment. Gateway-owned sources
@@ -287,6 +292,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 
 - 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange in the accompanying correction. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
 
