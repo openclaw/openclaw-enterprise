@@ -4785,6 +4785,38 @@ export const scenarios = {
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
   },
+  sandboxLost: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox lost",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "lost", code: "SANDBOX_STOPPED" },
+    description:
+      "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
+    steps: [
+      'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version to replace it." The line was reserved while the Sandbox was read, so nothing below moved.',
+      "At 390 wide the note stays on one line under the badge.",
+    ],
+    gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",
+  },
+  sandboxRunning: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox running",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "running" },
+    description:
+      "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+  },
+  sandboxStatusUnknown: {
+    group: "Pages/Agent detail",
+    name: "Sandbox status unknown",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "unknown", code: "UNAVAILABLE" },
+    description:
+      "The Sandbox Driver could not read the Sandbox record. Live serving stays Not verified and says the Sandbox status is unknown; it never reports a Sandbox it could not read as lost.",
+  },
   agentHeader: {
     group: "Pages/Agent detail",
     name: "Page header with a long name",

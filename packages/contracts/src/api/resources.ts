@@ -1554,47 +1554,46 @@ export const RuntimeLogRecordSchema = Type.Union([
 ]);
 
 export const AgentHarnessStatusSchema = Type.Object(
-    {
-      state: Type.Union([
-        Type.Literal("running"),
-        Type.Literal("starting"),
-        Type.Literal("lost"),
-        Type.Literal("unknown"),
+  {
+    state: Type.Union([
+      Type.Literal("running"),
+      Type.Literal("starting"),
+      Type.Literal("lost"),
+      Type.Literal("unknown"),
+    ]),
+    code: Type.Optional(
+      Type.Union([
+        Type.Literal("SANDBOX_MISSING"),
+        Type.Literal("SANDBOX_DELETING"),
+        Type.Literal("SANDBOX_STOPPED"),
+        Type.Literal("SANDBOX_FAILED"),
+        Type.Literal("HARNESS_EXITED"),
+        Type.Literal("HARNESS_RESTARTING"),
+        Type.Literal("UNAVAILABLE"),
       ]),
-      code: Type.Optional(
-        Type.Union([
-          Type.Literal("SANDBOX_MISSING"),
-          Type.Literal("SANDBOX_DELETING"),
-          Type.Literal("SANDBOX_STOPPED"),
-          Type.Literal("SANDBOX_FAILED"),
-          Type.Literal("HARNESS_EXITED"),
-          Type.Literal("HARNESS_RESTARTING"),
-          Type.Literal("UNAVAILABLE"),
-        ]),
-      ),
-      exitCode: Type.Optional(
-        Type.Integer({
-          minimum: -2147483648,
-          maximum: 2147483647,
-          description:
-            "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
-        }),
-      ),
-      restarts: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 4294967295,
-          description:
-            "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
-        }),
-      ),
-    },
-    {
-      additionalProperties: false,
-      description:
-        "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
-    },
-  );
+    ),
+    exitCode: Type.Optional(
+      Type.Integer({
+        minimum: -2147483648,
+        maximum: 2147483647,
+        description: "Present only with HARNESS_RESTARTING: the Harness process's last exit code.",
+      }),
+    ),
+    restarts: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 4294967295,
+        description:
+          "Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart).",
+      }),
+    ),
+  },
+  {
+    additionalProperties: false,
+    description:
+      "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
+  },
+);
 
 export const AgentRuntimeDescriptionSchema = Type.Object(
   {

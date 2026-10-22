@@ -99,7 +99,9 @@ Backends, and to create or update [Presets](presets.md#crud-and-permissions);
 the CLI has no commands for these. Neither the CLI nor the HTTP API
 offers Configuration listing. An accepted deploy returns a version; `agent get`
 shows desired state, `LIFECYCLE` (`active` or `deleting`), and the selected
-version, not runtime health. Run `occ agent deployment-status ID` for the
+version, not runtime health. Its table adds a `Harness Sandbox` line with the
+[Harness Sandbox status](agents.md#harness-sandbox-status) of a running dedicated
+Agent; `lost` tells you to deploy the Agent again. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
 For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
