@@ -617,7 +617,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   assert.deepEqual(revisions.data, []);
 });
 
-test("Plugin save shows the API's reason when it rejects the selections, else the plugin text", async (t) => {
+test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed success", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
@@ -638,7 +638,9 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
   await page
     .getByLabel("Plugin selections JSON", { exact: true })
     .fill(JSON.stringify({ [pluginId]: { enabled: "yes" } }));
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const agentPath = `${collection}/${agent.id}`;
+  const agentUrl = `${fixture.origin}${agentPath}`;
   const patched = (response) =>
     response.request().method() === "PATCH" && response.url() === agentUrl;
   const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
@@ -683,8 +685,111 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
     await page.getByText("Plugin selections were rejected.", { exact: false }).count(),
     0,
   );
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const saved = await fixture.request("GET", agentPath);
   assert.deepEqual(saved.data.plugins ?? {}, {});
+
+  // Two real Agents can share a Configuration and the same saved selections. Substitute only
+  // the response data: before a write it must stop the save; after one it cannot confirm it.
+  const other = await fixture.request("POST", collection, {
+    body: {
+      name: "Other plugin Agent",
+      configurationId: agent.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: null,
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  assert.notEqual(other.data.id, agent.id);
+  for (const field of ["namespaceId", "configurationId", "plugins", "pluginApprovers"]) {
+    assert.deepEqual(other.data[field], saved.data[field]);
+  }
+  const policy = { toolDefaults: { approval: "all_actions" }, enabled: true };
+  const edits = { [pluginId]: policy };
+  const editor = page.getByLabel("Plugin selections JSON", { exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  for (const [method, replyData] of [
+    ["GET", () => other.data],
+    [
+      "PATCH",
+      async (data) => {
+        const otherAgent = await fixture.updateAgent(namespace.id, other.data.id, {
+          configurationId: agent.configurationId,
+          plugins: edits,
+        });
+        assert.deepEqual(data.plugins, otherAgent.plugins);
+        return otherAgent;
+      },
+    ],
+    ["PATCH", ({ id, namespaceId, configurationId }) => ({ id, namespaceId, configurationId })],
+    ["PATCH", (data) => ({ ...data, plugins: {} })],
+    ["PATCH", (data) => ({ ...data, pluginApprovers: [] })],
+    // The last reply confirms the exact settings with a different object key order. The plugin
+    // editor must not replace the rest of the Agent (represented here by its name) from that reply.
+    ["PATCH", null],
+  ]) {
+    const beforeWrite = method === "GET";
+    const expected = beforeWrite ? {} : edits;
+    const confirmed = replyData === null;
+    requests.length = 0;
+    if (!(await editor.isVisible())) {
+      await page.getByText("Plugin selections JSON", { exact: true }).click();
+    }
+    await page.route(agentUrl, async (route) => {
+      if (route.request().method() !== method) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body = await response.json();
+      assert.equal(body.data.id, agent.id);
+      assert.deepEqual(body.data.plugins ?? {}, expected);
+      const data = confirmed
+        ? {
+            ...body.data,
+            name: "Unrelated acknowledgement field",
+            plugins: { [pluginId]: { enabled: true, toolDefaults: policy.toolDefaults } },
+          }
+        : await replyData(body.data);
+      await route.fulfill({ response, json: { ...body, data } });
+    });
+    await editor.fill(JSON.stringify(edits));
+    const previous = await editor.elementHandle();
+    await save.click();
+    if (confirmed) {
+      // Wait for the rebuilt editor, not the first confirmation on the editor being replaced.
+      await page.waitForFunction((node) => !node.isConnected, previous);
+    }
+    const message = beforeWrite
+      ? "Plugin selections changed. Reload this Agent before saving again."
+      : "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
+    const outcome = page
+      .getByText(message, { exact: true })
+      .or(page.getByText("Plugin selections saved.", { exact: true }));
+    await outcome.waitFor();
+    assert.equal(await outcome.textContent(), confirmed ? "Plugin selections saved." : message);
+    if (!confirmed) {
+      assert.equal(await editor.inputValue(), JSON.stringify(edits));
+    }
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(
+      await page.getByRole("heading", { name: agent.name, exact: true }).isVisible(),
+      true,
+    );
+    await page.unroute(agentUrl);
+
+    // Reconcile an unconfirmed result by reading, never by repeating the PATCH.
+    if (!confirmed) {
+      await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
+      await page.getByText("Plugin selections reloaded.", { exact: true }).waitFor();
+    }
+    assert.deepEqual(JSON.parse(await editor.inputValue()), expected);
+    assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins ?? {}, expected);
+    assert.deepEqual(
+      pathRequests(requests, "PATCH", agentPath).map(({ body }) => body.plugins),
+      beforeWrite ? [] : [edits],
+    );
+  }
 });
 
 test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {

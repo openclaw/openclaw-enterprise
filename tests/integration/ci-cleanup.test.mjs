@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
@@ -63,11 +64,6 @@ async function commandTreeFixture(t) {
   return { root, descendantPidPath, waitForTermination, trackPid: (path) => pidPaths.push(path) };
 }
 
-async function writeExecutable(path, content) {
-  await writeFile(path, content);
-  await chmod(path, 0o700);
-}
-
 async function writeState(path, state) {
   await writeFile(path, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
   await chmod(path, 0o600);
@@ -99,12 +95,7 @@ function runK3dModelReset(statePath, env = {}) {
 test("k3d routing reset removes only the owned test database", async (t) => {
   const root = await fixture(t);
   const containerLog = join(root, "container.log");
-  await writeExecutable(
-    join(root, "bin/podman"),
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(containerLog)}`, "exit 0", ""].join(
-      "\n",
-    ),
-  );
+  await writeCommand(join(root, "bin"), "podman", "exit 0\n", { log: containerLog });
   const prefix = "openclaw-ci-local-reset1234567890";
   const statePath = join(root, "state.json");
   await writeState(statePath, {
@@ -166,11 +157,10 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
     clusterDirectory,
   );
   const deletedMarker = join(root, "deleted");
-  await writeExecutable(
-    join(root, "bin/k3d"),
+  await writeCommand(
+    join(root, "bin"),
+    "k3d",
     [
-      "#!/bin/sh",
-      `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`,
       'if [ "$2" = "list" ]; then',
       `  if [ -e ${JSON.stringify(deletedMarker)} ]; then printf '[]\\n'; else printf '[{"name":"%s"}]\\n' ${JSON.stringify(clusterName)}; fi`,
       'elif [ "$2" = "delete" ]; then',
@@ -178,11 +168,9 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
       "fi",
       "",
     ].join("\n"),
+    { log: k3dLog },
   );
-  await writeExecutable(
-    join(root, "bin/docker"),
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(dockerLog)}`, "exit 0", ""].join("\n"),
-  );
+  await writeCommand(join(root, "bin"), "docker", "exit 0\n", { log: dockerLog });
 
   const statePath = join(root, "state.json");
   await writeState(statePath, {
@@ -210,7 +198,7 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
   });
 
   assert.equal(result.status, 0, result.stderr);
-  const k3dCommands = (await readFile(k3dLog, "utf8")).trim().split("\n");
+  const k3dCommands = await commandCalls(k3dLog);
   assert.deepEqual(k3dCommands, [
     "cluster list -o json",
     `cluster delete ${clusterName}`,
@@ -244,11 +232,10 @@ for (const scenario of [
       { owner: prefix, name: clusterName },
       clusterDirectory,
     );
-    await writeExecutable(
-      join(root, "bin/k3d"),
+    await writeCommand(
+      join(root, "bin"),
+      "k3d",
       [
-        "#!/bin/sh",
-        `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`,
         'if [ "$2" = "list" ]; then',
         scenario === "invalid-inventory"
           ? "  printf '{}\\n'"
@@ -263,16 +250,16 @@ for (const scenario of [
         "fi",
         "",
       ].join("\n"),
+      { log },
     );
     // An unlabelled network is ambiguous; a labelled image volume is owned.
     const dockerLog = join(root, "docker.log");
     const removed = join(root, "volume-removed");
     const partialVolume = ["partial-volume", "failed-volume-removal"].includes(scenario);
-    await writeExecutable(
-      join(root, "bin/docker"),
+    await writeCommand(
+      join(root, "bin"),
+      "docker",
       [
-        "#!/bin/sh",
-        `printf '%s\\n' "$*" >> ${JSON.stringify(dockerLog)}`,
         scenario === "partial-network"
           ? 'if [ "$1" = "network" ] && [ "$2" = "ls" ]; then case "$*" in *name=*) printf "k3d-owned-network\\n";; esac; fi'
           : "",
@@ -286,6 +273,7 @@ for (const scenario of [
           : "",
         "",
       ].join("\n"),
+      { log: dockerLog },
     );
     const statePath = join(root, "state.json");
     const state = {
@@ -357,15 +345,14 @@ function failedDropState() {
 test("cleanup continues after a failed database drop and retains only the failed resource", async (t) => {
   const root = await fixture(t);
   const containerLog = join(root, "container.log");
-  const docker = join(root, "bin/docker");
-  await writeExecutable(
-    docker,
-    `#!/bin/sh
-printf '%s\\n' "$*" >> ${JSON.stringify(containerLog)}
-case "$*" in
+  const docker = await writeCommand(
+    join(root, "bin"),
+    "docker",
+    `case "$*" in
   *" DROP DATABASE "*) echo "deliberate drop failure" >&2; exit 23 ;;
 esac
 `,
+    { log: containerLog },
   );
   const statePath = join(root, "state.json");
   const state = failedDropState();
@@ -389,11 +376,12 @@ esac
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
   const root = await fixture(t);
   const dropLog = join(root, "drop.log");
-  await writeExecutable(
-    join(root, "bin/docker"),
-    `#!/usr/bin/env node
-require("node:fs").appendFileSync(${JSON.stringify(dropLog)}, process.argv.at(-1) + "\\n");
+  await writeCommand(
+    join(root, "bin"),
+    "docker",
+    `require("node:fs").appendFileSync(${JSON.stringify(dropLog)}, process.argv.at(-1) + "\\n");
 `,
+    { interpreter: "node" },
   );
   const statePath = join(root, "state.json");
   const state = failedDropState();
@@ -451,10 +439,10 @@ for (const stream of ["stdout", "stderr"]) {
       const { root, descendantPidPath } = await commandTreeFixture(t);
       // The wrapper exits before its descendant writes the diagnostic. Waiting
       // only for exit loses the reason even though the pipes close within budget.
-      await writeExecutable(
-        join(root, "bin/docker"),
-        `#!/usr/bin/env node
-      const { spawn } = require("node:child_process");
+      await writeCommand(
+        join(root, "bin"),
+        "docker",
+        `      const { spawn } = require("node:child_process");
       const fs = require("node:fs");
       const descendant = spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => process.${stream}.write("late cleanup failure detail"), 100)`)}], {
         stdio: ["ignore", "inherit", "inherit"],
@@ -462,6 +450,7 @@ for (const stream of ["stdout", "stderr"]) {
       fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
       process.exit(23);
     `,
+        { interpreter: "node" },
       );
       const prefix = "openclaw-ci-local-output1234567890";
       const statePath = join(root, "state.json");
@@ -530,10 +519,10 @@ for (const scenario of [
       setTimeout(() => { clearInterval(timer); process.exit(0); }, 4000);
     `,
       );
-      await writeExecutable(
-        join(root, "bin/docker"),
-        `#!/usr/bin/env node
-      const { spawn } = require("node:child_process");
+      await writeCommand(
+        join(root, "bin"),
+        "docker",
+        `      const { spawn } = require("node:child_process");
       const fs = require("node:fs");
       if (!process.argv.includes("psql")) throw new Error("expected database drop");
       process.on("SIGTERM", () => {
@@ -548,6 +537,7 @@ for (const scenario of [
         if (["exit-before-timeout", "escaped-group"].includes(${JSON.stringify(scenario)})) process.exit(0);
       });
     `,
+        { interpreter: "node" },
       );
       const statePath = join(root, "state.json");
       const state = failedDropState();
@@ -655,10 +645,7 @@ test("cleanup rejects a k3d cluster directory outside the owned cluster prefix",
     { owner: prefix, name: clusterName },
     clusterDirectory,
   );
-  await writeExecutable(
-    join(root, "bin/k3d"),
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`, "exit 0", ""].join("\n"),
-  );
+  await writeCommand(join(root, "bin"), "k3d", "exit 0\n", { log: k3dLog });
 
   const statePath = join(root, "state.json");
   const state = {
@@ -686,10 +673,7 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
   const clusterDirectory = join(root, `${clusterName}-state`);
   const k3dLog = join(root, "k3d.log");
   const cluster = await createK3dClusterResource({ name: clusterName }, clusterDirectory);
-  await writeExecutable(
-    join(root, "bin/k3d"),
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`, "exit 0", ""].join("\n"),
-  );
+  await writeCommand(join(root, "bin"), "k3d", "exit 0\n", { log: k3dLog });
 
   const statePath = join(root, "state.json");
   const state = {
@@ -766,10 +750,10 @@ for (const scenario of [
       setTimeout(() => { clearInterval(timer); process.exit(0); }, 6000);
     `,
       );
-      await writeExecutable(
-        join(root, "bin/docker"),
-        `#!/usr/bin/env node
-      const fs = require("node:fs");
+      await writeCommand(
+        join(root, "bin"),
+        "docker",
+        `      const fs = require("node:fs");
       const { spawn } = require("node:child_process");
       fs.writeFileSync(${JSON.stringify(supervisorPidPath)}, String(process.ppid));
       fs.writeFileSync(${JSON.stringify(wrapperPidPath)}, String(process.pid));
@@ -779,6 +763,7 @@ for (const scenario of [
       fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));
       descendant.once("message", () => process.exit(0));
     `,
+        { interpreter: "node" },
       );
       const prefix = "openclaw-ci-local-cancellation123456";
       const statePath = join(root, "state.json");
@@ -987,14 +972,13 @@ test("QA lane cleanup returns launcher images to the recorded start and reports 
   const root = await fixture(t);
   const inventoryPath = join(root, "inventory.json");
   const commandLog = join(root, "commands.log");
-  const docker = join(root, "bin/docker");
   // Rows are [repository, tag, digest, id]. Tag and rm edit the inventory like an engine.
   // Removing the migrate tag fails as it does while a retained container still uses it,
   // and tagging an image the engine no longer has fails.
-  await writeExecutable(
-    docker,
-    `#!${process.execPath}
-const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+  const docker = await writeCommand(
+    join(root, "bin"),
+    "docker",
+    `const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
 const inventoryPath = ${JSON.stringify(inventoryPath)};
 const args = process.argv.slice(2);
 const rows = JSON.parse(readFileSync(inventoryPath, "utf8"));
@@ -1025,6 +1009,7 @@ if (args[0] === "tag" && !rows.some((row) => row[3] === args[1])) {
   writeFileSync(inventoryPath, JSON.stringify(rows.filter((row) => row[0] !== repository || row[1] !== tag)));
 }
 `,
+    { interpreter: process.execPath },
   );
   const id = (character) => `sha256:${character.repeat(64)}`;
   const nodeDigest = `sha256:${"d".repeat(64)}`;
@@ -1078,7 +1063,7 @@ if (args[0] === "tag" && !rows.some((row) => row[3] === args[1])) {
   );
   const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual((await readFile(commandLog, "utf8")).trim().split("\n"), [
+  assert.deepEqual(await commandCalls(commandLog), [
     `tag ${id("1")} openclaw-enterprise-runtime:kubernetes-quickstart`,
     `tag ${id("6")} openclaw-enterprise-repository-credentials:kubernetes-quickstart`,
     "image rm openclaw-enterprise-controller:kubernetes-quickstart",

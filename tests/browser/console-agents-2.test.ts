@@ -1,7 +1,24 @@
+/// <reference lib="es2024.promise" />
+
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import type { ServerResponse } from "node:http";
+import test, { type TestContext } from "node:test";
+import type { Locator, Page, Response, Route } from "playwright";
+
+import type {
+  CreateAgentBody,
+  CreateSecretBody,
+  ProvisionAgentBody,
+} from "../../packages/contracts/src/api/common.ts";
+import type {
+  AgentProvisioningStatusWire as ProvisioningStatus,
+  AgentWire,
+  IAMAccessBindingWire,
+  NamespaceWire,
+  PresetSummaryWire,
+} from "../../packages/contracts/src/api/resources.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/workspace-defaults.mjs";
@@ -45,8 +62,36 @@ import {
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-const createConsoleAppFixture = (t, options = {}) =>
+const createConsoleAppFixture = (t: TestContext, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+type ProvisioningMessage = NonNullable<ProvisioningStatus["error"]>;
+
+declare global {
+  var provisioningWrites: string[];
+}
+
+// Runs in the page. Keep repeated writes: the status is live and each update can be announced.
+function recordProvisioningWrites(prefixes: string[]) {
+  const writes: string[] = [];
+  globalThis.provisioningWrites = writes;
+  new MutationObserver((records) => {
+    for (const { target, addedNodes } of records) {
+      if (target instanceof Element && target.getAttribute("role") === "status") {
+        const text = Array.from(addedNodes, (node) => node.textContent).join("");
+        if (prefixes.some((prefix) => text.startsWith(prefix))) {
+          writes.push(text);
+        }
+      }
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
+function admission(requests: readonly ProvisionAgentBody[], attempt: number): ProvisionAgentBody {
+  const request = requests[attempt - 1];
+  assert.ok(request, `expected provisioning request ${attempt}`);
+  return request;
+}
 
 // Cases moved unchanged from the first console-agents test file: provisioning retries, model
 // selection, creation conflicts and duplicate-write guards. The file was split so the two parts run
@@ -54,7 +99,11 @@ const createConsoleAppFixture = (t, options = {}) =>
 // runs full CI for a test file that another file names.
 
 // The Installation provisions dedicated Agents and the Namespace offers no repository choices.
-async function routeDedicatedProvisioning(page, fixture, namespace) {
+async function routeDedicatedProvisioning(
+  page: Page,
+  fixture: Awaited<ReturnType<typeof createConsoleAppFixture>>,
+  namespace: NamespaceWire,
+) {
   await routeInstallationProvisioning(page, fixture);
   await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
     route.fulfill({
@@ -76,11 +125,11 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   const other = `${root}/work_other`;
   const job = { workId: "work_create", status: "queued", url };
   const requests = apiRequests(page, fixture.origin);
-  const admissions = [];
+  const admissions: ProvisionAgentBody[] = [];
   const failure = { code: "PROVISIONING_FAILED", message: "Another job failed." };
   const otherJob = { workId: "work_other", url: other, status: "failed", error: failure };
   await page.route(`**${root}`, (route) => {
-    const body = route.request().postDataJSON();
+    const body: ProvisionAgentBody = route.request().postDataJSON();
     admissions.push(body);
     const { requestId } = body;
     const responses = [
@@ -99,7 +148,9 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
   await page.route(`**${other}*`, (route) => route.fulfill({ json: { data: otherJob } }));
   // The honest admission's first poll then returns a complete response for that other job.
   await page.route(`**${url}`, (route) =>
-    route.fulfill({ json: { data: { ...otherJob, requestId: admissions[0].requestId } } }),
+    route.fulfill({
+      json: { data: { ...otherJob, requestId: admission(admissions, 1).requestId } },
+    }),
   );
   await page.route(`**${url}/retry`, (route) =>
     route.fulfill({
@@ -107,7 +158,7 @@ test("Create keeps provisioning reads and retries on the admitted job", async (t
       json: {
         data: {
           ...job,
-          requestId: admissions[0].requestId,
+          requestId: admission(admissions, 1).requestId,
           status: "failed",
           error: {
             code: "PROVISIONING_REJECTED",
@@ -154,7 +205,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   const { page } = await newPage(t, fixture);
   await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
-  const json = (data, status = 200) => ({
+  const json = (data: unknown, status = 200) => ({
     status,
     contentType: "application/json",
     body: JSON.stringify({
@@ -185,7 +236,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       agentId: agentIds[1],
     },
   ];
-  const bodies = [];
+  const bodies: ProvisionAgentBody[] = [];
   let provisionPosts = 0;
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route, request) => {
     provisionPosts += 1;
@@ -209,7 +260,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       });
       return;
     }
-    const body = request.postDataJSON();
+    const body: ProvisionAgentBody = request.postDataJSON();
     // Like the API, a known request ID returns its existing job.
     const work =
       bodies.findIndex((earlier) => earlier.requestId === body.requestId) + 1 || bodies.length + 1;
@@ -253,7 +304,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       json(
         {
           provisioning: {
-            requestId: bodies[1].requestId,
+            requestId: admission(bodies, 2).requestId,
             workId: "work_2",
             status: "failed",
             phase: "transport",
@@ -302,7 +353,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
               }),
             }
           : json({
-              requestId: bodies[3].requestId,
+              requestId: admission(bodies, 4).requestId,
               workId: "work_4",
               status: "succeeded",
               phase: "handoff",
@@ -315,10 +366,12 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
       );
       return;
     }
-    const { agentId: createdAgentId, ...error } = failures[index - 1];
+    const failure = failures[index - 1];
+    assert.ok(failure, `unexpected request for provisioning job ${index}`);
+    const { agentId: createdAgentId, ...error } = failure;
     await route.fulfill(
       json({
-        requestId: bodies[index - 1].requestId,
+        requestId: admission(bodies, index).requestId,
         workId: `work_${index}`,
         status: "failed",
         phase: "accepted",
@@ -368,11 +421,13 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   assert.equal(await retry.isVisible(), true);
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
   assert.equal(bodies.length, 2);
-  assert.equal(bodies[1].name, "Free name");
+  const taken = admission(bodies, 1);
+  const available = admission(bodies, 2);
+  assert.equal(available.name, "Free name");
   // The failed job keeps its request ID, so the edited form submits a new one with the
   // same saved credential.
-  assert.notEqual(bodies[1].requestId, bodies[0].requestId);
-  assert.deepEqual(bodies[1].harnessAuth, bodies[0].harnessAuth);
+  assert.notEqual(available.requestId, taken.requestId);
+  assert.deepEqual(available.harnessAuth, taken.harnessAuth);
 
   const retried = page.waitForResponse((response) => response.url().endsWith("/work_2/retry"));
   await retry.click();
@@ -400,7 +455,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     )
     .waitFor();
   assert.equal(bodies.length, 3);
-  assert.notEqual(bodies[2].requestId, bodies[1].requestId);
+  const cancelled = admission(bodies, 3);
+  assert.notEqual(cancelled.requestId, available.requestId);
   // A cancelled job cannot be retried either; the next submit uses a new request ID.
   assert.equal(await retry.isVisible(), false);
   await waitForEnabled(page.getByLabel("Agent name"));
@@ -413,7 +469,8 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
     )
     .waitFor();
   assert.equal(bodies.length, 4);
-  assert.notEqual(bodies[3].requestId, bodies[2].requestId);
+  const finished = admission(bodies, 4);
+  assert.notEqual(finished.requestId, cancelled.requestId);
   // After an unknown outcome a refused retry may mean the job succeeded, so the request
   // ID is kept and Create Agent recovers the job instead of starting a new one.
   await retry.click();
@@ -432,7 +489,7 @@ test("Dedicated Agent creation offers Retry only for a transient provisioning fa
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page.waitForURL(new RegExp(`/agents/${agentIds[2]}\\?`));
   assert.equal(bodies.length, 5);
-  assert.equal(bodies[4].requestId, bodies[3].requestId);
+  assert.equal(admission(bodies, 5).requestId, finished.requestId);
 });
 
 test("Dedicated Agent creation shows the API's named reason when a provisioning retry is refused", async (t) => {
@@ -443,7 +500,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   await routeDedicatedProvisioning(page, fixture, namespace);
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
-  const jobUrl = (work) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
+  const jobUrl = (work: number) => `/namespaces/${namespace.id}/agents/provision/work_${work}`;
   // Each job fails transiently, then the API refuses its retry: first with the generic
   // conflict text (a store race; controller refusals name a reason), then naming the
   // Secret that was deleted.
@@ -451,9 +508,9 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
     "The requested platform resource already exists.",
     "Secret sec_00000000-0000-4000-8000-00000000dead, which this provisioning request uses, was deleted. Submit a new Agent provisioning request.",
   ];
-  const requestIds = [];
+  const requestIds: string[] = [];
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, async (route) => {
-    const { requestId } = route.request().postDataJSON();
+    const { requestId }: ProvisionAgentBody = route.request().postDataJSON();
     const jobs = requestIds.push(requestId);
     await route.fulfill({
       status: 202,
@@ -474,8 +531,8 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
       }),
     });
   });
-  const routeJob = async (route) => {
-    const work = Number(new URL(route.request().url()).pathname.split("/")[5].split("_")[1]);
+  const routeJob = async (route: Route) => {
+    const work = Number(new URL(route.request().url()).pathname.split("/")[5]?.split("_")[1]);
     await route.fulfill(
       route.request().method() === "POST"
         ? {
@@ -539,9 +596,13 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
 
 // The stopped guidance is not an error, so neither its text nor its block's stripe takes the
 // error colour.
-async function assertNotErrorColour(locator) {
+async function assertNotErrorColour(locator: Locator) {
   const [colour, stripe, errorColour] = await locator.evaluate((node) => {
+    const status = node.closest(".status");
     const view = node.ownerDocument.defaultView;
+    if (!status || !view) {
+      throw new Error("Expected the status inside the document");
+    }
     const probe = node.ownerDocument.createElement("span");
     probe.style.color = "var(--color-danger)";
     node.ownerDocument.body.append(probe);
@@ -549,7 +610,7 @@ async function assertNotErrorColour(locator) {
     probe.remove();
     return [
       view.getComputedStyle(node).color,
-      view.getComputedStyle(node.closest(".status")).borderLeftColor,
+      view.getComputedStyle(status).borderLeftColor,
       danger,
     ];
   });
@@ -582,7 +643,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_stopped`;
-  let clientRequestId;
+  let clientRequestId: ProvisionAgentBody["requestId"];
   await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
     clientRequestId = route.request().postDataJSON().requestId;
     return route.fulfill({
@@ -604,14 +665,17 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       }),
     });
   });
-  const cancelled = (agentId, by) => ({
+  const cancelled = (agentId: string, by: "stopped" | "deleted") => ({
     agentId,
     error: {
       code: "PROVISIONING_CANCELLED",
       message: `Provisioning was cancelled because the Agent was ${by}.`,
     },
   });
-  const unreadable = (status, code, message) => ({ status, error: { code, message } });
+  const unreadable = (status: number, code: string, message: string) => ({
+    status,
+    error: { code, message },
+  });
   const keptHref = `/console/agents/${kept.id}?namespace=${namespace.id}`;
   const unknown =
     "Provisioning was cancelled because the Agent was stopped. If the Agent still exists, open it and deploy a version; otherwise select Create Agent to submit a new request.";
@@ -675,7 +739,7 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
       href: null,
     },
   ];
-  let current = cases[0];
+  let current = cases[0]!;
   await page.route(`**/namespaces/${namespace.id}/agents/provision/work_stopped`, (route) =>
     route.fulfill({
       status: 200,
@@ -760,8 +824,11 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   const updatedAt = new Date().toISOString();
   const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
   const url = `/namespaces/${namespace.id}/agents/provision/work_label`;
-  let clientRequestId;
-  const job = (status, extra = {}) => ({
+  let clientRequestId: ProvisionAgentBody["requestId"];
+  const job = (
+    status: ProvisioningStatus["status"],
+    extra: Partial<ProvisioningStatus> = {},
+  ): ProvisioningStatus => ({
     workId: "work_label",
     status,
     phase: "configuration",
@@ -813,21 +880,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-  // Record every write to a status line, including writes of the text it already shows.
-  await page.evaluate(() => {
-    globalThis.provisioningWrites = [];
-    new globalThis.MutationObserver((records) => {
-      for (const record of records) {
-        if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
-          // Each write replaces the line's text node; the added node holds the text written.
-          const text = [...record.addedNodes].map((node) => node.textContent).join("");
-          if (text.startsWith("Provisioning")) {
-            globalThis.provisioningWrites.push(text);
-          }
-        }
-      }
-    }).observe(globalThis.document.body, { childList: true, subtree: true });
-  });
+  await page.evaluate(recordProvisioningWrites, ["Provisioning"]);
   await page.getByRole("button", { name: "Create Agent" }).click();
   await page.getByText("Provisioning failed.", { exact: true }).waitFor();
   assert.equal(read, reads.length);
@@ -846,7 +899,7 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
 test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
-  for (const mode of ["readable", "refused", "interrupted", "access lost"]) {
+  for (const mode of ["readable", "refused", "interrupted", "access lost"] as const) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pod quota ${mode}`, {
@@ -857,10 +910,13 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     const updatedAt = new Date().toISOString();
     const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
     const url = `/namespaces/${namespace.id}/agents/provision/work_quota`;
-    let clientRequestId;
+    let clientRequestId: ProvisionAgentBody["requestId"];
     const agentId = "agt_00000000-0000-4000-8000-00000000a617";
     const revisionId = "rev_00000000-0000-4000-8000-00000000a617";
-    const job = (status, extra = {}) => ({
+    const job = (
+      status: ProvisioningStatus["status"],
+      extra: Partial<ProvisioningStatus> = {},
+    ): ProvisioningStatus => ({
       workId: "work_quota",
       status,
       phase: "configuration",
@@ -869,7 +925,12 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
       url,
       ...extra,
     });
-    const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
+    const handedOff = {
+      phase: "handoff",
+      agentId,
+      configurationId: "cfg_quota",
+      revisionId,
+    } as const;
     let submitted = false;
     await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
       submitted = true;
@@ -910,7 +971,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         }),
       }),
     );
-    const attempts =
+    const attempts: (ProvisioningMessage | "stalled" | "unavailable")[] =
       mode === "interrupted"
         ? [{ code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull }, "stalled", "unavailable"]
         : [
@@ -918,9 +979,9 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
             { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
             { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
           ];
-    const deploymentReads = [];
+    const deploymentReads: number[] = [];
     const deploymentRequests = [];
-    const stalledRead = Promise.withResolvers();
+    const stalledRead = Promise.withResolvers<void>();
     let stalledCancelled = Promise.resolve(false);
     page.on("request", (request) => {
       if (new URL(request.url()).pathname.includes("/deployments/")) {
@@ -1002,19 +1063,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     await page.getByLabel("Authentication method").selectOption("codex_pat");
     await createModelCredentialSecret(page, "model-secret-value");
     await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-    await page.evaluate(() => {
-      globalThis.provisioningWrites = [];
-      new globalThis.MutationObserver((records) => {
-        for (const record of records) {
-          if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
-            const text = [...record.addedNodes].map((node) => node.textContent).join("");
-            if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
-              globalThis.provisioningWrites.push(text);
-            }
-          }
-        }
-      }).observe(globalThis.document.body, { childList: true, subtree: true });
-    });
+    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The Namespace"]);
     const start = Date.now();
     await page.clock.install({ time: start });
     await page.clock.pauseAt(start + 1_000);
@@ -1103,10 +1152,13 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     const updatedAt = new Date().toISOString();
     const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
     const url = `/namespaces/${namespace.id}/agents/provision/work_named`;
-    let clientRequestId;
+    let clientRequestId: ProvisionAgentBody["requestId"];
     const agentId = "agt_00000000-0000-4000-8000-00000000a690";
     const revisionId = "rev_00000000-0000-4000-8000-00000000a690";
-    const job = (status, extra = {}) => ({
+    const job = (
+      status: ProvisioningStatus["status"],
+      extra: Partial<ProvisioningStatus> = {},
+    ): ProvisioningStatus => ({
       workId: "work_named",
       status,
       phase: "configuration",
@@ -1115,15 +1167,20 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       url,
       ...extra,
     });
-    const handedOff = { phase: "handoff", agentId, configurationId: "cfg_named", revisionId };
+    const handedOff = {
+      phase: "handoff",
+      agentId,
+      configurationId: "cfg_named",
+      revisionId,
+    } as const;
     const pending = {
       code: "PROVISIONING_DEPLOYMENT_PENDING",
       message: "Waiting for the initial deployment to complete.",
     };
-    const waiting = (lastAttempt) => ({
+    const waiting = (lastAttempt: ProvisioningMessage | null) => ({
       ...handedOff,
       progress: {
-        phase: "deployment",
+        phase: "deployment" as const,
         lastAttempt: lastAttempt && { at: updatedAt, ...lastAttempt },
       },
     });
@@ -1153,7 +1210,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
     const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: pullFailed };
     const stopWait = { code: "AGENT_STOP_YIELDED", message: stopping };
-    const polls = deploymentReader
+    const polls: [ProvisioningMessage, ProvisioningMessage | 403 | 503][] = deploymentReader
       ? [
           [runtimeWait, runtimeWait],
           [runtimeWait, pullWait],
@@ -1237,19 +1294,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     await page.getByLabel("Authentication method").selectOption("codex_pat");
     await createModelCredentialSecret(page, "model-secret-value");
     await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
-    await page.evaluate(() => {
-      globalThis.provisioningWrites = [];
-      new globalThis.MutationObserver((records) => {
-        for (const record of records) {
-          if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
-            const text = [...record.addedNodes].map((node) => node.textContent).join("");
-            if (/^(?:Provisioning|The |Kubernetes )/.test(text)) {
-              globalThis.provisioningWrites.push(text);
-            }
-          }
-        }
-      }).observe(globalThis.document.body, { childList: true, subtree: true });
-    });
+    await page.evaluate(recordProvisioningWrites, ["Provisioning", "The ", "Kubernetes "]);
     const start = Date.now();
     await page.clock.install({ time: start });
     await page.clock.pauseAt(start + 1_000);
@@ -1299,20 +1344,24 @@ for (const [name, leave] of [
     false,
   ],
   ["Leaving Create Agent during a stalled deployment detail read stops polling the old job", true],
-]) {
+] as const) {
   test(name, async (t) => {
     const agentId = "agt_00000000-0000-4000-8000-00000000a681";
     const revisionId = "rev_00000000-0000-4000-8000-00000000a681";
     const detailPath = `/agents/${agentId}/deployments/${revisionId}`;
-    const bodyStarted = Promise.withResolvers();
+    const bodyStarted = Promise.withResolvers<void>();
     const fixture = await createConsoleAppFixture(t, {
-      async onSend(request, reply, payload) {
+      async onSend(
+        request: { url: string },
+        reply: { hijack(): void; raw: ServerResponse },
+        payload: unknown,
+      ) {
         if (!request.url.endsWith(detailPath)) {
           return payload;
         }
         reply.hijack();
         reply.raw.writeHead(200, { "content-type": "application/json" });
-        reply.raw.write('{"data":', bodyStarted.resolve);
+        reply.raw.write('{"data":', () => bodyStarted.resolve());
       },
     });
     await fixture.bootstrap();
@@ -1330,15 +1379,21 @@ for (const [name, leave] of [
       phase: "handoff",
       status: "running",
     };
+    let requestId: string;
     await page.route(`**${provision}`, (route) => {
-      job.requestId = route.request().postDataJSON().requestId;
-      return route.fulfill({ status: 202, json: { data: { provisioning: job } } });
+      requestId = route.request().postDataJSON().requestId;
+      return route.fulfill({
+        status: 202,
+        json: { data: { provisioning: { ...job, requestId } } },
+      });
     });
-    const finishPoll = Promise.withResolvers();
+    const finishPoll = Promise.withResolvers<void>();
     await page.route(`**${url}`, async (route) => {
       // Let the browser report cancellation before navigation can cancel the detail read itself.
       await finishPoll.promise;
-      await route.fulfill({ json: { data: { provisioning: { ...job, status: "succeeded" } } } });
+      await route.fulfill({
+        json: { data: { provisioning: { ...job, requestId, status: "succeeded" } } },
+      });
     });
 
     await trackSettledFetches(page);
@@ -1411,9 +1466,9 @@ test("Agent creation rejects non-object native Configuration JSON before Configu
   await jsonError
     .getByText("Enter a valid JSON object, not an array or a single value.", { exact: true })
     .waitFor();
-  assert.equal(await json.evaluate((node) => node.validationMessage), "");
+  assert.equal(await json.evaluate((node: HTMLTextAreaElement) => node.validationMessage), "");
   assert.equal(await json.getAttribute("aria-invalid"), "true");
-  assert.match(await json.getAttribute("aria-describedby"), /\bconfiguration-json-error\b/);
+  assert.match((await json.getAttribute("aria-describedby")) ?? "", /\bconfiguration-json-error\b/);
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.id),
     "configuration-json",
@@ -1466,7 +1521,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
     await page
       .getByLabel("Harness", { exact: true })
       .locator("option:not([disabled])")
-      .evaluateAll((options) => options.map((option) => option.value)),
+      .evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value)),
     ["openclaw"],
   );
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
@@ -1483,7 +1538,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   assert.deepEqual(
     await authMethod
       .locator("option:not([disabled])")
-      .evaluateAll((options) => options.map((option) => option.value)),
+      .evaluateAll((options: HTMLOptionElement[]) => options.map((option) => option.value)),
     ["api_key"],
   );
   await authMethod.selectOption("api_key");
@@ -1543,7 +1598,7 @@ test("Agent creation offers mainline Anthropic models before credentials and sav
   await page.getByRole("button", { name: "Create Agent" }).click();
   const response = await saved;
   assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent: AgentWire = (await response.json()).data;
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   assert.equal(agent.executionMode, "embedded");
   assert.equal(agent.backendId, null);
@@ -1656,7 +1711,7 @@ test("Static model selection survives credential edits and resets for provider o
     "codex/gpt-5.6-luna",
   );
   assert.deepEqual(
-    secretPostRequests(requests, namespace.id).map(({ body }) => body.value),
+    secretPostRequests(requests, namespace.id).map(({ body }) => (body as CreateSecretBody).value),
     ["first-openai-key", "replacement-openai-key", "at-static-model-token", "discarded-openai-key"],
   );
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
@@ -1712,8 +1767,8 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.isVisible(), false);
   assert.equal(await model.evaluate((input) => input.ownerDocument.activeElement === input), true);
   assert.equal(await model.inputValue(), "gpt-6-astra");
-  assert.equal(await model.evaluate((input) => input.required), true);
-  assert.equal(await choice.evaluate((input) => input.required), false);
+  assert.equal(await model.evaluate((input: HTMLInputElement) => input.required), true);
+  assert.equal(await choice.evaluate((input: HTMLSelectElement) => input.required), false);
   // A manual edit replaces the previous list selection in the same Configuration.
   await model.fill("gpt-6-sol");
   await model.press("Tab");
@@ -1725,8 +1780,8 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.inputValue(), "gpt-6-sol");
   assert.equal(await model.isVisible(), false);
   assert.equal(await choice.isVisible(), true);
-  assert.equal(await model.evaluate((input) => input.required), false);
-  assert.equal(await choice.evaluate((input) => input.required), true);
+  assert.equal(await model.evaluate((input: HTMLInputElement) => input.required), false);
+  assert.equal(await choice.evaluate((input: HTMLSelectElement) => input.required), true);
   assert.equal(
     JSON.parse(await configuration.inputValue()).agents.defaults.model,
     "codex/gpt-6-sol",
@@ -1741,7 +1796,10 @@ test("Agent creation can return from manual model entry to the list and save the
   assert.equal(await choice.isVisible(), true);
   assert.equal(await choice.evaluate((input) => input.ownerDocument.activeElement === input), true);
   assert.equal(await choice.inputValue(), "");
-  assert.equal(await choice.evaluate((input) => input.validity.valueMissing), true);
+  assert.equal(
+    await choice.evaluate((input: HTMLSelectElement) => input.validity.valueMissing),
+    true,
+  );
   assert.equal(JSON.parse(await configuration.inputValue()).agents?.defaults?.model, undefined);
   assert.equal(await credential.inputValue(), secretOptionLabel(secret));
   assert.equal(await page.getByLabel("Agent name").inputValue(), "Model selection round trip");
@@ -1764,7 +1822,7 @@ test("Agent creation can return from manual model entry to the list and save the
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await saved;
   assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent: AgentWire = (await response.json()).data;
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: secret.ref });
   const savedConfiguration = await fixture.request(
     "GET",
@@ -1778,7 +1836,10 @@ test("Agent creation accepts a manual model outside the static list and saves th
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Manual model override", { ready: true });
   const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
-  const starter = presets.data.find((preset) => preset.name === "default-codex");
+  const starter = (presets.data as PresetSummaryWire[]).find(
+    (preset) => preset.name === "default-codex",
+  );
+  assert.ok(starter, "expected the default Codex Preset");
   const template = structuredClone(
     (await fixture.request("GET", `/namespaces/${namespace.id}/presets/${starter.id}`)).data
       .template,
@@ -1834,7 +1895,7 @@ test("Agent creation accepts a manual model outside the static list and saves th
   await page.getByRole("button", { name: "Create Agent" }).click();
   const response = await saved;
   assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent: AgentWire = (await response.json()).data;
   assert.deepEqual(agent.harnessAuth, { method: "api_key", source: selectedSecret.ref });
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   const configuration = await fixture.request(
@@ -1894,7 +1955,9 @@ test("Agent creation names the Configuration field that holds an inline model cr
   });
   await feedback.waitFor();
   // Only the editor holds the key; the explanation never repeats it.
-  assert.equal((await feedback.textContent()).includes(sentinel), false);
+  const explanation = await feedback.textContent();
+  assert.ok(explanation, "expected the explanation of the credential field");
+  assert.equal(explanation.includes(sentinel), false);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);
   await waitForEnabled(configuration);
 });
@@ -1942,12 +2005,12 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.getByLabel("Agent name").fill("Taken Agent");
   await enterManualModel(page, "duplicate-name-model-key", "gpt-duplicate-name");
   const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
-  const agentPost = (response) =>
+  const agentPost = (response: Response) =>
     response.url() === agentsUrl && response.request().method() === "POST";
 
   // Any other conflict keeps the generic text: plain conflicts reach the client as "The
   // requested platform resource already exists.", which would mislead on this form.
-  const otherConflict = async (route) => {
+  const otherConflict = async (route: Route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
       return;
@@ -1980,7 +2043,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
 
   // A Namespace that is still provisioning is named as the cause, not a saved-state conflict.
-  const notReady = async (route) => {
+  const notReady = async (route: Route) => {
     if (route.request().method() !== "POST") {
       await route.continue();
       return;
@@ -2017,7 +2080,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   const feedback = page.getByRole("alert").filter({ hasText: sentence });
   await feedback.waitFor();
   assert.match(
-    await feedback.textContent(),
+    (await feedback.textContent()) ?? "",
     /^An Agent with this name already exists in this Namespace\. Choose a different name\.( Request ID: req_[0-9a-f-]+)?$/,
   );
   const name = page.getByLabel("Agent name");
@@ -2032,7 +2095,7 @@ test("Agent creation shows the API's duplicate-name conflict, a not-ready Namesp
   await create.click();
   const response = await saved;
   assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent: AgentWire = (await response.json()).data;
   assert.equal(agent.name, "Free Agent");
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
@@ -2222,27 +2285,31 @@ test("Agent creation reuses its saved Secret and Configuration after an Agent cr
     secretPostRequests(requests, namespace.id).map(({ body }) => body),
     [{ name: "Retry Agent model credential", value: "at-browser-pat" }],
   );
-  assert.equal(agentPostRequests(requests, namespace.id).length, 2);
-  const attempts = agentPostRequests(requests, namespace.id);
-  assert.deepEqual(attempts[0].body.harnessAuth, {
+  const attempts = agentPostRequests(requests, namespace.id).map(
+    ({ body }) => body as CreateAgentBody,
+  );
+  assert.equal(attempts.length, 2);
+  const [first, corrected] = attempts;
+  assert.ok(first && corrected, "expected both Agent submissions");
+  assert.deepEqual(first.harnessAuth, {
     method: "codex_pat",
     source: selectedSecret.ref,
   });
-  assert.deepEqual(attempts[1].body.harnessAuth, {
+  assert.deepEqual(corrected.harnessAuth, {
     method: "codex_pat",
     source: selectedSecret.ref,
   });
   assert.deepEqual(retried.data.harnessAuth, { method: "codex_pat", source: selectedSecret.ref });
-  assert.equal(attempts[0].body.initialWorkspaceFiles["SOUL.md"], "# Keep this draft\n");
-  assert.equal(attempts[1].body.initialWorkspaceFiles["SOUL.md"], "# Corrected draft\n");
+  assert.equal(first.initialWorkspaceFiles?.["SOUL.md"], "# Keep this draft\n");
+  assert.equal(corrected.initialWorkspaceFiles?.["SOUL.md"], "# Corrected draft\n");
   assert.deepEqual(retried.data.plugins, {
     "codex-plugin:linear@openai-curated-remote": {
       enabled: true,
       toolDefaults: { approval: "none" },
     },
   });
-  for (const request of attempts) {
-    assert.equal(request.body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
+  for (const body of attempts) {
+    assert.equal(body.workspaceDefaultsId, WORKSPACE_DEFAULTS_ID);
   }
 });
 
@@ -2276,13 +2343,13 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await page.getByRole("button", { name: "Create Agent" }).click();
   const response = await created;
   assert.equal(response.status(), 201);
-  const agent = (await response.json()).data;
+  const agent: AgentWire = (await response.json()).data;
   await page
     .getByRole("alert")
     .filter({ hasText: /Agent was created, but credential access is not confirmed/ })
     .waitFor();
   assert.match(
-    await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href"),
+    (await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href")) ?? "",
     new RegExp(agent.id),
   );
   assert.equal(await page.getByLabel("Agent name").isDisabled(), true);
@@ -2313,9 +2380,13 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
   const bindings = await fixture.request("GET", bindingPath);
   assert.equal(bindings.status, 200);
-  assert.equal(bindings.data.length, 1);
-  assert.equal(bindings.data[0].subjectId, agent.servicePrincipalId);
-  assert.equal(bindings.data[0].resourceId, agent.harnessAuth.source.id);
+  const grants: IAMAccessBindingWire[] = bindings.data;
+  assert.equal(grants.length, 1);
+  const [grant] = grants;
+  assert.ok(grant && "resourceId" in grant, "expected a resource-specific credential grant");
+  assert.equal(grant.subjectId, agent.servicePrincipalId);
+  assert.ok(agent.harnessAuth && "source" in agent.harnessAuth);
+  assert.equal(grant.resourceId, agent.harnessAuth.source.id);
   assert.equal(pathRequests(requests, "POST", bindingPath).length, 1);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/iam/roles`).length, 1);
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
@@ -2333,7 +2404,7 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     await routeInstallationWithoutProvisioning(page, fixture);
     const requests = apiRequests(page, fixture.origin);
     const path = `/namespaces/${namespace.id}/${collection}`;
-    let committed;
+    let committed: { id: string } | undefined;
     await page.route(`**${path}`, async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
@@ -2379,7 +2450,9 @@ for (const collection of ["secrets", "configurations", "agents"]) {
     assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Start over" }).isDisabled(), true);
     // Even programmatic form resubmission must respect the unknown-commit boundary.
-    await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+    await page
+      .locator("#create-agent-form")
+      .evaluate((form: HTMLFormElement) => form.requestSubmit());
     assert.equal(pathRequests(requests, "POST", path).length, 1);
     const sequence = ["secrets", "configurations", "agents"];
     for (const later of sequence.slice(sequence.indexOf(collection) + 1)) {
@@ -2407,7 +2480,7 @@ test("the Agents list does not move when failed deployments land", async (t) => 
     ["Delta completed", null, 950],
     ["Epsilon failed", "CONVERGENCE_DEADLINE_EXCEEDED", 1100],
     ["Zeta completed", null, 1250],
-  ];
+  ] as const;
   const records = [];
   for (const [name, code, delay] of agents) {
     const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
@@ -2468,7 +2541,10 @@ test("the Agents list does not move when failed deployments land", async (t) => 
     t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
     assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
     // The whole error stays readable in the row.
-    for (const { name, error } of records.filter((record) => record.error)) {
+    for (const { name, error } of records) {
+      if (!error) {
+        continue;
+      }
       const note = page
         .getByRole("row")
         .filter({ hasText: name })

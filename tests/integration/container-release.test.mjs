@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);
@@ -220,15 +221,14 @@ test("chart push accepts a digest on stderr only after a successful exit", async
   process.env.OCC_HELM_BIN = helm;
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\n`);
-  await chmod(helm, 0o700);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
   assert.equal(pushChart("chart.tgz", "oci://registry.invalid/charts"), reported);
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     actual: 1,
     expected: 0,
   });
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n'\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n'\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     message: /^Helm did not report the chart digest on stderr\./,
   });

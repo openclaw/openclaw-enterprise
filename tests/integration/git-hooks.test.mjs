@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmod, copyFile, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { delimiter, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
@@ -130,18 +131,17 @@ test("the native pre-push hook runs installed Prettier directly and blocks forma
     prettierDirectory,
     "dir",
   );
-  const packageManagerPath = join(binariesPath, "pnpm");
-  await writeFile(
-    packageManagerPath,
-    '#!/bin/sh\nprintf "%s\\n" "$@" > "$PACKAGE_MANAGER_INVOCATION_LOG"\nexit 97\n',
+  await writeCommand(
+    binariesPath,
+    "pnpm",
+    'printf "%s\\n" "$@" > "$PACKAGE_MANAGER_INVOCATION_LOG"\nexit 97\n',
   );
-  await chmod(packageManagerPath, 0o755);
 
   const packageManagerInvocationLog = join(fixtureRoot, "pnpm-invocation.log");
   const nativeHookPath = join(fixtureRoot, ".git/hooks/pre-push");
   const environment = {
     ...process.env,
-    PATH: `${binariesPath}${delimiter}${process.env.PATH ?? ""}`,
+    PATH: commandPath(binariesPath),
     PACKAGE_MANAGER_INVOCATION_LOG: packageManagerInvocationLog,
   };
   const runHook = () =>

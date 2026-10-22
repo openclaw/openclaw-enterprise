@@ -519,6 +519,13 @@ export function repositoryCheckbox(page, name) {
 // With `afterServer`, the server answers first and the page gets that answer on release (a
 // write that landed while the page waits); if that answer is lost, the page's request fails
 // rather than being sent again. With `fulfill`, the held request gets that response.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("playwright").Page} page
+ * @param {Parameters<import("playwright").Page["route"]>[0]} url
+ * @param {{ once?: boolean, method?: string, afterServer?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null }} [options]
+ * @returns {Promise<{ requested: Promise<void>, release: () => void, wasRequested: () => boolean }>}
+ */
 export async function holdRequests(
   t,
   page,
@@ -608,6 +615,7 @@ export function recordLayoutShifts() {
 
 // Returns the layout shifts recorded since the last call, and their total.
 export async function takeLayoutShifts(page) {
+  /** @type {{ value: number, sources: { node: string, text?: string, from: number[], to: number[] }[] }[]} */
   const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }

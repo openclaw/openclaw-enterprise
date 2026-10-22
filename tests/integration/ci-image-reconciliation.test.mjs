@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -23,20 +24,19 @@ function run(script, args, env) {
 
 test("image lanes use separate cache scopes without exposing credentials or competing writers", async (t) => {
   const directory = await temporaryDirectory(t, "ci-image-cache-");
-  const docker = join(directory, "docker");
   const commandsPath = join(directory, "commands.json");
   // Stop at the real preparer's external build boundary. Hosted CI separately
   // proves BuildKit cache transport; this verifies invocation and failure ownership.
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-  await writeFile(
-    docker,
-    `#!${process.execPath}\n` +
-      'const fs = process.getBuiltinModule("node:fs");\n' +
+  const docker = await writeCommand(
+    directory,
+    "docker",
+    'const fs = process.getBuiltinModule("node:fs");\n' +
       "const args = process.argv.slice(2);\n" +
       'if (args[0] === "version") { console.log("29.4.0"); process.exit(0); }\n' +
       "fs.appendFileSync(process.env.COMMANDS_PATH, `${JSON.stringify(args)}\\n`);\n" +
       "process.exit(42);\n",
-    { mode: 0o700 },
+    { interpreter: process.execPath },
   );
   for (const [lane, roles] of [
     // Images and Packaging builds its two images at once.
@@ -102,9 +102,11 @@ test("image lanes use separate cache scopes without exposing credentials or comp
 test("failed image preparation and cleanup retain a sanitized attempt-bound tag", async (t) => {
   const directory = await temporaryDirectory(t, "ci-image-reconciliation-");
   const statePath = join(directory, "state.json");
-  const docker = join(directory, "docker");
-  await writeFile(docker, '#!/bin/sh\nif [ "$1" = "version" ]; then echo 1; exit 0; fi\nexit 42\n');
-  await chmod(docker, 0o700);
+  const docker = await writeCommand(
+    directory,
+    "docker",
+    'if [ "$1" = "version" ]; then echo 1; exit 0; fi\nexit 42\n',
+  );
   const env = {
     GITHUB_RUN_ID: "12345",
     GITHUB_RUN_ATTEMPT: "2",

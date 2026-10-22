@@ -6,9 +6,10 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { kubectlGetJson, plainGet } from "../helpers/kubernetes-api-read.mjs";
 import { isTransientKubectlFailure } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
@@ -189,15 +190,15 @@ async function cluster(t) {
 
   // A kubectl on PATH that prints its kubeconfig for `config view` and logs every run.
   const calls = join(directory, "kubectl-calls");
-  await writeFile(calls, "");
-  await writeFile(
-    join(directory, "kubectl"),
-    `#!/bin/sh\necho "$*" >> '${calls}'\n[ "$5 $6" = "config view" ] && exec cat "$2"\nexit 7\n`,
-    { mode: 0o755 },
+  await writeCommand(
+    directory,
+    "kubectl",
+    `[ "$5 $6" = "config view" ] && exec cat "$2"\nexit 7\n`,
+    {
+      log: calls,
+    },
   );
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  t.after(() => (process.env.PATH = path));
+  prependPath(t, directory);
 
   let configurations = 0;
   const kubeconfig = async (url, user) => {
@@ -235,7 +236,7 @@ async function cluster(t) {
     user,
     requests,
     connections: () => connections,
-    kubectlRuns: async () => (await readFile(calls, "utf8")).split("\n").filter(Boolean),
+    kubectlRuns: () => commandCalls(calls),
   };
 }
 

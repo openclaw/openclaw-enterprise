@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { writeCommand } from "../helpers/fake-commands.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -78,14 +79,9 @@ async function runLauncher(
   const clipboard = join(root, "clipboard");
   await mkdir(bin);
 
-  const command = async (name, source) => {
-    const path = join(bin, name);
-    await writeFile(path, source, { mode: 0o700 });
-    await chmod(path, 0o700);
-  };
-  await command("uname", `#!/bin/sh\nprintf '${platform}\\n'\n`);
-  await command("git", `#!/bin/sh\nprintf '${"a".repeat(40)}\\n'\n`);
-  await command(clipboardCommand, `#!/bin/sh\n/usr/bin/tee '${clipboard}' >/dev/null\n`);
+  await writeCommand(bin, "uname", `printf '${platform}\\n'\n`);
+  await writeCommand(bin, "git", `printf '${"a".repeat(40)}\\n'\n`);
+  await writeCommand(bin, clipboardCommand, `/usr/bin/tee '${clipboard}' >/dev/null\n`);
 
   let expectedDockerHost = "";
   if (engine === "podman") {
@@ -98,10 +94,10 @@ async function runLauncher(
       server.listen(socket, resolvePromise);
     });
     expectedDockerHost = `unix://${socket}`;
-    await command(
+    await writeCommand(
+      bin,
       "podman",
-      `#!/bin/sh
-if [ "$1" = machine ] && [ "$2" = inspect ]; then printf '%s\\n' '${socket}'; exit 0; fi
+      `if [ "$1" = machine ] && [ "$2" = inspect ]; then printf '%s\\n' '${socket}'; exit 0; fi
 if [ "$1" = info ] && [ "$2" = --format ]; then printf '%s\\n' '${socket}'; exit 0; fi
 if [ "$1" = image ] && [ "$2" = inspect ]; then [ '${missingBaseImages}' = true ] && exit 1; exit 0; fi
 if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
@@ -115,12 +111,12 @@ fi
 exit 90
 `,
     );
-    await command("podman-compose", "#!/bin/sh\nexit 0\n");
+    await writeCommand(bin, "podman-compose", "exit 0\n");
   } else {
-    await command(
+    await writeCommand(
+      bin,
       "docker",
-      `#!/bin/sh
-if [ "$1" = info ]; then exit 0; fi
+      `if [ "$1" = info ]; then exit 0; fi
 if [ "$1" = compose ] && [ "$2" = version ]; then exit 0; fi
 if [ "$1" = image ] && [ "$2" = inspect ]; then [ '${missingBaseImages}' = true ] && exit 1; exit 0; fi
 if [ "$1" = pull ]; then printf '%s\n' "$2" >> '${imagePulls}'; exit 0; fi
@@ -136,20 +132,20 @@ exit 90
     );
   }
 
-  await command("k3d", "#!/bin/sh\nexit 91\n");
-  await command(
+  await writeCommand(bin, "k3d", "exit 91\n");
+  await writeCommand(
+    bin,
     "kubectl",
-    `#!/bin/sh
-case "$*" in
+    `case "$*" in
   *"get namespaces"*) exit 0 ;;
 esac
 exit 91
 `,
   );
-  await command(
+  await writeCommand(
+    bin,
     "node",
-    `#!/bin/sh
-if [ "$1" = -e ]; then exec '${process.execPath}' "$@"; fi
+    `if [ "$1" = -e ]; then exec '${process.execPath}' "$@"; fi
 if printf '%s' "$*" | grep -q 'scripts/ci/prepare.mjs'; then
   printf '%s' "$*" | grep -q -- '--lane ${selectedHarness === "openclaw" ? "openshell" : "gateway-routing"}' || exit 93
   [ -z "$OCC_TEST_KUBERNETES_GATEWAY_IMAGE" ] || exit 92

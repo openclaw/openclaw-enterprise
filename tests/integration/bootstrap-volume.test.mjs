@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { commandCalls, commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
@@ -22,7 +23,6 @@ const helper = join(repository, "scripts/prepare-bootstrap-volume");
 const image = `registry.example.invalid/openclaw/controller@sha256:${"a".repeat(64)}`;
 
 async function writeFakeKubectl(directory, options = {}) {
-  const kubectl = join(directory, "kubectl");
   const statePath = join(directory, "kubectl-state.jsonl");
   const manifestPath = join(directory, "manifest.yaml");
   const phase = options.phase ?? "Succeeded";
@@ -30,10 +30,10 @@ async function writeFakeKubectl(directory, options = {}) {
     options.logs ??
     `${JSON.stringify({ event: "bootstrap-volume.prepared", uid: 1000, gid: 1000, mode: "0700" })}\n`;
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
-  await writeFile(
-    kubectl,
-    `#!/usr/bin/env node
-const fs = process.getBuiltinModule("node:fs");
+  const kubectl = await writeCommand(
+    directory,
+    "kubectl",
+    `const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(statePath)}, JSON.stringify({ args }) + "\\n");
 if (args.includes("create")) {
@@ -56,7 +56,7 @@ if (args.includes("create")) {
   process.exit(64);
 }
 `,
-    { mode: 0o700 },
+    { interpreter: "node" },
   );
   return { kubectl, statePath, manifestPath };
 }
@@ -69,20 +69,16 @@ async function fixture(t, options) {
   return { directory, kubeconfig, ...fake };
 }
 
+// The stand-in kubectl appends one JSON line per call.
 async function invocations(statePath) {
-  const contents = await readFile(statePath, "utf8");
-  return contents
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line).args);
+  return (await commandCalls(statePath)).map((line) => JSON.parse(line).args);
 }
 
 test("prepare-bootstrap-volume requires explicit cluster selectors and immutable images", async (t) => {
   const { directory, kubeconfig } = await fixture(t);
   const base = {
     cwd: repository,
-    env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+    env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
   };
 
   await assert.rejects(
@@ -278,7 +274,7 @@ test("prepare-bootstrap-volume creates a hardened preparation Pod and removes it
     ],
     {
       cwd: repository,
-      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+      env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
     },
   );
   assert.ok(
@@ -353,7 +349,7 @@ test("prepare-bootstrap-volume omits nodeSelector unless requested", async (t) =
     ],
     {
       cwd: repository,
-      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+      env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
     },
   );
 
@@ -384,7 +380,7 @@ test("prepare-bootstrap-volume retains the preparation Pod when Kubernetes repor
       ],
       {
         cwd: repository,
-        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+        env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
       },
     ),
     ({ stderr }) =>
@@ -424,7 +420,7 @@ test("prepare-bootstrap-volume refuses unverifiable success reports without prin
       ],
       {
         cwd: repository,
-        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+        env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
       },
     ),
     ({ stderr }) =>
@@ -456,7 +452,7 @@ test("prepare-bootstrap-volume preserves YAML-scalar namespace names as strings"
         ],
         {
           cwd: repository,
-          env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+          env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
         },
       );
       const manifest = loadYaml(await readFile(manifestPath, "utf8"));
@@ -489,7 +485,7 @@ test("prepare-bootstrap-volume preserves YAML-scalar node selector keys and valu
     ],
     {
       cwd: repository,
-      env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+      env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
     },
   );
   const manifest = loadYaml(await readFile(manifestPath, "utf8"));
@@ -510,7 +506,7 @@ test("prepare-bootstrap-volume refuses non-ASCII names under a UTF-8 locale", as
     cwd: repository,
     env: {
       ...compileCacheEnvironment,
-      PATH: `${directory}:${process.env.PATH}`,
+      PATH: commandPath(directory),
       LANG: locale,
       LC_ALL: locale,
     },
@@ -584,7 +580,7 @@ test("prepare-bootstrap-volume gives image references Kubernetes' verdict", asyn
       ],
       {
         cwd: repository,
-        env: { ...compileCacheEnvironment, PATH: `${directory}:${process.env.PATH}` },
+        env: { ...compileCacheEnvironment, PATH: commandPath(directory) },
       },
     );
     if (immutableImageAccepted(reference, problem)) {

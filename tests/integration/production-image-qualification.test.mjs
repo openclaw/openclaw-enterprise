@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -83,11 +84,10 @@ print(json.dumps(state))
 `;
   const { stdout } = await execute("python3", ["-c", fixture, root]);
   const identity = JSON.parse(stdout);
-  const docker = join(root, "docker");
-  await writeFile(
-    docker,
-    `#!/usr/bin/env python3
-import json, os, pathlib, sys
+  await writeCommand(
+    root,
+    "docker",
+    `import json, os, pathlib, sys
 root = pathlib.Path(__file__).parent
 identity = json.loads((root / "identity.json").read_text())
 if sys.argv[1:3] == ["image", "inspect"]:
@@ -98,15 +98,15 @@ elif sys.argv[1:3] == ["image", "save"]:
 else:
     sys.exit(2)
 `,
+    { interpreter: "python3" },
   );
-  await chmod(docker, 0o755);
   // The actual CLI performs admission, reads the export, hashes metadata and
   // resolves the selected manifest's configuration. Only Docker I/O is a fixture.
   const image = `example.invalid/qualification@${identity.root}`;
   const result = await execute("python3", [imageIdentityScript, image, "linux/arm64"], {
     env: {
       ...process.env,
-      PATH: `${root}:${process.env.PATH}`,
+      PATH: commandPath(root),
       IMAGE_FIXTURE_ARCHIVE: "image.tar",
     },
   });
@@ -142,7 +142,7 @@ with tarfile.open(root / "image.tar") as source, tarfile.open(root / "rejected.t
       execute("python3", [imageIdentityScript, image, "linux/arm64"], {
         env: {
           ...process.env,
-          PATH: `${root}:${process.env.PATH}`,
+          PATH: commandPath(root),
           IMAGE_FIXTURE_ARCHIVE: "rejected.tar",
         },
       }),
