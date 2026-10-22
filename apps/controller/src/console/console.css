@@ -3974,8 +3974,8 @@ select:not([multiple])[size="1"] {
 .agent-logs-opening > .danger-zone {
   visibility: hidden;
 }
-/* Pod cards share the panel's width: auto-fit drops the empty columns that left one or two cards
-   at a fixed 260 px with the rest of the row blank (finding 2100). */
+/* Pod cards share the panel's width: auto-fit collapses the empty columns that left one or two
+   cards near the 260 px minimum with the rest of the row blank (finding 2100). */
 .runtime-strip {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));

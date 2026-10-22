@@ -683,10 +683,11 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
   await strip.getByRole("heading", { name: "Gateway" }).waitFor();
   for (const width of [1440, 1600, 390]) {
     await page.setViewportSize({ width, height: 900 });
-    const { row, cards } = await strip.evaluate((node) => {
+    const { row, tracks, cards } = await strip.evaluate((node) => {
       const box = node.getBoundingClientRect();
       return {
         row: { left: box.left, right: box.right },
+        tracks: globalThis.getComputedStyle(node).gridTemplateColumns.split(" "),
         cards: [...node.querySelectorAll(".runtime-pod")].map((card) => {
           const rect = card.getBoundingClientRect();
           return { top: rect.top, left: rect.left, right: rect.right };
@@ -694,6 +695,9 @@ test("runtime Pod cards fill the status strip at desktop and phone widths", asyn
       };
     });
     assert.equal(cards.length, 2);
+    // No column is left without a card, whatever the strip's width.
+    const used = tracks.filter((track) => Number.parseFloat(track) > 0);
+    assert.ok(used.length <= cards.length, `columns ${tracks.join(" ")} at ${width}px`);
     // Each row of cards starts at the strip's left edge and its last card ends at its right edge.
     const rows = Map.groupBy(cards, ({ top }) => Math.round(top));
     assert.equal(rows.size, width === 390 ? 2 : 1, `card rows at ${width}px`);

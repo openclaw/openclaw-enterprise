@@ -1835,7 +1835,8 @@ export function installFixture(scenario, evidence) {
           const pods = [pod];
           if (scenario.runtimePod === "dedicatedPair") {
             // A dedicated Agent: a Harness Pod beside the Gateway, both with the generated long
-            // names and completed init containers a real install shows.
+            // names and completed init containers a real install shows. This story is about the
+            // Pod cards; its Agent (Harness) source reads the same simulated Gateway output.
             const completed = (name) => ({
               name,
               state: "terminated",
