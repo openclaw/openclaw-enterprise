@@ -1,14 +1,14 @@
 ---
-rfc: ../rfcs/0023-gateway-outbound.md
+rfc: ../rfcs/0024-gateway-outbound.md
 ---
 
 # Implementation plan: managed Gateway outbound HTTPS
 
-- **ID:** RFC-0023
+- **ID:** RFC-0024
 - **Delivery status:** In progress
-- **Authority:** [RFC-0023](../rfcs/0023-gateway-outbound.md)
+- **Authority:** [RFC-0024](../rfcs/0024-gateway-outbound.md)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
-- **Refresh target:** upstream `main` at `26d3bcc89e313a7041c6def5b973dfc54ea0e2f4`
+- **Refresh target:** upstream `main` at `7d472f3f7d3b5104deb7e18ae7a2627ce1da0f91`
 
 ## Outcome and scope
 
@@ -17,8 +17,9 @@ dedicated execution and existing credential owners. Supply automatic Slack
 requirements, explicitly approved restricted/public integration HTTPS, isolated
 revision proxies and a separately restricted control-plane transport. Teams
 implementation, embedded networking and remote plugin hosting are excluded.
-Harness egress and Credential Proxy mediation remain separate. Unmerged upstream
-PRs #2484 and #2487 are not dependencies; protected compositions remain unqualified.
+Harness egress and Credential Proxy mediation remain separate. Credential Proxy
+RFC-0023 is on main; its implementation PR #2487 is not a dependency. Protected
+compositions remain unqualified.
 
 ## Implementation
 

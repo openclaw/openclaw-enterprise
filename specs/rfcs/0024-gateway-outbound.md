@@ -6,9 +6,9 @@ author: miguelbranco80
 
 # Proposal: managed outbound HTTPS for dedicated Gateways
 
-- **ID:** RFC-0023
+- **ID:** RFC-0024
 - **Created:** 2026-10-14
-- **Implementation plan:** [RFC-0023 delivery](../plans/0023-gateway-outbound.md)
+- **Implementation plan:** [RFC-0024 delivery](../plans/0023-gateway-outbound.md)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
 - **Related:** [Agent egress for 0.x](0017-agent-egress-0x/index.md),
   [Compute](../../docs/reference/drivers/compute.md),
@@ -168,10 +168,10 @@ Teams delivery. RFC-0017 prefers native Sandbox and credential mechanisms; this
 bounded trusted-Gateway transport must be reviewed alongside that direction and
 does not claim to implement the broader proposed egress/credential RFC.
 
-The separate Credential Proxy [proposal #2484](https://github.com/openclaw/openclaw-enterprise/pull/2484)
-and [implementation #2487](https://github.com/openclaw/openclaw-enterprise/pull/2487)
-remain unmerged and are not dependencies of this proposal. Composition with
-protected Harness or Credential Proxy configurations remains unqualified.
+The separate Credential Proxy [RFC-0023](0023-egress-proxy-credential-lifecycle/index.md)
+is on main. Its [implementation #2487](https://github.com/openclaw/openclaw-enterprise/pull/2487)
+is not a dependency of this proposal. Composition with protected Harness or
+Credential Proxy configurations remains unqualified.
 
 ## Required proof
 

@@ -155,4 +155,4 @@ an allowed hostname can mean the plugin transport does not honor the proxy.
 
 [Runtime flow](../flows/gateway-outbound.md) explains resource ordering.
 [Testing](../testing/gateway-outbound.md) records selected proof and limits.
-[RFC-0021](../../specs/rfcs/0023-gateway-outbound.md) records the architectural proposal.
+[RFC-0024](../../specs/rfcs/0024-gateway-outbound.md) records the architectural proposal.
