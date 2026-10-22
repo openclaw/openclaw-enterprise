@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { changeSignal, followContainer } from "./docker-follow.mjs";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
@@ -40,8 +41,9 @@ export const constrainedGatewayCpuLimit = "0.5";
 export const productionGatewayMemoryLimit = "2g";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
+// Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
 export async function runDocker(args, options = {}) {
-  return execute(docker, args, {
+  return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,
     ...options,
