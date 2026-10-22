@@ -97,18 +97,22 @@ backend:
       registryPath: /etc/openclaw/repository-registry/registry.json
     drivers:
       repo: repository-credentials
-drivers:
-  repo:
-    id: repository-credentials
-    configuration:
-      controlSocket: /run/openclaw/repository-control/private/control.sock
-      sessionDurationSeconds: 86400
-      publicCaPath: /etc/openclaw/repository-ca/ca.crt
+repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
+  nativeSender:
+    controlSocket: /run/openclaw/repository-control/private/control.sock
+    publicCaPath: /etc/openclaw/repository-ca/ca.crt
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match the selected `repo` Driver. The registry's Backend
+must match `repository.id`. Startup rejects the retired Installation `drivers.repo`
+selection; see [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check). The registry's Backend
 ID must match the definition, and the session duration must fit the registry's
 maximum. Unsupported Driver packages or configuration keys fail startup.
 

@@ -167,14 +167,6 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 			(policy["transport"] == "git-and-draft-pr" && base != "main")) {
 			return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
 		}
-		seenProfiles := map[string]bool{}
-		for _, profile := range profiles {
-			name, ok := profile.(string)
-			if !ok || (name != "git-read" && name != "git-write" && name != "git-full") || seenProfiles[name] {
-				return nil, fmt.Errorf("repository profiles must be supported and unique")
-			}
-			seenProfiles[name] = true
-		}
 	}
 	cidrData, err := read("upstream-cidrs.json", false)
 	if err != nil {
@@ -382,7 +374,7 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	}
 	config, err := json.Marshal(map[string]any{
 		"gateway":       map[string]any{"listen": "0.0.0.0:8443", "controlSocket": "/run/openclaw/repository-control/private/control.sock"},
-		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-read", "git-write", "git-full"}},
+		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-write"}},
 		"backend":       backend,
 	})
 	if err != nil {

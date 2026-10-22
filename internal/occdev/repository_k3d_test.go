@@ -17,8 +17,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"go.yaml.in/yaml/v3"
 )
 
 // preparedRepositoryRegistry is an input registry the worker can prepare: one
@@ -235,71 +233,16 @@ func testDevelopmentRepositoryInstallation(t *testing.T, origin, realNode string
 	if err := r.enableDevelopmentRepository(context.Background(), state, inputs, "registry.example/repository@"+profileTestDigest, "ns_initial", readinessClient(t, server.URL), time.Minute); err != nil {
 		t.Fatalf("repository wiring failed: %v\n%s", err, strings.Join(commands(), "\n"))
 	}
+	// Run the real startup paths on the generated files first: the Installation
+	// loader (API and worker) and the repository service's projected-input
+	// loader. Each refuses a retired selection with its own error.
+	if nodeErr != nil {
+		t.Log("node not found; skipping the real startup parse of the generated files")
+	} else {
+		parseGeneratedRepositoryStartup(t, realNode, state, inputs, origin)
+	}
 	if !strings.Contains(strings.Join(commands(), "\n"), "create secret generic occ-repository-custody") {
 		t.Fatal("the worker custody key Secret was not created")
-	}
-	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var installation map[string]any
-	if err := yaml.Unmarshal(data, &installation); err != nil {
-		t.Fatal(err)
-	}
-	if _, found := field(t, installation, "drivers").(map[string]any)["repo"]; found {
-		t.Fatal("startup refuses the retired drivers.repo selection")
-	}
-	service := readJSONFile(t, filepath.Join(state.directory, "repository-service.json"))
-	if field(t, service, "backend", "kind") != "github-prepared-git-registry" {
-		t.Fatalf("the repository service refuses the retired App signing backend: %v", service["backend"])
-	}
-
-	if nodeErr != nil {
-		t.Log("node not found; skipping the real startup parse of the generated Installation")
-	} else {
-		program := `import assert from 'node:assert/strict';
-import {loadInstallationConfiguration} from './apps/controller/src/composition/installation-config.ts';
-const loaded = await loadInstallationConfiguration({mode:'production', environment:{OCC_CONFIG_PATH:process.argv[1]}});
-assert.equal(loaded.repositoryGitDriver, undefined);
-assert.equal(typeof loaded.nativeRepositorySender, 'object');
-assert.equal(loaded.repositoryOwner.backendId, 'repository-backend');
-assert.equal(loaded.preparedRepositoryGit.apiOrigin, process.argv[2] || undefined);
-`
-		// Startup reads the files the chart mounts under /etc/openclaw. Root a copy
-		// of the Installation at a temporary directory holding the generated material.
-		root := t.TempDir()
-		generated := func(name string) []byte {
-			data, err := os.ReadFile(filepath.Join(state.directory, name))
-			if err != nil {
-				t.Fatal(err)
-			}
-			return data
-		}
-		registry := readJSONFile(t, filepath.Join(state.directory, "repository-registry.json"))
-		for path, data := range map[string][]byte{
-			"repository-registry/registry.json":   []byte(field(t, registry, "data", "registry.json").(string)),
-			"repository-ca/ca.crt":                generated("repository-ca.crt"),
-			"prepared-repository/private-key.pem": generated("repository-app-key.pem"),
-			"prepared-repository/custody.key":     generated("repository-custody.key"),
-			"prepared-repository-ca/ca.crt":       inputs.issuerCA,
-		} {
-			target := filepath.Join(root, "etc", "openclaw", path)
-			if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(target, data, 0600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		parsedPath := filepath.Join(root, "installation.yaml")
-		if err := os.WriteFile(parsedPath, []byte(strings.ReplaceAll(string(data), "/etc/openclaw/", root+"/etc/openclaw/")), 0600); err != nil {
-			t.Fatal(err)
-		}
-		parse := exec.Command(realNode, "--input-type=module", "-e", program, parsedPath, origin)
-		parse.Dir = state.Repository
-		if out, err := parse.CombinedOutput(); err != nil {
-			t.Fatalf("real startup rejected the generated Installation: %v\n%s", err, out)
-		}
 	}
 	if helmErr != nil {
 		t.Log("helm not found (set OCC_HELM_BIN); skipping the chart render")
@@ -308,5 +251,99 @@ assert.equal(loaded.preparedRepositoryGit.apiOrigin, process.argv[2] || undefine
 	rendered := string(renderDevelopmentChart(t, helm, state, "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "helm-values.json"))
 	if !strings.Contains(rendered, "mountPath: /etc/openclaw/prepared-repository\n") {
 		t.Fatal("the chart did not mount the worker's prepared repository custody")
+	}
+}
+
+// parseGeneratedRepositoryStartup loads the generated Installation and broker
+// configuration with the controller's own startup code. The chart mounts these
+// files under /etc/openclaw; a copy rooted in a temporary directory stands in.
+func parseGeneratedRepositoryStartup(t *testing.T, realNode string, state *developmentState, inputs *developmentRepositoryInputs, origin string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The broker derives its prepared-material socket beside the control socket,
+	// and a Unix socket path must stay short.
+	sockets, err := os.MkdirTemp("", "occ-rc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockets) })
+	if sockets, err = filepath.EvalSymlinks(sockets); err != nil {
+		t.Fatal(err)
+	}
+	// A file the launcher did not generate stays empty, so the loaders report what is missing.
+	generated := func(name string) []byte {
+		data, err := os.ReadFile(filepath.Join(state.directory, name))
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return []byte(strings.NewReplacer(
+			"/run/openclaw/repository-control/private/control.sock", filepath.Join(sockets, "private", "control.sock"),
+			"/etc/openclaw/", root+"/etc/openclaw/",
+		).Replace(string(data)))
+	}
+	registry := []byte(field(t, readJSONFile(t, filepath.Join(state.directory, "repository-registry.json")), "data", "registry.json").(string))
+	for path, data := range map[string][]byte{
+		"installation.yaml":                                generated("installation.yaml"),
+		"service-config.json":                              generated("repository-service.json"),
+		"etc/openclaw/repository-registry/registry.json":   registry,
+		"etc/openclaw/repository-ca/ca.crt":                generated("repository-ca.crt"),
+		"etc/openclaw/prepared-repository/private-key.pem": generated("repository-app-key.pem"),
+		"etc/openclaw/prepared-repository/custody.key":     generated("repository-custody.key"),
+		"etc/openclaw/prepared-repository-ca/ca.crt":       inputs.issuerCA,
+		"broker-tls.crt":                                   generated("repository-tls.crt"),
+		"broker-tls.key":                                   generated("repository-tls.key"),
+	} {
+		target := filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(target, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	program := `import assert from 'node:assert/strict';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { loadInstallationConfiguration } from './apps/controller/src/composition/installation-config.ts';
+import { prepareProjectedInputs } from './apps/controller/src/composition/repository-credentials/projected-inputs.ts';
+import { createSystemClock } from './apps/controller/src/drivers/repo/credentials/clock.ts';
+const [root, sockets, origin] = process.argv.slice(1);
+const loaded = await loadInstallationConfiguration({ mode: 'production', environment: { OCC_CONFIG_PATH: join(root, 'installation.yaml') } });
+assert.equal(loaded.repositoryGitDriver, undefined);
+assert.equal(typeof loaded.nativeRepositorySender, 'object');
+assert.equal(loaded.repositoryOwner.backendId, 'repository-backend');
+assert.equal(loaded.preparedRepositoryGit.apiOrigin, origin || undefined);
+// Lay the broker inputs out as Kubernetes projects the chart's Secret and ConfigMap volumes.
+const project = async (directory, files) => {
+  await mkdir(join(directory, '..generation'), { recursive: true, mode: 0o755 });
+  for (const [name, source] of Object.entries(files)) {
+    await writeFile(join(directory, '..generation', name), await readFile(join(root, source)), { mode: 0o440 });
+    await symlink('..data/' + name, join(directory, name));
+  }
+  await symlink('..generation', join(directory, '..data'));
+};
+await project(join(root, 'inputs'), { 'config.json': 'service-config.json', 'tls.crt': 'broker-tls.crt', 'tls.key': 'broker-tls.key' });
+await project(join(root, 'registry'), { 'registry.json': 'etc/openclaw/repository-registry/registry.json' });
+await mkdir(join(root, 'private-volume'), { mode: 0o755 });
+const broker = await prepareProjectedInputs({
+  inputsDirectory: join(root, 'inputs'),
+  registryFile: join(root, 'registry', 'registry.json'),
+  privateDirectory: join(root, 'private-volume', 'private'),
+  controlSocket: join(sockets, 'private', 'control.sock'),
+  expectedOrigin: 'https://git.oce-system.svc.cluster.local',
+  backendId: 'repository-backend',
+  authority: 'prepared-git',
+}, createSystemClock());
+assert.equal(broker.authority, 'github-prepared-git-registry');
+assert.equal(broker.upstreamCa !== undefined, origin !== '');
+broker.close();
+`
+	parse := exec.Command(realNode, "--input-type=module", "-e", program, root, sockets, origin)
+	parse.Dir = state.Repository
+	if out, err := parse.CombinedOutput(); err != nil {
+		t.Fatalf("real startup rejected the generated repository configuration: %v\n%s", err, out)
 	}
 }
