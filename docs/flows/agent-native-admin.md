@@ -238,7 +238,7 @@ admin Configuration remains Pod-local.
 
 ## Related docs
 
-- [Proposed Compute preparation contract](../../specs/rfcs/0023-native-admin-deployment-preparation.md)
+- [Proposed Compute preparation contract](../../specs/rfcs/0024-native-admin-deployment-preparation.md)
 - [Agent native admin UI](../reference/agent-native-admin.md)
 - [Platform console](../reference/console.md#open-the-native-admin-ui)
 - [Gateway routing with Envoy](../reference/gateway-routing.md#native-admin-ui-routing)

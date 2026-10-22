@@ -6,7 +6,7 @@ author: miguelbranco80
 
 # Proposal: Prepare enabled native administration at deployment admission
 
-- **ID:** RFC-0023
+- **ID:** RFC-0024
 - **Created:** 2026-10-17
 - **RFC and implementation PR:** [#2259](https://github.com/openclaw/openclaw-enterprise/pull/2259)
 - **Related:** [scope-cut RFC #898](https://github.com/openclaw/openclaw-enterprise/pull/898), [trusted-operator pilot #256](https://github.com/openclaw/openclaw-enterprise/pull/256), [issue #2257](https://github.com/openclaw/openclaw-enterprise/issues/2257)
