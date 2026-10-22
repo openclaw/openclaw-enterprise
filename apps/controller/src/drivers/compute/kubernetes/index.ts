@@ -1215,6 +1215,8 @@ const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
   "operator.talk",
   "operator.talk.secrets",
 ]);
+// Gateways read proxy headers as Latin-1 byte strings, so only printable ASCII matches reliably.
+const PRINTABLE_ASCII_IDENTITY = /^[\x20-\x7e]+$/u;
 const MODEL_API_KEY = "OPENAI_API_KEY";
 const SERVICE_ACCOUNT_TOKEN_KEY = "token";
 /** The provider credential whose token an account Secret holds, so a leftover can be revoked. */
@@ -1964,6 +1966,15 @@ function scopedCidr(value: unknown, description: string, index: number, path?: s
     throw configurationConstraintFailure(`${description}s cannot cover every address.`, path);
   }
   return parsed;
+}
+
+/**
+ * The Gateway resolves identityScopes for "@" identities case-insensitively, so case
+ * variants of one would share a grant; a case variant of the machine identity is a spoof.
+ */
+function proxyIdentityMatchKey(identity: string): string {
+  const folded = identity.toLowerCase();
+  return identity.includes("@") || folded === TRUSTED_PROXY_IDENTITY ? folded : identity;
 }
 
 function trustedProxyCidrSet(
@@ -13153,10 +13164,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       allowUsers !== undefined &&
       (!Array.isArray(allowUsers) ||
         !allowUsers.includes(TRUSTED_PROXY_IDENTITY) ||
-        allowUsers.some((user) => typeof user !== "string" || user.trim() !== user || user === ""))
+        allowUsers.some(
+          (user) =>
+            typeof user !== "string" ||
+            user.trim() !== user ||
+            !PRINTABLE_ASCII_IDENTITY.test(user),
+        ) ||
+        new Set(allowUsers.map((user) => proxyIdentityMatchKey(user as string))).size !==
+          allowUsers.length)
     ) {
       throw new ConfigurationFailure(
-        `Kubernetes native trustedProxy.allowUsers must contain nonblank, trimmed identities including ${TRUSTED_PROXY_IDENTITY}.`,
+        `Kubernetes native trustedProxy.allowUsers must contain distinct, nonblank, trimmed, printable ASCII identities including ${TRUSTED_PROXY_IDENTITY}.`,
       );
     }
     if (trustedProxy.allowLoopback !== undefined && trustedProxy.allowLoopback !== false) {

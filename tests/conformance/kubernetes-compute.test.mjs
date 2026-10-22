@@ -5835,15 +5835,80 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       }),
     );
 
+    // Human grants must not change the machine identity's exact administration.
+    for (const machineScopes of [
+      [],
+      ["operator.read", "operator.write"],
+      ["operator.admin", "operator.read"],
+      "operator.admin",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  identityScopes: { ...auth.identityScopes, "occ-workspace-files": machineScopes },
+                },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.identityScopes" &&
+          error.message.includes("exactly operator.admin"),
+      );
+    }
+    // Upstream matches allowUsers exactly, but resolves identityScopes for "@" identities
+    // case-insensitively; only exact-case, non-email identities may differ by case.
+    assert.doesNotThrow(() =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: {
+              ...auth.trustedProxy,
+              allowUsers: [...auth.trustedProxy.allowUsers, "oidc:Member-01"],
+            },
+          },
+        },
+      }),
+    );
+
     // An empty list means "allow every proxy user" upstream. Additional humans
     // must not turn explicit admission into a wildcard or remove machine access.
-    for (const allowUsers of [[], ["oidc:member-01"], ["occ-workspace-files", " "], null]) {
+    // Duplicates, case variants that share a grant or spoof the machine identity, and
+    // identities a proxy header cannot carry exactly are refused as well.
+    for (const allowUsers of [
+      [],
+      ["oidc:member-01"],
+      ["occ-workspace-files", " "],
+      null,
+      ["occ-workspace-files", "oidc:member-01", "oidc:member-01"],
+      ["occ-workspace-files", "occ-workspace-files"],
+      ["occ-workspace-files", "OCC-Workspace-Files"],
+      ["occ-workspace-files", "member@example.com", "Member@Example.com"],
+      ["occ-workspace-files", "oidc:m\u00e9mber-01"],
+      ["occ-workspace-files", "oidc:member\u200b-01"],
+      ["occ-workspace-files", "oidc:member\u0000-01"],
+      ["occ-workspace-files", "oidc:member\t01"],
+      ["occ-workspace-files", 42],
+    ]) {
+      // Machine-only grants keep the identityScopes checks from refusing first.
       assert.throws(
         () =>
           driver.kubernetesGatewayConfigurationDocument({
-            gateway: { auth: { ...auth, trustedProxy: { ...auth.trustedProxy, allowUsers } } },
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, allowUsers },
+                identityScopes: { "occ-workspace-files": ["operator.admin"] },
+              },
+            },
           }),
-        /allowUsers/,
+        /native trustedProxy\.allowUsers must contain/,
       );
     }
     assert.throws(

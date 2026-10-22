@@ -5,7 +5,10 @@ Compute renders `gateway.auth.mode: trusted-proxy` and
 or set them to those exact values. Omission defaults `allowUsers` to
 `["occ-workspace-files"]` and its `identityScopes` grant to `["operator.admin"]`.
 Human policies must retain the machine identity and its exact `["operator.admin"]` grant.
-Empty allowlists and nonstring, blank, or untrimmed identities fail closed.
+Empty allowlists and nonstring, blank, untrimmed or non-printable-ASCII identities
+fail closed. So do duplicates and case variants of `occ-workspace-files` or of an
+email-style identity: OpenClaw matches `identityScopes` case-insensitively for
+identities containing `@`, so such variants would share one grant.
 
 > **Warning: trusted teammates only.** Shared human access is opt-in for teammates
 > trusted with the Agent's configured tools, credentials and workspace. Profiles
@@ -62,6 +65,14 @@ identity and authority headers. Use stable, namespaced human identities, such
 as an issuer-qualified OIDC subject. Reserve `occ-workspace-files` for OCC:
 the human ingress must never emit that identity.
 
+The ingress must also set `x-openclaw-scopes` on every request, HTTP and WebSocket
+upgrade, to that person's granted scopes, replacing any client value; an empty
+value grants none. Stripping the header is not enough. Native HTTP APIs, such as
+`/tools/invoke` and `/sessions/<key>/kill`, ignore `identityScopes`: without the
+header, OpenClaw gives a trusted-proxy request its default operator scopes,
+including `operator.admin`, narrowed only by native role ceilings. On WebSocket
+upgrades the header caps the union of device and identity grants.
+
 Private routing can remain enabled. Its operator HTTPRoute always replaces
 `x-occ-identity` with the machine identity, so human traffic needs a separate
 identity-preserving route to the Gateway Service. With a separate proxy, the
@@ -88,7 +99,10 @@ With auto-approval enabled, device scopes are a shared grant, not a per-human ca
 Omitting them uses OpenClaw's defaults: `operator.read`, `operator.write`,
 `operator.approvals` and `operator.questions`. Explicit read/write device scopes
 can likewise widen a narrower identity grant. Set device scopes explicitly for
-the least-privileged admitted human; per-identity grants cannot subtract them.
+the least-privileged admitted human; per-identity grants cannot subtract them, but
+the ingress's per-person `x-openclaw-scopes` cap can. Admitting humans does not
+narrow devices already paired with admin grants, for example under earlier
+machine-only admin auto-approval: review and revoke those pairings first.
 
 ## Listener and proxy trust
 
