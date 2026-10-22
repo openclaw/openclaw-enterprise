@@ -273,6 +273,19 @@ test("a stopped gateway summary names its shutdown outcome and every clean-close
     ),
     "shutdown completed cleanly; clean-close receipts: active-leases, written",
   );
+  assert.equal(
+    stoppedGatewaySummary(
+      [
+        line("plugins", "Local model service shutdown failed: synthetic"),
+        line("gateway/shutdown", "shutdown completed in 900ms with warnings: memory-managers"),
+      ].join("\n"),
+    ),
+    "shutdown completed with warnings; clean-close receipts: none",
+  );
+  assert.equal(
+    stoppedGatewaySummary(line("gateway/shutdown", "shutdown failed in 12ms: plugin-registry")),
+    "shutdown failed; clean-close receipts: none",
+  );
   // Finding 2198's shape: the Gateway stopped, but no receipt was logged.
   assert.equal(
     stoppedGatewaySummary(line("gateway", "received SIGTERM; shutting down")),

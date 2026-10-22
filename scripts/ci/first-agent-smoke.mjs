@@ -984,8 +984,13 @@ export function stoppedGatewaySummary(output) {
   const receipts = [...output.matchAll(/agent database clean-close receipt: ([a-z-]+)/g)].map(
     (match) => match[1],
   );
-  const shutdown = /shutdown (completed cleanly|completed with warnings|failed)/.exec(output)?.[1];
-  return `shutdown ${shutdown ?? "not logged"}; clean-close receipts: ${
+  // OpenClaw's gateway/shutdown wording; other subsystems also log "shutdown failed".
+  const shutdown =
+    /shutdown (completed cleanly|failed) in \d+ms|shutdown completed in \d+ms (with warnings)/.exec(
+      output,
+    );
+  const outcome = shutdown === null ? "not logged" : (shutdown[1] ?? `completed ${shutdown[2]}`);
+  return `shutdown ${outcome}; clean-close receipts: ${
     receipts.length === 0 ? "none" : receipts.join(", ")
   }`;
 }
@@ -1030,15 +1035,21 @@ function followGatewayLog(stack, pod) {
       const settle = delay(STOPPED_GATEWAY_LOG_SETTLE_MS, undefined, { ref: false });
       await Promise.race([closed, settle]);
       child.kill("SIGKILL");
-      return [...lines, partial].slice(-STOPPED_GATEWAY_LOG_LINES).join("\n");
+      return [...lines, ...(partial === "" ? [] : [partial])]
+        .slice(-STOPPED_GATEWAY_LOG_LINES)
+        .join("\n");
     },
   };
 }
 
 async function stopAgent(stack, agent) {
-  const gateways = (await agentPods(stack, agent.id)).filter(
+  // A failed Pod read only loses the kept log; it must not fail the stop.
+  const gateways = (await agentPods(stack, agent.id).catch(() => [])).filter(
     (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
   );
+  if (gateways.length === 0) {
+    log(`${agent.label}: no running gateway Pod to follow through the stop`);
+  }
   const followers = gateways.map((pod) => followGatewayLog(stack, pod));
   try {
     const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
