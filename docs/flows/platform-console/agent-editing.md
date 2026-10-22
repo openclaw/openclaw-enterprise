@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
-updated: 2026-10-20
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-22
+last_updated_session: 01a162ec-b748-7c42-9034-1f0a92b05703
 ---
 
 # Console Agent editing and runtime requests
@@ -108,10 +108,15 @@ A refused write lists required grants without guessing which; a refused prefligh
 access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
 and authentication editors; Configuration saves get no such hint.
 
-`agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
-**Save plugin selections** PATCHes the Agent map, preserving Configuration and
-saved versions. Driver validation precedes deployment's immutable snapshot. See the
-[plugin deployment flow](../agent-plugins.md).
+`agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
+`agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
+Namespace, Configuration, selections, or approvers differ from the editor's
+baseline, it sends no write. This read does not lock the Agent. The editor clears
+the draft only when the response confirms that identity and the submitted settings.
+**Reload plugin selections** discards the local draft and reads the Agent without
+repeating the PATCH. A successful read rebuilds the editor from saved settings.
+If the read fails, the Console opens the draft page again. The Plugin Driver
+validates the selections before deployment [snapshots the saved settings](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
 PATCHes `repositoryAccess`. Unsaved edits also block tabs; failed discovery leaves
@@ -314,6 +319,7 @@ Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion
 
 ## Changelog
 
+- 2026-10-22 10:14: Trace plugin save confirmation and recovery when the response is incomplete or identifies different settings. (01a162ec-b748-7c42-9034-1f0a92b05703 - 345d9f63d)
 - 2026-10-20 05:00: Move steps 7 and 8 (stop, deletion) to [their own trace](agent-stop-and-deletion.md). (docs-split-1020)
 - 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
