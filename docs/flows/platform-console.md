@@ -345,7 +345,7 @@ refresh and inspection.
   They verify navigation, isolation, creation, draft/history/channel editing, and
   authentication, not PostgreSQL persistence, Backend health, runtime dispatch,
   worker leases, or Compute effects.
-- `node --test tests/browser/console-secrets.test.mjs` exercises Secret mutation,
+- `node --test tests/browser/console-secrets.test.ts` exercises Secret mutation,
   Agent references, denials, and lost replies with passive test Secret storage.
   The `console-secrets` [QA scenario](../testing/ci.md#qa-matrix) selects real
   shipped storage; it requires the documented runtime and credential setup.
