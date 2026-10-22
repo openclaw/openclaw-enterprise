@@ -36,6 +36,21 @@ const repositoryCredentialValues = {
   "repositoryCredentials.serviceName": "git",
 };
 const themeValues = { "api.consoleTheme.configMapName": "console-theme-v2" };
+// Prepared GitHub custody for the Credential Proxy authority, without and with a private issuer CA.
+const preparedGitHubValues = {
+  "egressAuthority.enabled": "true",
+  "egressAuthority.tlsSecretName": "authority-server-tls",
+  "egressAuthority.issuerSecretName": "gateway-jwt-keys",
+  "egressAuthority.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+    "openshell-system",
+  "egressAuthority.clients[0].podSelector.matchLabels.app": "openshell-gateway",
+  "preparedGitHub.custodySecretName": "prepared-github-custody",
+  "preparedGitHub.issuerCidrs[0]": "192.0.2.3/32",
+};
+const issuerCaValues = {
+  ...preparedGitHubValues,
+  "preparedGitHub.issuerCaConfigMapName": "prepared-github-issuer-ca",
+};
 
 async function render(values, isUpgrade) {
   const objects = await parseProductionChart(
@@ -68,6 +83,8 @@ test(
       repositoryCredentialValues,
       themeValues,
       { ...repositoryCredentialValues, ...themeValues },
+      preparedGitHubValues,
+      issuerCaValues,
     ]) {
       const { job, hook, api } = await render(values, true);
       // Pre-upgrade hooks finish before Helm updates the Deployments.
@@ -103,6 +120,11 @@ test(
       }
       if ("repositoryCredentials.enabled" in values) {
         expected.push("repository-registry", "repository-public-ca");
+      }
+      // Loading the Installation reads preparedGitHub.issuerCaPath (finding 2205). The custody
+      // key is read only after startup, so the hook never mounts it.
+      if ("preparedGitHub.issuerCaConfigMapName" in values) {
+        expected.push("prepared-github-issuer-ca");
       }
       assert.deepEqual(
         check.volumeMounts.map(({ name }) => name),
