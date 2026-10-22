@@ -61,8 +61,8 @@ graph TD
 
 ### 1. Save additional authority on the Agent
 
-`apps/controller/src/console/navigation.mjs:createNavigation` retains the exact
-Network tab through login. `apps/controller/src/console/agents/detail.mjs:reloadDraftInPlace`
+`apps/controller/src/console/navigation.mts:createNavigation` retains the exact
+Network tab through login. `apps/controller/src/console/agents/detail.mts:reloadDraftInPlace`
 rereads the Agent after a Network save or explicit reload, then rebuilds the editor
 in place with confirmation and focus. Sidebar navigation and Back wait for pending
 Network writes. Unsaved changes still block deployment;
