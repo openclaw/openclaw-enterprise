@@ -2113,7 +2113,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   const namespace = await fixture.createNamespace("Capability denial", { ready: true });
   const { page } = await newPage(t, fixture);
   // Without a permission answer that grants Agent create, a denied Installation read keeps the
-  // refusal; a member the Namespace lets create goes on (console-create-agent-member.test.mjs).
+  // refusal; a member with permission to create Agents in the Namespace can continue.
   let permissions: { agents: { create: boolean } } | null = null;
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
     permissions

@@ -2364,8 +2364,7 @@ test("Agent creation retries a denied credential grant without duplicating its s
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   // Native IAM denies the administrator's grant authority after the session found it allowed. A
-  // session that already knows it is refused sends no grant at all
-  // (console-create-agent-member.test.mjs, finding 2109).
+  // session that already knows it is refused sends no grant at all (finding 2109).
   fixture.policy.restrictions.push({
     id: "deny-credential-grant",
     resourceKind: "installation",

@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import type {
+  AgentDeploymentStatusWire,
+  AgentReadWire,
+  AgentResponse,
+  AgentRevisionResponse,
+  ConfigurationWire,
+  PresetWire,
+} from "../../packages/contracts/src/api/resources.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import {
   login,
@@ -11,6 +21,18 @@ import {
 import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+
+function assertChannelOnlySlackAccess(configuration: unknown) {
+  const channels = asRecord(asRecord(configuration)?.channels);
+  const slack = asRecord(channels?.slack);
+  assert.ok(slack, "the saved configuration contains Slack settings");
+  assert.equal(slack.enabled, true);
+  assert.deepEqual(asRecord(slack.channels)?.CDEMO123, {
+    requireMention: true,
+    users: ["UDEMO123"],
+  });
+  assert.equal(Object.hasOwn(slack, "allowFrom"), false);
+}
 
 for (const issuesEnabled of [true, false]) {
   test(`one Dedicated Agent retains repository scope through Slack setup, credentials and deployment admission (issues ${issuesEnabled ? "on" : "off"})`, async (t) => {
@@ -31,9 +53,10 @@ for (const issuesEnabled of [true, false]) {
       },
     });
     assert.equal(preset.status, 201, JSON.stringify(preset));
+    const { id: presetId }: PresetWire = preset.data;
     const { page } = await newPage(t, fixture);
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByLabel("Preset template").selectOption(presetId);
     await page.getByRole("button", { name: "Use Preset" }).click();
     await page.getByLabel("Agent name").fill("Repository teammate");
     await page.getByLabel("Harness", { exact: true }).selectOption("codex");
@@ -98,7 +121,7 @@ for (const issuesEnabled of [true, false]) {
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     const response = await createdResponse;
     assert.equal(response.status(), 201);
-    const { data: agent } = await response.json();
+    const { data: agent }: AgentResponse = await response.json();
     const expectedBindings = [
       { repositoryRef: "application", profile },
       { repositoryRef: "documentation", profile },
@@ -129,7 +152,7 @@ for (const issuesEnabled of [true, false]) {
     for (const [label, value] of [
       ["Slack app token", "xapp-synthetic-demo"],
       ["Slack bot token", "xoxb-synthetic-demo"],
-    ]) {
+    ] as const) {
       await openCreateSecretDialog(channelDialog, label);
       const secretDialog = page.getByRole("dialog", { name: `Create ${label} Secret` });
       assert.equal(
@@ -161,34 +184,30 @@ for (const issuesEnabled of [true, false]) {
     );
     assert.equal(credentialStatus.status, 200);
     assert.deepEqual(credentialStatus.data, { transportConfigured: true });
-    const { data: revision } = await admitted.json();
+    const { data: revision }: AgentRevisionResponse = await admitted.json();
     assert.equal(revision.agentId, agent.id);
     assert.equal(revision.harness.id, "codex");
     assert.equal(revision.harness.mode, "dedicated");
-    assert.deepEqual(revision.repositoryCredentials.bindings, expectedBindings);
-    assert.equal(revision.configuration.channels.slack.enabled, true);
-    assert.deepEqual(revision.configuration.channels.slack.channels.CDEMO123, {
-      requireMention: true,
-      users: ["UDEMO123"],
-    });
-    assert.equal(Object.hasOwn(revision.configuration.channels.slack, "allowFrom"), false);
-    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-    const configuration = await fixture.request(
-      "GET",
-      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    );
-    assert.deepEqual(saved.data.repositoryBindings, expectedBindings);
-    assert.equal(configuration.data.values.channels.slack.enabled, true);
-    assert.deepEqual(configuration.data.values.channels.slack.channels.CDEMO123, {
-      requireMention: true,
-      users: ["UDEMO123"],
-    });
-    assert.equal(Object.hasOwn(configuration.data.values.channels.slack, "allowFrom"), false);
-    assert.deepEqual(Object.keys(configuration.data.secretBindings).sort(), [
+    assert.deepEqual(revision.repositoryCredentials?.bindings, expectedBindings);
+    assertChannelOnlySlackAccess(revision.configuration);
+    const saved: AgentReadWire = (
+      await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)
+    ).data;
+    const configuration: ConfigurationWire = (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      )
+    ).data;
+    assert.ok("repositoryBindings" in saved);
+    assert.deepEqual(saved.repositoryBindings, expectedBindings);
+    assertChannelOnlySlackAccess(configuration.values);
+    assert.ok(configuration.secretBindings);
+    assert.deepEqual(Object.keys(configuration.secretBindings).sort(), [
       "SLACK_APP_TOKEN",
       "SLACK_BOT_TOKEN",
     ]);
-    assert.deepEqual(revision.secretBindings, configuration.data.secretBindings);
+    assert.deepEqual(revision.secretBindings, configuration.secretBindings);
     const storedRevision = await fixture.request(
       "GET",
       `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${revision.id}`,
@@ -200,8 +219,9 @@ for (const issuesEnabled of [true, false]) {
       `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
     );
     assert.equal(deployment.status, 200);
-    assert.equal(deployment.data.deploymentId, revision.id);
-    assert.equal(deployment.data.status, "queued");
+    const { deploymentId, status }: AgentDeploymentStatusWire = deployment.data;
+    assert.equal(deploymentId, revision.id);
+    assert.equal(status, "queued");
     await expectDeploymentOutcome(page, "Queued");
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page
@@ -211,12 +231,15 @@ for (const issuesEnabled of [true, false]) {
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();
     assert.equal(await page.locator(".repository-write-access").isVisible(), true);
+    const agents = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+    assert.equal(agents.status, 200);
+    const savedAgents: AgentReadWire[] = agents.data;
     assert.deepEqual(
-      (await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data.map(({ id }) => id),
+      savedAgents.map(({ id }) => id),
       [agent.id],
     );
     // No worker, Pod, model or provider runs in this fixture. Acceptance ends at
     // the actual immutable revision admitted by OCC; no Ready result is fabricated.
-    assert.equal(saved.data.activeRevisionId, undefined);
+    assert.equal(saved.activeRevisionId, undefined);
   });
 }

@@ -9,6 +9,8 @@ import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
 
+/** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
+
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
@@ -240,6 +242,11 @@ export const repositoryBackendFixture = Object.freeze({
   drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
+ * @param {{ reloadablePolicy?: boolean, controlSocket?: string }} [options]
+ */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
@@ -273,6 +280,7 @@ export async function createRepositoryLaunchFixture(
   return {
     fixture,
     namespace,
+    /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
       currentPolicy = repositoryPolicyDriver(repositories, controlSocket);

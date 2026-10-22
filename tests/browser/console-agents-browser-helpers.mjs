@@ -504,6 +504,7 @@ export async function slackSelectionValue(input) {
     .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }
 
+/** @param {import("playwright").Page} page @param {string} name */
 export function repositoryCheckbox(page, name) {
   return page
     .locator("#repository-results .repository-result-row")

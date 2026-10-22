@@ -1,7 +1,21 @@
+/// <reference lib="es2024.promise" />
+
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import test from "node:test";
+
+import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
+import type {
+  AgentReadWire,
+  AgentResponse,
+  AgentWire,
+  ConfigurationResponse,
+  PresetWire,
+  RepositoryOptionListResponse,
+} from "../../packages/contracts/src/api/resources.ts";
+import { asRecord } from "../../packages/utils/src/objects.ts";
+import type { GitHubProfile } from "../../apps/controller/src/drivers/repo/github/credentials/types.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
@@ -60,7 +74,7 @@ test("Agent repository access labels target the right repository when references
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await (await createResponse).json();
+  const created: AgentResponse = await (await createResponse).json();
   assert.deepEqual(created.data.repositoryAccess, {
     defaultProfile: "git-read",
     repositories: [{ repositoryRef: "app", profile: "git-full" }],
@@ -176,7 +190,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const created = await (await createResponse).json();
+  const created: AgentResponse = await (await createResponse).json();
   assert.deepEqual(created.data.repositoryAccess, {
     defaultProfile: "git-read",
     repositories: [
@@ -221,7 +235,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       response.request().method() === "PATCH",
   );
   await page.getByRole("button", { name: "Save repository access" }).click();
-  const saved = await (await savedResponse).json();
+  const saved: AgentResponse = await (await savedResponse).json();
   assert.deepEqual(saved.data.repositoryAccess, {
     defaultProfile: "git-read",
     repositories: [
@@ -275,20 +289,21 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   );
   await page.getByRole("button", { name: "Save repository access" }).click();
   assert.equal((await repairedResponse).status(), 200);
-  const legacy = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+  const legacyResponse = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
     body: {
       name: "Legacy explicit repository access",
       configurationId: created.data.configurationId,
       repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
     },
   });
-  assert.equal(legacy.status, 201);
+  assert.equal(legacyResponse.status, 201);
+  const legacy: AgentWire = legacyResponse.data;
   await page.goto(
-    `${fixture.origin}/console/agents/${legacy.data.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+    `${fixture.origin}/console/agents/${legacy.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
   );
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
-  const optionsPath = `**/namespaces/${namespace.id}/agents/${legacy.data.id}/repository-options`;
-  const optionsHeld = Promise.withResolvers();
+  const optionsPath = `**/namespaces/${namespace.id}/agents/${legacy.id}/repository-options`;
+  const optionsHeld = Promise.withResolvers<void>();
   t.after(() => optionsHeld.resolve());
   await page.route(optionsPath, async (route) => {
     await optionsHeld.promise;
@@ -343,7 +358,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     },
   ]);
   // While the retry is held, the refusal gives way to a quiet loading hint.
-  const retryHeld = Promise.withResolvers();
+  const retryHeld = Promise.withResolvers<void>();
   t.after(() => retryHeld.resolve());
   await page.route(optionsPath, async (route) => {
     await retryHeld.promise;
@@ -379,7 +394,7 @@ test("Agent repository tab keeps Save disabled for an existing binding while rep
     },
   });
   assert.equal(created.status, 201);
-  const agent = created.data;
+  const agent: AgentWire = created.data;
   const { page } = await newPage(t, fixture);
   // The API answers this code when the Installation's composition offers no repository options,
   // for example after a Compute Driver without repository support is selected.
@@ -446,7 +461,8 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
   );
   const response = await options;
   assert.equal(response.status(), 503);
-  assert.equal((await response.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  const { error }: ErrorResponse = await response.json();
+  assert.equal(error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
   const status = page.getByRole("status").filter({
     hasText: "Repository access is not available in this Installation's configuration.",
   });
@@ -501,9 +517,10 @@ test("Preset repository access and plugin policies remain independent during Age
     },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { id: presetId }: PresetWire = preset.data;
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Preset template").selectOption(presetId);
   await page.getByRole("button", { name: "Use Preset" }).click();
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
@@ -525,7 +542,7 @@ test("Preset repository access and plugin policies remain independent during Age
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await createdResponse;
   assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const { data: created }: AgentResponse = await response.json();
   assert.deepEqual(created.plugins, { [pluginId]: { enabled: true } });
   assert.deepEqual(created.repositoryAccess, {
     defaultProfile: "git-full",
@@ -571,10 +588,11 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
     },
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { id: presetId }: PresetWire = preset.data;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Preset template").selectOption(presetId);
   await page.getByRole("button", { name: "Use Preset" }).click();
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), initialPlugins);
@@ -607,7 +625,9 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
       response.request().method() === "POST",
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const savedConfiguration = (await (await savedConfigurationResponse).json()).data;
+  const { data: savedConfiguration }: ConfigurationResponse = await (
+    await savedConfigurationResponse
+  ).json();
   assert.equal((await rejectedResponse).status(), 403);
   await page.getByRole("heading", { name: "Recover from a rejected Agent save" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), initialPlugins);
@@ -643,7 +663,7 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await createdResponse;
   assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const { data: created }: AgentResponse = await response.json();
   assert.deepEqual(created.plugins, updatedPlugins);
   assert.deepEqual(created.repositoryAccess, {
     defaultProfile: "git-full",
@@ -655,10 +675,12 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 0);
   const agentRequests = agentPostRequests(requests, namespace.id);
   assert.equal(agentRequests.length, 2);
-  assert.deepEqual(agentRequests[0].body.plugins, initialPlugins);
-  assert.deepEqual(agentRequests[1].body.plugins, updatedPlugins);
-  assert.deepEqual(agentRequests[1].body.repositoryAccess, created.repositoryAccess);
-  assert.equal(agentRequests[1].body.configurationId, savedConfiguration.id);
+  const [firstAttempt, retryAttempt] = agentRequests.map(({ body }) => asRecord(body));
+  assert.ok(firstAttempt && retryAttempt, "expected both Agent submissions");
+  assert.deepEqual(firstAttempt.plugins, initialPlugins);
+  assert.deepEqual(retryAttempt.plugins, updatedPlugins);
+  assert.deepEqual(retryAttempt.repositoryAccess, created.repositoryAccess);
+  assert.equal(retryAttempt.configurationId, savedConfiguration.id);
 });
 
 test("Agent repository editor distinguishes stale, rejected, and uncertain saves", async (t) => {
@@ -676,7 +698,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     nativeValues("repository-save"),
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const access = (defaultProfile) => ({
+  const access = (defaultProfile: GitHubProfile) => ({
     defaultProfile,
     repositories: [{ repositoryRef: "application" }],
   });
@@ -738,8 +760,8 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
 
   // Commit through the real API, then lose its response. Hold completion long enough
   // to verify pending controls before proving that readback is required after loss.
-  const committed = Promise.withResolvers();
-  const release = Promise.withResolvers();
+  const committed = Promise.withResolvers<number>();
+  const release = Promise.withResolvers<void>();
   t.after(() => release.resolve());
   await page.route(`${fixture.origin}${path}`, async (route) => {
     if (route.request().method() !== "PATCH") {
@@ -767,8 +789,9 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     .waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isDisabled(), true);
-  const persisted = await fixture.request("GET", path);
-  assert.deepEqual(persisted.data.repositoryAccess, access("git-full"));
+  const persisted: AgentReadWire = (await fixture.request("GET", path)).data;
+  assert.ok("repositoryAccess" in persisted);
+  assert.deepEqual(persisted.repositoryAccess, access("git-full"));
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
   const reload = page.getByRole("button", { name: "Reload draft", exact: true });
   await reload.click();
@@ -907,7 +930,7 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
     ["I\u0307stanbul", "acme/istanbul"],
     ["ıstanbul", "acme/istanbul"],
     ["Ibm", "acme/platform"],
-  ]) {
+  ] as const) {
     await search.fill(query);
     await repositoryCheckbox(page, name).waitFor();
     assert.deepEqual(await names.allTextContents(), [name], query);
@@ -921,8 +944,8 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository metadata", { ready: true });
-  const metadataRequested = Promise.withResolvers();
-  const releaseMetadata = Promise.withResolvers();
+  const metadataRequested = Promise.withResolvers<void>();
+  const releaseMetadata = Promise.withResolvers<void>();
   t.after(() => releaseMetadata.resolve());
   const description = 'Application <img src=x onerror="alert(1)"> & services';
   // The actual credential service talks to a controlled GitHub TLS endpoint.
@@ -954,6 +977,7 @@ test("Repository descriptions arrive without interrupting a selection", async (t
       { repositoryRef: "tools", repository: "example/tools", repositoryId: "794" },
     ],
   });
+  assert.ok(credentials, "the registry credential service fixture started");
   const driver = new GitHubRepoDriver(
     {
       id: repositoryBackendFixture.id,
@@ -1000,7 +1024,8 @@ test("Repository descriptions arrive without interrupting a selection", async (t
     if (response.status() !== 200 || refs.length !== 6 || !refs.includes("documentation")) {
       return false;
     }
-    return (await response.json()).meta?.descriptionsPending === false;
+    const { meta }: RepositoryOptionListResponse = await response.json();
+    return meta?.descriptionsPending === false;
   });
   await search.fill("");
   assert.equal(
@@ -1015,7 +1040,7 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   await waitForCondition(
     () =>
       credentials.repositories.every((entry) =>
-        entry.github.tokenState().every((token) => token.revoked),
+        entry.github.tokenState().every((token: { revoked: boolean }) => token.revoked),
       ),
     "metadata credentials were not revoked",
     10_000,
@@ -1030,7 +1055,8 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await createdResponse;
   assert.equal(response.status(), 201);
-  assert.deepEqual((await response.json()).data.repositoryBindings, [
+  const { data }: AgentResponse = await response.json();
+  assert.deepEqual(data.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
 });
@@ -1058,7 +1084,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
     "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
   ].join(" ");
   // Tag characters spelling `text`, raw and as the picker escapes them.
-  const tags = (text) => [
+  const tags = (text: string): [string, string] => [
     Array.from(text, (letter) => String.fromCodePoint(0xe0000 + letter.charCodeAt(0))).join(""),
     Array.from(text, (letter) => `\\U000e00${letter.charCodeAt(0).toString(16)}`).join(""),
   ];
@@ -1092,7 +1118,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
   const shown = `${hiddenShown} ${joined} ${escaped.map(([, text]) => text).join(" ")}`;
   const directory = await socketDirectory(t, "repository-description-escapes-");
   const controlSocket = join(directory, "control.sock");
-  const held = [];
+  const held: (() => void)[] = [];
   let lookups = 0;
   const server = createServer((request, response) => {
     lookups += 1;
@@ -1113,7 +1139,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
     // what it renders itself.
     request.once("end", () => (lookups === 1 ? answer() : held.push(answer)));
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(controlSocket, resolve);
   });
@@ -1136,7 +1162,7 @@ test("Repository descriptions show hidden and direction-changing characters as e
           repositoryRef: name,
           repositoryId: String(2001 + index),
           repository: `example/${name}`,
-          namespaces: [{ namespaceId, profiles: ["git-read"] }],
+          namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
         }),
       ),
     ],
@@ -1340,7 +1366,7 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     const response = await saved;
     assert.equal(response.status(), 201);
-    const agent = (await response.json()).data;
+    const { data: agent }: AgentResponse = await response.json();
     assert.deepEqual(agent.repositoryAccess, {
       defaultProfile: "git-full",
       repositories: [{ repositoryRef: "repository-001" }],
@@ -1351,6 +1377,8 @@ for (const discoveryState of ["later page", "search filter", "dismissed results"
     assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
     const attempts = agentPostRequests(requests, namespace.id);
     assert.equal(attempts.length, 2);
-    assert.equal(agent.configurationId, attempts[0].body.configurationId);
+    const firstAttempt = asRecord(attempts[0]?.body);
+    assert.ok(firstAttempt, "expected the original Agent submission");
+    assert.equal(agent.configurationId, firstAttempt.configurationId);
   });
 }

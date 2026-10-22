@@ -3271,7 +3271,7 @@ export const scenarios = {
       'Under the form fields, read "Your permissions in this Namespace could not be checked".',
       "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
     ],
-    gap: "The live retry that succeeds is in tests/browser/console-create-agent-member.test.mjs.",
+    gap: "The member creation browser test also covers a successful retry.",
   },
   createMember: {
     group: "Pages/Create Agent",
@@ -3285,7 +3285,7 @@ export const scenarios = {
       'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
-    gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
+    gap: "The member creation browser test uses a member account and the real Installation permission check.",
   },
   createMemberGrantRefused: {
     group: "Pages/Create Agent",

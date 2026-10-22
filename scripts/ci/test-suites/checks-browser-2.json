@@ -18,7 +18,7 @@
     "tests/browser/console-runtime-credentials.test.mjs",
     "tests/browser/console-codex-oauth.test.mjs",
     "tests/browser/console-agent-save-refusals.test.ts",
-    "tests/browser/console-repository-dedicated.test.mjs",
+    "tests/browser/console-repository-dedicated.test.ts",
     "tests/browser/console-create-agent-provisioning-400.test.mjs",
     "tests/browser/console-agent-deploy-focus.test.mjs",
     "tests/browser/console-agents-list-return.test.mjs",
@@ -64,7 +64,7 @@
       "path": "tests/browser/console-create-agent-provisioning-400.test.mjs"
     },
     {
-      "path": "tests/browser/console-repository-dedicated.test.mjs"
+      "path": "tests/browser/console-repository-dedicated.test.ts"
     },
     {
       "path": "tests/browser/console-runtime-credentials.test.mjs"

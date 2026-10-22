@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
+import type { Page, Route } from "playwright";
 
-import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
+import type { Permission, Principal } from "../../packages/contracts/src/index.ts";
+import type {
+  AgentResponse,
+  NamespaceListResponse,
+  NamespaceWire,
+  SecretWire,
+} from "../../packages/contracts/src/api/resources.ts";
+
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   holdRequests,
   login,
@@ -19,11 +28,11 @@ import { waitForCreateFormReads } from "./console-agents-test-support.mjs";
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
-const createConsoleAppFixture = (t) =>
-  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+type ConsoleFixture = Awaited<ReturnType<typeof createConsoleAppFixture>>;
+type Grant = [action: Permission["action"], resourceKind: Permission["resourceKind"]];
 
 // What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write persona).
-const MEMBER_WRITE = [
+const MEMBER_WRITE: Grant[] = [
   ["read", "namespace"],
   ["read", "agent"],
   ["update", "agent"],
@@ -40,8 +49,8 @@ const MEMBER_WRITE = [
   ["read", "preset"],
 ];
 
-function member(fixture, namespaceId, label, actions) {
-  return fixture.createAccountWithPolicy(label, (principal) => {
+function member(fixture: ConsoleFixture, namespaceId: string, label: string, actions: Grant[]) {
+  return fixture.createAccountWithPolicy(label, (principal: Principal) => {
     fixture.policy.roles.push({
       id: `role-${label}`,
       namespaceId,
@@ -67,8 +76,8 @@ const INSTALLATION_REFUSAL =
   "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
 
 // Every console API answer, as "METHOD path status".
-function apiResponses(page, origin) {
-  const answers = [];
+function apiResponses(page: Page, origin: string) {
+  const answers: string[] = [];
   page.on("response", (response) => {
     const url = new URL(response.url());
     if (url.origin === origin && !url.pathname.startsWith("/console")) {
@@ -78,8 +87,8 @@ function apiResponses(page, origin) {
   return answers;
 }
 
-async function setup(t) {
-  const fixture = await createConsoleAppFixture(t);
+async function setup(t: TestContext) {
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Member team", { ready: true });
   const secret = await fixture.createSecret(namespace.id, "Team OpenAI key", "sk-member-team");
@@ -87,7 +96,7 @@ async function setup(t) {
 }
 
 // Start from the default Preset with the Namespace's model Secret and a manual model ID.
-async function fillDefaultPreset(page, secret, name) {
+async function fillDefaultPreset(page: Page, secret: SecretWire, name: string) {
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).fill(name);
   await selectSecret(page, "API key Secret", secret);
@@ -150,16 +159,15 @@ test("a member with Agent create completes the default Preset path without Insta
   await submit.click();
   const response = await createdResponse;
   assert.equal(response.status(), 201);
-  const created = (await response.json()).data;
+  const { data: created }: AgentResponse = await response.json();
   assert.equal(created.name, "Member Agent");
   assert.deepEqual(created.harnessAuth, { method: "api_key", source: secret.ref });
   // Granting the Agent's credential access is Installation administration, which the API refuses
   // the member: the form names who finishes it instead of a generic denial.
   await page.getByRole("alert").filter({ hasText: MEMBER_GRANT_REFUSED }).waitFor();
-  assert.match(
-    await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href"),
-    new RegExp(created.id),
-  );
+  const agentLink = await page.getByRole("link", { name: "Open saved Agent" }).getAttribute("href");
+  assert.ok(agentLink);
+  assert.match(agentLink, new RegExp(created.id));
   // Every write the console tried was the member's own Namespace work; nothing touched the
   // Installation.
   assert.deepEqual(
@@ -244,7 +252,7 @@ const PERMISSIONS_UNREAD =
 const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
-function unavailable(route) {
+function unavailable(route: Route) {
   return route.fulfill({
     status: 503,
     json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again." } },
@@ -423,10 +431,10 @@ test("a member's form links Create Agent to why a Namespace that turned failed r
   const { fixture, namespace } = await setup(t);
   const writer = await member(fixture, namespace.id, "member-write", MEMBER_WRITE);
   const { page } = await newPage(t, fixture);
-  let status = "provisioning";
+  let status: NamespaceWire["status"] = "provisioning";
   await page.route(`${fixture.origin}/namespaces`, async (route) => {
     const response = await route.fetch();
-    const body = await response.json();
+    const body: NamespaceListResponse = await response.json();
     body.data = body.data.map((item) => (item.id === namespace.id ? { ...item, status } : item));
     await route.fulfill({ response, json: body });
   });
