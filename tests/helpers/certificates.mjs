@@ -5,9 +5,9 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 
-// Writes `keyPem` to `keyPath`, or returns openssl arguments that generate a fresh P-256
-// key there (much faster than RSA). Shared fixture keys (shared-keys.mjs) save the
-// generation entirely where a test needs RSA.
+// Returns the openssl key arguments: `-key keyPath` after writing `keyPem` there, or
+// arguments that generate a fresh P-256 key at `keyPath` (much faster than RSA). Shared
+// fixture keys (shared-keys.mjs) save the generation entirely where a test needs RSA.
 async function keyArguments(keyPath, keyPem) {
   if (keyPem === undefined) {
     return [
