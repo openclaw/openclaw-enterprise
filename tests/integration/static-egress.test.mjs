@@ -253,9 +253,7 @@ test("provider authentication rejection fences the exact material version and en
   assert.ok(result.blocked, "duplicate JSON keys cannot conceal reflected material from parsing");
   // Function arguments have their own protocol-defined JSON layer. Ordinary tool
   // decoding must never recover the protected value from escaped response text.
-  const escaped = [..."synthetic-key-initial"]
-    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
-    .join("");
+  const escaped = unicodeEscapes("synthetic-key-initial");
   result = await f.exchangeResponse({
     status: 200,
     body: {
@@ -649,6 +647,21 @@ const encode = (events) => encodeSyntheticEvents(events).toString("utf8");
 const selectedMaterial = "synthetic-key-initial";
 const reflectedMaterial = [selectedMaterial, Buffer.from(selectedMaterial).toString("base64")];
 
+function splitText(text) {
+  const middle = Math.floor(text.length / 2);
+  return [text.slice(0, middle), text.slice(middle)];
+}
+
+function outputTextParts(...texts) {
+  return texts.map((text) => ({ type: "output_text", text, annotations: [] }));
+}
+
+function unicodeEscapes(text) {
+  return [...text]
+    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
+    .join("");
+}
+
 // Exercise the actual protected exchange in both directions. A denied response must
 // release no messages (including its head); an allowed response must arrive byte-for-byte.
 function responseChecks(f) {
@@ -683,15 +696,14 @@ test("Responses output text assembled across parts and messages cannot reveal se
     id,
     status: "completed",
     role: "assistant",
-    content: parts.map((text) => ({ type: "output_text", text, annotations: [] })),
+    content: outputTextParts(...parts),
   });
   // Deltas and completed items stay harmless. Only the terminal envelope contains
   // the candidate, so protecting an earlier projection cannot mask this test.
   for (const stream of [false, true]) {
     for (const acrossMessages of [false, true]) {
       for (const text of [...reflectedMaterial, "ordinary response"]) {
-        const middle = Math.floor(text.length / 2);
-        const parts = [text.slice(0, middle), text.slice(middle)];
+        const parts = splitText(text);
         const events = responseEvents();
         events.at(-1).response.output = acrossMessages
           ? parts.map((part, i) => message(`msg_${i}`, [part]))
@@ -714,7 +726,7 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
   // A provider safety refusal streams as a `refusal` content part with refusal deltas.
   const refusalEvents = (refusal) => {
     const events = responseEvents();
-    const middle = Math.floor(refusal.length / 2);
+    const [prefix, suffix] = splitText(refusal);
     return events.flatMap((event) => {
       const next = structuredClone(event);
       if (next.part) {
@@ -722,8 +734,8 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
       }
       if (next.type === "response.output_text.delta") {
         return [
-          { ...next, type: "response.refusal.delta", delta: refusal.slice(0, middle) },
-          { ...next, type: "response.refusal.delta", delta: refusal.slice(middle) },
+          { ...next, type: "response.refusal.delta", delta: prefix },
+          { ...next, type: "response.refusal.delta", delta: suffix },
         ];
       }
       if (next.type === "response.output_text.done") {
@@ -763,18 +775,18 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
   // join both, so the assistant stream protects their concatenation.
   const mixed = (text) => {
     const [created, item, part, delta, ...rest] = responseEvents();
-    const middle = Math.floor(text.length / 2);
+    const [prefix, suffix] = splitText(text);
     return [
       created,
       item,
       part,
-      { ...delta, delta: text.slice(0, middle) },
+      { ...delta, delta: prefix },
       { ...part, content_index: 1, part: { type: "refusal", refusal: "" } },
       {
         ...delta,
         type: "response.refusal.delta",
         content_index: 1,
-        delta: text.slice(middle),
+        delta: suffix,
       },
       ...rest,
     ];
@@ -806,14 +818,7 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
 test("Responses assistant projections protect independent items and seeded deltas", async (t) => {
   const f = await staticEgressFixture(t);
   const check = responseChecks(f);
-  const parts = (text) => {
-    const middle = Math.floor(text.length / 2);
-    return [text.slice(0, middle), text.slice(middle)].map((text) => ({
-      type: "output_text",
-      text,
-      annotations: [],
-    }));
-  };
+  const parts = (text) => outputTextParts(...splitText(text));
   function eventsFor(text, kind) {
     const events = responseEvents();
     if (kind === "done") {
@@ -951,16 +956,20 @@ test("Responses assistant projections protect independent items and seeded delta
 test("signed Responses Plan projections protect completed and response-wide streamed text", async (t) => {
   const f = await staticEgressFixture(t);
   const check = responseChecks(f);
-  const parts = (text) => [{ type: "output_text", text, annotations: [] }];
   const added = (index, text) => ({
     type: "response.output_item.added",
     output_index: index,
-    item: { type: "message", id: `msg_plan_${index}`, role: "assistant", content: parts(text) },
+    item: {
+      type: "message",
+      id: `msg_plan_${index}`,
+      role: "assistant",
+      content: outputTextParts(text),
+    },
   });
   const done = (event, text = "READY") => ({
     ...event,
     type: "response.output_item.done",
-    item: { ...event.item, content: parts(text) },
+    item: { ...event.item, content: outputTextParts(text) },
   });
   const response = (...events) => [wire.responseEvents[0], ...events, wire.responseEvents.at(-1)];
   for (const unsafe of [false, true]) {
@@ -972,18 +981,18 @@ test("signed Responses Plan projections protect completed and response-wide stre
     // Ordinary citation-visible text and the terminal envelope stay harmless.
     const completed = responseEvents();
     const markup = `<oai-mem-citation>outer\n<proposed_plan>\n${left}<oai-mem-citation>note</oai-mem-citation>${right}\n</proposed_plan>\n`;
-    completed[6].item.content = parts(markup);
+    completed[6].item.content = outputTextParts(markup);
     assert.ok(!encode(completed).includes(expected));
     await check.events(completed, unsafe, "completed Plan and benign twin");
     // Each completed message owns its Plan; a later safe message must not
     // erase an unsafe earlier message from the response-envelope projection.
     const envelope = responseEvents();
     envelope.at(-1).response.output = [
-      { ...completed[6].item, content: parts(markup) },
+      { ...completed[6].item, content: outputTextParts(markup) },
       {
         ...completed[6].item,
         id: "msg_later_plan",
-        content: parts("<proposed_plan>\nSafe final message\n</proposed_plan>"),
+        content: outputTextParts("<proposed_plan>\nSafe final message\n</proposed_plan>"),
       },
     ];
     await check.events(envelope, unsafe, "independent completed Plan in envelope");
@@ -1003,8 +1012,8 @@ test("signed Responses Plan projections protect completed and response-wide stre
     const events = responseEvents();
     events[4].text = generated;
     events[5].part.text = generated;
-    events[6].item.content = parts(generated);
-    events[7].response.output[0].content = parts(generated);
+    events[6].item.content = outputTextParts(generated);
+    events[7].response.output[0].content = outputTextParts(generated);
     events.splice(
       3,
       1,
@@ -1078,7 +1087,7 @@ test("signed Responses Plan projections protect completed and response-wide stre
   // Completed Plan selects the last raw block, not every prior block. Ordinary
   // citation-visible text stays harmless while the earlier Plan would be unsafe.
   const last = responseEvents();
-  last[6].item.content = parts(
+  last[6].item.content = outputTextParts(
     "<oai-mem-citation>outer\n<proposed_plan>\nsynthetic-key-<oai-mem-citation>note</oai-mem-citation>initial\n</proposed_plan>\n<proposed_plan>\nfinal safe plan\n</proposed_plan>",
   );
   await check.events(last, false, "completed Plan selects only the last block");
@@ -1089,9 +1098,7 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   const check = responseChecks(f);
   const events = (candidate, kind) => {
     const [created, item, part, delta, ...rest] = responseEvents();
-    const middle = Math.floor(candidate.length / 2);
-    const prefix = candidate.slice(0, middle);
-    const suffix = candidate.slice(middle);
+    const [prefix, suffix] = splitText(candidate);
     if (kind === "item") {
       item.item.content = [{ ...part.part, text: prefix }];
       return [created, item, { ...delta, delta: suffix }, ...rest];
@@ -1221,7 +1228,6 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     };
     const end = structuredClone(wire.responseEvents.at(-1));
     end.response.output = [item];
-    const middle = Math.floor(argumentsText.length / 2);
     return [
       structuredClone(wire.responseEvents[0]),
       {
@@ -1229,7 +1235,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
         output_index: 0,
         item: { ...item, arguments: "", status: "in_progress" },
       },
-      ...[argumentsText.slice(0, middle), argumentsText.slice(middle)].map((delta) => ({
+      ...splitText(argumentsText).map((delta) => ({
         type: "response.function_call_arguments.delta",
         output_index: 0,
         item_id: item.id,
@@ -1258,9 +1264,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     true,
     "function_call_arguments.done and output_item.done cannot disagree about the arguments",
   );
-  const escapedCredential = [..."synthetic-key-initial"]
-    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
-    .join("");
+  const escapedCredential = unicodeEscapes("synthetic-key-initial");
   const escapedFunction = functionEvents('{"cmd":"' + escapedCredential + '"}');
   const disguisedFunction = structuredClone(escapedFunction);
   disguisedFunction.splice(4, 1);
@@ -1778,16 +1782,25 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
   }
 });
 
-function receiptAttempt(f, captured, ready) {
+async function stageReceiptExchange(f) {
+  const captured = f.capture();
+  const { ready } = await f.resolve(captured);
+  assert.ok(ready, "authority resolved the staged operation");
+  const useId = captured.request.context.request_id;
   return {
-    sender: f.egress.sourceControl.sender,
-    instanceId: f.installation.enforcement.instanceId,
-    useId: captured.request.context.request_id,
-    attemptId: captured.request.context.request_id,
-    material: JSON.parse(ready.evidence.authority_evidence.toString()),
-    deadlineAt: new Date(
-      Number(captured.deadline.seconds) * 1000 + captured.deadline.nanos / 1e6,
-    ).toISOString(),
+    captured,
+    ready,
+    permit: f.permitRequest(captured, ready),
+    input: {
+      sender: f.egress.sourceControl.sender,
+      instanceId: f.installation.enforcement.instanceId,
+      useId,
+      attemptId: useId,
+      material: JSON.parse(ready.evidence.authority_evidence.toString()),
+      deadlineAt: new Date(
+        Number(captured.deadline.seconds) * 1000 + captured.deadline.nanos / 1e6,
+      ).toISOString(),
+    },
   };
 }
 
@@ -2242,10 +2255,8 @@ test("stream progress beyond the response bound is refused", async (t) => {
 
 test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
   const f = await staticEgressFixture(t);
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
-  const input = receiptAttempt(f, captured, ready);
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+  const { captured, ready, input, permit } = await stageReceiptExchange(f);
+  assert.ok((await f.authorize(permit)).allowed);
   const possible = await readReceipt(f, input);
   assert.deepEqual(possible.outcome, { kind: "uncertain", dispatch: "possible" });
   assert.equal(possible.observation, null);
@@ -2299,12 +2310,10 @@ test("receipt observation fences only positive credential rejection, including b
   const f = await staticEgressFixture(t);
   async function exchange(status, body) {
     f.setResponse({ status, body });
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
-    assert.ok(ready);
-    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    const { captured, ready, input, permit } = await stageReceiptExchange(f);
+    assert.ok((await f.authorize(permit)).allowed);
     const result = await f.protect(captured, await f.send(captured, ready));
-    return { result, receipt: await readReceipt(f, receiptAttempt(f, captured, ready)) };
+    return { result, receipt: await readReceipt(f, input) };
   }
   for (const [status, body] of [
     [401, { error: "invalid credential" }],
@@ -2326,16 +2335,15 @@ test("receipt observation fences only positive credential rejection, including b
     status: 401,
     body: { error: { code: "invalid_api_key", type: "invalid_request_error" } },
   });
-  const partialCapture = f.capture();
-  const partialReady = (await f.resolve(partialCapture)).ready;
-  assert.ok((await f.authorize(f.permitRequest(partialCapture, partialReady))).allowed);
-  const partialResponse = await f.send(partialCapture, partialReady);
-  const incomplete = await f.protect(partialCapture, {
+  const partial = await stageReceiptExchange(f);
+  assert.ok((await f.authorize(partial.permit)).allowed);
+  const partialResponse = await f.send(partial.captured, partial.ready);
+  const incomplete = await f.protect(partial.captured, {
     ...partialResponse,
     response_complete: false,
   });
   assert.equal(incomplete.blocked, true);
-  const partialReceipt = await readReceipt(f, receiptAttempt(f, partialCapture, partialReady));
+  const partialReceipt = await readReceipt(f, partial.input);
   assert.equal(partialReceipt.observation.kind, "response_blocked");
   assert.equal(partialReceipt.feedback, null);
   const acceptedRejection = await exchange(401, {
@@ -2393,9 +2401,7 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         now: () => new Date(Date.now() + elapsed),
         appFactory: fault.appFactory,
       });
-      const captured = f.capture();
-      const ready = (await f.resolve(captured)).ready;
-      const input = receiptAttempt(f, captured, ready);
+      const { captured, input, permit } = await stageReceiptExchange(f);
       const gate = fault.arm(
         scenario === "check_deadline"
           ? "isEgressMaterialRejected"
@@ -2405,7 +2411,7 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         ["reject", "lost_ack"].includes(scenario) ? scenario : "pause",
       );
       t.after(gate.release);
-      const result = f.authorize(f.permitRequest(captured, ready), {
+      const result = f.authorize(permit, {
         cancelAfterMs: scenario === "cancel" ? 50 : undefined,
       });
       if (scenario !== "reject") {
@@ -2491,10 +2497,8 @@ test("response persistence must commit its observation and fence before policy b
         status: 401,
         body: { error: { code: "invalid_api_key", type: "invalid_request_error" } },
       });
-      const captured = f.capture();
-      const ready = (await f.resolve(captured)).ready;
-      const input = receiptAttempt(f, captured, ready);
-      assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+      const { captured, ready, input, permit } = await stageReceiptExchange(f);
+      assert.ok((await f.authorize(permit)).allowed);
       const response = await f.send(captured, ready);
       const gate = fault.arm("save", scenario === "deadline" ? "pause" : scenario);
       t.after(gate.release);
@@ -2638,20 +2642,38 @@ test("production Compute refuses protected admission and release, including empt
   );
 });
 
-test("protected admission refuses an Agent's network policy additions instead of dropping them", async (t) => {
-  // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
-  // Admission says so at deploy time; it must not silently admit a revision without them.
-  const grant = {
+function networkPolicyGrant() {
+  return {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
     host: "example.org",
     ports: [{ from: 443, to: 443 }],
   };
+}
+
+async function networkPolicyFixture(t, { admitRevision = true } = {}) {
+  const grant = networkPolicyGrant();
   const f = await staticEgressFixture(t, {
-    admitRevision: false,
+    admitRevision,
     appFactory: (context, options) =>
       createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
   });
+  return { f, grant };
+}
+
+async function enableNetworkPolicyEditing(f) {
+  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
+  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
+  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
+  const view = await f.request("GET", base);
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+  return { base, view: view.body.data };
+}
+
+test("protected admission refuses an Agent's network policy additions instead of dropping them", async (t) => {
+  // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
+  // Admission says so at deploy time; it must not silently admit a revision without them.
+  const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
   const savePolicy = (additions) =>
     f.controller.transact(async (unit) => {
       const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
@@ -2692,27 +2714,14 @@ test("protected admission refuses an Agent's network policy additions instead of
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {
   // Fail early: the same rule createRevision and the worker enforce is refused at save and
   // apply time, with the Credential Proxy named, and the policy view says so up front.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const f = await staticEgressFixture(t, {
-    appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
-  });
-  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
+  const { f, grant } = await networkPolicyFixture(t);
   assert.equal(f.revision.executionAdmission.mode, "protected");
-  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
-  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
-  const view = await f.request("GET", base);
-  assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(view.body.data.editingEnabled, true);
-  assert.equal(view.body.data.protectedExecution, true);
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  assert.equal(view.editingEnabled, true);
+  assert.equal(view.protectedExecution, true);
   // The protected revision admitted no Agent policy snapshot, so no revision owns defaults.
-  assert.equal(view.body.data.defaultsRevisionId, undefined);
-  const version = view.body.data.policy.version;
+  assert.equal(view.defaultsRevisionId, undefined);
+  const version = view.policy.version;
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
@@ -2744,28 +2753,10 @@ test("the policy endpoint refuses additions and live application while the activ
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {
   // Finding 2053, fail early: with the Credential Proxy selected, the next deploy is protected
   // and would refuse saved additions, so save refuses them before any revision exists.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const f = await staticEgressFixture(t, {
-    admitRevision: false,
-    appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
-  });
-  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
-  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
-  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
-  const view = await f.request("GET", base);
-  assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(
-    view.body.data.protectedExecution,
-    true,
-    "no revision yet; the next one is protected",
-  );
-  const version = view.body.data.policy.version;
+  const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  assert.equal(view.protectedExecution, true, "no revision yet; the next one is protected");
+  const version = view.policy.version;
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
@@ -2796,12 +2787,7 @@ test("the OpenShell Driver refuses a protected revision carrying Agent network p
   // profile alone. Admission never stores additions on a protected revision; should one carry
   // them anyway, provisioning refuses it rather than silently dropping them.
   const f = await staticEgressFixture(t);
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
+  const grant = networkPolicyGrant();
   const requirements = {
     loginMode: "api_key",
     image: "harness-fixture:local",
@@ -2843,12 +2829,7 @@ test("the policy worker names protected execution when it fails queued live appl
   // Finding 2053's worker backstop: OCC now refuses live application to a protected revision,
   // so only work queued by earlier admission code reaches this state. It must fail at once,
   // name the rule and touch no provider.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
+  const grant = networkPolicyGrant();
   const application = {
     id: "application-2053",
     revisionId: "rev-2053",
