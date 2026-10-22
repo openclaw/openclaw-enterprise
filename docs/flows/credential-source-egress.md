@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-21"
-last_updated_session: authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002
+last_updated_session: authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c
 ---
 
 # Protected credential request flow
@@ -13,17 +13,14 @@ Secret version and sets response policy. Outside the Agent, the trusted OpenShel
 supervisor resolves the static credential, obtains fresh permission to send, injects it
 and submits the complete provider response for protection.
 
-Only Kubernetes Compute can release a fresh protected execution, after signing its
-startup challenge for the exact current installation. Production Credential Proxy
-owns private response acceptance on the authenticated installation exchange. See
+Kubernetes Compute releases a fresh execution after signing its exact installation's
+startup challenge. Credential Proxy owns response acceptance on that exchange. See
 the [profile and release cutoff](../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 and [supported configuration](../reference/credential-sources/protected-inference.md).
 The bundled legacy supervisor is incompatible.
 
-The API binds the selected Credential Proxy Driver's authenticated exchange
-once, before serving requests. OCC gives it resolve, send authorization and
-response operations; requests cannot choose an exchange owner. Bundled
-OpenShell uses this contract for the flow below.
+Before serving requests, the API binds the selected Driver's authenticated exchange
+to OCC resolve, send and response operations. Requests cannot choose that owner.
 
 [Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
 uses a separate worker binding. The worker gives the same selected Driver
@@ -74,8 +71,8 @@ supervisor and no-bypass networking separately.
 `packages/occ/src/index.ts:admitStaticEgressSource`,
 `packages/occ/src/index.ts:admitProxyPlan`
 
-New protected sources store a closed live/static descriptor after source and Secret
-permission checks and candidate validation. Existing sources opt in through an explicit update.
+Source and Secret authorization precede live/static admission; existing sources require
+explicit opt-in.
 
 Version 3 binds Sandbox and Credential Proxy to one registered Driver. The plan records
 its ID, implementation and configuration digest. The API checks the registration object.
@@ -103,25 +100,16 @@ and no Gateway attachment. Protected sources receive no Gateway authentication
 environment; Gateway-owned sources still require their exact attachment. The
 Sandbox returns its complete prepared source policy from
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`.
-The adapter compares the full source revision against that output and checks the
-protected routes and middleware against the plan. It requires the authenticated
-gateway's `LoadedPolicyObservationV1`, binding the unchanged source hash to the
-effective policy and its nested enforcement evidence. Full policies must match
-except for the exact name-only runtime rule allowed by the
-[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement).
-The evidence also binds Sandbox, current instance, policy version,
-configuration/environment revisions and enforced capability. The immutable local
-fingerprint includes both supplier hashes and both complete decoded policies.
-
 `apps/controller/src/drivers/egress-proxy/openshell.ts:enforcementEvidence`
-
-Installation and revalidation use the same V1 checks. Missing V1, widening or a
-changed fence refuses; LOADED and legacy field 3 cannot substitute. The gateway
-producer must compare full typed policies, including fields unknown to this
-consumer, and fence reports and queries against current registration and effective
-configuration. The local fingerprint does not compute a canonical supplier hash
-or attest the supervisor. Request authorization still runs before Secret access
-and before send.
+compares the complete prepared policy and protected routes with the plan. The
+authenticated `LoadedPolicyObservationV1` binds source and effective policies to
+the Sandbox, instance, policy version, configuration/environment revisions and
+capabilities. Installation and revalidation enforce the
+[V1 contract](../reference/credential-sources/protected-inference.md#loaded-enforcement),
+including its exact name-only rule exception. Missing evidence, widening or a
+changed fence refuses; legacy observations cannot substitute. The gateway must
+compare unknown fields too. The local fingerprint covers both hashes and full
+policies; it is not a canonical supplier hash or supervisor attestation.
 
 `apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`,
 `apps/controller/src/drivers/sandbox/openshell.ts:enrollHarness`
@@ -307,6 +295,22 @@ or automatic retries. The runtime manifest preserves this profile. Its
 `--ignore-user-config` probe explicitly sets request and stream retries to zero
 and never repeats a timed-out protected probe.
 
+### 6. Reduce the live credential policy
+
+`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy`,
+`apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawSandboxCredentialSource`
+
+OCC commits source withdrawal before provider action. Multiple sources require
+`policyReduction` version 1; stock OpenShell still requires runtime retirement.
+Under the Agent lock, OCC records the exact installation, retained routes and
+operation on the withdrawal. Concurrent reductions wait for observation. Restart
+inspects that operation without replaying apply.
+
+OCC advances the installation only after independent observation of the exact
+operation, recipient and retained plan. Remaining grants stay unchanged; the last
+route leaves observed deny-all. The Driver must prevent stale installation from
+restoring routes. The reference-peer test does not qualify released Sandboxes.
+
 ## Debugging and Verification
 
 The [testing guide](../testing/static-egress.md) covers API, IAM, TLS,
@@ -327,6 +331,8 @@ selected installation. Observe the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-21 23:40: Describe versioned policy reduction, durable operation recovery and the reference-peer proof boundary in the accompanying change. (authoring-run/3e4e8e77-728c-435a-90e9-fe6c9758551c - d8a5a9c77963836fbe54f1dc28f2f8a0c01c5622)
 
 - 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 

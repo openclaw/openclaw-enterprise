@@ -498,6 +498,13 @@
       "when": 1787000000080,
       "tag": "0071_credential_deliveries",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0072_credential_policy_reduction",
+      "breakpoints": true
     }
   ]
 }

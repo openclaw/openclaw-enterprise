@@ -1,3 +1,4 @@
+import type { CredentialPolicyReductionState } from "./platform-state.ts";
 import type {
   InitialWorkspaceFiles,
   ProtectedEgressSource,
@@ -600,6 +601,7 @@ export const credentialWithdrawals = occSchema.table(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     lastReason: text("last_reason"),
     lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    policyReduction: jsonb("policy_reduction").$type<CredentialPolicyReductionState>(),
   },
   (table): PgTableExtraConfigValue[] => [
     primaryKey({
@@ -620,6 +622,16 @@ export const credentialWithdrawals = occSchema.table(
     })
       .onUpdate("restrict")
       .onDelete("cascade"),
+    check(
+      "credential_withdrawals_policy_reduction",
+      sql`${table.policyReduction} IS NULL OR COALESCE(
+      jsonb_typeof(${table.policyReduction}) = 'object'
+      AND ${table.policyReduction}->'request'->>'version' = '1'
+      AND ${table.policyReduction}->'request'->>'operationId' ~ '^[0-9a-f-]{36}$'
+      AND ${table.policyReduction} #>> '{request,expected,plan,execution,namespaceId}' = ${table.namespaceId}
+      AND ${table.policyReduction} #>> '{request,expected,plan,execution,revisionId}' = ${table.revisionId}
+      AND jsonb_typeof(${table.policyReduction} #> '{request,retained,routes}') = 'array', false)`,
+    ),
     check("credential_withdrawals_state_valid", sql`${table.state} IN ('pending', 'revoked')`),
     check(
       "credential_withdrawals_completion",

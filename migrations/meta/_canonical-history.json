@@ -569,6 +569,14 @@
       "tag": "0071_credential_deliveries",
       "breakpoints": true,
       "sha256": "0925954aceb16a28ffa9b2240329b26d3fc801be39fddef0920cb643dd63b12d"
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000081,
+      "tag": "0072_credential_policy_reduction",
+      "breakpoints": true,
+      "sha256": "4c946b84a280c22952bf9059163e256db206e3987939f78a0be1ec509d01bdf5"
     }
   ],
   "initialSchemaStates": {
@@ -597,7 +605,7 @@
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
     "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
-    "completed": "607d1db485f8c4b6144b0fe10ce774debe68f9915af41b26387dda96abe8c0cc",
+    "completed": "c17c41f4ab35779daf3ee11cf07068bfd88567586db57d1c8ccdc077bba977b1",
     "preRepositoryGitObservedHook": "2827e9348b133afd96c1c130275af333fb743696eacd72caebd6782a3c33141c",
     "prePreparedRepositoryDraftUses": "d34b71856f3105853950b8bb145ee45f109e90add7b86a15346ea708ff36c4c8",
     "preProtectedDriverRegistration": "cc231e4e9c7569e1bc3ba45c37b5c62c5515246e1ba51ec35b6b43fce05c98da",
@@ -639,7 +647,8 @@
     "preProtectedRepositoryGitRecipients": "c2670f27d3bdeab66d86fda080f82d98561dec192bd68d1350640e516cb60852",
     "preCredentialProxyGitHubInstallation": "219ac774a61fdb0e5c155c34e1556fd97ea09d3ebda30f188f06e0a3248a9f83",
     "preRepositoryGitOnlineAuthorization": "e5cae0385ebe224f2246a0accf4e0c7404530b4788b901633c50310a201baaad",
-    "preCredentialDeliveries": "9c36bc3a770d921c5194425a8685c3b5d694e712f1e0b335b1e7f411b63f0ac3"
+    "preCredentialDeliveries": "9c36bc3a770d921c5194425a8685c3b5d694e712f1e0b335b1e7f411b63f0ac3",
+    "preCredentialPolicyReduction": "607d1db485f8c4b6144b0fe10ce774debe68f9915af41b26387dda96abe8c0cc"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

@@ -111,8 +111,7 @@
     "tests/integration/protected-driver-registration.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
-    "tests/integration/egress-prepared-github-metadata.test.mjs",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/egress-prepared-github-metadata.test.mjs"
   ],
   "files": [
     {
@@ -527,12 +526,6 @@
     },
     {
       "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
-    },
-    {
-      "path": "tests/integration/credential-proxy-withdrawal.test.ts",
-      "expectedTests": [
-        "OpenShell requests explicit retirement when it cannot attest binding reduction"
-      ]
     }
   ]
 }

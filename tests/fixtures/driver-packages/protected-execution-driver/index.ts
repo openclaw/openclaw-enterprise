@@ -167,7 +167,6 @@ export function createDriver({
         async verifyInstallation(_context, installed) {
           return isDeepStrictEqual(installed, await read());
         },
-        withdrawBinding: outsideProfile,
         removeRevision: outsideProfile,
       },
     },

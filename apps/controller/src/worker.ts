@@ -1,3 +1,4 @@
+import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
   credentialSourceMatchesSnapshot,
@@ -3152,7 +3153,10 @@ export class ControllerWorker {
           const attempt = { credentialSourceId: source.id, requestedBy: withdrawal.requestedBy };
           try {
             const status = await this.withClaimHeartbeat(claim, (signal) =>
-              withdraw(revision, source, signal),
+              withdraw(revision, source, signal, {
+                reducePolicy: (context) =>
+                  reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
+              }),
             );
             const revoked = status.state === "revoked" || status.state === "absent";
             attempts.push({
@@ -3780,7 +3784,11 @@ export class ControllerWorker {
     for (const source of sources) {
       this.assertCredentialWithdrawalOwner(revision, source);
       await this.withClaimHeartbeat(claim, (signal) =>
-        withdraw(revision, source, signal, { recheck: true }),
+        withdraw(revision, source, signal, {
+          recheck: true,
+          reducePolicy: (context) =>
+            reduceCredentialPolicy(this.state, this.protectedDriver, context, source.id),
+        }),
       );
     }
   }
@@ -5193,12 +5201,33 @@ export class ControllerWorker {
           ? {}
           : {
               recordEgressInstallation: async (installation) => {
-                if (!isDeepStrictEqual(installation.plan, revision.egressPlan)) {
-                  throw new Error("Egress receipt does not match the admitted revision.");
-                }
-                await this.state.transact((state) =>
-                  state.credentialSources.recordEgressInstallation(installation),
-                );
+                await this.state.transact(async (state) => {
+                  await state.agents.lockAgent(revision.namespaceId, revision.agentId);
+                  const current = await state.credentialSources.findRevisionEgressInstallation(
+                    revision.namespaceId,
+                    revision.id,
+                  );
+                  if (isDeepStrictEqual(current, installation)) {
+                    return;
+                  }
+                  if (
+                    current ||
+                    !isDeepStrictEqual(installation.plan, revision.egressPlan) ||
+                    (
+                      await state.credentialSources.listCredentialWithdrawals(
+                        revision.namespaceId,
+                        revision.id,
+                      )
+                    ).some(({ credentialSourceId }) =>
+                      revision.egressPlan?.routes.some(
+                        (route) => route.binding.source.source.id === credentialSourceId,
+                      ),
+                    )
+                  ) {
+                    throw new Error("Egress receipt does not match the current admitted policy.");
+                  }
+                  await state.credentialSources.recordEgressInstallation(installation);
+                });
               },
               currentEgressInstallation: () =>
                 this.state.read(async (view) => {
@@ -5218,7 +5247,31 @@ export class ControllerWorker {
                     current?.executionAdmission.mode !== "protected" ||
                     !isDeepStrictEqual(current.egressPlan, revision.egressPlan)
                   ) {
+                    if (revision.egressPlan?.policyReductionVersion !== undefined) {
+                      throw new DependencyUnavailableError(
+                        "The protected execution is no longer current.",
+                      );
+                    }
                     return undefined;
+                  }
+                  const withdrawals = await view.credentialSources.listCredentialWithdrawals(
+                    namespaceId,
+                    id,
+                  );
+                  if (
+                    revision.egressPlan?.policyReductionVersion &&
+                    withdrawals.some(
+                      (withdrawal) =>
+                        !withdrawal.policyReduction?.observed &&
+                        revision.egressPlan?.routes.some(
+                          (route) =>
+                            route.binding.source.source.id === withdrawal.credentialSourceId,
+                        ),
+                    )
+                  ) {
+                    throw new DependencyUnavailableError(
+                      "Credential policy reduction is not observed.",
+                    );
                   }
                   return view.credentialSources.findRevisionEgressInstallation(namespaceId, id);
                 }),

@@ -1,4 +1,5 @@
 import type {
+  CredentialPolicyWithdrawalOptions,
   ExecutionAdmission,
   ProtectedEgressSource,
   CredentialInputRead,
@@ -10,6 +11,10 @@ import type {
 } from "./credential-proxy.ts";
 
 export type {
+  CredentialPolicyReduction,
+  CredentialPolicyObservation,
+  CredentialPolicyReducer,
+  CredentialPolicyWithdrawalOptions,
   EgressRef,
   EgressSourceKey,
   ExecutionAdmission,
@@ -2324,7 +2329,7 @@ export interface ComputeDriver extends Driver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
-    options?: { readonly recheck?: boolean },
+    options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
   /**
    * Withdraws the Harness exposure a Sandbox Driver created for Compute's status read of a

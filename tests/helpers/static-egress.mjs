@@ -138,6 +138,20 @@ export async function staticEgressFixture(
   const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
   const objects = new Map();
   let namespace;
+  const namespaceResource = () => ({
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name: `oce-${createHash("sha256").update(namespace.id).digest("hex").slice(0, 15)}`,
+      labels: {
+        "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        "openclaw.dev/gateway-namespace": namespace.id,
+        "openclaw.dev/namespace": namespace.id,
+      },
+      annotations: { "openclaw.dev/namespace-id": namespace.id },
+    },
+    status: { phase: "Active" },
+  });
   let runtimeNamespace;
   let secretReads = 0;
   let secretReadBarrier;
@@ -157,22 +171,23 @@ export async function staticEgressFixture(
         JSON.stringify({
           apiVersion: "v1",
           kind: "NamespaceList",
-          items: [
-            {
-              metadata: {
-                name: `oce-${createHash("sha256").update(nsId).digest("hex").slice(0, 15)}`,
-                labels: {
-                  "app.kubernetes.io/managed-by": "openclaw-enterprise",
-                  "openclaw.dev/gateway-namespace": nsId,
-                  "openclaw.dev/namespace": nsId,
-                },
-                annotations: { "openclaw.dev/namespace-id": nsId },
-              },
-              status: { phase: "Active" },
-            },
-          ],
+          items: [namespaceResource()],
         }),
       );
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      url.pathname === `/api/v1/namespaces/${namespaceResource().metadata.name}`
+    ) {
+      response.end(JSON.stringify(namespaceResource()));
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      url.pathname === `/apis/apps/v1/namespaces/${namespaceResource().metadata.name}/deployments`
+    ) {
+      response.end(JSON.stringify({ apiVersion: "apps/v1", kind: "DeploymentList", items: [] }));
       return;
     }
     const parts = url.pathname.split("/");
@@ -575,6 +590,7 @@ export async function staticEgressFixture(
       path,
       countSecretReads: () => secretReads,
       origin: `https://provider.example.test:${providerPort}`,
+      computeAuthentication: { mode: "kubeconfig", kubeconfigPath, context: "fixture" },
     }));
   }
   // Grant the real service principal through the supported policy API. Revocation later

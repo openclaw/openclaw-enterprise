@@ -1,3 +1,6 @@
+import { isReducedCredentialPlan } from "./credential-policy-reduction.ts";
+
+export { reduceCredentialPolicy, isReducedCredentialPlan } from "./credential-policy-reduction.ts";
 export { CredentialDeliveries } from "./state/credential-deliveries.ts";
 export type {
   CredentialDeliveryKey,
@@ -5133,7 +5136,7 @@ export class OpenClawController {
       agent.desiredRuntimeState !== "running" ||
       agent.servicePrincipalId !== execution.servicePrincipalId ||
       !revision ||
-      !isDeepStrictEqual(revision.egressPlan, use.installation.plan) ||
+      !isReducedCredentialPlan(revision.egressPlan, use.installation.plan) ||
       !isDeepStrictEqual(installed, use.installation)
     ) {
       return deny("withdrawn");
@@ -5169,6 +5172,8 @@ export class OpenClawController {
       !admitted ||
       !this.currentCredentialSourceOwner(source, revision) ||
       !this.selectedProxyOwner().ownsProxyPlan(use.installation.plan) ||
+      (use.installation.plan.policyReductionVersion !== undefined &&
+        driver.policyReduction?.version !== use.installation.plan.policyReductionVersion) ||
       !isDeepStrictEqual(admitted.key, use.route.binding.source) ||
       !isDeepStrictEqual(admitted.key.backend, control.backend) ||
       !isDeepStrictEqual(admitted.sender, use.peer.sender) ||
@@ -5512,16 +5517,21 @@ export class OpenClawController {
       return undefined;
     }
     const sourceCount = sources.length + (harnessCredentialSource ? 1 : 0);
-    if (sourceCount > 1 || (agent.credentialSources?.length ?? 0) !== sourceCount) {
+    const owner = this.selectedProxyOwner();
+    const driver = owner.require("credential_proxy");
+    if ((agent.credentialSources?.length ?? 0) !== sourceCount) {
       throw new ScopeViolationError(
-        "Protected egress permits only its explicitly admitted source or the repository execution's separately authorized Harness source.",
+        "Protected egress requires an explicitly admitted source for every credential binding.",
+      );
+    }
+    if (sourceCount > 1 && driver.policyReduction?.version !== 1) {
+      throw new ScopeViolationError(
+        "Multiple credential sources require a Credential Proxy that can verify a reduced policy.",
       );
     }
     if (!sandboxDriverId || agent.executionMode !== "dedicated") {
       throw new ScopeViolationError("Protected egress requires a dedicated enforcing Sandbox.");
     }
-    const owner = this.selectedProxyOwner();
-    const driver = owner.require("credential_proxy");
     if (repositoryGit && sources.length) {
       throw new ScopeViolationError(
         "Repository Credential Proxy does not admit unrelated credential routes.",
@@ -5584,6 +5594,8 @@ export class OpenClawController {
       sandboxDriverId,
       egressDriverId: driver.id,
       driver: owner.ref,
+      ...(sources.length > 0 &&
+        driver.policyReduction && { policyReductionVersion: driver.policyReduction.version }),
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
         (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
@@ -9335,7 +9347,7 @@ export class OpenClawController {
       // attempt counts until recoverStale fails it.
       const reported =
         withdrawal.state === "pending" ? withdrawal : (pendingOthers[0] ?? withdrawal);
-      return Object.freeze({ ...reported, withdrawalInProgress: reported.state === "pending" });
+      return credentialWithdrawalStatus(reported, reported.state === "pending");
     });
   }
 
@@ -9468,19 +9480,19 @@ export class OpenClawController {
         if (candidate.state !== "pending") {
           continue;
         }
-        const status = Object.freeze({
-          ...candidate,
-          withdrawalInProgress: await state.operations.hasOutstandingCredentialWithdrawalWork(
+        const status = credentialWithdrawalStatus(
+          candidate,
+          await state.operations.hasOutstandingCredentialWithdrawalWork(
             candidate.namespaceId,
             candidate.revisionId,
           ),
-        });
+        );
         if (!status.withdrawalInProgress) {
           return status;
         }
         inProgress ??= status;
       }
-      return inProgress ?? Object.freeze({ ...withdrawal, withdrawalInProgress: false });
+      return inProgress ?? credentialWithdrawalStatus(withdrawal, false);
     });
   }
 
@@ -13496,3 +13508,23 @@ export class OpenClawController {
 }
 export { PostgresMetricsSnapshot } from "./state/postgres-metrics.ts";
 export type { PlatformMetricsSnapshot } from "./state/postgres-metrics.ts";
+
+/** Keep internal reduction custody out of caller-visible withdrawal status. */
+function credentialWithdrawalStatus(
+  withdrawal: CredentialWithdrawal,
+  withdrawalInProgress: boolean,
+): Readonly<CredentialWithdrawalStatus> {
+  return Object.freeze({
+    namespaceId: withdrawal.namespaceId,
+    agentId: withdrawal.agentId,
+    revisionId: withdrawal.revisionId,
+    credentialSourceId: withdrawal.credentialSourceId,
+    state: withdrawal.state,
+    requestedBy: withdrawal.requestedBy,
+    requestedAt: withdrawal.requestedAt,
+    ...(withdrawal.completedAt === undefined ? {} : { completedAt: withdrawal.completedAt }),
+    ...(withdrawal.lastReason === undefined ? {} : { lastReason: withdrawal.lastReason }),
+    ...(withdrawal.lastAttemptAt === undefined ? {} : { lastAttemptAt: withdrawal.lastAttemptAt }),
+    withdrawalInProgress,
+  });
+}

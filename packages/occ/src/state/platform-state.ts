@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   ProtectedEgressSource,
   EgressInstallation,
+  CredentialPolicyReduction,
   EgressMaterialEvidence,
 } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
@@ -382,6 +383,16 @@ export interface SecretRepository extends SecretReadRepository {
   hasReferences(namespaceId: string, secretId: string): Promise<boolean>;
 }
 
+/** Internal withdrawal custody, never part of caller-visible status. */
+export interface CredentialPolicyReductionState {
+  readonly request: CredentialPolicyReduction;
+  readonly observed?: EgressInstallation;
+}
+
+export interface StoredCredentialWithdrawal extends CredentialWithdrawal {
+  readonly policyReduction?: CredentialPolicyReductionState;
+}
+
 export interface CredentialSourceReadRepository {
   isEgressMaterialRejected(evidence: EgressMaterialEvidence): Promise<boolean>;
   findEgressInstallation(
@@ -403,11 +414,11 @@ export interface CredentialSourceReadRepository {
     namespaceId: string,
     revisionId: string,
     credentialSourceId: string,
-  ): Promise<Readonly<CredentialWithdrawal> | undefined>;
+  ): Promise<Readonly<StoredCredentialWithdrawal> | undefined>;
   listCredentialWithdrawals(
     namespaceId: string,
     revisionId: string,
-  ): Promise<readonly Readonly<CredentialWithdrawal>[]>;
+  ): Promise<readonly Readonly<StoredCredentialWithdrawal>[]>;
 }
 
 export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
@@ -415,6 +426,17 @@ export type CredentialSourceBlockingReference = "reference" | "withdrawal_work";
 export interface CredentialSourceRepository extends CredentialSourceReadRepository {
   rejectEgressMaterial(evidence: EgressMaterialEvidence): Promise<void>;
   recordEgressInstallation(installation: EgressInstallation): Promise<void>;
+  saveCredentialPolicyReduction(
+    namespaceId: string,
+    revisionId: string,
+    sourceId: string,
+    expected: CredentialPolicyReductionState | undefined,
+    next: CredentialPolicyReductionState,
+  ): Promise<boolean>;
+  reduceEgressInstallation(
+    expected: EgressInstallation,
+    next: EgressInstallation,
+  ): Promise<boolean>;
   admitEgressSource(
     namespaceId: string,
     sourceId: string,
@@ -1021,7 +1043,7 @@ interface PlatformSnapshot {
   readonly presets: Map<string, Readonly<Preset>>;
   readonly secrets: Map<string, Readonly<Secret>>;
   readonly credentialSources: Map<string, Readonly<CredentialSource>>;
-  readonly credentialWithdrawals: Map<string, Readonly<CredentialWithdrawal>>;
+  readonly credentialWithdrawals: Map<string, Readonly<StoredCredentialWithdrawal>>;
   readonly egressInstallations: Map<string, Readonly<EgressInstallation>>;
   readonly egressRejected: Set<string>;
   readonly serviceAccounts: Map<string, Readonly<ServiceAccount>>;
@@ -2038,6 +2060,25 @@ function repositories(
         ({ plan: { execution } }) =>
           execution.namespaceId === namespaceId && execution.revisionId === revisionId,
       ),
+    saveCredentialPolicyReduction: async (namespaceId, revisionId, sourceId, expected, next) => {
+      const current = await findCredentialWithdrawal(namespaceId, revisionId, sourceId);
+      if (!current || !isDeepStrictEqual(current.policyReduction, expected)) {
+        return false;
+      }
+      snapshot.credentialWithdrawals.set(
+        JSON.stringify([namespaceId, revisionId, sourceId]),
+        immutableCopy({ ...current, policyReduction: next }),
+      );
+      return true;
+    },
+    reduceEgressInstallation: async (expected, next) => {
+      const key = JSON.stringify([expected.sender.id, expected.sandboxId]);
+      if (!isDeepStrictEqual(snapshot.egressInstallations.get(key), expected)) {
+        return false;
+      }
+      snapshot.egressInstallations.set(key, immutableCopy(next));
+      return true;
+    },
     recordEgressInstallation: async (installation) => {
       const execution = installation.plan.execution;
       const revision = (

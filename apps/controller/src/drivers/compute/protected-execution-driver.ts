@@ -13,7 +13,11 @@ import type {
   SandboxHarnessStatusContext,
   SelectedDriverRegistration,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError, type InstalledDriver } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  isReducedCredentialPlan,
+  type InstalledDriver,
+} from "@openclaw-enterprise/occ";
 
 /** The release boundary shared by API admission and worker preparation, enrollment and activation. */
 export class ProtectedExecutionDriver {
@@ -46,12 +50,18 @@ export class ProtectedExecutionDriver {
       plan !== undefined &&
       (source === "stored" ||
         (source === this.owner && revision.executionAdmission.version >= 3)) &&
-      this.owner.ownsProxyPlan(plan)
+      this.owner.ownsProxyPlan(plan) &&
+      (plan.policyReductionVersion === undefined ||
+        this.proxy.policyReduction?.version === plan.policyReductionVersion)
     );
   }
 
   async configure(context: ProxyRevisionContext): Promise<ProxyWiring> {
-    if (!this.owner.ownsProxyPlan(context.plan)) {
+    if (
+      !this.owner.ownsProxyPlan(context.plan) ||
+      (context.plan.policyReductionVersion !== undefined &&
+        this.proxy.policyReduction?.version !== context.plan.policyReductionVersion)
+    ) {
       throw new DependencyUnavailableError("The protected Driver no longer owns this plan.");
     }
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
@@ -148,7 +158,11 @@ export class ProtectedExecutionDriver {
     const { enforcement } = installed;
     return (
       this.owner.ownsProxyPlan(context.plan) &&
-      isDeepStrictEqual(installed.plan, context.plan) &&
+      (context.plan.policyReductionVersion === undefined ||
+        this.proxy.policyReduction?.version === context.plan.policyReductionVersion) &&
+      (isDeepStrictEqual(installed.plan, context.plan) ||
+        (this.proxy.policyReduction?.version === 1 &&
+          isReducedCredentialPlan(context.plan, installed.plan))) &&
       isDeepStrictEqual(installed.sender, this.proxy.sourceControl.sender) &&
       !!installed.sandboxId &&
       enforcement?.authorityScope === "execution" &&
@@ -164,7 +178,7 @@ export class ProtectedExecutionDriver {
           repositoryGitDeliveryProfile(context.plan.repositoryGit),
           context.plan.repositoryGitAuthorization,
         )) &&
-      (await this.proxy.verifyInstallation(context, installed))
+      (await this.proxy.verifyInstallation({ ...context, plan: installed.plan }, installed))
     );
   }
 }

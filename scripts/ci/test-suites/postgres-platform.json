@@ -49,7 +49,8 @@
     "tests/integration/postgres-standing-approval-api.test.ts",
     "tests/integration/postgres-standing-repository-boundary.test.ts",
     "tests/integration/postgres-standing-execution.test.ts",
-    "tests/integration/postgres-standing-session-worker.test.ts"
+    "tests/integration/postgres-standing-session-worker.test.ts",
+    "tests/integration/credential-proxy-withdrawal.test.ts"
   ],
   "files": [
     {
@@ -408,6 +409,12 @@
         "stopping the registered execution denies a new provider issuance while cleanup is paused",
         "registered worker renews the same standing execution across both expired horizons and removal immediately fences use",
         "standing maintenance supervises missing Git evidence across restart and still withdraws model authority"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-withdrawal.test.ts",
+      "expectedTests": [
+        "policy reduction preserves another binding then observes deny-all (PostgreSQL)"
       ]
     }
   ]

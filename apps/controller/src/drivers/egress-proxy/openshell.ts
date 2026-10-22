@@ -16,7 +16,6 @@ import type {
   EgressInstallation,
   ProxyPlan,
   CredentialProxyDriver,
-  EgressRef,
   ProxyRevisionContext,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
@@ -548,19 +547,6 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     _sandboxId: string,
   ): EgressInstallation["enforcement"] | undefined {
     return undefined;
-  }
-
-  async withdrawBinding(
-    context: ProxyRevisionContext,
-    binding: EgressRef,
-  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
-    this.assertPlan(context);
-    if (!context.plan.routes.some((route) => isDeepStrictEqual(route.binding.binding, binding))) {
-      throw new Error("Unknown egress withdrawal binding.");
-    }
-    // The installed exchange protocol does not attest a reduced route set. OCC already
-    // denies this binding; only the lifecycle caller may decide to retire its execution.
-    return "retire-runtime";
   }
 
   async removeRevision(context: ProxyRevisionContext): Promise<boolean> {

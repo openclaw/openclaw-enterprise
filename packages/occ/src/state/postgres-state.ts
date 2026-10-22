@@ -3,7 +3,11 @@ import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
 import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
-import type { SandboxPolicyRepository } from "./platform-state.ts";
+import type {
+  CredentialPolicyReductionState,
+  SandboxPolicyRepository,
+  StoredCredentialWithdrawal,
+} from "./platform-state.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import { DatabaseError } from "pg";
@@ -32,7 +36,6 @@ import type {
   AgentRevision,
   AuditEvent,
   CredentialSource,
-  CredentialWithdrawal,
   Group,
   GroupMembership,
   Identity,
@@ -556,9 +559,9 @@ const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.
   ), '{}'::jsonb) AS secret_ids`;
 
 const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, credential_source_id,
-  state, requested_by, requested_at, completed_at, last_reason, last_attempt_at`;
+  state, requested_by, requested_at, completed_at, last_reason, last_attempt_at, policy_reduction`;
 
-function credentialWithdrawalFromRow(row: PostgresRow): Readonly<CredentialWithdrawal> {
+function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentialWithdrawal> {
   const state = text(row, "state");
   if (state !== "pending" && state !== "revoked") {
     throw new DependencyUnavailableError("Persisted credential withdrawal state is invalid.");
@@ -578,6 +581,13 @@ function credentialWithdrawalFromRow(row: PostgresRow): Readonly<CredentialWithd
     ...(completedAt === undefined ? {} : { completedAt }),
     ...(lastReason === undefined ? {} : { lastReason }),
     ...(lastAttemptAt === undefined ? {} : { lastAttemptAt }),
+    ...(row.policy_reduction == null
+      ? {}
+      : {
+          policyReduction: jsonObject(
+            row.policy_reduction,
+          ) as unknown as CredentialPolicyReductionState,
+        }),
   });
 }
 
@@ -2692,7 +2702,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       namespaceId: string,
       revisionId: string,
       credentialSourceId: string,
-    ): Promise<Readonly<CredentialWithdrawal> | undefined> => {
+    ): Promise<Readonly<StoredCredentialWithdrawal> | undefined> => {
       const found = rows(
         (
           await client.query(
@@ -2748,6 +2758,29 @@ export class PostgresPlatformState implements PlatformStateStore {
         return row === undefined
           ? undefined
           : immutableCopy(jsonObject(row.installation) as unknown as EgressInstallation);
+      },
+      saveCredentialPolicyReduction: async (namespaceId, revisionId, sourceId, expected, next) => {
+        const result = await client.query(
+          `UPDATE occ.credential_withdrawals SET policy_reduction=$5::jsonb
+           WHERE namespace_id=$1 AND revision_id=$2 AND credential_source_id=$3
+             AND policy_reduction IS NOT DISTINCT FROM $4::jsonb`,
+          [
+            namespaceId,
+            revisionId,
+            sourceId,
+            expected ? JSON.stringify(expected) : null,
+            JSON.stringify(next),
+          ],
+        );
+        return result.rowCount === 1;
+      },
+      reduceEgressInstallation: async (expected, next) => {
+        const result = await client.query(
+          `UPDATE occ.egress_installations SET installation=$4::jsonb
+           WHERE sender_id=$1 AND sandbox_id=$2 AND installation=$3::jsonb`,
+          [expected.sender.id, expected.sandboxId, JSON.stringify(expected), JSON.stringify(next)],
+        );
+        return result.rowCount === 1;
       },
       recordEgressInstallation: async (installation) => {
         const execution = installation.plan.execution;

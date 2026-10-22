@@ -291,6 +291,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 70) {
     return "preCredentialDeliveries";
   }
+  if (count === 71) {
+    return "preCredentialPolicyReduction";
+  }
   if (count === 69) {
     return "preRepositoryGitObservedHook";
   }

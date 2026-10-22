@@ -56,10 +56,15 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   }
   if (driver.capability === "credential_proxy") {
     const control = asRecord(candidate.sourceControl);
+    const reduction = asRecord(candidate.policyReduction);
     return (
       (candidate.bindExchange === undefined || typeof candidate.bindExchange === "function") &&
       (candidate.bindRepositoryGit === undefined ||
         typeof candidate.bindRepositoryGit === "function") &&
+      (candidate.policyReduction === undefined ||
+        (reduction?.version === 1 &&
+          typeof reduction.apply === "function" &&
+          typeof reduction.observe === "function")) &&
       control !== undefined &&
       typeof control.assertAvailable === "function" &&
       Array.isArray(control.providers) &&
@@ -78,13 +83,9 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
           ].every((operation) => typeof provider[operation] === "function")
         );
       }) &&
-      [
-        "configureRevision",
-        "wiringStatus",
-        "verifyInstallation",
-        "withdrawBinding",
-        "removeRevision",
-      ].every((operation) => typeof candidate[operation] === "function")
+      ["configureRevision", "wiringStatus", "verifyInstallation", "removeRevision"].every(
+        (operation) => typeof candidate[operation] === "function",
+      )
     );
   }
   if (driver.capability === "credential_gateway") {

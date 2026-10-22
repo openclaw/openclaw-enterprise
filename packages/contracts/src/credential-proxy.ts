@@ -124,6 +124,8 @@ export interface ProxyPlan {
   readonly egressDriverId: string;
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
+  /** Capability required by this admission, including after process restart. */
+  readonly policyReductionVersion?: 1;
   /** v4–v6: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
   /** v4 is exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
@@ -385,9 +387,48 @@ export interface ProxyRevisionContext {
   readonly signal: AbortSignal;
 }
 
+/** Versioned, compare-and-reduce operation. The paired Sandbox must retain deny-all
+ * when routes is empty. No creation, replacement, expansion or business request replay. */
+export interface CredentialPolicyReduction {
+  readonly version: 1;
+  readonly operationId: string;
+  readonly expected: EgressInstallation;
+  readonly retained: ProxyPlan;
+}
+
+/** Positive observation from the enforcing peer, independently queried after apply. */
+export interface CredentialPolicyObservation {
+  readonly operationId: string;
+  readonly installation: EgressInstallation;
+}
+
+/** Capability of the paired Credential Proxy and Sandbox. Every installation path must
+ * honor persistent reduction tombstones: stale configure/enroll cannot restore a route.
+ * Observation identifies the currently enforced policy, not just an accepted request.
+ * An already authorized send may finish; this does not replace per-request OCC checks. */
+export interface CredentialPolicyReducer {
+  readonly version: 1;
+  /** Compare exact Driver registration, execution, recipient and policy generation before
+   * applying. Persist operation identity and reject stale or conflicting reductions. */
+  apply(context: ProxyRevisionContext, reduction: CredentialPolicyReduction): Promise<void>;
+  /** Inspect the original operation and current enforced policy; never apply or repair. */
+  observe(
+    context: ProxyRevisionContext,
+    reduction: CredentialPolicyReduction,
+  ): Promise<CredentialPolicyObservation | undefined>;
+}
+
+export interface CredentialPolicyWithdrawalOptions {
+  readonly recheck?: boolean;
+  readonly reducePolicy?: (
+    context: ProxyRevisionContext,
+  ) => Promise<"withdrawn" | "pending" | "retire-runtime">;
+}
+
 export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
+  readonly policyReduction?: CredentialPolicyReducer;
   /** API process: bind the installed transport's exchange owner once, before accepting requests. */
   bindExchange?(
     createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
@@ -404,12 +445,6 @@ export interface CredentialProxyDriver extends Driver {
     context: ProxyRevisionContext,
     installation: EgressInstallation,
   ): Promise<boolean>;
-  /** Reduce the policy on this exact execution and independently verify it. A provider
-   * that cannot prove reduction requests retirement; it must not destroy the runtime here. */
-  withdrawBinding(
-    context: ProxyRevisionContext,
-    binding: EgressRef,
-  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
 }
 
@@ -446,6 +481,16 @@ export function assertExecutionAdmission(
   }
   if (admission.mode === "protected" && !Array.isArray(revision.egressPlan?.routes)) {
     throw new Error("Invalid protected execution plan.");
+  }
+  const plan = revision.egressPlan;
+  if (
+    (plan?.policyReductionVersion !== undefined &&
+      (plan.policyReductionVersion !== 1 || admission.version !== 3)) ||
+    (plan &&
+      new Set(plan.routes.map((route) => route.binding.source.source.id)).size > 1 &&
+      plan.policyReductionVersion !== 1)
+  ) {
+    throw new Error("Protected execution requires its admitted policy reduction capability.");
   }
   const repository = revision.egressPlan?.repositoryGit;
   if (

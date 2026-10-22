@@ -1,3 +1,4 @@
+import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
@@ -6529,13 +6530,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "The Credential Gateway must attach each bound source exactly once.",
           );
         }
+        const currentEgressInstallation = revision.egressPlan?.policyReductionVersion
+          ? await context!.currentEgressInstallation!()
+          : undefined;
         const egressContext =
           revision.egressPlan === undefined
             ? undefined
             : {
                 namespace: sandboxContext.namespace,
                 revision,
-                plan: revision.egressPlan,
+                plan: currentEgressInstallation?.plan ?? revision.egressPlan,
                 signal: sandboxContext.signal,
               };
         if (
@@ -7715,7 +7719,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
-    options: { readonly recheck?: boolean } = {},
+    options: CredentialPolicyWithdrawalOptions = {},
   ): Promise<CredentialAttachmentStatus> {
     try {
       return await this.withdrawSandboxCredentialSource(revision, source, signal, options);
@@ -7740,7 +7744,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
-    options: { readonly recheck?: boolean },
+    options: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus> {
     if (
       revision.compute.id !== this.id ||
@@ -7794,16 +7798,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!binding) {
         throw new OwnershipFailure("The protected source has no admitted binding.");
       }
-      const removed = await egress.withdrawBinding(
-        {
-          namespace: sandboxNamespace,
-          revision,
-          plan: revision.egressPlan,
-          // The claim's signal bounds the withdrawal like every other gateway call (2055).
-          signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-        },
-        binding,
-      );
+      const context = {
+        namespace: sandboxNamespace,
+        revision,
+        plan: revision.egressPlan,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      };
+      const removed =
+        egress.policyReduction && options.reducePolicy
+          ? await options.reducePolicy(context)
+          : "retire-runtime";
       if (removed === "retire-runtime") {
         throw new CredentialWithdrawalRefusedError(
           "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
