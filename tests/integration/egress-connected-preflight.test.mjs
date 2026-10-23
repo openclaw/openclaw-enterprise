@@ -12,6 +12,7 @@ import {
   admitRepositoryAgent,
 } from "../helpers/egress-custody-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
+import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
@@ -404,6 +405,41 @@ test("connected failed-turn observation rejects partial text without a completed
   ]) {
     assert.throws(() => assertNoConnectedAssistantOutput({ assistant: "", items: [event] }), {
       code: "ERR_ASSERTION",
+    });
+  }
+});
+
+test("installed cleanup records an unsettled prepared source without retrying or observing custody", async () => {
+  const cleanup = async (code) => {
+    const records = [];
+    let removes = 0;
+    const removed = await deleteInstalledResource({
+      remove: async () => {
+        removes += 1;
+        return {
+          status: 409,
+          body: { meta: { requestId: "req_cleanup" }, error: { code, message: "retry later" } },
+        };
+      },
+      record: async (details) => records.push(details),
+      // Never reached: only a 500 INTERNAL_ERROR may observe custody and retry.
+      prepared: {
+        databaseUrl: "postgresql://127.0.0.1:1/unreachable",
+        namespaceId: "ns",
+        sourceId: "src",
+      },
+    });
+    return { removed, removes, records };
+  };
+  // Since #3251 an unsettled prepared source answers this code; retry waits up to the token lifetime.
+  for (const [code, reason] of [
+    ["CREDENTIAL_TOKEN_UNSETTLED", "CREDENTIAL_TOKEN_UNSETTLED"],
+    ["SOME_FUTURE_CODE", "unclassified-response"],
+  ]) {
+    assert.deepEqual(await cleanup(code), {
+      removed: false,
+      removes: 1,
+      records: [{ observation: "delete-started-result-not-yet-known" }, { status: 409, reason }],
     });
   }
 });
