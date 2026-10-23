@@ -224,17 +224,19 @@ early when other Work is claimable.
 On version stop, the Driver stops the Gateway within the pinned runtime's 330-second
 budget and waits for Pod disappearance before stopping the Harness, which remains
 available for active work. Idle or pre-OpenClaw shutdown (wrappers run under `tini`)
-completes promptly. Forced termination can delay the successor until the persistent
-owner lease expires.
+completes promptly. Forced termination can block the successor when OpenClaw cannot
+verify that the previous owner stopped; lease expiry alone does not permit a
+cross-namespace takeover.
 
-Both Gateway modes persist SQLite, media, linked worktrees and common Git metadata
+Both Gateway modes persist SQLite, client credentials, media, linked worktrees and common Git metadata
 on their private claim, preserving session paths across replacement. Embedded Gateways
 retain their default workspace; dedicated Harness claims retain node identity. Claims
 precede Pods for `WaitForFirstConsumer`; [Gateway storage](../reference/drivers/kubernetes-compute/storage-and-credentials.md#gateway-storage)
 defines initialization and mounts.
 
 Workspace-file access uses the enrolled Harness node; Gateway and Harness share
-no workspace, session, skill or image mounts. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
+no workspace, session, skill or image mounts. Codex's Harness path is set before startup; pairing only enables file-transfer.
+The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
 covers per-image assets and generated-image return. The node host stores bundles
 in its state and workspaces below `/home/node/workspace`, separate from gateway state,
 `CODEX_HOME` and credentials. Restart republishes image-owned assets and reconnects

@@ -2,6 +2,11 @@ name: Check Native Container Images
 
 on:
   workflow_dispatch:
+    inputs:
+      node_base_image:
+        description: "Pinned Node base image; defaults to the repository configuration."
+        required: false
+        type: string
   workflow_call:
     inputs:
       source_sha:

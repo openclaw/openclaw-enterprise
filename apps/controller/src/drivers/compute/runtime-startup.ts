@@ -37,11 +37,11 @@ async function timeStartupPhase(phase, run) {
 
 /**
  * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
- * src/state/openclaw-agent-db-contract.ts) at the runtime image's pinned
+ * src/state/openclaw-schema-versions.ts) at the runtime image's pinned
  * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
  * fails when a pin moves it; update it with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 24;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 31;
 
 // A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
 // refuses one with an older schema (exit 78) until "openclaw doctor --fix"

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-16
+last_updated_session: codex/01a13683-3916-7880-b1a6-27175b853600
 ---
 
 # Container publication flow
@@ -88,9 +88,9 @@ source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
 `deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive
-and applies three patches whose hashes it verifies and records in runtime provenance:
+and applies three checksum-verified patches:
 the stock Codex 0.163.0-alpha.2 dependency pin, before extracting frozen installation
-inputs, and the temporary read-only-paths and `connect --ephemeral` expired-setup
+inputs, and the temporary read-only-paths and full-access-profile
 bridge patches. The bridge forwards the bound
 Agent's stock network settings without modifying Codex. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
@@ -99,6 +99,9 @@ plugin's installation. Build tools remain in full Bookworm stages; final images
 use a separately pinned Node 24 Bookworm slim base. Both bases apply available
 Debian package updates when their recipe layers build. The Node digest identifies
 the upstream image; it does not freeze Debian package repositories.
+
+The build stage runs checksum-verified caller-authority tests offline. Runtime
+provenance records their patch checksum; tests stay in the build stage.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so
@@ -117,6 +120,9 @@ helper rewrites `contents.json` from `/app/node_modules/openclaw` and updates
 therefore describes the final runtime tree. Upstream
 import-closure and native-addon checks remain. See the
 [runtime recipe](../../deploy/runtime/README.md).
+
+Final image checks require `@openclaw/proc-safe/reaper` to return true from
+`isSupported()`.
 
 ### 2. Verify and assemble both platform variants
 
@@ -235,6 +241,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-16 22:41: Require the native reaper and caller-authority regression checks. (codex/01a13683-3916-7880-b1a6-27175b853600 - fd21b43ce92dbd44f98fce5fef29489b97d6352c)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

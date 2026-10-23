@@ -112,7 +112,7 @@ configuration, arguments and environment; remote output is discarded. The launch
 waits for completion. A workspace `flock` serializes attempts after lost
 acknowledgments. The verifier uses `OPENCLAW_WORKSPACE_DIR` after relocation.
 
-The runner validates identity, paths, OpenClaw `2026.9.9`, and template digest
+The runner validates identity, paths, OpenClaw `2026.10.5`, and template digest
 against Console defaults; identities must match, and links or conflicts fail.
 Native `setup` initializes workspace/Git without starting Gateway. Kubernetes init
 containers use Gateway resource budgets. Supplied files, including empty strings,
@@ -125,9 +125,10 @@ Missing or mismatched markers after recorded completion block startup, preservin
 later edits. Errors omit document contents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing at once, as
-does `SandboxWorkspaceSetupRefusedError` (OpenShell). Kubernetes restarts other
-failures (`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation time.
+reports refusals (exit 2) as `WORKSPACE_SETUP_REFUSED`; OpenShell raises
+`SandboxWorkspaceSetupRefusedError`. Kubernetes retries other failures
+(`WORKSPACE_SETUP_RETRYING`). OpenShell reports only RPC status or setup
+exit/timeout. `checkedAt` records termination/observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 

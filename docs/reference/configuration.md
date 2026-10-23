@@ -290,6 +290,43 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   tenant placement is ready, exact namespaced ConfigMap access exists, and the
   tenant-owned ConfigMap contains one valid `openclaw.json` document.
 
+## Gateway tool policy
+
+Dedicated OpenClaw on Kubernetes and Codex on Kubernetes or Docker automatically
+apply a reviewed Gateway tool baseline after plugin grants. Plugin approval
+permits installation and enablement; model access also requires concrete tool
+names in `tools.gatewayPolicy.allow`. Ordinary `tools.alsoAllow` cannot widen it.
+
+Trusted Configuration authors can select reviewed task tools:
+
+```json
+{
+  "tools": {
+    "gatewayPolicy": {
+      "allow": ["sessions", "read", "diffs"],
+      "actions": { "sessions": ["patch"] }
+    }
+  }
+}
+```
+
+Diffs must separately be enabled as a plugin. Omitting the policy uses the
+[baseline](../../apps/controller/src/drivers/compute/gateway-tool-policy.ts);
+empty `allow` withholds Gateway tools. Action-bearing tools require explicit
+allowed actions. Baseline actions can only narrow; administrative tools and
+additional baseline actions are rejected. Profiles, denies and Codex dynamic-tool
+exclusions still apply.
+
+Compute enforces `automations.scope: "caller"` and `allowCommandJobs: false` under
+`tools.gatewayPolicy`, plus `agents.defaults.modelSelectionScope: "session"` and
+`cron.triggers.enabled: false`. Human Gateway administration and Codex native
+tools retain their existing authorization.
+
+Deploy a new Agent revision to change policy. Replacement applies it after old
+work ends; peer respawn restores the deployed policy. The
+[deployment flow](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness)
+details compatibility checks.
+
 ## Related
 
 - [Quickstart](../guides/quickstart.md)

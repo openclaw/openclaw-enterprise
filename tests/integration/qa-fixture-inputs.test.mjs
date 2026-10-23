@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { randomUUID } from "node:crypto";
@@ -7,7 +7,7 @@ import { chmod, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { protectedText } from "../helpers/qa-secrets.mjs";
+import { protectedText, registerQaSecret } from "../helpers/qa-secrets.mjs";
 
 test("QA Agent reads the selected Preset in its Namespace", async (t) => {
   const { createQaAgent } = await import("../helpers/qa-installation.mjs");
@@ -1843,6 +1843,1164 @@ test("failed native Gateway turns capture private bounded logs for the original 
       }
     });
   }
+});
+
+test("native cron positive control requires its own successful completed run", async (t) => {
+  const { assertNativeCronRunSucceeded } = await import("../helpers/plugin-driver-real.mjs");
+  const accepted = { ok: true, enqueued: true, runId: "control-run" };
+  const finished = {
+    jobId: "control-job",
+    runId: "control-run",
+    action: "finished",
+    status: "ok",
+  };
+  async function exercise(ack, entry) {
+    const calls = [];
+    const proof = await assertNativeCronRunSucceeded({
+      jobId: "control-job",
+      async request(method, params) {
+        calls.push({ method, params });
+        if (method === "cron.run") {
+          return ack;
+        }
+        assert.equal(method, "cron.runs");
+        return { entries: entry === undefined ? [] : [entry] };
+      },
+      // One observation represents completion or exhausted polling, without a real timer.
+      waitFor: async (_description, inspect) => inspect(),
+    });
+    return { proof, calls };
+  }
+
+  await t.test("records the accepted run only after its successful terminal result", async () => {
+    const { proof, calls } = await exercise(accepted, finished);
+    assert.deepEqual(proof, { jobId: "control-job", runId: "control-run", status: "ok" });
+    assert.deepEqual(calls, [
+      {
+        method: "cron.run",
+        params: { id: "control-job", mode: "force", waitTimeoutMs: 5_000 },
+      },
+      { method: "cron.runs", params: { id: "control-job", runId: "control-run", limit: 1 } },
+    ]);
+  });
+  for (const [name, ack, entry, expected] of [
+    [
+      "a successful RPC that did not run the job",
+      { ok: true, ran: false, reason: "invalid-spec" },
+      finished,
+      /must enqueue a run/,
+    ],
+    ["a different completed run", accepted, { ...finished, runId: "other-run" }, /enqueued run/],
+    ["an unfinished run", accepted, { ...finished, action: "started" }, /must finish/],
+    ["a failed terminal run", accepted, { ...finished, status: "error" }, /must succeed/],
+  ]) {
+    await t.test(`rejects ${name}`, async () => {
+      await assert.rejects(exercise(ack, entry), expected);
+    });
+  }
+});
+
+test("native tool evidence reads compressed rows, prompt snapshots and command exit status", async (t) => {
+  const { DatabaseSync } = await import("node:sqlite");
+  const { zstdCompressSync } = await import("node:zlib");
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "oce-tool-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const databasePath = join(directory, "transcript.sqlite");
+  const db = new DatabaseSync(databasePath);
+  db.exec(`CREATE TABLE session_nodes(session_key TEXT, current_session_id TEXT, entry_json TEXT);
+    CREATE TABLE session_entry_snapshots(session_key TEXT, field TEXT, value_json TEXT);
+    CREATE TABLE transcript_events(session_id TEXT, seq INTEGER, event_json TEXT, event_zstd BLOB, event_utf8_bytes INTEGER);`);
+  const sessionKey = "agent:main:evidence-fixture";
+  db.prepare("INSERT INTO session_nodes VALUES (?, ?, ?)").run(sessionKey, "session-fixture", "{}");
+  db.prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)").run(
+    sessionKey,
+    "systemPromptReport",
+    JSON.stringify({
+      source: "run",
+      tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+    }),
+  );
+  const toolErrorSecret = "fixture-tool-error-secret";
+  registerQaSecret(toolErrorSecret);
+  const rows = [
+    { role: "user", content: "allowed-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "allowed-call",
+          name: "exec",
+          arguments: { command: "printf TOOL-SUCCESS" },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "allowed-call",
+      toolName: "exec",
+      content: [{ type: "text", text: "TOOL-SUCCESS" }],
+      isError: false,
+      details: { exitCode: 0 },
+    },
+    { role: "assistant", content: [{ type: "text", text: "allowed-fixture" }], stopReason: "stop" },
+    { role: "user", content: "denied-fixture" },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "denied-call",
+          name: "automations",
+          arguments: {
+            action: "update",
+            jobId: "fixture-job",
+            job: { payload: { timeoutSeconds: 5 } },
+          },
+        },
+      ],
+    },
+    {
+      role: "toolResult",
+      toolCallId: "denied-call",
+      toolName: "automations",
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: [
+            "earlier error context omitted from bounded diagnostic",
+            "Automation not found: fixture-job",
+            `private fixture value: ${toolErrorSecret}`,
+            "x".repeat(3_000),
+          ].join("\n"),
+        },
+      ],
+    },
+    { role: "assistant", content: [{ type: "text", text: "denied-fixture" }], stopReason: "stop" },
+  ];
+  for (const [seq, message] of rows.entries()) {
+    const text = JSON.stringify({ type: "message", message });
+    const compressed = [1, 2, 4, 5, 7].includes(seq);
+    db.prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)").run(
+      "session-fixture",
+      seq,
+      compressed ? null : text,
+      compressed ? zstdCompressSync(text) : null,
+      Buffer.byteLength(text),
+    );
+  }
+  db.close();
+  // Run the real evidence program against disposable SQLite storage. This tests
+  // evidence decoding/correlation, not a live model or deployment policy.
+  const assertionOptions = {
+    gatewayUrl: async () => {
+      throw new Error("no Gateway connection in this fixture");
+    },
+    execGateway: async (_agent, [command, flag, script, ...args]) => {
+      assert.equal(command, "node");
+      assert.equal(flag, "-e");
+      const localScript = script.replace(
+        '"/home/node/.openclaw/agents/main/agent/openclaw-agent.sqlite"',
+        JSON.stringify(databasePath),
+      );
+      return {
+        label: "sqlite-fixture",
+        stdout: execFileSync(process.execPath, ["-e", localScript, ...args], { encoding: "utf8" }),
+      };
+    },
+    waitFor: async (_description, check) => check(),
+    proofMode: "openclaw",
+  };
+  const native = createNativePluginAssertions(assertionOptions);
+  const shellEvidence = {
+    sessionKey,
+    turnMarker: "allowed-fixture",
+    toolName: "exec",
+    resultPattern: "TOOL-SUCCESS",
+  };
+  const allowed = await native.assertSessionToolCallEvidence(
+    {},
+    {
+      ...shellEvidence,
+      expectedExitCode: 0,
+    },
+  );
+  assert.equal(allowed.toolCallId, "allowed-call");
+  assert.equal(allowed.promptAdvertised, true);
+  assert.equal(allowed.exitCode, 0);
+  assert.equal(allowed.promptReport.source, "run");
+  assert.deepEqual(allowed.promptReport.toolNames, ["exec", "automations"]);
+  await t.test("positive direct evidence matches the requested arguments", async () => {
+    assert.equal(
+      (
+        await native.assertSessionToolCallEvidence(
+          {},
+          { ...shellEvidence, expectedArguments: { command: "printf TOOL-SUCCESS" } },
+        )
+      ).toolCallId,
+      "allowed-call",
+    );
+    await assert.rejects(
+      native.assertSessionToolCallEvidence(
+        {},
+        { ...shellEvidence, expectedArguments: { command: "a different task" } },
+      ),
+      /matching successful result/,
+    );
+  });
+  for (const [report, expectedShape] of [
+    [
+      undefined,
+      { present: false, valueType: "undefined", entriesType: "undefined", entriesCount: null },
+    ],
+    [
+      { source: "estimate", tools: { entries: [{ name: "exec" }] } },
+      {
+        present: true,
+        valueType: "object",
+        source: "estimate",
+        entriesType: "array",
+        entriesCount: 1,
+      },
+    ],
+    [
+      { source: "run", tools: { entries: {} } },
+      {
+        present: true,
+        valueType: "object",
+        source: "run",
+        entriesType: "object",
+        entriesCount: null,
+      },
+    ],
+  ]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM session_entry_snapshots");
+      if (report !== undefined) {
+        update
+          .prepare("INSERT INTO session_entry_snapshots VALUES (?, ?, ?)")
+          .run(sessionKey, "systemPromptReport", JSON.stringify(report));
+      }
+    } finally {
+      update.close();
+    }
+    await assert.rejects(native.assertSessionToolCallEvidence({}, shellEvidence), (error) => {
+      const diagnostic = JSON.parse(error.message.split("tools.entries snapshot: ")[1]);
+      assert.equal(diagnostic.sessionId, "session-fixture");
+      assert.deepEqual(diagnostic.promptReport, expectedShape);
+      return true;
+    });
+  }
+  const restore = new DatabaseSync(databasePath);
+  try {
+    restore
+      .prepare("UPDATE session_entry_snapshots SET value_json = ?")
+      .run(JSON.stringify({ source: "run", tools: { entries: [] } }));
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, shellEvidence),
+      /prompt tools must advertise exec: .*"promptToolNames":\[\]/,
+    );
+    restore.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+      JSON.stringify({
+        source: "run",
+        tools: { entries: [{ name: "exec" }, { name: "automations" }] },
+      }),
+    );
+  } finally {
+    restore.close();
+  }
+  for (const details of [
+    { exitCode: 1 },
+    undefined,
+    { status: "running", sessionId: "fixture-process" },
+  ]) {
+    const text = JSON.stringify({ type: "message", message: { ...rows[2], details } });
+    const update = new DatabaseSync(databasePath);
+    try {
+      update
+        .prepare("UPDATE transcript_events SET event_zstd = ?, event_utf8_bytes = ? WHERE seq = 2")
+        .run(zstdCompressSync(text), Buffer.byteLength(text));
+    } finally {
+      update.close();
+    }
+    await assert.rejects(
+      native.assertSessionToolCallEvidence({}, { ...shellEvidence, expectedExitCode: 0 }),
+      details?.status === "running"
+        ? /must exit with code 0: .*"status":"running"/
+        : /must exit with code 0/,
+    );
+  }
+  // Tools without structured exit status retain their existing evidence contract.
+  assert.equal(
+    (await native.assertSessionToolCallEvidence({}, shellEvidence)).toolCallId,
+    "allowed-call",
+  );
+  const denial = {
+    sessionKey,
+    turnMarker: "denied-fixture",
+    toolName: "automations",
+    expectedArguments: {
+      action: "update",
+      jobId: "fixture-job",
+      job: { payload: { timeoutSeconds: 5 } },
+    },
+    resultPattern: ["job.payload.kind:", "Automation not found: fixture-job"],
+  };
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).toolCallId,
+    "denied-call",
+  );
+  assert.equal(
+    (await native.assertSessionToolPolicyDeniedEvidence({}, denial)).matchedRefusal,
+    "Automation not found: fixture-job",
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      { ...denial, expectedArguments: { ...denial.expectedArguments, jobId: "wrong-target" } },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        resultPattern: [
+          "job.payload.kind:",
+          "automation command payloads cannot be created or edited",
+        ],
+      },
+    ),
+    /the attempted tool must return the policy refusal/,
+  );
+  await assert.rejects(
+    native.assertSessionToolPolicyDeniedEvidence(
+      {},
+      {
+        ...denial,
+        expectedArguments: { ...denial.expectedArguments, job: { payload: { timeoutSeconds: 6 } } },
+      },
+    ),
+    /exact requested action and target/,
+  );
+  await assert.rejects(native.assertSessionToolCallEvidence({}, denial), (error) => {
+    const diagnostic = JSON.parse(error.message.slice(error.message.indexOf("{")));
+    const [result] = diagnostic.results;
+    assert.equal(result.toolCallId, "denied-call");
+    assert.equal(result.errorText, undefined);
+    assert.equal(result.errorLines.length, 3);
+    assert.equal(result.errorLines[0], "Automation not found: fixture-job");
+    assert.equal(result.errorLines[1], "private fixture value: [env:qa-secret]");
+    assert.equal(error.message.includes(toolErrorSecret), false);
+    assert.ok(result.errorLines.every((line) => line.length <= 900 + "... [truncated]".length));
+    assert.match(result.errorLines[2], /\[truncated\]$/);
+    return true;
+  });
+
+  function replaceTranscript(messages, promptNames = ["exec", "dispatch_action", "tool_search"]) {
+    const update = new DatabaseSync(databasePath);
+    try {
+      update.exec("DELETE FROM transcript_events");
+      update.prepare("UPDATE session_entry_snapshots SET value_json = ?").run(
+        JSON.stringify({
+          source: "run",
+          tools: { entries: promptNames.map((name) => ({ name })) },
+        }),
+      );
+      for (const [seq, message] of messages.entries()) {
+        const text = JSON.stringify({ type: "message", message });
+        const compressed = seq % 2 === 0;
+        update
+          .prepare("INSERT INTO transcript_events VALUES (?, ?, ?, ?, ?)")
+          .run(
+            "session-fixture",
+            seq,
+            compressed ? null : text,
+            compressed ? zstdCompressSync(text) : null,
+            Buffer.byteLength(text),
+          );
+      }
+    } finally {
+      update.close();
+    }
+  }
+  await t.test("does not treat an assistant refusal as a denied tool call", async () => {
+    replaceTranscript([
+      { role: "user", content: "denied-fixture" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "I cannot call that tool. denied-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+    await assert.rejects(native.assertSessionToolPolicyDeniedEvidence({}, denial), (error) => {
+      assert.match(error.message, /the denied turn must attempt exactly the requested tool/);
+      const [summary] = error.message.split("\n");
+      const diagnostic = JSON.parse(summary.slice(summary.indexOf("{")));
+      assert.deepEqual(diagnostic.observedToolNames, []);
+      assert.equal(diagnostic.finalAssistantDiagnostics.mentionsUnavailable, true);
+      return true;
+    });
+  });
+  const dispatchedCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "dispatched-call",
+        name: "dispatch_action",
+        arguments: { id: "openclaw:core:automations", args: { action: "list" } },
+      },
+    ],
+  };
+  const targetResult = { content: [{ type: "text", text: '{"jobs":[]}' }], details: { jobs: [] } };
+  const envelope = {
+    tool: { id: "openclaw:core:automations", name: "automations", source: "openclaw" },
+    result: targetResult,
+  };
+  const dispatchedResult = {
+    role: "toolResult",
+    toolCallId: "dispatched-call",
+    toolName: "dispatch_action",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(envelope) }],
+    details: envelope,
+  };
+  const dispatchedMessages = (call = dispatchedCall, result = dispatchedResult) => [
+    { role: "user", content: "dispatched-fixture" },
+    call,
+    result,
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "dispatched-fixture" }],
+      stopReason: "stop",
+    },
+  ];
+  const dispatchedEvidence = {
+    sessionKey,
+    turnMarker: "dispatched-fixture",
+    toolName: "automations",
+    expectedArguments: { action: "list" },
+    resultPattern: "jobs",
+  };
+  await t.test(
+    "correlates the real dispatcher and target without a direct target schema",
+    async () => {
+      for (const id of [
+        "openclaw:core:automations",
+        "automations",
+        " openclaw:core:automations ",
+        "\tautomations\n",
+      ]) {
+        const call = structuredClone(dispatchedCall);
+        call.content[0].arguments.id = id;
+        replaceTranscript(dispatchedMessages(call));
+        await assert.rejects(
+          native.assertNoSessionToolCallEvidence({}, dispatchedEvidence),
+          /still invoked automations/,
+        );
+        const proof = await native.assertSessionToolCallEvidence({}, dispatchedEvidence);
+        assert.equal(proof.toolName, "dispatch_action");
+        assert.equal(proof.targetName, "automations");
+        assert.equal(proof.targetId, id.trim());
+        assert.equal(proof.toolCallId, "dispatched-call");
+      }
+    },
+  );
+  for (const [name, change] of [
+    [
+      "wrong call target",
+      (call) => {
+        call.content[0].arguments.id = "openclaw:core:nodes";
+      },
+    ],
+    [
+      "wrong target arguments",
+      (call) => {
+        call.content[0].arguments.args.action = "run";
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "different-call";
+      },
+    ],
+    [
+      "wrong envelope target",
+      (_call, result) => {
+        result.details.tool.name = "nodes";
+      },
+    ],
+    [
+      "target failure behind an ordinary outer result",
+      (_call, result) => {
+        result.details.status = "failed";
+      },
+    ],
+  ]) {
+    await t.test(`rejects dispatched ${name}`, async () => {
+      const call = structuredClone(dispatchedCall);
+      const result = structuredClone(dispatchedResult);
+      change(call, result);
+      replaceTranscript(dispatchedMessages(call, result));
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, dispatchedEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("correlates a thrown dispatcher refusal to its exact target arguments", async () => {
+    const call = structuredClone(dispatchedCall);
+    call.content[0].arguments.args = { action: "run", jobId: "fixture-job" };
+    const result = { ...rows[6], toolCallId: "dispatched-call", toolName: "dispatch_action" };
+    const options = {
+      ...denial,
+      turnMarker: "dispatched-fixture",
+      expectedArguments: { action: "run", jobId: "fixture-job" },
+    };
+    for (const details of [
+      undefined,
+      { status: "error", tool: "dispatch_action", error: "Automation not found: fixture-job" },
+    ]) {
+      result.details = details;
+      replaceTranscript(dispatchedMessages(call, result));
+      assert.equal(
+        (await native.assertSessionToolPolicyDeniedEvidence({}, options)).targetId,
+        "openclaw:core:automations",
+      );
+    }
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence(
+        {},
+        {
+          ...options,
+          expectedArguments: { action: "run", jobId: "wrong-target" },
+        },
+      ),
+      /exact requested action and target/,
+    );
+    result.details = {
+      tool: { ...envelope.tool, name: "nodes" },
+      result: { content: result.content },
+    };
+    replaceTranscript(dispatchedMessages(call, result));
+    await assert.rejects(
+      native.assertSessionToolPolicyDeniedEvidence({}, options),
+      /the refusal must belong to the attempted target/,
+    );
+  });
+
+  const expectedCatalog = { present: ["read"], absent: ["agents_list", "gateway"] };
+  const searchCall = {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "search-call",
+        name: "tool_search",
+        arguments: {
+          queries: ["read", "agents_list", "gateway"].map((query) => ({ query, limit: 1 })),
+        },
+      },
+    ],
+  };
+  const readCandidate = { id: "openclaw:core:read", name: "read", source: "openclaw" };
+  const searchPayload = {
+    results: [
+      { query: "read", candidates: [readCandidate] },
+      // Exact-name search may return a fuzzy alternative when the exact tool is absent.
+      { query: "agents_list", candidates: [readCandidate] },
+      { query: "gateway", candidates: [] },
+    ],
+  };
+  const searchResult = {
+    role: "toolResult",
+    toolCallId: "search-call",
+    toolName: "tool_search",
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(searchPayload) }],
+    details: searchPayload,
+  };
+  const searchEvidence = {
+    sessionKey,
+    turnMarker: "search-fixture",
+    toolName: "tool_search",
+    expectedCatalog,
+  };
+  function replaceSearch(call = searchCall, result = searchResult) {
+    replaceTranscript([
+      { role: "user", content: "search-fixture" },
+      call,
+      result,
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "search-fixture" }],
+        stopReason: "stop",
+      },
+    ]);
+  }
+  await t.test("proves complete exact discovery with an allowed positive control", async () => {
+    replaceSearch();
+    const proof = await native.assertSessionToolCallEvidence({}, searchEvidence);
+    assert.equal(proof.toolCallId, "search-call");
+    assert.deepEqual(proof.catalog, [
+      { query: "read", names: ["read"], truncated: false },
+      { query: "agents_list", names: ["read"], truncated: false },
+      { query: "gateway", names: [], truncated: false },
+    ]);
+  });
+  for (const [name, change] of [
+    [
+      "nonexact request",
+      (call) => {
+        call.content[0].arguments.queries[1].query = "agents";
+      },
+    ],
+    [
+      "different request limit",
+      (call) => {
+        call.content[0].arguments.queries[1].limit = 2;
+      },
+    ],
+    [
+      "wrong result identity",
+      (_call, result) => {
+        result.toolCallId = "other-search";
+      },
+    ],
+    [
+      "missing result group",
+      (_call, result) => {
+        result.details.results.pop();
+      },
+    ],
+    [
+      "duplicate result group",
+      (_call, result) => {
+        result.details.results[2] = result.details.results[0];
+      },
+    ],
+    [
+      "truncated response",
+      (_call, result) => {
+        result.details.truncated = true;
+      },
+    ],
+    [
+      "truncated group",
+      (_call, result) => {
+        result.details.results[1].truncated = true;
+      },
+    ],
+    [
+      "missing allowed control",
+      (_call, result) => {
+        result.details.results[0].candidates = [];
+      },
+    ],
+    [
+      "forbidden exact match",
+      (_call, result) => {
+        result.details.results[1].candidates = [
+          { id: "openclaw:core:agents_list", name: "agents_list", source: "openclaw" },
+        ];
+      },
+    ],
+  ]) {
+    await t.test(`rejects catalog proof with ${name}`, async () => {
+      const call = structuredClone(searchCall);
+      const result = structuredClone(searchResult);
+      change(call, result);
+      replaceSearch(call, result);
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, searchEvidence),
+        /matching successful result/,
+      );
+    });
+  }
+  await t.test("binds Code Mode evidence to the exact real-tool program", async (t) => {
+    const codeModeCall = {
+      title: "Gateway policy qualification",
+      code: 'return await exec({"command":"printf TOOL-SUCCESS","awaitResults":true});',
+      awaitResults: true,
+    };
+    const completed = {
+      status: "completed",
+      value: { status: "completed", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+    };
+    const replaceCodeMode = (details, args = codeModeCall) =>
+      replaceTranscript(
+        [
+          { role: "user", content: "code-mode-fixture" },
+          {
+            role: "assistant",
+            content: [{ type: "toolCall", id: "code-mode-call", name: "exec", arguments: args }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "code-mode-call",
+            toolName: "exec",
+            isError: false,
+            content: [{ type: "text", text: JSON.stringify(details) }],
+            details,
+          },
+          {
+            role: "assistant",
+            content: [{ type: "text", text: "code-mode-fixture" }],
+            stopReason: "stop",
+          },
+        ],
+        ["exec"],
+      );
+    const options = {
+      sessionKey,
+      turnMarker: "code-mode-fixture",
+      toolName: "exec",
+      codeModeCall,
+      resultPattern: "TOOL-SUCCESS",
+      expectedExitCode: 0,
+    };
+    replaceCodeMode(completed);
+    const proof = await native.assertSessionToolCallEvidence({}, options);
+    assert.equal(proof.codeModeProgramVerified, true);
+    assert.equal(proof.exitCode, 0);
+    await t.test("rejects guest-manufactured success without the exact program", async () => {
+      replaceCodeMode(completed, {
+        ...codeModeCall,
+        code: 'return {status:"completed",exitCode:0,aggregated:"TOOL-SUCCESS"};',
+      });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /matching successful result/,
+      );
+    });
+    for (const value of [
+      { status: "running", exitCode: 0, aggregated: "TOOL-SUCCESS" },
+      { status: "completed", exitCode: 1, aggregated: "TOOL-SUCCESS" },
+    ]) {
+      replaceCodeMode({ ...completed, value });
+      await assert.rejects(
+        native.assertSessionToolCallEvidence({}, options),
+        /must exit with code 0/,
+      );
+    }
+    await t.test("correlates returned Gateway errors and thrown bridge errors", async () => {
+      const refusal = "cron job not found: fixture-job";
+      const call = {
+        ...codeModeCall,
+        code: 'return await automations({"action":"update","jobId":"fixture-job","job":{"payload":{"timeoutSeconds":1}}});',
+      };
+      const denied = {
+        sessionKey,
+        turnMarker: options.turnMarker,
+        toolName: "exec",
+        codeModeCall: call,
+        resultPattern: refusal,
+      };
+      for (const details of [
+        { status: "completed", value: { status: "error", error: refusal } },
+        { status: "failed", bridgeDispatchStarted: true, error: refusal },
+      ]) {
+        replaceCodeMode(details, call);
+        assert.equal(
+          (await native.assertSessionToolPolicyDeniedEvidence({}, denied)).codeModeProgramVerified,
+          true,
+        );
+      }
+      replaceCodeMode({ status: "failed", bridgeDispatchStarted: false, error: refusal }, call);
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /refusal must belong to the attempted target/,
+      );
+      replaceCodeMode(
+        { status: "completed", value: { status: "error", error: "unrelated fixture error" } },
+        call,
+      );
+      await assert.rejects(
+        native.assertSessionToolPolicyDeniedEvidence({}, denied),
+        /must return the policy refusal/,
+      );
+    });
+    await t.test(
+      "checks the actual complete catalog alongside the child's command result",
+      async () => {
+        const call = {
+          ...codeModeCall,
+          code: 'const command = await exec({"command":"printf TOOL-SUCCESS","awaitResults":true}); return {...command, catalog: catalog.all().filter(tool => ["read","gateway"].includes(tool.toolName)).map(tool => ({name: tool.toolName, source: tool.source, callableName: tool.callableName}))};',
+        };
+        const readHandle = { name: "read", source: "openclaw", callableName: "read" };
+        const details = {
+          status: "completed",
+          value: { ...completed.value, catalog: [readHandle] },
+        };
+        const catalogOptions = {
+          ...options,
+          codeModeCall: call,
+          expectedCatalog: { present: ["read"], absent: ["gateway"] },
+        };
+        replaceCodeMode(details, call);
+        const proof = await native.assertSessionToolCallEvidence({}, catalogOptions);
+        assert.deepEqual(proof.catalog, [readHandle]);
+        assert.equal(proof.exitCode, 0);
+        details.value.catalog.push({
+          name: "gateway",
+          source: "openclaw",
+          callableName: "gateway",
+        });
+        replaceCodeMode(details, call);
+        await assert.rejects(
+          native.assertSessionToolCallEvidence({}, catalogOptions),
+          /matching successful result/,
+        );
+      },
+    );
+  });
+  await t.test("retains direct native Codex call and mirror correlation", async () => {
+    const prefix = "codex:thread-fixture:turn-fixture";
+    const messages = [
+      {
+        role: "user",
+        content: "codex-fixture",
+        __openclaw: { mirrorIdentity: `${prefix}:prompt` },
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "codex-call",
+            name: "automations",
+            arguments: { action: "list" },
+          },
+        ],
+        __openclaw: { mirrorIdentity: `${prefix}:tool:codex-call:call` },
+      },
+      {
+        role: "toolResult",
+        toolCallId: "codex-call",
+        toolName: "automations",
+        isError: false,
+        content: targetResult.content,
+        __openclaw: { mirrorIdentity: `${prefix}:tool:codex-call:result` },
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "codex-fixture" }],
+        stopReason: "stop",
+        __openclaw: { mirrorIdentity: `${prefix}:assistant` },
+      },
+    ];
+    replaceTranscript(messages, []);
+    const codex = createNativePluginAssertions({ ...assertionOptions, proofMode: "codex" });
+    const proof = await codex.assertSessionToolCallEvidence(
+      {},
+      { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+    );
+    assert.equal(proof.toolName, "automations");
+    assert.equal(proof.codexMirrorTurnVerified, true);
+    messages[2].__openclaw.mirrorIdentity = "codex:other:turn:tool:codex-call:result";
+    replaceTranscript(messages, []);
+    await assert.rejects(
+      codex.assertSessionToolCallEvidence(
+        {},
+        { ...dispatchedEvidence, turnMarker: "codex-fixture" },
+      ),
+      /share one mirrored turn/,
+    );
+  });
+});
+
+test("Gateway policy evidence identifies a fresh native Codex child and its own completed work", async (t) => {
+  const { assertCodexPolicyChild, parseCodexPolicyMetadata, readCodexPolicyRolloutHead } =
+    await import("../helpers/plugin-driver-real.mjs");
+  const metadata = (id, dynamic_tools = [], parent_thread_id) =>
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id, dynamic_tools, parent_thread_id },
+    });
+  const parentLine = metadata("parent", [
+    {
+      type: "namespace",
+      name: "openclaw",
+      tools: [
+        {
+          type: "function",
+          name: "agents_list",
+          description: "private description",
+          inputSchema: {},
+        },
+      ],
+    },
+  ]);
+  const childLine = metadata("child", [], "parent");
+  const fixture = (version = "v1") => ({
+    childMarker: "child-done",
+    childResult: "command-result",
+    parent: {
+      id: "parent",
+      turns: [
+        {
+          id: "parent-turn",
+          status: "completed",
+          error: null,
+          items:
+            version === "v2"
+              ? [
+                  {
+                    type: "userMessage",
+                    content: [{ type: "text", text: "run native work and reply child-done" }],
+                  },
+                  {
+                    type: "subAgentActivity",
+                    id: "spawn-call",
+                    kind: "started",
+                    agentThreadId: "child",
+                    agentPath: "/root/policy_child",
+                  },
+                ]
+              : [
+                  {
+                    type: "collabAgentToolCall",
+                    tool: "spawnAgent",
+                    status: "completed",
+                    senderThreadId: "parent",
+                    receiverThreadIds: ["child"],
+                    prompt: "run native work and reply child-done",
+                  },
+                ],
+        },
+      ],
+    },
+    child: {
+      id: "child",
+      parentThreadId: "parent",
+      forkedFromId: null,
+      turns: [
+        {
+          id: "child-turn",
+          status: "completed",
+          error: null,
+          items: [
+            {
+              type: "commandExecution",
+              status: "completed",
+              exitCode: 0,
+              aggregatedOutput: "42 command-result\n",
+            },
+            { type: "agentMessage", text: "child-done" },
+          ],
+        },
+      ],
+    },
+    parentMetadata: parseCodexPolicyMetadata(parentLine, "parent"),
+    childMetadata: parseCodexPolicyMetadata(childLine, "child"),
+  });
+  for (const version of ["v1", "v2"]) {
+    const result = assertCodexPolicyChild(fixture(version));
+    assert.equal(result.childTurnId, "child-turn");
+    assert.equal(result.nativeCommandSucceeded, true);
+    assert.deepEqual(result.childGatewayTools, []);
+    assert.deepEqual(result.parentGatewayTools, [{ namespace: "openclaw", name: "agents_list" }]);
+    assert.equal(JSON.stringify(result).includes("private description"), false);
+  }
+
+  for (const [label, mutate] of [
+    [
+      "activity in another turn",
+      (value) => {
+        const activity = value.parent.turns[0].items.pop();
+        value.parent.turns.push({
+          id: "other-turn",
+          status: "completed",
+          error: null,
+          items: [activity],
+        });
+      },
+    ],
+    [
+      "activity that did not start a child",
+      (value) => {
+        value.parent.turns[0].items[1].kind = "completed";
+      },
+    ],
+    [
+      "incomplete parent turn",
+      (value) => {
+        value.parent.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "activity identifying another child",
+      (value) => {
+        value.parent.turns[0].items[1].agentThreadId = "other-child";
+      },
+    ],
+  ]) {
+    await t.test(`rejects V2 ${label}`, () => {
+      const value = fixture("v2");
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+
+  await t.test("reports bounded spawn predicates without private native content", () => {
+    const value = fixture();
+    const spawn = value.parent.turns[0].items[0];
+    // Separate each rejected predicate so a real zero-match result identifies its cause.
+    value.parent.turns = [
+      ...Array.from({ length: 10 }, () => ({ status: "inProgress", error: null, items: [] })),
+      {
+        status: "completed",
+        error: null,
+        items: [
+          { ...spawn, status: "inProgress" },
+          { ...spawn, senderThreadId: "private-thread" },
+          { ...spawn, prompt: "private-prompt private-secret" },
+          {
+            type: "commandExecution",
+            command: "private-command",
+            aggregatedOutput: "private-result",
+          },
+        ],
+      },
+      { status: "completed", items: [spawn] },
+      { status: "inProgress", error: null, items: [spawn] },
+      { status: "failed", error: { message: "private-error" }, items: [spawn] },
+      { status: "private-status", error: "private-error", items: [] },
+    ];
+    assert.throws(
+      () => assertCodexPolicyChild(value),
+      (error) => {
+        assert.ok(error instanceof assert.AssertionError);
+        const prefix = "one completed native spawn must match the child task: ";
+        assert.ok(error.message.startsWith(prefix));
+        const diagnostic = JSON.parse(error.message.split("\n")[0].slice(prefix.length));
+        assert.deepEqual(diagnostic.counts, {
+          turns: 15,
+          completedErrorNullTurns: 1,
+          collabSpawns: 3,
+          completedSpawns: 2,
+          senderBoundSpawns: 1,
+          markerBoundSpawns: 0,
+          subAgentActivities: 0,
+          startedSubAgents: 0,
+          taskBoundSubAgents: 0,
+        });
+        assert.equal(diagnostic.recentTurns.length, 10);
+        assert.deepEqual(diagnostic.recentTurns.slice(-5), [
+          { status: "completed", hasError: false, errorIsNull: true },
+          { status: "completed", hasError: false, errorIsNull: false },
+          { status: "inProgress", hasError: false, errorIsNull: true },
+          { status: "failed", hasError: true, errorIsNull: false },
+          { status: "unknown", hasError: true, errorIsNull: false },
+        ]);
+        for (const privateText of [
+          "private-thread",
+          "private-prompt",
+          "private-secret",
+          "private-command",
+          "private-result",
+          "private-error",
+          "private-status",
+        ]) {
+          assert.equal(error.message.includes(privateText), false);
+        }
+        return true;
+      },
+    );
+  });
+
+  for (const [label, mutate] of [
+    [
+      "unrelated child",
+      (value) => {
+        value.child.id = "other";
+      },
+    ],
+    [
+      "wrong lineage",
+      (value) => {
+        value.child.parentThreadId = "other";
+      },
+    ],
+    [
+      "forked history",
+      (value) => {
+        value.child.forkedFromId = "parent";
+      },
+    ],
+    [
+      "wrong metadata identity",
+      (value) => {
+        value.childMetadata.threadId = "other";
+      },
+    ],
+    [
+      "missing parent catalog control",
+      (value) => {
+        value.parentMetadata.tools = [];
+      },
+    ],
+    [
+      "inherited Gateway tools",
+      (value) => {
+        value.childMetadata.tools = value.parentMetadata.tools;
+      },
+    ],
+    [
+      "unfinished child",
+      (value) => {
+        value.child.turns[0].status = "inProgress";
+      },
+    ],
+    [
+      "failed command",
+      (value) => {
+        value.child.turns[0].items[0].exitCode = 1;
+      },
+    ],
+    [
+      "reply without native work",
+      (value) => {
+        value.child.turns[0].items.shift();
+      },
+    ],
+  ]) {
+    await t.test(`rejects ${label}`, () => {
+      const value = fixture();
+      mutate(value);
+      assert.throws(() => assertCodexPolicyChild(value), assert.AssertionError);
+    });
+  }
+  await t.test("reads only the exact plain or compressed SessionMeta head", async () => {
+    const { zstdCompressSync } = await import("node:zlib");
+    const directory = await mkdtemp(join(tmpdir(), "codex-policy-metadata-"));
+    try {
+      const path = join(directory, "rollout.jsonl");
+      await writeFile(path, `${parentLine}\nnot-a-json-record\n`);
+      await writeFile(`${path}.zst`, zstdCompressSync(`${childLine}\n`));
+      assert.equal(await readCodexPolicyRolloutHead(`${path}.zst`), parentLine);
+      await rm(path);
+      assert.equal(await readCodexPolicyRolloutHead(path), childLine);
+      assert.throws(
+        () => parseCodexPolicyMetadata(childLine, "unrelated-thread"),
+        /SessionMeta must identify the requested thread/,
+      );
+      assert.throws(
+        () => parseCodexPolicyMetadata('{"type":"response_item"}', "child"),
+        /rollout head must be native SessionMeta/,
+      );
+      await writeFile(path, "x".repeat(4 * 1024 * 1024 + 1));
+      await assert.rejects(readCodexPolicyRolloutHead(path), /fixture read limit/);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 // The shapes the pinned Codex reviewer records on a tool result (finding 1980): a

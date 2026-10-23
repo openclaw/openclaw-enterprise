@@ -189,6 +189,7 @@ function startupProbeWrapper(kind) {
       `OPENCLAW_HARNESS_PROBE_CONFIG=${JSON.stringify(probeConfiguration)}`,
       `OPENAI_API_KEY=${startupProbeApiKey}`,
       "NODE_EXTRA_CA_CERTS=/fixture/ca.pem",
+      "OPENCLAW_GATEWAY_RESTART_TRACE=1",
       ...status,
     ],
   };
@@ -422,6 +423,8 @@ export async function runStartupProbeScenario(
     return {
       events,
       output,
+      stdout: native.stdout,
+      stderr: native.stderr,
       phases: entries.filter(({ event }) => event === "runtime.startup_phase"),
       // Only the embedded Gateway's OpenClaw probe writes these.
       probe: entries.find(({ event }) => event === "openclaw.model_probe"),

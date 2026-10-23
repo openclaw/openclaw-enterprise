@@ -37,8 +37,7 @@ async function waitForListenerReady(containerName, probe) {
   let lastReadinessFailure = "No readiness probe ran.";
   for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
     try {
-      await runDocker(["exec", containerName, "node", "-e", probe]);
-      return;
+      return await probe();
     } catch (error) {
       lastReadinessFailure = failureTail(error.message, 2048);
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -102,19 +101,22 @@ test(
           "OPENCLAW_POD_UID=owned-native-tls",
         ],
       });
-      const nativeProbe = enabled
-        ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
-        : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
-      await waitForListenerReady(containerName, nativeProbe);
-      const readiness = () =>
-        runDocker([
-          "exec",
-          containerName,
-          "node",
-          "-e",
-          'fetch("http://127.0.0.1:18791/readyz").then(async r=>{if(await r.text()!=="")process.exit(2);console.log(r.status);process.exit(r.status===200?0:1)}).catch(()=>process.exit(2));',
-        ]);
+      const readinessProbe =
+        'fetch("http://127.0.0.1:18791/readyz").then(async r=>{if(await r.text()!=="")process.exit(2);console.log(r.status);process.exit(r.status===200?0:1)}).catch(()=>process.exit(2));';
+      const readiness = () => runDocker(["exec", containerName, "node", "-e", readinessProbe]);
       if (enabled) {
+        // Establish complete native readiness before attributing Compute's refusal to TLS.
+        const nativeProbe = `
+          const options = {hostname:"127.0.0.1",port:8080,servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")};
+          Promise.all(["/startupz","/readyz"].map(path => new Promise(resolve => {
+            require("https").get({...options,path}, r => {
+              r.resume(); resolve(r.statusCode === 200);
+            }).on("error", () => resolve(false));
+          }))).then(results => process.exit(results.every(Boolean) ? 0 : 1));
+        `;
+        await waitForListenerReady(containerName, () =>
+          runDocker(["exec", containerName, "node", "-e", nativeProbe]),
+        );
         await assert.rejects(
           readiness,
           (error) => error.code === 1 && error.stdout.trim() === "503",
@@ -127,7 +129,8 @@ test(
           );
         }
       } else {
-        await readiness();
+        // A native /readyz response alone does not establish Compute readiness.
+        await waitForListenerReady(containerName, readiness);
         for (const [, driver] of drivers) {
           assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
         }
@@ -198,25 +201,25 @@ test(
           ],
         },
       );
-      await waitForListenerReady(
-        containerName,
-        'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
-      );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
       assert.ok(address);
-      const remote = await runDocker([
-        "run",
-        "--rm",
-        "--pull=never",
-        "--network",
-        network,
-        "--entrypoint",
-        "node",
-        image,
-        "-e",
-        `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>console.log(JSON.stringify(v)));`,
-      ]);
+      // Wait for the observations under test together; earlier loopback health
+      // does not establish readiness when the Pod-IP probe runs.
+      const remote = await waitForListenerReady(containerName, () =>
+        runDocker([
+          "run",
+          "--rm",
+          "--pull=never",
+          "--network",
+          network,
+          "--entrypoint",
+          "node",
+          image,
+          "-e",
+          `Promise.all([8080,18791].map(async port=>{try{const r=await fetch("http://${address}:"+port+"/readyz",{signal:AbortSignal.timeout(3000)});return {port,status:r.status};}catch(e){return {port,error:e.cause?.code??e.name};}})).then(v=>{console.log(JSON.stringify(v));process.exitCode=v[1].status===200&&(${reachable}?v[0].status===200:v[0].error==="ECONNREFUSED")?0:1;});`,
+        ]),
+      );
       const [native, status] = JSON.parse(remote.stdout.trim());
       assert.equal(status.status, 200);
       if (reachable) {

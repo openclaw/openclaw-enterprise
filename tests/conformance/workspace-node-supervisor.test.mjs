@@ -156,6 +156,24 @@ async function startSupervisor(
   return { supervisor, exited, events, waitFor, output: () => output };
 }
 
+test("native worker refuses an invalid configured private port", { timeout: 10_000 }, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "oce-native-worker-readiness-"));
+  const { exited, output } = await startSupervisor(t, directory, {
+    entrypoint: NATIVE_WORKER_ENTRYPOINT,
+    child: ['throw new Error("unexpected native worker launch");'],
+    env: {
+      TMPDIR: directory,
+      OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify({}),
+      OPENCLAW_NATIVE_WORKER_CAPACITY: "2",
+      OPENCLAW_NODE_SETUP_CODE: "fixture-native-node-setup",
+      OPENCLAW_RUNTIME_STATUS_PORT: "",
+    },
+  });
+  const [code] = await exited;
+  assert.notEqual(code, 0);
+  assert.match(output(), /Runtime status port is invalid\./);
+});
+
 // This proves process supervision with real child processes. It does not prove
 // native pairing, Codex startup or container integration.
 test(
