@@ -112,20 +112,25 @@ named source from the list, fails with `400` "The Harness credential source must
 be listed in the Agent's credentialSources." after the grant checks below.
 
 The caller needs exact `credential_source:operate` on every current and requested
-source, including removals. Requested entries must be `ready` and owned by the
-selected gateway; existing bindings need only `operate`. After a gateway change,
-omitting `credentialSources` leaves existing bindings unchanged. To remove old bindings, change
-`harnessAuth` and replace the list with new sources or `[]`. Relisting an old
-source, or deploying one, returns `503`; see
+source, including removals. A [connection owner](connection-templates.md#connect-an-account)
+can retain that already attached source on the same Agent without a separate
+source grant. This exception does not cover Harness authentication or source
+removal. Requested entries must be `ready` and owned by the selected gateway.
+After a gateway change, omitting `credentialSources` leaves existing bindings
+unchanged. To remove old bindings, change `harnessAuth` and replace the list with
+new sources or `[]`. Relisting an old source, or deploying one, returns `503`; see
 [After a Credential Gateway change](#after-a-credential-gateway-change).
 
 Deployment also requires the Agent's service principal to have exact `operate`
 on every source through a [Namespace IAM](authorization.md#manage-namespace-policy)
 Role and `credential_source` AccessBinding, but no underlying Secret permission.
-The worker rechecks both grants before provisioning.
+The worker rechecks the caller's authority and the Agent principal's grant before
+provisioning. A disconnect can race with attachment during an in-flight
+deployment; see [credential source dispatch](../flows/credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 Without a Credential Gateway, binding fails with
-`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` after the caller's `operate` check.
+`409 CREDENTIAL_GATEWAY_NOT_CONFIGURED` after the caller's source authorization
+check.
 A gateway requires a Sandbox Driver, so deploying without one normally returns
 the same error. If `harnessAuth` names no source but an earlier configuration's
 list retains sources, deployment instead returns `409 RESOURCE_CONFLICT`:

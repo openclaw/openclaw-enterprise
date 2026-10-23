@@ -125,6 +125,7 @@ routing, and `[]` denies Slack approval.
 | Plugin map value field     | Type                                      | Behavior                                                            |
 | -------------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
 | `enabled`                  | Boolean                                   | Required plugin gate; `false` wins over every tool override.        |
+| `credentialSourceId`       | Optional CredentialSource ID              | Associates an OpenClaw plugin with a connection on this Agent.      |
 | `toolDefaults.enabled`     | Optional Boolean                          | Default tool enablement, unless overridden for an individual tool.  |
 | `toolDefaults.approval`    | Optional approval mode                    | Default review behavior.                                            |
 | `toolDefaults.reviewer`    | Optional `human` or `auto`                | Default reviewer; omission inherits the effective Harness reviewer. |
@@ -134,6 +135,16 @@ routing, and `[]` denies Slack approval.
 | `tools.<toolId>.reviewer`  | Optional reviewer                         | Override the reviewer default only where the Driver supports it.    |
 | `tools.<toolId>.approvers` | Optional array of channel user identities | Replaces the plugin approvers for this tool.                        |
 | `driverPolicy`             | Optional object                           | Fields owned and validated by the selected Driver.                  |
+
+To associate an OpenClaw plugin with a connected account, update an existing
+Agent and set `credentialSourceId` to the ID returned by its [connection
+lifecycle](connection-templates.md#connect-an-account). The connection
+must belong to this Agent, remain attached, and have a ready CredentialSource.
+Deployment checks the association again and freezes the ID in the Agent revision.
+The association adds no credential grant and does not isolate the credential to
+that plugin. Disabling or removing the plugin does not disconnect the account.
+If the connection is disconnected, clear or replace the association before
+saving or redeploying.
 
 Each supplied `toolDefaults` or tool override contains at least one supported
 field; omitted fields inherit. The Driver validates unsupported fields and

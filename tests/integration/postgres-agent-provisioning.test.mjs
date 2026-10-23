@@ -733,10 +733,36 @@ test(
   "provisioning API queues one job with existing Secret references and replays only the exact same request",
   requiresPostgres,
   async (context) => {
-    const fixture = await createFixture(context);
+    const fixture = await createFixture(context, { pluginDriver: new OCCPluginDriver() });
     const namespace = await fixture.bootstrapNamespace();
     const secrets = await createProvisioningSecrets(fixture, namespace.id);
     const body = provisioningBody(namespace.id, secrets);
+
+    // A connection belongs to an existing Agent, so this selection cannot be provisioned.
+    // The refusal must leave the request ID reusable and create no durable or runnable work.
+    const unbound = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: {
+        ...body,
+        plugins: {
+          "occ-plugin:diffs": {
+            enabled: true,
+            credentialSourceId: `cs_${randomUUID()}`,
+          },
+        },
+      },
+    });
+    assert.equal(unbound.status, 400, JSON.stringify(unbound.body));
+    assert.deepEqual(unbound.error, {
+      code: "INVALID_REQUEST",
+      message: "Create the Agent and connect an account before binding a plugin.",
+    });
+    const stored = await fixture.pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM occ.agent_provisioning_work WHERE namespace_id = $1) AS plans,
+       (SELECT count(*)::integer FROM occ.controller_work WHERE namespace_id = $1 AND work_kind = 'provisioning') AS jobs`,
+      [namespace.id],
+    );
+    assert.deepEqual(stored.rows[0], { plans: 0, jobs: 0 });
 
     const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
       body,

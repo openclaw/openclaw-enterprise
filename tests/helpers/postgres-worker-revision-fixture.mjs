@@ -319,11 +319,12 @@ export function createWorkerRevisionFixtures(
         grantHarnessSecret = true,
         auth = "secret",
         nonModelSources = 0,
+        credentialSources: existingCredentialSources = [],
       } = {},
     ) {
       const id = `agt_${randomUUID()}`;
       // Tool sources are ready gateway-held tokens in the same Namespace as the Agent.
-      const credentialSources = [];
+      const credentialSources = [...existingCredentialSources];
       for (let index = 0; index < nonModelSources; index += 1) {
         const source = {
           id: `cs_${randomUUID()}`,

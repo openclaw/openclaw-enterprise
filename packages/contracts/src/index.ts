@@ -577,6 +577,8 @@ export type PluginApprovers = readonly PluginApprover[];
 
 export interface PluginDesiredSelection {
   readonly enabled: boolean;
+  /** Existing Agent connection selected for this plugin; never a credential value. */
+  readonly credentialSourceId?: string;
   readonly approvers?: PluginApprovers;
   readonly toolDefaults?: PluginToolDefaults;
   /** Validated by the selected Plugin Driver, never interpreted by the control plane. */

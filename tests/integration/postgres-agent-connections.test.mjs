@@ -7,6 +7,7 @@ import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
 import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { OpenShellProviderAlreadyExistsError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { validateAuthAccountPrincipalSeed } from "../../packages/iam/src/index.ts";
 import { PostgresHumanAuthentication } from "../../packages/occ/src/index.ts";
@@ -382,23 +383,34 @@ test(
       });
       assert.equal(bound.statusCode, 201, bound.body);
     }
-    // Bob's exact-Agent grant comes through the same Namespace policy API the console uses.
+    // Bob can edit this Agent and use its existing configuration and model Secret. These exact
+    // grants do not give him general access to credential sources.
     const agentRole = await inject("POST", `/namespaces/${namespace.id}/iam/roles`, {
       name: "Agent owner",
-      permissions: ["read", "update", "deploy", "operate", "administer"].map((action) => ({
-        action,
-        resourceKind: "agent",
-      })),
+      permissions: [
+        ...["read", "update", "deploy", "operate", "administer"].map((action) => ({
+          action,
+          resourceKind: "agent",
+        })),
+        { action: "read", resourceKind: "configuration" },
+        { action: "operate", resourceKind: "secret" },
+      ],
     });
     assert.equal(agentRole.statusCode, 201, agentRole.body);
-    const agentGrant = await inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
-      subjectKind: "identity",
-      subjectId: bob.principalId,
-      roleId: agentRole.json().data.id,
-      resourceKind: "agent",
-      resourceId: agent.id,
-    });
-    assert.equal(agentGrant.statusCode, 201, agentGrant.body);
+    for (const [resourceKind, resourceId] of [
+      ["agent", agent.id],
+      ["configuration", agent.configurationId],
+      ["secret", agent.harnessAuth.source.id],
+    ]) {
+      const grant = await inject("POST", `/namespaces/${namespace.id}/iam/access-bindings`, {
+        subjectKind: "identity",
+        subjectId: bob.principalId,
+        roleId: agentRole.json().data.id,
+        resourceKind,
+        resourceId,
+      });
+      assert.equal(grant.statusCode, 201, grant.body);
+    }
     const listed = await bob.request("GET", `/namespaces/${namespace.id}/connection-templates`);
     assert.equal(listed.statusCode, 200, listed.body);
     assert.deepEqual(
@@ -436,6 +448,18 @@ test(
     );
     assert.equal(started.statusCode, 201, started.body);
     const { authorizationUrl, credentialSourceId } = started.json().data;
+    // Diffs is the bundled OpenClaw catalog entry. This checks binding admission and persistence;
+    // it does not claim Diffs consumes the credential or that an Agent is running.
+    const pluginDriver = new OCCPluginDriver();
+    controller.registerDriver(pluginDriver);
+    controller.selectDriver("plugin", pluginDriver.id);
+    const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+    const pluginId = "occ-plugin:diffs";
+    const plugins = { [pluginId]: { enabled: true, credentialSourceId } };
+    const selectPlugin = () =>
+      bob.request("PATCH", agentPath, { configurationId: agent.configurationId, plugins });
+    const beforeConsent = await selectPlugin();
+    assert.equal(beforeConsent.statusCode, 404, beforeConsent.body);
     const consentUrl = new URL(authorizationUrl);
     assert.equal(consentUrl.searchParams.get("code_challenge_method"), "S256");
     assert.equal(consentUrl.searchParams.get("redirect_uri"), redirectUri);
@@ -461,6 +485,32 @@ test(
     assert.equal(completed.headers["referrer-policy"], "no-referrer");
     assert.match(completed.headers.location, /connection=connected$/);
     assert.equal(completed.headers.location.includes("code="), false);
+
+    const selectedPlugin = await selectPlugin();
+    assert.equal(selectedPlugin.statusCode, 200, selectedPlugin.body);
+    const savedAgent = await bob.request("GET", agentPath);
+    assert.equal(savedAgent.statusCode, 200, savedAgent.body);
+    assert.deepEqual(savedAgent.json().data.plugins, plugins);
+
+    // Turning off a plugin must not lock the connection owner out of ordinary Agent edits.
+    const disabledPlugin = await bob.request("PATCH", agentPath, {
+      configurationId: agent.configurationId,
+      plugins: { [pluginId]: { enabled: false, credentialSourceId } },
+    });
+    assert.equal(disabledPlugin.statusCode, 200, disabledPlugin.body);
+    const editedAgent = await bob.request("PATCH", agentPath, {
+      configurationId: agent.configurationId,
+    });
+    assert.equal(editedAgent.statusCode, 200, editedAgent.body);
+    assert.equal(editedAgent.json().data.plugins[pluginId].enabled, false);
+    assert.deepEqual(editedAgent.json().data.credentialSources, [{ sourceId: credentialSourceId }]);
+    // Retaining the connected source does not grant permission to remove it outside disconnect.
+    const removedSource = await bob.request("PATCH", agentPath, {
+      configurationId: agent.configurationId,
+      credentialSources: [],
+      plugins: {},
+    });
+    assert.equal(removedSource.statusCode, 403, removedSource.body);
 
     // A replayed callback never exchanges the code twice.
     const replayed = await bob.request("GET", callbackPath);
@@ -515,15 +565,18 @@ test(
     );
     assert.equal(adminDeploy.statusCode, 403, adminDeploy.body);
 
-    // A connected source cannot move to another Agent.
-    const moved = await inject(
-      "PATCH",
-      `/namespaces/${other.namespace.id}/agents/${other.agent.id}`,
-      {
-        credentialSources: [{ sourceId: credentialSourceId }],
-      },
-    );
-    assert.notEqual(moved.statusCode, 200, moved.body);
+    // Neither an Agent-level source reference nor a plugin selection can transfer the grant.
+    for (const selection of [
+      { credentialSources: [{ sourceId: credentialSourceId }] },
+      { plugins },
+    ]) {
+      const moved = await inject(
+        "PATCH",
+        `/namespaces/${other.namespace.id}/agents/${other.agent.id}`,
+        { configurationId: other.agent.configurationId, ...selection },
+      );
+      assert.equal(moved.statusCode, 404, moved.body);
+    }
 
     // An edit creates version 2; Bob's connection keeps the version he approved.
     const edited = await inject("PATCH", `/connection-templates/${templateA.id}`, {
@@ -581,6 +634,8 @@ test(
     const early = await bob.request("DELETE", disconnectPath);
     assert.equal(early.statusCode, 200, early.body);
     assert.deepEqual(early.json().data, { withdrawalRequested: false, deleted: false });
+    const afterDisconnect = await selectPlugin();
+    assert.equal(afterDisconnect.statusCode, 404, afterDisconnect.body);
     assert.equal((await shareCarol()).statusCode, 409, "still personal until the source is gone");
 
     // Disconnecting again after the fence deletes the source, which lifts the restriction.

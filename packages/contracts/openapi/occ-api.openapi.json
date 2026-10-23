@@ -694,6 +694,10 @@
         "additionalProperties": false,
         "properties": {
           "approvers": { "$ref": "#/components/schemas/def-2" },
+          "credentialSourceId": {
+            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "type": "string"
+          },
           "driverPolicy": { "additionalProperties": {}, "type": "object" },
           "enabled": { "type": "boolean" },
           "toolDefaults": { "$ref": "#/components/schemas/def-4" },
@@ -17899,7 +17903,7 @@
         ]
       },
       "patch": {
-        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update.",
+        "description": "Requires update permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth, before and after the update. The owner of a completed connection can retain its already attached source on the same Agent without a separate CredentialSource grant; Harness authentication still requires its usual grant.",
         "operationId": "updateAgent",
         "parameters": [
           {
@@ -19231,7 +19235,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deploy": {
       "post": {
-        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
+        "description": "Requires deploy permission on the requested Agent. Requires read permission on the requested Configuration. Requires read permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires operate permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment. Requires read permission on each currently associated or newly associated ServiceAccount when present. Requires operate permission on each bound Secret when Secret bindings are present or selected. Requires operate permission on each CredentialSource the Agent lists or names in harnessAuth. The owner of a completed connection needs no separate CredentialSource grant for its already attached source on the same Agent; Harness authentication still requires its usual grant. Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each CredentialSource the Agent lists.",
         "operationId": "deployAgent",
         "parameters": [
           {

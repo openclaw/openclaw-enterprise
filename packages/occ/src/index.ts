@@ -2608,6 +2608,7 @@ export class OpenClawController {
     }
     const backendId = this.backendId(input.backendId);
     const plugins = normalizeAgentPlugins(input.plugins);
+    this.requireUnboundNewAgentPlugins(plugins);
     const pluginApprovers = normalizeAgentPluginApprovers(input.pluginApprovers);
     const workspace = normalizeProvisioningWorkspace(
       input.initialWorkspaceFiles,
@@ -8235,6 +8236,7 @@ export class OpenClawController {
         credentialSources ?? [],
         harnessAuth,
       );
+      this.requireUnboundNewAgentPlugins(plugins);
       this.validatePluginPolicies(plugins, pluginApprovers);
       const agentId = this.nextIdentifier("agent");
       await this.authorizeBindings(
@@ -8338,6 +8340,7 @@ export class OpenClawController {
       // createConfiguration's order.
       await this.configurationDriver().validateSize?.(values);
       this.validateConfigurationContent(values);
+      this.requireUnboundNewAgentPlugins(plugins);
       this.validatePluginPolicies(plugins, pluginApprovers);
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>
@@ -8425,15 +8428,22 @@ export class OpenClawController {
       await this.guardAgentProvisioning(state, namespace.id, agent.id);
       await this.guardProvisioningConfiguration(state, namespace.id, input.configurationId);
       const previousAuth = this.harnessAuthBinding(agent.harnessAuth);
-      // Every update needs the caller's grant on each source the Agent binds now, but not a
-      // usable record: after a Secret Driver or Credential Gateway change, an update must still
-      // be able to replace or drop what the new driver does not own. Only what the update
-      // binds is looked up, and deploy admission rechecks every bound source.
+      // The caller needs authority over each currently attached source. The account owner can
+      // retain their connected account on this Agent; changing the Agent's source bindings still
+      // needs ordinary source authority. Check usability only for sources the update binds.
       await this.authorizeBoundHarnessAuth(principalId, namespace.id, previousAuth);
+      const resultingSources = requestedSources ?? agent.credentialSources ?? [];
+      const ownedConnectionSources = await this.ownedAgentConnectionSources(
+        state,
+        principalId,
+        agent,
+        resultingSources,
+      );
       await this.authorizeBoundCredentialSources(
         principalId,
         namespace.id,
         agent.credentialSources ?? [],
+        ownedConnectionSources,
       );
       if (requestedAuth !== undefined) {
         rejectCrossNamespaceSecretSources(namespace.id, undefined, requestedAuth);
@@ -8447,10 +8457,17 @@ export class OpenClawController {
           requestedSources,
           requestedAuth === undefined ? previousAuth : requestedAuth,
           agent.id,
+          ownedConnectionSources,
         );
       } else if (requestedAuth !== undefined) {
         this.assertHarnessSourceListed(agent.credentialSources ?? [], requestedAuth);
       }
+      await this.validatePluginConnections(
+        state,
+        agent,
+        plugins ?? agent.plugins,
+        resultingSources,
+      );
       // Unlike the Agent's own bindings above, the named Configuration's Secret bindings get the
       // full check even when `configurationId` is unchanged: deploy needs them usable, and only a
       // Configuration write (or naming another Configuration) can replace them, so loosening this
@@ -8726,6 +8743,12 @@ export class OpenClawController {
         principalId,
         lockedAgent,
         sandbox,
+      );
+      await this.validatePluginConnections(
+        state,
+        lockedAgent,
+        lockedAgent.plugins,
+        credentialSources,
       );
       const secretBindings = this.bindings(metadata.secretBindings);
       const sources = await this.authorizeBindings(
@@ -10230,16 +10253,19 @@ export class OpenClawController {
   }
 
   /**
-   * `operate` on each source an Agent already binds, so an update cannot swap out or drop a
-   * source the caller may not use. It reads no record, so it answers the same whether or not the
-   * source still exists, is ready, or belongs to the selected gateway.
+   * `operate` on each source unless its owner already connected it to this Agent and the
+   * operation retains that source. This check reads no source record.
    */
   private async authorizeBoundCredentialSources(
     principalId: string,
     namespaceId: string,
     bindings: readonly AgentCredentialSourceBinding[],
+    ownedConnectionSources?: ReadonlySet<string>,
   ): Promise<void> {
     for (const { sourceId } of bindings) {
+      if (ownedConnectionSources?.has(sourceId)) {
+        continue;
+      }
       await this.authorize(principalId, "operate", {
         kind: "credential_source",
         namespaceId,
@@ -10259,13 +10285,15 @@ export class OpenClawController {
     bindings: readonly AgentCredentialSourceBinding[],
     harnessAuth: HarnessAuthBinding | null | undefined,
     agentId?: string,
+    ownedConnectionSources?: ReadonlySet<string>,
   ): Promise<void> {
     for (const { sourceId } of bindings) {
-      await this.authorize(principalId, "operate", {
-        kind: "credential_source",
+      await this.authorizeBoundCredentialSources(
+        principalId,
         namespaceId,
-        id: sourceId,
-      });
+        [{ sourceId }],
+        ownedConnectionSources,
+      );
       this.assertCredentialGatewaySelected();
       const source = await state.credentialSources.lockCredentialSource(namespaceId, sourceId);
       if (source === undefined || source.state !== "ready") {
@@ -10312,6 +10340,7 @@ export class OpenClawController {
       bindings,
       agent.harnessAuth,
       agent.id,
+      await this.ownedAgentConnectionSources(state, principalId, agent, bindings),
     );
     const snapshots: CredentialSourceSnapshot[] = [];
     for (const { sourceId } of bindings) {
@@ -10332,6 +10361,90 @@ export class OpenClawController {
       snapshots.push({ sourceId, credentialGatewayId: gateway.id, sourceType: source.type });
     }
     return immutableCopy(snapshots);
+  }
+
+  /** An Agent must exist before an account can complete its connection for that Agent. */
+  private requireUnboundNewAgentPlugins(plugins: PluginDesiredState | undefined): void {
+    if (
+      Object.values(plugins ?? {}).some(
+        ({ credentialSourceId }) => credentialSourceId !== undefined,
+      )
+    ) {
+      throw new PluginPolicyValidationError("connectionRequiresAgent");
+    }
+  }
+
+  /**
+   * A completed connection authorizes its owner to retain the already-attached source on this
+   * Agent. It grants no source access for other Agents or operations, and does not let an Agent
+   * update remove the source without using the connection's withdrawal lifecycle.
+   */
+  private async ownedAgentConnectionSources(
+    state: PlatformReadView,
+    principalId: string,
+    agent: Readonly<Agent>,
+    retainedSources: readonly AgentCredentialSourceBinding[],
+  ): Promise<ReadonlySet<string>> {
+    const retainedSourceIds = new Set(retainedSources.map(({ sourceId }) => sourceId));
+    const eligibleSourceIds = new Set(
+      (agent.credentialSources ?? [])
+        .map(({ sourceId }) => sourceId)
+        .filter((sourceId) => retainedSourceIds.has(sourceId)),
+    );
+    if (eligibleSourceIds.size === 0) {
+      return eligibleSourceIds;
+    }
+    const connections = await state.agentConnections.listAgentConnections(
+      agent.namespaceId,
+      agent.id,
+    );
+    return new Set(
+      connections
+        .filter(
+          (connection) =>
+            connection.ownerPrincipalId === principalId &&
+            eligibleSourceIds.has(connection.credentialSourceId),
+        )
+        .map(({ credentialSourceId }) => credentialSourceId),
+    );
+  }
+
+  /** The association cannot attach a source or move a connection between Agents. */
+  private async validatePluginConnections(
+    state: PlatformUnitOfWork,
+    agent: Readonly<Agent>,
+    plugins: PluginDesiredState | undefined,
+    credentialSources: readonly AgentCredentialSourceBinding[],
+  ): Promise<void> {
+    const checked = new Set<string>();
+    for (const { credentialSourceId } of Object.values(plugins ?? {})) {
+      if (credentialSourceId === undefined || checked.has(credentialSourceId)) {
+        continue;
+      }
+      checked.add(credentialSourceId);
+      if (
+        !agent.credentialSources?.some(({ sourceId }) => sourceId === credentialSourceId) ||
+        !credentialSources.some(({ sourceId }) => sourceId === credentialSourceId)
+      ) {
+        throw new ScopeViolationError(
+          "The plugin connection must already be attached to this Agent.",
+        );
+      }
+      const connection = await state.agentConnections.findAgentConnection(
+        agent.namespaceId,
+        credentialSourceId,
+      );
+      if (connection?.agentId !== agent.id) {
+        throw new ScopeViolationError("The plugin connection must belong to this Agent.");
+      }
+      const source = await state.credentialSources.lockCredentialSource(
+        agent.namespaceId,
+        credentialSourceId,
+      );
+      if (source?.state !== "ready") {
+        throw new ScopeViolationError("The plugin connection's credential source is not ready.");
+      }
+    }
   }
 
   /**

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-18
-last_updated_session: lows-1018b
+updated: 2026-10-23
+last_updated_session: authoring-run/0f2bce88-74bd-46e6-a187-a6b7ab79d9ed
 ---
 
 # Agent Plugin Deployment Flow
@@ -46,7 +46,7 @@ graph TD
   D3 -->|Existing Agent| E3["Recheck grants and binding"]
   E3 --> D4
   D4 --> D5["Return safe catalog metadata"]
-  A["Authorize and validate policy"] -->|valid| S["Save Agent selections"]
+  A["Authorize and validate policy and connections"] -->|valid| S["Save Agent selections"]
   A -->|unsupported| Y["Reject write"]
   S --> B["Revalidate and snapshot version"]
   B --> C["Validate native metadata; grant selected plugins"]
@@ -121,6 +121,15 @@ authentication, and release/tool metadata remain startup checks. Agent mutations
 the reusable Configuration or active runtime. On update, omission preserves the
 map, `{}` clears it, and a nonempty map replaces it.
 
+For a selection with `credentialSourceId`,
+`OpenClawController.validatePluginConnections` checks that the completed
+connection belongs to the Agent, that the CredentialSource is already attached
+to that Agent, and that it is ready. `OpenClawController.ownedAgentConnectionSources`
+authorizes the connection owner to retain that source on the Agent independently
+of plugin enablement. Harness authentication and other credential sources retain
+their ordinary authorization checks. A disconnected association must be removed
+or replaced before another Agent update succeeds.
+
 Installation uses `GET /installation`; Agent editors use
 `GET .../plugins/capabilities` with Agent read/update. Both return policy capabilities.
 
@@ -128,9 +137,12 @@ Installation uses `GET /installation`; Agent editors use
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Deployment revalidates selections and Configuration, records the Driver and
-policy-only plugin map in an Agent revision, and queues it. Native app mapping,
-release metadata, and configuration resolve later.
+Deployment revalidates selections, any connected CredentialSource, and
+Configuration, records the Driver and plugin map in an Agent revision, and
+queues it. The connection reference does not change the Agent's existing
+credential injection authority. Native app mapping, release metadata, and
+configuration resolve later. Before Compute preparation, the worker [rechecks
+connected sources](credential-source-lifecycle.md#6-resolve-the-source-at-dispatch).
 
 ### 3. Deliver requested state through Compute preparation
 
@@ -354,6 +366,7 @@ deadline.
 
 ## Changelog
 
+- 2026-10-23 17:56: Document plugin connection association and admission in the accompanying code changes. (authoring-run/0f2bce88-74bd-46e6-a187-a6b7ab79d9ed - 2c868396c394bd964ab320491d361b5ac5e6342b)
 - 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
 - 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)
 

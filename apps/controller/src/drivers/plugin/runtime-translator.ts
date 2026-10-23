@@ -305,6 +305,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       }
       policyRecord(selection, "Plugin selection", [
         "enabled",
+        ...(kind === "openclaw" ? ["credentialSourceId"] : []),
         "approvers",
         "toolDefaults",
         "tools",
@@ -312,6 +313,9 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
       ]);
       if (typeof selection.enabled !== "boolean") {
         throw new Error("Plugin enabled must be a boolean.");
+      }
+      if (selection.credentialSourceId !== undefined) {
+        requiredString(selection.credentialSourceId, "Plugin connection");
       }
       if (selection.approvers !== undefined) {
         slackApprovers(selection.approvers);

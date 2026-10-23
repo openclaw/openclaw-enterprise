@@ -476,6 +476,7 @@ const PluginToolPolicyMapSchema = Type.Unsafe({
 export const PluginDesiredSelectionSchema = Type.Object(
   {
     enabled: Type.Boolean(),
+    credentialSourceId: Type.Optional(CredentialSourceId),
     approvers: Type.Optional(Type.Ref("PluginApprovers")),
     toolDefaults: Type.Optional(Type.Ref("PluginToolDefaults")),
     driverPolicy: Type.Optional(Type.Record(Type.String(), Type.Unknown())),

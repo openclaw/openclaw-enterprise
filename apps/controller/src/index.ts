@@ -1092,9 +1092,9 @@ function permissionDescription(
           return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
         }
         if (operation?.operationId === "updateAgent") {
-          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update. The owner of a completed connection can retain its already attached source on the same Agent without a separate ${name} grant; Harness authentication still requires its usual grant.`;
         }
-        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
+        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth. The owner of a completed connection needs no separate ${name} grant for its already attached source on the same Agent; Harness authentication still requires its usual grant.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;

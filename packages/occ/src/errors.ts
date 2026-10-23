@@ -1243,6 +1243,7 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "connectionRequiresAgent"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
@@ -1258,6 +1259,8 @@ export class PluginPolicyValidationError extends Error {
       } does not offer${
         pluginId === undefined ? "" : `: ${pluginId}`
       }. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.`;
+    } else if (field === "connectionRequiresAgent") {
+      message = "Create the Agent and connect an account before binding a plugin.";
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';

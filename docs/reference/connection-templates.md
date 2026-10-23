@@ -129,7 +129,10 @@ reason code and the person who sent it.
 
 [List connections](api.md#get-namespacesnamespaceidagentsagentidconnections)
 returns each source, its owner, and the approved template version. Deploy the
-Agent to use the connection.
+Agent to use the connection. The owner can update or deploy that Agent while
+retaining a completed connection without a separate `credential_source:operate`
+grant. Other sources and Harness authentication still require their usual
+grants. Use the disconnect operation to withdraw a connected source.
 
 ### Disconnect
 

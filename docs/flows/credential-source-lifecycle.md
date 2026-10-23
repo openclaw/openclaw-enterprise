@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-16
-last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
+updated: 2026-10-23
+last_updated_session: authoring-run/0f2bce88-74bd-46e6-a187-a6b7ab79d9ed
 ---
 
 # Credential source lifecycle Flow
@@ -35,11 +35,11 @@ graph TD
   R --> D["<b>registerSource</b><br/>Gateway stores copy"]
   D -- "failed or unknown" --> Y["<b>removeSource</b><br/>Delete record, or keep it deleting"]
   D -- "ready or pending" --> E["<b>Mark ready</b><br/>with audit"]
-  E --> F["<b>Bind to Agent</b><br/>actor operate"]
-  F --> G{"<b>deployAgent</b><br/>gateway, Sandbox, both grants"}
+  E --> F["<b>Bind to Agent</b><br/>caller authority"]
+  F --> G{"<b>deployAgent</b><br/>gateway, Sandbox, caller and Agent authority"}
   G -- "Secret-backed method" --> Z["<b>409 conflict</b><br/>No env fallback"]
   G -- "admitted" --> H["<b>Freeze snapshot</b><br/>sourceId, gateway, type, loginMode"]
-  H --> I{"<b>Worker dispatch</b><br/>grants and live record"}
+  H --> I{"<b>Worker dispatch</b><br/>authority and live record"}
   I -- "mismatch or unavailable" --> W["<b>Permanent failure</b><br/>Version stays inactive"]
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
@@ -123,8 +123,11 @@ traces exchange and cancellation.
 
 `packages/occ/src/index.ts:authorizeHarnessAuthSource`
 
-PATCH authorizes `credential_source:operate` on existing bindings without lookup
-(`authorizeBoundCredentialSources`), allowing removal after gateway changes.
+PATCH authorizes `credential_source:operate` on existing bindings without
+looking up the source (`authorizeBoundCredentialSources`), allowing removal
+after gateway changes. `ownedAgentConnectionSources` also authorizes a completed
+connection's owner to retain that exact source on the same Agent. This does not
+authorize source removal or replace Harness authentication checks.
 Create/PATCH authorize requested sources before requiring a selected gateway
 (`CredentialGatewayNotConfiguredError`, `409`). Sources must be ready, in the
 exact Namespace, and owned by that gateway. The
@@ -133,7 +136,7 @@ exact Namespace, and owned by that gateway. The
 `authorizeAgentCredentialSources` applies those checks to every `credentialSources`
 entry. Afterwards `assertHarnessSourceListed` requires a credential-source
 `harnessAuth` to appear in the list (`AgentCredentialSourceBindingError`, `400`);
-a caller lacking `operate` gets `403` first. The list persists in
+a caller lacking source authority gets `403` first. The list persists in
 `agents.credential_sources`. Constraint `agents_harness_credential_source_listed`
 enforces membership; trigger `agent_credential_sources_are_synchronized` mirrors
 it into `agent_credential_sources`, whose foreign key restricts deletion.
@@ -154,7 +157,7 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 model Secret and passes the resolved source to Sandbox provisioning.
 
 `admitCredentialSources` requires a Sandbox (`409`), rechecks caller binding
-grants, authorizes the Agent principal's `operate` on every listed source,
+authority, authorizes the Agent principal's `operate` on every listed source,
 including the Harness source, checks catalog types, and freezes `{ sourceId,
 credentialGatewayId, sourceType }` in Agent revision `credential_sources`.
 
@@ -163,12 +166,19 @@ credentialGatewayId, sourceType }` in Agent revision `credential_sources`.
 `apps/controller/src/worker.ts:authorizeRevision`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks deploying-actor and Agent-principal `credential_source:operate`
-(`AUTHORIZATION_DENIED` on denial). A selected gateway differing from the snapshot
-returns `CREDENTIAL_GATEWAY_MISMATCH`; a missing/deleting source or changed Driver/type
-returns `HARNESS_AUTH_SOURCE_UNAVAILABLE`. Compute rechecks the snapshot and live
-record through `harnessAuthForRevision`. Other listed sources use the same checks,
-skipping the Harness and withdrawn sources; missing/changed records return
+The worker rechecks the deploying actor's authority and the Agent principal's
+`credential_source:operate` (`AUTHORIZATION_DENIED` on denial). The connection
+owner remains authorized for that exact source while it is still attached to
+the same Agent and is not the Harness source. For an unwithdrawn source bound to
+a plugin, a missing connection or Agent attachment returns
+`CREDENTIAL_SOURCE_UNAVAILABLE` even if the actor has general source access.
+This check precedes Compute's credential attachment and does not serialize a
+concurrent disconnect with that attachment. A selected gateway differing from
+the snapshot returns `CREDENTIAL_GATEWAY_MISMATCH`; a missing/deleting source or
+changed Driver/type returns `HARNESS_AUTH_SOURCE_UNAVAILABLE`. Compute rechecks
+the snapshot and live record through `harnessAuthForRevision`. Other listed
+sources use the same checks, skipping the Harness and withdrawn sources;
+missing/changed records return
 `CREDENTIAL_SOURCE_UNAVAILABLE`. Compute's `credentialSourcesForRevision` validates
 the list before [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
@@ -313,6 +323,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-23 18:08: Document connected source ownership through Agent save, admission, and dispatch in the accompanying code changes. (authoring-run/0f2bce88-74bd-46e6-a187-a6b7ab79d9ed - 2c868396c394bd964ab320491d361b5ac5e6342b)
 - 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 
 - 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)

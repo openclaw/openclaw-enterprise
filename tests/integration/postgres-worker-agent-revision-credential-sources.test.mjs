@@ -3,13 +3,17 @@ import { randomUUID } from "node:crypto";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceStateConflictError,
   SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/index.ts";
-import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
+import {
+  createBackendWorkerDrivers,
+  requiresPostgres,
+} from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
@@ -2604,6 +2608,240 @@ revisionTest(
     assert.equal(await withdrawalState(modelSourceId), "revoked");
     await runMaintenancePass(fixture, active);
     assert.equal(dispatched.length, prepared, "a model-withdrawn revision must not be prepared");
+  },
+);
+
+async function createWorkerConnection(fixture, ownerId) {
+  // Model the persisted result of browser consent. The worker does not perform OAuth.
+  const sourceId = `cs_${randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const registration = {
+    id: `ccr_${randomUUID()}`,
+    issuer: "https://identity.example.com",
+    clientId: `worker-${randomUUID()}`,
+    credentialRefreshDriverId: "credential-refresh-worker-fixture",
+    createdAt,
+  };
+  const version = {
+    templateId: `ctp_${randomUUID()}`,
+    version: 1,
+    clientRegistrationId: registration.id,
+    issuer: registration.issuer,
+    clientId: registration.clientId,
+    authorizationUrl: `${registration.issuer}/authorize`,
+    tokenUrl: `${registration.issuer}/token`,
+    scopes: ["account.read"],
+    authorizationParameters: {},
+    endpoint: { host: "api.example.com", port: 443, path: "/**" },
+    envVar: "ACCOUNT_TOKEN",
+    createdAt,
+  };
+  await fixture.state.transact(async (unit) => {
+    await unit.connectionTemplates.createClientRegistration(registration);
+    await unit.connectionTemplates.createConnectionTemplate({
+      id: version.templateId,
+      displayName: "Worker account",
+      current: version,
+      createdAt,
+    });
+    await unit.credentialSources.createCredentialSource({
+      id: sourceId,
+      namespaceId: fixture.namespace.id,
+      name: "Worker account",
+      type: "oauth2-refresh-token",
+      config: {
+        host: version.endpoint.host,
+        port: String(version.endpoint.port),
+        path: version.endpoint.path,
+        env_var: version.envVar,
+        token_url: version.tokenUrl,
+        client_id: version.clientId,
+        scope: version.scopes.join(" "),
+      },
+      secrets: {},
+      driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
+      state: "registering",
+      createdAt,
+    });
+    await unit.credentialSources.markCredentialSourceReady(fixture.namespace.id, sourceId);
+  });
+  const agent = await fixture.agent("connected-account", {
+    executionMode: "dedicated",
+    auth: "runtime",
+    credentialSources: [{ sourceId }],
+  });
+  await fixture.state.transact((unit) =>
+    unit.agentConnections.createAgentConnection({
+      namespaceId: fixture.namespace.id,
+      credentialSourceId: sourceId,
+      agentId: agent.id,
+      ownerPrincipalId: ownerId,
+      connectionTemplateId: version.templateId,
+      connectionTemplateVersion: version.version,
+      createdAt,
+    }),
+  );
+  return { agent, sourceId };
+}
+
+revisionTest(
+  "worker dispatch accepts a connection owner while still requiring Agent source permission",
+  async (fixture) => {
+    const ownerId = `connection-owner-${randomUUID()}`;
+    await fixture.copyActorGrants(ownerId, { withoutActions: ["operate"] });
+    const { agent, sourceId } = await createWorkerConnection(fixture, ownerId);
+    const sourceAccess = await fixture.controller.selectedDriver("iam").authorize({
+      principalId: ownerId,
+      action: "operate",
+      resource: { kind: "credential_source", namespaceId: fixture.namespace.id, id: sourceId },
+    });
+    assert.equal(sourceAccess.allowed, false, "the owner has no general credential source grant");
+
+    const options = { actorId: ownerId, sandboxDriverId: "sandbox-worker-fixture" };
+    const admitted = await fixture.revision(agent, 1, options);
+    const prepared = [];
+    const compute = {
+      ...fixture.compute,
+      async prepareRevision(revision, context) {
+        prepared.push({
+          revisionId: revision.id,
+          sources: context.credentialSources?.map((s) => s.id),
+        });
+        return fixture.compute.prepareRevision(revision, context);
+      },
+    };
+    await startWithGateway(fixture, compute);
+    await fixture.work(admitted, "succeeded");
+    assert.equal((await fixture.currentAgent(agent)).activeRevisionId, admitted.id);
+    assert.deepEqual(prepared, [{ revisionId: admitted.id, sources: [sourceId] }]);
+
+    // A connected owner cannot substitute for the Agent principal's source permission.
+    await fixture.stop();
+    const revoked = await fixture.revision(agent, 2, options);
+    await removeSourceGrant(fixture, agent, sourceId);
+    await startWithGateway(fixture, compute);
+    await fixture.work(revoked, "failed_permanent");
+    assert.equal((await fixture.workResult(revoked)).rows[0].reason_code, "AUTHORIZATION_DENIED");
+    assert.deepEqual(prepared, [{ revisionId: admitted.id, sources: [sourceId] }]);
+  },
+);
+
+revisionTest(
+  "worker rejects a plugin connection detached after deployment admission",
+  async (fixture) => {
+    const ownerId = fixture.actor.id;
+    const { agent, sourceId } = await createWorkerConnection(fixture, ownerId);
+    const { configuration, source } = await fixture.state.read(async (view) => ({
+      configuration: await view.configurations.findConfiguration(
+        agent.namespaceId,
+        agent.configurationId,
+      ),
+      source: await view.credentialSources.findCredentialSource(agent.namespaceId, sourceId),
+    }));
+    await fixture.controller
+      .selectedDriver("configuration")
+      .create({ ...configuration, values: {} });
+
+    // This controlled Compute accepts the native topology but does not run OpenClaw or a plugin.
+    const prepared = [];
+    const compute = {
+      ...fixture.compute,
+      id: "compute-plugin-connection-worker-fixture",
+      async prepareRevision(revision, context) {
+        prepared.push({
+          revisionId: revision.id,
+          sourceIds: context.credentialSources?.map(({ id }) => id),
+        });
+        return fixture.compute.prepareRevision(revision, context);
+      },
+    };
+    const paired = withCredentialGateway(createBackendWorkerDrivers(compute, []));
+    const sandboxDriver = {
+      ...paired.sandboxDriver,
+      facets: ["networking", "filesystem", "process"],
+      async provisionHarness() {
+        assert.fail("the controlled Compute must not provision a Harness");
+      },
+    };
+    const credentialGatewayDriver = {
+      ...paired.credentialGatewayDriver,
+      async listSourceTypes() {
+        return [
+          {
+            type: source.type,
+            config: Object.keys(source.config).map((name) => ({ name, required: true })),
+            secrets: [{ name: "refresh_token", required: true }],
+            rotation: "refresh",
+          },
+        ];
+      },
+    };
+    const pluginDriver = new OCCPluginDriver();
+    for (const driver of [compute, sandboxDriver, credentialGatewayDriver, pluginDriver]) {
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver(driver.capability, driver.id);
+    }
+    const input = { namespaceId: agent.namespaceId, agentId: agent.id };
+    const selected = await fixture.controller.updateAgent(ownerId, {
+      ...input,
+      configurationId: agent.configurationId,
+      plugins: { "occ-plugin:diffs": { enabled: true, credentialSourceId: sourceId } },
+    });
+    const revision = await fixture.controller.deployAgent(ownerId, input, (harnessId) =>
+      harnessId === "openclaw" ? { ...fixture.productionHarness, id: "openclaw" } : undefined,
+    );
+    assert.deepEqual(revision.plugins.plugins, selected.plugins);
+    assert.equal(revision.harness.mode, "dedicated");
+    for (const principalId of [ownerId, agent.servicePrincipalId]) {
+      const access = await fixture.controller.selectedDriver("iam").authorize({
+        principalId,
+        action: "operate",
+        resource: { kind: "credential_source", namespaceId: agent.namespaceId, id: sourceId },
+      });
+      assert.equal(access.allowed, true, "source IAM must not cause the dispatch refusal");
+    }
+
+    // The first deployment is pending, so disconnect detaches the source without a withdrawal;
+    // the pending revision still holds it and prevents deletion.
+    const disconnected = await fixture.controller.disconnectAgentConnection(ownerId, {
+      ...input,
+      credentialSourceId: sourceId,
+    });
+    assert.deepEqual(disconnected, { withdrawalRequested: false, deleted: false });
+    const afterDisconnect = await fixture.state.read(async (view) => ({
+      agent: await view.agents.findAgent(agent.namespaceId, agent.id),
+      connection: await view.agentConnections.findAgentConnection(agent.namespaceId, sourceId),
+      source: await view.credentialSources.findCredentialSource(agent.namespaceId, sourceId),
+      withdrawal: await view.credentialSources.findCredentialWithdrawal(
+        agent.namespaceId,
+        revision.id,
+        sourceId,
+      ),
+    }));
+    assert.deepEqual(afterDisconnect.agent.credentialSources ?? [], []);
+    assert.equal(afterDisconnect.connection.agentId, agent.id);
+    assert.equal(afterDisconnect.source.state, "ready");
+    assert.equal(afterDisconnect.withdrawal, undefined);
+
+    await fixture.start(compute, {
+      transformDrivers: (drivers) => ({
+        ...drivers,
+        installation: {
+          ...paired.installation,
+          drivers: { ...paired.installation.drivers, plugin: { id: pluginDriver.id } },
+        },
+        sandboxDriver,
+        credentialGatewayDriver,
+        pluginDriver,
+      }),
+    });
+    const work = { id: revision.id, idempotencyKey: `agent_revision:${revision.id}:reconcile` };
+    await fixture.work(work, "failed_permanent");
+    assert.equal(
+      (await fixture.workResult(work)).rows[0].reason_code,
+      "CREDENTIAL_SOURCE_UNAVAILABLE",
+    );
+    assert.deepEqual(prepared, []);
   },
 );
 

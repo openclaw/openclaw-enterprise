@@ -4200,9 +4200,17 @@ export class ControllerWorker {
       };
     }
     // Queued work rechecks the personal-Agent rule: only the connection owner deploys.
-    const connections = await this.state.read((view) =>
-      view.agentConnections.listAgentConnections(agent.namespaceId, agent.id),
-    );
+    const { connections, currentAgent } = await this.state.read(async (view) => {
+      const connections = await view.agentConnections.listAgentConnections(
+        agent.namespaceId,
+        agent.id,
+      );
+      const currentAgent =
+        connections.length === 0
+          ? undefined
+          : await view.agents.findAgent(agent.namespaceId, agent.id);
+      return { connections, currentAgent };
+    });
     if (connections.some((connection) => connection.ownerPrincipalId !== claim.actorId)) {
       return { outcome: "permanent", code: "PERSONAL_AGENT_OWNER_REQUIRED" };
     }
@@ -4253,8 +4261,9 @@ export class ControllerWorker {
     ) {
       return { outcome: "permanent", code: "INVALID_HARNESS_AUTH" };
     }
-    // Both the deploying actor and the Agent principal must still operate every source the
-    // revision can attach. A withdrawn source, pending or revoked, never attaches again
+    // The Agent principal must still operate every source the revision can attach. A completed
+    // connection authorizes its account owner in place of the deploying actor's source grant,
+    // but never for Harness authentication. A withdrawn source never attaches again
     // (`resolveRevisionSecretContext`), so a grant removed from it must not fail maintenance
     // before maintenance re-queues the withdrawal itself.
     const withdrawnSourceIds = new Set(
@@ -4264,11 +4273,30 @@ export class ControllerWorker {
         )
       ).map(({ credentialSourceId }) => credentialSourceId),
     );
+    const pluginConnectionIds = new Set(
+      Object.values(revision.plugins?.plugins ?? {})
+        .map(({ credentialSourceId }) => credentialSourceId)
+        .filter((sourceId) => sourceId !== undefined),
+    );
     for (const sourceId of revisionCredentialSourceIds(revision)) {
       if (withdrawnSourceIds.has(sourceId)) {
         continue;
       }
-      for (const principalId of [claim.actorId, revision.servicePrincipalId]) {
+      const ownedAgentConnection =
+        currentAgent?.credentialSources?.some((binding) => binding.sourceId === sourceId) &&
+        connections.some(
+          (connection) =>
+            connection.credentialSourceId === sourceId &&
+            connection.ownerPrincipalId === claim.actorId,
+        );
+      if (pluginConnectionIds.has(sourceId) && !ownedAgentConnection) {
+        return { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" };
+      }
+      const principals =
+        ownedAgentConnection && sourceId !== revisionHarnessSourceId(revision)
+          ? [revision.servicePrincipalId]
+          : [claim.actorId, revision.servicePrincipalId];
+      for (const principalId of principals) {
         const sourceAuthorization: AuthorizationRequest = {
           principalId,
           action: "operate",

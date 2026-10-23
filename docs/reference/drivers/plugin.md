@@ -116,8 +116,10 @@ Trusted startup creates the selected bundled Driver and validates its configurat
 The shared interface has no startup, shutdown, or uninstall operation. Saving an
 Agent's requested plugin map validates supported policy, but does not perform
 authenticated catalog discovery; saved entries remain readable even if the original Driver is unavailable. An Agent revision with
-nonempty selections records the selected Driver's ID and implementation and the
-requested IDs and policies, not credential values or native release metadata.
+nonempty selections records the selected Driver's ID and implementation, the
+requested IDs and policies, and any admitted connection references. It contains
+no credential values or native release metadata. See [Agent plugin connection
+associations](../agent-plugins.md#request-fields).
 
 At runtime, Compute and the bundled preparation helpers resolve current native
 metadata, translate supported policy, and apply it to the specified Agent revision
