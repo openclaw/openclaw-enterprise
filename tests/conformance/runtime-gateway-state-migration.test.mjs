@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { lstat, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readFile, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -439,8 +440,13 @@ test("Docker replaces a legacy config symlink without changing its workspace tar
   await symlink(target, config);
   const outcome = await runDockerGateway(directory);
   assert.equal(outcome.spawned.at(-1).args[1], "gateway");
-  assert.equal((await lstat(config)).isSymbolicLink(), false);
-  assert.deepEqual(JSON.parse(await readFile(config, "utf8")), {});
+  const published = await open(config, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert.equal((await published.stat()).isFile(), true);
+    assert.deepEqual(JSON.parse(await published.readFile("utf8")), {});
+  } finally {
+    await published.close();
+  }
   assert.equal(await readFile(target, "utf8"), "workspace-owned content");
 });
 
