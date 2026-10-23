@@ -16,8 +16,9 @@ import {
   SAVE_REFUSALS,
 } from "./list.mjs";
 import {
+  askInstallationAdministrator,
+  credentialOperateGrants,
   ensureCredentialOperateBinding,
-  secretOperateGrants,
   type AgentAccessContext,
 } from "./credential-access.mjs";
 import {
@@ -171,14 +172,16 @@ const SLACK_GRANT: GrantWarningSubject = {
 // administration (UX plan A2): a refused or unverified grant names who finishes it and how. The
 // Slack Secret and harness authentication paths share these words (findings 1920, 2259).
 const ADMINISTRATOR_STEP = (step: string) =>
-  `needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select ${step}.`;
+  askInstallationAdministrator(`open this Agent's Credentials and select ${step}`);
 const GRANT_WARNINGS: Record<SecretGrantProblem, (subject: GrantWarningSubject) => string> = {
   refused: ({ saved, refusal, administratorStep }) =>
     `${saved} saved, but ${refusal}. Granting it ${ADMINISTRATOR_STEP(administratorStep)}`,
   unconfirmed: ({ saved, access, retry }) =>
     `${saved} saved, but ${access} could not be confirmed. Select ${retry}; if it is refused, ask an Installation administrator.`,
-  missing: ({ bound, retry }) =>
-    `This Agent has no access to ${bound}, so deploying it would be refused. Select ${retry} to grant it.`,
+  // Only an Installation administrator's console reads a missing grant, so it names the
+  // administrator's step (finding 2260).
+  missing: ({ bound, administratorStep }) =>
+    `This Agent has no access to ${bound}, so deploying it would be refused. Select ${administratorStep} to grant it.`,
   unverified: ({ saved, credential, administratorStep }) =>
     `${saved} saved, but this session did not verify that this Agent can use ${credential}. Granting access ${ADMINISTRATOR_STEP(administratorStep)}`,
 };
@@ -188,8 +191,9 @@ export function grantWarning(problem: SecretGrantProblem, subject: GrantWarningS
 }
 
 // The harness authentication source's grant. A refusal reports the refused request, not the
-// Agent's access, which nothing read. An administrator's console does not read whether the grant
-// is missing, so the administrator saves the source again, which grants it (finding 2259).
+// Agent's access, which nothing read. An administrator saves the source again, which grants it;
+// their console reads the IAM policy and names that step when the grant is missing (findings
+// 2259, 2260).
 export function harnessGrantSubject(kind: "secret" | "credential_source"): GrantWarningSubject {
   const noun = kind === "secret" ? "Secret" : "credential source";
   return {
@@ -197,7 +201,6 @@ export function harnessGrantSubject(kind: "secret" | "credential_source"): Grant
     credential: `the selected ${noun}`,
     refusal: `the request to grant this Agent access to the selected ${noun} was refused`,
     access: `this Agent's ${noun} access`,
-    // Unused for now: this path reads no IAM policy, so it never reports a missing grant.
     bound: `its authentication ${noun}`,
     administratorStep: "Save authentication source",
     retry: "Retry credential access",
@@ -357,6 +360,7 @@ export function createChannelSecretsPanel({
   carried = null,
   outstandingGrants = null,
   checkGrants = false,
+  canGrant = true,
   isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,
@@ -375,6 +379,8 @@ export function createChannelSecretsPanel({
   onOutstandingGrants?(grants: OutstandingSecretGrants | null): void;
   // Whether to read the Namespace's IAM policy for bound Secrets the Agent has no grant for.
   checkGrants?: boolean;
+  // False when this session is known not to administer the Installation, so it cannot grant.
+  canGrant?: boolean;
   // Whether this panel is still the page's own, for answers that arrive late.
   isCurrent?(): boolean;
   onConfigurationChange?(configuration: Configuration): void;
@@ -451,6 +457,15 @@ export function createChannelSecretsPanel({
     return Object.values(state.pendingSecretGrants).filter((secret) =>
       referencedIds.has(secret.id),
     );
+  }
+
+  // Outstanding grants this session could not verify, which it cannot retry either.
+  function unverifiedGrants() {
+    return state.grantProblem === "unverified" && pendingSecretGrants().length > 0;
+  }
+
+  function retryableGrants() {
+    return pendingSecretGrants().length > 0 && state.grantProblem !== "unverified";
   }
 
   function prunePendingSecretGrants(secretBindings = state.configuration.secretBindings ?? {}) {
@@ -627,7 +642,7 @@ export function createChannelSecretsPanel({
       SLACK_SECRET_BINDINGS.every(
         (binding) => secretIdForBinding(draft.secretBindings[binding.key]) !== null,
       ) &&
-      (Object.values(draft.changedSecrets).length > 0 || pendingSecretGrants().length > 0);
+      (Object.values(draft.changedSecrets).length > 0 || retryableGrants());
     const updateControls = () => {
       // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
       // an unsaved authentication source does.
@@ -646,6 +661,8 @@ export function createChannelSecretsPanel({
           ? "Retry Secret access"
           : "Save channel Secrets";
       save.disabled = !canSaveChannelSecrets();
+      // A session that cannot grant gets no Retry the API would refuse (finding 2263).
+      save.hidden = !state.unsavedSecrets && unverifiedGrants();
     };
     shown.updateControls = updateControls;
     const form = element(
@@ -741,6 +758,22 @@ export function createChannelSecretsPanel({
         state.draftSeed = null;
         state.carriedNote = "";
         const grantTargets = secretGrantTargets(draft);
+        if (grantTargets.length && !canGrant) {
+          // Granting writes IAM policy, which needs Installation administration. This session
+          // already knows it lacks that, so it sends no grant the API would refuse and audit.
+          // Nothing verified the Agent's access, which an administrator may already have
+          // granted; the warning names who grants it, as the harness path does (findings 2109,
+          // 2259, 2263).
+          state.grantProblem = "unverified";
+          state.outcomeUnknown = false;
+          state.saveError = { ...requestFailure(undefined), step: "grant" };
+          state.saveMessage = "";
+          updateGrantWarning();
+          status.textContent = "";
+          setStatusTone(error, saveErrorTone());
+          error.textContent = saveErrorText();
+          return;
+        }
         for (const secret of grantTargets) {
           if (!context.isCurrent()) {
             return;
@@ -842,8 +875,9 @@ export function createChannelSecretsPanel({
       : null;
     // An unknown outcome always comes with its save error, which the error line above shows as a
     // danger alert ("Outcome unknown…"); the deploy gate names it too (finding 2014).
+    // Reload draft also clears grants this session could not verify (finding 2263).
     const reload =
-      state.outcomeUnknown || state.reloadRequired
+      state.outcomeUnknown || state.reloadRequired || unverifiedGrants()
         ? button("Reload draft", (event) => {
             // The page rebuilds this section from the reread draft, with the Secret choices a
             // save conflict kept applied over it.
@@ -908,7 +942,12 @@ export function createChannelSecretsPanel({
     const started = saveCount;
     let grants;
     try {
-      grants = await secretOperateGrants(context, state.agent, bound);
+      grants = await credentialOperateGrants(
+        context,
+        state.agent,
+        "secret",
+        bound.map(({ id }) => id),
+      );
     } catch {
       return;
     }

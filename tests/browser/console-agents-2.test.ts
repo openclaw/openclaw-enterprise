@@ -2502,9 +2502,7 @@ for (const swapped of ["Agent", "service principal"]) {
     await page.getByRole("button", { name: "Retry credential access" }).click();
     assert.equal((await reread).status(), 200);
     await page.waitForURL((url) => url.pathname === `/console/agents/${agent.id}`);
-    const result = await fixture.request("GET", bindings);
-    assert.equal(result.status, 200);
-    const recovered: IAMAccessBindingWire[] = result.data;
+    const recovered: IAMAccessBindingWire[] = await fixture.addedAccessBindings(namespace.id);
     assert.deepEqual(
       recovered.map((binding) => [
         binding.subjectId,

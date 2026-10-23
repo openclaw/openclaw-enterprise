@@ -2466,6 +2466,9 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
 // The shared grant wording for the harness authentication source (findings 1920, 2259).
 const HARNESS_GRANT_REFUSED =
   "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.";
+// An Installation administrator's console read the IAM policy and found no grant (finding 2260).
+const HARNESS_GRANT_MISSING =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
 const HARNESS_GRANT_UNVERIFIED =
   "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
 
@@ -2652,8 +2655,8 @@ test("Agent credentials name the administrator step for a member's harness Secre
     assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
   }
 
-  // The administrator the warning names takes the named step: saving the unchanged source
-  // grants the Agent its Secret.
+  // The administrator the warning names opens the Agent's Credentials: its IAM policy read finds
+  // the grant missing, so the tab names the same step and Deploy waits (finding 2260).
   const { page: adminPage } = await newPage(t, fixture);
   await login(
     adminPage,
@@ -2665,11 +2668,24 @@ test("Agent credentials name the administrator step for a member's harness Secre
     adminPage.getByLabel("API key Secret", { exact: true }),
     secretOptionLabel(replacementSecret),
   );
+  const missing = adminPage.getByText(HARNESS_GRANT_MISSING, { exact: true });
+  await missing.waitFor();
+  assert.equal(await missing.getAttribute("data-tone"), "warning");
+  await adminPage
+    .getByText("Confirm authentication and Secret access in Credentials before deploying.")
+    .waitFor();
+  assert.equal(
+    await adminPage.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+    true,
+  );
+  // The named step grants the Agent its Secret; the rebuilt tab reads the grant and clears both.
   await adminPage.getByRole("button", { name: "Save authentication source" }).click();
   await adminPage.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
-  const grants = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  await waitForEnabled(adminPage.getByRole("button", { name: "Deploy new version" }));
+  assert.equal(await adminPage.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+  const grants = await fixture.addedAccessBindings(namespace.id);
   assert.deepEqual(
-    grants.data
+    grants
       .filter(({ subjectId }) => subjectId === ungranted.servicePrincipalId)
       .map(({ resourceKind, resourceId }) => [resourceKind, resourceId]),
     [["secret", replacementSecret.id]],

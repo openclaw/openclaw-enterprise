@@ -15,6 +15,12 @@ export type AgentAccessContext = Pick<
 
 type CredentialReference = SecretReference | CredentialSourceReference;
 
+// Granting access writes Namespace IAM policy, which only Installation administration may do (UX
+// plan A2). Every message that sends a reader to have access granted names that role in these
+// words (findings 1920, 2259, 2260).
+export const askInstallationAdministrator = (task: string) =>
+  `needs Installation administration access: ask an Installation administrator to ${task}.`;
+
 // A malformed policy read is not an empty policy: never create a grant on that evidence.
 export function policyList<T>(value: unknown, read: (item: unknown) => T): T[] {
   if (!Array.isArray(value)) {
@@ -157,16 +163,18 @@ export async function ensureCredentialOperateBinding(
 }
 
 /**
- * Whether this Namespace's IAM policy grants the Agent operate on each Secret, as the IAM Driver
- * evaluates it: an identity binding scoped to the Namespace or to that Secret, whose role holds
- * the permission. An Agent's service principal belongs to no Group. A binding to a role the
- * Namespace does not list leaves its Secret undecided (undefined), never missing. Reading the
- * policy needs Installation administration; a refused read rejects (finding 1920).
+ * Whether this Namespace's IAM policy grants the Agent operate on each credential of one kind
+ * (Secrets or credential sources, by id), as the IAM Driver evaluates it: an identity binding
+ * scoped to the Namespace or to that credential, whose role holds the permission. An Agent's
+ * service principal belongs to no Group. A binding to a role the Namespace does not list leaves
+ * its credential undecided (undefined), never missing. Reading the policy needs Installation
+ * administration; a refused read rejects (findings 1920, 2260).
  */
-export async function secretOperateGrants(
+export async function credentialOperateGrants(
   context: AgentAccessContext,
   agent: Pick<Agent, "servicePrincipalId">,
-  secrets: readonly SecretReference[],
+  kind: CredentialReference["kind"],
+  ids: readonly string[],
 ) {
   const [roles, bindings] = await Promise.all([
     context.request(iamPath(context, "roles")).then((value) => policyList(value, policyRole)),
@@ -175,7 +183,7 @@ export async function secretOperateGrants(
       .then((value) => policyList(value, policyBinding)),
   ]);
   const grants = new Map<string, boolean | undefined>();
-  for (const secret of secrets) {
+  for (const id of ids) {
     let granted: boolean | undefined = false;
     for (const binding of bindings) {
       if (
@@ -183,7 +191,7 @@ export async function secretOperateGrants(
         binding.subjectKind !== "identity" ||
         binding.subjectId !== agent.servicePrincipalId ||
         (binding.resourceKind !== undefined &&
-          (binding.resourceKind !== "secret" || binding.resourceId !== secret.id))
+          (binding.resourceKind !== kind || binding.resourceId !== id))
       ) {
         continue;
       }
@@ -193,14 +201,14 @@ export async function secretOperateGrants(
       } else if (
         role.namespaceId === context.namespaceId &&
         role.permissions.some(
-          ({ action, resourceKind }) => action === "operate" && resourceKind === "secret",
+          ({ action, resourceKind }) => action === "operate" && resourceKind === kind,
         )
       ) {
         granted = true;
         break;
       }
     }
-    grants.set(secret.id, granted);
+    grants.set(id, granted);
   }
   return grants;
 }
