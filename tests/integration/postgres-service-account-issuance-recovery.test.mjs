@@ -23,6 +23,7 @@ import {
   serviceAccountDriverId,
   workspaceId,
 } from "../helpers/postgres-backend-state.mjs";
+import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
 /**
  * Finding 1397: an issuance whose token Secret was stored but whose transaction never committed
@@ -261,19 +262,12 @@ test(
           [account.id],
         );
         waiting.catch(() => {});
-        let holder;
-        const deadline = Date.now() + 15_000;
-        for (;;) {
-          const [{ blockers }] = (
-            await pool.query("SELECT pg_blocking_pids($1) AS blockers", [probePid])
-          ).rows;
-          if (blockers.length > 0) {
-            holder = blockers[0];
-            break;
-          }
-          assert.ok(Date.now() < deadline, "the probe never waited for the account lock");
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
+        const holder = await waitForLockHolder(
+          pool,
+          probePid,
+          "the probe to wait for the account lock",
+          { timeoutMs: 15_000, intervalMs: 50 },
+        );
         await pool.query("SELECT pg_terminate_backend($1)", [holder]);
         await waiting;
         await probe.query("ROLLBACK");

@@ -93,6 +93,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	recommendations.Flags().StringVar(&recommendationRevision, "revision", "", "Exact revision ID")
 	_ = recommendations.MarkFlagRequired("revision")
 
+	for _, child := range []*cobra.Command{get, update, apply, editing, recommendations} {
+		child.Annotations = map[string]string{outputFormatsAnnotation: "json,yaml"}
+	}
 	command.AddCommand(get, update, apply, editing, recommendations)
 	return command
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const ciFixtureRequested = [
   process.env.OCC_TEST_NATIVE_IAM_BARRIER_CI,
@@ -726,23 +726,21 @@ test(
         "INSERT INTO occ.iam_restrictions SELECT * FROM occ.iam_restrictions WHERE FALSE",
       );
     };
-    const waitForBarrier = async (pid, intent) => {
-      const deadline = performance.now() + 2000;
-      while (performance.now() < deadline) {
-        const result = await contender.query(
-          `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+    const waitForBarrier = (pid, intent) =>
+      waitUntil(
+        "the original State backend to reach the conflicting policy table",
+        async () => {
+          const result = await contender.query(
+            `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
             WHERE pid = $1 AND NOT granted
               AND relation = 'occ.iam_restrictions'::pg_catalog.regclass AND mode = $2
               AND pg_catalog.pg_backend_pid() = ANY(pg_catalog.pg_blocking_pids($1))) AS waiting`,
-          [pid, intent === "read" ? "ShareLock" : "ShareRowExclusiveLock"],
-        );
-        if (result.rows[0].waiting) {
-          return;
-        }
-        await delay(10);
-      }
-      assert.fail("the original State backend did not reach the conflicting policy table");
-    };
+            [pid, intent === "read" ? "ShareLock" : "ShareRowExclusiveLock"],
+          );
+          return result.rows[0].waiting;
+        },
+        { timeoutMs: 2000, intervalMs: 10 },
+      );
     const resourceLocks = async (pid) =>
       (
         await contender.query(
@@ -755,22 +753,20 @@ test(
           [pid, ["installation", ...tables]],
         )
       ).rows;
-    const waitForAdvisoryLock = async (pid) => {
-      const deadline = performance.now() + 2000;
-      while (performance.now() < deadline) {
-        const result = await contender.query(
-          `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
+    const waitForAdvisoryLock = (pid) =>
+      waitUntil(
+        "the original State backend to wait for the independent lock holder",
+        async () => {
+          const result = await contender.query(
+            `SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_locks
             WHERE pid = $1 AND locktype = 'advisory' AND NOT granted
               AND pg_catalog.pg_backend_pid() = ANY(pg_catalog.pg_blocking_pids($1))) AS waiting`,
-          [pid],
-        );
-        if (result.rows[0].waiting) {
-          return;
-        }
-        await delay(10);
-      }
-      assert.fail("the original State backend did not wait for the independent lock holder");
-    };
+            [pid],
+          );
+          return result.rows[0].waiting;
+        },
+        { timeoutMs: 2000, intervalMs: 10 },
+      );
     try {
       await context.test(
         "policy queue binds one transaction after both write barriers",

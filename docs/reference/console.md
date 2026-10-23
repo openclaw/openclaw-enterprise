@@ -1,6 +1,6 @@
 # Platform console
 
-Open `/console/` on your OCC address to manage Agents and supported Slack settings,
+Open `/console/` on your OCC address to manage Agents, Namespace Secrets, and supported Slack settings,
 workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
@@ -23,6 +23,12 @@ accepts service keys. Expiry clears private content and drafts. Sign in again to
 return to the validated page after access checks.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
+## Customize deployment branding
+
+Operators can replace the displayed product name, logo, browser icons, and semantic
+colors with a mounted [theme bundle](console/theming.md). See
+[Apply a console theme](../guides/deploy/console-theme.md) for deployment steps.
+
 ## Identify the control-plane build
 
 With `debug=true`, the sidebar wordmark shows the first eight characters of the
@@ -32,13 +38,14 @@ HTML.
 
 ## Browse and select a Namespace
 
-The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
+The sidebar opens **Agents**, **Secrets**, or **Namespaces**; **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
 hidden. Namespace rows open their Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Agents        | Selected Namespace; Namespace `read`, then exact Agent `read` filtering.                                             |
+| Secrets       | Selected Namespace; Namespace `read`, then exact Secret `read` filtering.                                            |
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
@@ -79,6 +86,19 @@ the flag; remove it to hide diagnostics and stop these reads. **Refresh**
 retries unavailable metadata and updates the snapshot.
 [Debug sidebar fields](console/debug-fields.md) defines every field, Docker and
 Kubernetes differences, inspection scope, and unavailable states.
+
+## Manage Namespace Secrets
+
+The **Secrets** page lists metadata, creates Secrets, replaces values, inspects
+consumers, and deletes unreferenced Secrets through the existing Secret API.
+Creation needs collection `secret:create`; replacement and deletion need exact
+`secret:update` and `secret:delete`. Read access does not grant mutation or use.
+The API authorizes each operation; a refusal disables the submitted action.
+Names are fixed, values remain unreadable, and entered material is never saved
+in browser storage. Consumer counts retain read-permission and truncation limits.
+
+Follow [Manage Secrets in the console](../guides/console/secrets.md) for procedures,
+replacement delivery, deletion effects, and uncertain-write recovery.
 
 ## Agent creation and deployment
 
@@ -212,7 +232,7 @@ domain; native chat or other Agent-host activity does not extend that session.
 
 Supported pages are `/console/login`, `/console/agents`,
 `/console/agents/new`, `/console/agents/:agentId`, `/console/backends`,
-`/console/namespaces`, and `/console/settings`. `/console/` resolves the session
+`/console/namespaces`, `/console/secrets`, and `/console/settings`. `/console/` resolves the session
 and opens Agents. Unknown console paths show a generic not-found page.
 See the [request flow](../flows/platform-console.md) and
 [local testing](../testing/local.md) for implementation and verification.

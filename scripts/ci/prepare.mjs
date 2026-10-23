@@ -70,7 +70,6 @@ const fixtureLanes = new Set([
 const lanesWithoutK3sAddons = new Set([
   ...fixtureLanes,
   "images-runtime-startup",
-  "repository-credentials-platform",
   "k3d-observability",
 ]);
 const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
@@ -208,7 +207,7 @@ function requireEnv(names, env = process.env) {
 }
 
 function fileStem(file) {
-  return slug(basename(file).replace(/\.test\.mjs$/, ""), "_") || "test_file";
+  return slug(basename(file).replace(/\.test\.(?:mjs|ts)$/, ""), "_") || "test_file";
 }
 
 function normalizeStatePath(statePath) {
@@ -668,15 +667,52 @@ async function createAndMigrateDatabase(
     );
   }
   const server = existingServer ?? (await ensurePostgresServer(statePath, state));
-  const source = template === undefined ? undefined : templateDatabase(state, server, template);
+  const source =
+    template === undefined
+      ? await laneTemplateDatabase(statePath, state, server, kind)
+      : templateDatabase(state, server, template);
+  return createDatabase(statePath, state, server, { kind, label, source });
+}
+
+// The server's migrated database, one per kind, that each file's database of that kind
+// copies. Migrating takes a pnpm process and seconds of CPU, and it ran once per file
+// under the CI state lock, where each test's own copy waited behind it: a worker revision
+// file's first test waited for the runner to migrate the files that start with it
+// (finding 2178). A copy is the same database (schemas, their ACLs, every migration).
+// PostgreSQL copies only a database without sessions, and nothing connects to the
+// template: its URL is never handed out. Lane cleanup drops it with the other databases.
+async function laneTemplateDatabase(statePath, state, server, kind) {
+  const existing = state.resources.find(
+    (resource) =>
+      resource.kind === "postgres-database" &&
+      resource.laneTemplate === kind &&
+      resource.owner === state.prefix &&
+      resource.status === "ready" &&
+      resource.composeProject === server.name &&
+      resource.port === server.port,
+  );
+  if (existing) {
+    return existing.name;
+  }
+  const created = await createDatabase(statePath, state, server, {
+    kind,
+    label: "lane_template",
+    laneTemplate: kind,
+  });
+  return created.name;
+}
+
+async function createDatabase(statePath, state, server, { kind, label, source, laneTemplate }) {
   const name = databaseName(kind, label);
   const resource = addResource(state, "postgres-database", {
     name,
     composeProject: server.name,
     port: server.port,
+    ...(laneTemplate === undefined ? {} : { laneTemplate }),
   });
   await writeState(statePath, state);
 
+  const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
   await postgresExec(
     server,
     [
@@ -689,28 +725,32 @@ async function createAndMigrateDatabase(
       "postgres",
       "-c",
       `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
+      // A copy carries the template's schemas, their ACLs and every migration, but not
+      // the database-level grant, which lives in pg_database, so it is granted from here.
+      // Each -c is its own request (CREATE DATABASE refuses a transaction block) and psql
+      // stops at the first error. Every test's copy runs this under the CI state lock,
+      // where each `docker compose exec` costs about 0.25 s (finding 2180).
+      ...(source === undefined ? [] : ["-c", grant]),
     ],
     "database-create",
   );
-  // A copy carries the template's schemas, their ACLs and every migration, but not the
-  // database-level grant, which lives in pg_database.
-  await postgresExec(
-    server,
-    [
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      name,
-      "-c",
-      `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;${source === undefined ? " CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;" : ""}`,
-    ],
-    "database-schema",
-  );
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   if (source === undefined) {
+    await postgresExec(
+      server,
+      [
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "postgres",
+        "-d",
+        name,
+        "-c",
+        `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      ],
+      "database-schema",
+    );
     await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
       env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
       stage: "database-migrate",
@@ -880,16 +920,13 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
 }
 
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
-// (ci-image-cache.yml) exports it, building with images-packaging's state. The
-// repository platform lane loads its runtime image into the Docker engine so a
-// default-builder fixture build can derive from it.
+// (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
   ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
   ["images-runtime-startup-3", { localStore: false }],
-  ["repository-credentials-platform", { localStore: true }],
 ]);
 
 function imageCache(role) {
@@ -1914,53 +1951,6 @@ async function pinFixtureImageInK3d(cluster, image) {
   );
 }
 
-// The platform image needs no cluster, so the lane overlaps it with k3d creation.
-async function buildRepositoryPlatformImage(statePath, state) {
-  const runtime = await timedPreparation(state.lane, "runtime-image-build", () =>
-    buildRuntimeImages(statePath, state, { runtime: true, localStore: true }),
-  );
-  const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/repository-platform:local`;
-  const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
-  await writeState(statePath, state);
-  // Derive the controlled Harness from the delivered runtime so its Git/gh
-  // clients and credential material entrypoint remain the production ones.
-  await timedPreparation(state.lane, "platform-fixture-build", () =>
-    execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-      "build",
-      "--builder",
-      "default",
-      "--load",
-      "--pull=false",
-      "--build-arg",
-      `RUNTIME_IMAGE=${runtime.env.OCC_TEST_RUNTIME_IMAGE}`,
-      "-f",
-      join(repositoryRoot, "tests/fixtures/repository-credentials/Dockerfile.platform-fixture"),
-      "-t",
-      image,
-      join(repositoryRoot, "tests/fixtures/repository-credentials"),
-    ]),
-  );
-  await markResourceReady(statePath, state, resource);
-  return image;
-}
-
-async function repositoryPlatformHostAddress(cluster) {
-  const result = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    `k3d-${cluster.name}-server-0`,
-  ]);
-  const address = JSON.parse(result.stdout)[`k3d-${cluster.name}`]?.Gateway;
-  if (
-    !isIPv4(address ?? "") ||
-    !/^(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(address)
-  ) {
-    throw new Error("The owned k3d network must expose a private IPv4 Docker host gateway.");
-  }
-  return address;
-}
-
 function immutableDigest(image) {
   return image.match(/@sha256:([a-f0-9]{64})$/i)?.[1]?.toLowerCase();
 }
@@ -2902,44 +2892,6 @@ async function prepareLane({ lane, statePath }) {
       );
       break;
     }
-    case "repository-credentials-platform": {
-      // PostgreSQL, the cluster and the image builds are independent. The
-      // gateway check runs as soon as the cluster exists, and nothing is
-      // imported into a cluster that failed it.
-      const [, { cluster, hostAddress }, platformImage] = await timedPreparation(
-        name,
-        "postgres-cluster-image-build",
-        () =>
-          prepareTogether([
-            () =>
-              timedPreparation(name, "postgres-start", () =>
-                ensurePostgresServer(resolvedStatePath, state),
-              ),
-            async () => {
-              const cluster = await timedPreparation(name, "k3d-create", () =>
-                ensureK3dCluster(resolvedStatePath, state),
-              );
-              return { cluster, hostAddress: await repositoryPlatformHostAddress(cluster) };
-            },
-            () => buildRepositoryPlatformImage(resolvedStatePath, state),
-          ]),
-      );
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS = hostAddress;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE = (
-        await timedPreparation(name, "platform-image-import", () =>
-          registerImageInK3d(
-            resolvedStatePath,
-            state,
-            cluster,
-            platformImage,
-            "OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE",
-          ),
-        )
-      ).reference;
-      break;
-    }
     case "repository-credentials-installed": {
       await commandAvailable(process.env.OCC_HELM_BIN ?? "helm", ["version", "--short"]);
       const cluster = await ensureK3dCluster(resolvedStatePath, state);
@@ -3187,8 +3139,8 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 
 // `template` (optional) is an OCC_TEST_DATABASE_URL that an earlier prepareFile call
 // returned for this state. The file's database is then a copy of that database
-// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. The worker revision
-// suite copies the database the runner prepared for its file, one copy per test.
+// (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
+// revision suite copies the database the runner prepared for its file, one copy per test.
 async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {

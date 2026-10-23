@@ -125,32 +125,38 @@ runs:
       if: inputs.lane == 'checks-browser' || (inputs.lane == 'checks-baseline-1' && inputs.static-checks == 'false')
       shell: bash
       run: pnpm docs:install
-    - name: Run typecheck
-      if: inputs.lane == 'checks-baseline-1'
-      shell: bash
-      run: pnpm typecheck
     - name: Check Go CLI
       if: inputs.lane == 'checks-baseline-1'
       shell: bash
       run: pnpm cli:check && pnpm cli:test
-    - name: Build workspace output
-      # Part 1 builds it in its typecheck step; some tests read apps/controller/dist.
+    - name: Typecheck and build workspace output
+      # This one compiler run builds the workspace (some part 2 tests read
+      # apps/controller/dist) and checks TypeScript tests without emitting them.
+      # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm build
+      run: pnpm typecheck
     - name: Build Go CLI for development installation proof
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
+    - name: Precompile controller route schemas
+      # Most of these lanes' test files build the API in process. Each build then loads the
+      # route validators and serializers from apps/controller/dist/route-compilers.cjs instead
+      # of compiling every schema (http/route-compilers.ts). Other lanes build too few apps
+      # to repay the 2-4 CPU-s it takes.
+      if: inputs.lane == 'checks-baseline-1' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'postgres-auth' || inputs.lane == 'postgres-platform'
+      shell: bash
+      run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
-      if: (inputs.lane == 'repository-credentials-platform' || startsWith(inputs.lane, 'k3d-observability')) && runner.environment == 'github-hosted'
+      if: startsWith(inputs.lane, 'k3d-observability') && runner.environment == 'github-hosted'
       shell: bash
       env:
         OPENCLAW_CI_HEADROOM_LANE: ${{ inputs.lane }}
       run: node scripts/ci/repository-platform-headroom.mjs
     - name: Expose image cache credentials
       id: image-cache
-      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform'
+      if: inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
       with:
         script: |
@@ -167,7 +173,7 @@ runs:
       env:
         # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
         CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
-        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
+        OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
       run: node scripts/ci/prepare.mjs --lane "${{ inputs.lane }}" --state "$RUNNER_TEMP/state/${{ inputs.lane }}.json" --github-env "$GITHUB_ENV"

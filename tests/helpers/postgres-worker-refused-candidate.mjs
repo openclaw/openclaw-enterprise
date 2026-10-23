@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
+import {
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
+  SandboxRevisionUnsupportedError,
+} from "../../packages/occ/src/index.ts";
 import { waitFor } from "./wait-for.mjs";
 
 // Refused-candidate fakes shared by the worker revision -replacement, -refused-stop,
@@ -63,13 +67,16 @@ export function denyDeploy(fixture, owner) {
 /**
  * Starts the refused-candidate scenario: an exclusive Agent whose first revision activated and
  * whose replacement's first pass started its runtime but is not ready. `refuse` decides how later
- * passes fail: "revoked" denies `deploy` (the next pass refuses it) and "unsupported" is refused
- * by Compute; the self-failures "held" (a held model-probe failure) and "retried" (an ordinary
- * error) are not refusals. Any other value, such as "late", only leaves the candidate unready.
- * `stopRevision(revision)` returns undefined to use the counting driver's stop or a promise that
- * replaces it, for example a failing stop. `compute` restarts the worker. `refusing()` false lets
- * Compute accept the candidate again, and `candidateReady()` makes it ready; `startOptions` go to
- * the worker. `admittedAt` is the time just before the replacement was admitted.
+ * passes fail: "revoked" denies `deploy` (the next pass refuses it), "unsupported" is refused
+ * by Compute, "unqualified" by its Credential Proxy (an upgraded worker refusing a revision
+ * admitted with an unqualified Git sender), and "undeliverable" by it too (a Git plan with no
+ * delivery profile, such as git-read). The self-failures "held" (a held model-probe
+ * failure) and "retried" (an ordinary error) are not refusals. Any other value, such as
+ * "late", only leaves the candidate unready. `stopRevision(revision)` returns undefined to use
+ * the counting driver's stop or a promise that replaces it, for example a failing stop.
+ * `compute` restarts the worker. `refusing()` false lets Compute accept the candidate again, and
+ * `candidateReady()` makes it ready; `startOptions` go to the worker. `admittedAt` is the time
+ * just before the replacement was admitted.
  */
 export async function startRefusedCandidate(
   fixture,
@@ -112,6 +119,12 @@ export async function startRefusedCandidate(
       if (refuse === "unsupported" && candidatePasses > 1 && refusing()) {
         // A refusal decided by the pass after the newer-revision check.
         throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", "test");
+      }
+      if (refuse === "unqualified" && candidatePasses > 1 && refusing()) {
+        throw new RepositoryGitSenderUnqualifiedError();
+      }
+      if (refuse === "undeliverable" && candidatePasses > 1 && refusing()) {
+        throw new RepositoryGitProfileUnsupportedError();
       }
       if (refuse === "retried" && candidatePasses > 1) {
         throw new Error("Kubernetes API temporarily unavailable");
@@ -219,4 +232,6 @@ export function proxiedIAM(authorize) {
 export const refusals = {
   revoked: "AUTHORIZATION_DENIED",
   unsupported: "SANDBOX_HARNESS_UNSUPPORTED",
+  unqualified: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  undeliverable: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
 };

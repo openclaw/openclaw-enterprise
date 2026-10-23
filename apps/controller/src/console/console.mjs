@@ -1,3 +1,4 @@
+import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
@@ -10,10 +11,11 @@ import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, initials, panel, sorted } from "./shell.mjs";
+import { brandContents, createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
+import { renderSecrets } from "./secrets.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -37,6 +39,8 @@ let loggingOut = false;
 let navigateAgentTab = null;
 // The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
 let leaveGuard = null;
+// Whether the shown page has a write in flight that a reload or tab close would cut short.
+let writeInFlight = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -550,7 +554,7 @@ function clearRetainedViewsOutsideNamespaces(readable) {
 }
 
 function clearPasswordInputs() {
-  document.querySelectorAll('input[type="password"]').forEach((input) => {
+  document.querySelectorAll('input[type="password"], [data-secret-value]').forEach((input) => {
     if (input.value) {
       if (mountedViewState) {
         mountedViewState.reusable = false;
@@ -756,6 +760,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   }
   navigateAgentTab = null;
   leaveGuard = null;
+  writeInFlight = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -778,6 +783,13 @@ function headerPage(current) {
     return { creating: true };
   }
   return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function collectionPath(feature, selection) {
+  return (
+    { namespaces: "/namespaces", backends: "/backends" }[feature] ??
+    `/namespaces/${encodeURIComponent(selection)}/${feature}`
+  );
 }
 
 function renderShell(
@@ -1007,12 +1019,7 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element(
-        "p",
-        { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OpenClaw Enterprise",
-      ),
+      element("p", { className: "brand" }, ...brandContents(40)),
       element("h1", {}, "Sign in"),
       usernameHint,
       form,
@@ -1500,8 +1507,9 @@ async function loadPage({
       )?.id ??
       null;
     replaceUrl(pageUrl(current.target));
-    const agentsNamespaceUnavailable =
-      current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
+    const scopedNamespaceUnavailable =
+      ["agents", "secrets"].includes(current.feature) &&
+      !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
       // Namespace admission is done, so the header selector, when the shown page has one, is
       // usable while the destination's first read runs. A switch resets the lifetime, discarding
@@ -1520,11 +1528,11 @@ async function loadPage({
     // an unknown answer (a failed read) keeps the controls.
     const permissionsPath = `/namespaces/${encodeURIComponent(namespaceId)}/permissions`;
     const permissionsRead =
-      !agentsNamespaceUnavailable && current.feature === "agents" && !current.agentId
+      !scopedNamespaceUnavailable && current.feature === "agents" && !current.agentId
         ? request(permissionsPath).catch(() => null)
         : null;
     let firstPermissions = null;
-    if (!agentsNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
+    if (!scopedNamespaceUnavailable && current.feature !== "settings" && !current.creating) {
       if (current.agentId) {
         firstAgent = await request(
           `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}`,
@@ -1533,11 +1541,7 @@ async function loadPage({
         firstItems =
           current.feature === "namespaces"
             ? namespaces
-            : await request(
-                current.feature === "backends"
-                  ? "/backends"
-                  : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-              );
+            : await request(collectionPath(current.feature, namespaceId));
       }
       if (!lifetime.isCurrent(active)) {
         return;
@@ -1551,7 +1555,7 @@ async function loadPage({
     }
     const retainedState = retainedView?.state;
     let unchanged = false;
-    if (retained && reuseView && retainedState && !agentsNamespaceUnavailable) {
+    if (retained && reuseView && retainedState && !scopedNamespaceUnavailable) {
       const fresh = new Map([["/namespaces", namespaces]]);
       if (firstAgent) {
         fresh.set(
@@ -1559,12 +1563,7 @@ async function loadPage({
           firstAgent,
         );
       } else if (firstItems && current.feature !== "namespaces") {
-        fresh.set(
-          current.feature === "backends"
-            ? "/backends"
-            : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-          firstItems,
-        );
+        fresh.set(collectionPath(current.feature, namespaceId), firstItems);
       }
       if (firstPermissions !== null) {
         fresh.set(permissionsPath, firstPermissions);
@@ -1619,7 +1618,7 @@ async function loadPage({
     if (
       retained &&
       reuseView &&
-      !agentsNamespaceUnavailable &&
+      !scopedNamespaceUnavailable &&
       (document.activeElement === document.body ||
         (heldHeading !== null && document.activeElement === heldHeading))
     ) {
@@ -1647,6 +1646,7 @@ async function loadPage({
       }
       navigateAgentTab = retainedState.tabNavigation;
       leaveGuard = retainedState.leaveGuard ?? null;
+      writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1661,7 +1661,7 @@ async function loadPage({
     // so nothing is focused twice (finding 1528). A fresh load whose reads beat the loading
     // delay has no shell yet: its startup status stands in, until the overview reveals or the
     // delay passes and the loading page takes its place (finding 1537).
-    const agentEntry = current.agentId && !current.creating && !agentsNamespaceUnavailable;
+    const agentEntry = current.agentId && !current.creating && !scopedNamespaceUnavailable;
     const startupStandIn =
       agentEntry && !shell && loadingTimer !== null ? app.querySelector(":scope > .startup") : null;
     const standIn =
@@ -1763,10 +1763,19 @@ async function loadPage({
     }
     if (current.feature === "settings") {
       shell.view.append(settingsView());
+      if (installationAdmin) {
+        shell.view.append(
+          renderInstallationConfigurations({
+            request,
+            isCurrent: () => lifetime.isCurrent(viewState.active),
+          }),
+        );
+      }
+
       markMountedRoute(current);
       return;
     }
-    if (agentsNamespaceUnavailable) {
+    if (scopedNamespaceUnavailable) {
       clearRetainedViewsForNamespace(namespaceId);
       panel(
         shell.view,
@@ -1852,6 +1861,27 @@ async function loadPage({
           leaveGuard = refuse;
         }
       },
+      // A page whose writes hold it open (an Agent's share, a draft's save) says when one is in
+      // flight, so a reload or tab close asks first too (finding 2125).
+      setWriteInFlight(check) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.writeInFlight = check;
+          writeInFlight = check;
+        }
+      },
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
+      holdWhileWriting({ writing, held, released }) {
+        agentContext.setLeaveGuard(() => {
+          if (!writing()) {
+            released?.();
+            return false;
+          }
+          held();
+          return true;
+        });
+        agentContext.setWriteInFlight(writing);
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
@@ -1859,8 +1889,8 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
-    if (current.creating || (current.feature === "agents" && !current.agentId)) {
-      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+    if (current.creating || (["agents", "secrets"].includes(current.feature) && !current.agentId)) {
+      // The Agent and Secret pages show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
       const shownStatus = agentContext.namespace?.status;
@@ -2002,14 +2032,7 @@ async function loadPage({
     if (!Array.isArray(items)) {
       throw new Error("Invalid collection response");
     }
-    viewState.reads.set(
-      current.feature === "namespaces"
-        ? "/namespaces"
-        : current.feature === "backends"
-          ? "/backends"
-          : `/namespaces/${encodeURIComponent(namespaceId)}/agents`,
-      JSON.stringify(items),
-    );
+    viewState.reads.set(collectionPath(current.feature, namespaceId), JSON.stringify(items));
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
@@ -2019,6 +2042,8 @@ async function loadPage({
         items,
         renderRows,
       );
+    } else if (current.feature === "secrets") {
+      renderSecrets({ ...agentContext, items, sorted });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -2534,9 +2559,10 @@ document.addEventListener("visibilitychange", () => {
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work
-// (finding 1902).
+// (finding 1902). It would also cut short a write in flight, such as the second of a share's
+// two bindings (finding 2125).
 window.addEventListener("beforeunload", (event) => {
-  if (!loggingOut && drafts.hasUnsaved()) {
+  if (!loggingOut && (drafts.hasUnsaved() || writeInFlight?.())) {
     event.preventDefault();
     event.returnValue = "";
   }

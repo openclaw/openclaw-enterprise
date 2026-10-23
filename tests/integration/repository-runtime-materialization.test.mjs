@@ -20,6 +20,7 @@ import test, { before } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
 import { projectRepositorySessions } from "../fixtures/repository-credentials/projection.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const deadlineWallMs = Date.now() + 86400000;
 const client = {
@@ -35,8 +36,7 @@ const client = {
 let nativeClientImport;
 
 before(async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "repository-material-client-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "repository-material-client-");
   const repository = fileURLToPath(new URL("../../", import.meta.url));
   const build = join(root, "build");
   await mkdir(join(build, "scripts"), { recursive: true });
