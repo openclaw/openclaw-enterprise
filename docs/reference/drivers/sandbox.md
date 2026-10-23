@@ -244,8 +244,9 @@ provider could not authenticate (`transient`: a token file or signing key betwee
 refreshes) retries within the attempt budget first. The worker logs the failed
 stop, deletion or withdrawal with `hintCode: sandbox-gateway-identity`, which names
 the guidance the deployment status shows: check the controller gateway identity's
-token file and the gateway's signing-key refresh, or restore its Workspace role,
-then retry.
+token file and the gateway's signing-key refresh, or restore its Workspace role (or
+recreate the Workspace with a deploy; a Workspace removed outside the controller
+presents the same way), then deploy, stop, delete or withdraw again.
 A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
 the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 

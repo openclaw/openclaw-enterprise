@@ -204,9 +204,9 @@ function safePath(value: unknown): string | undefined {
 }
 
 // Fields that name a fixed code, from any emitter: for example an OpenShell Git expiry check, a
-// failure class, the reason code an Agent is shown, a Harness lifecycle state, an auth:maintain
-// command or the operator guidance a refusal names. Only a short identifier passes, never free
-// text.
+// failure class, the reason code an Agent is shown, a Harness lifecycle state or the operator
+// guidance a refusal names. Only a short identifier passes, never free text. `command` passes
+// only on auth:maintain events, whose commands are a fixed list (AUTH_MAINTAIN_COMMANDS).
 const CODE_FIELDS = new Set([
   "check",
   "command",
@@ -355,7 +355,7 @@ function sanitizedEvent(
   for (const [key, value] of Object.entries(event)) {
     if (CODE_FIELDS.has(key)) {
       const code = safeCode(value);
-      if (code !== undefined) {
+      if (code !== undefined && (key !== "command" || eventName.startsWith("auth-maintain."))) {
         result[key] = code;
       }
       continue;

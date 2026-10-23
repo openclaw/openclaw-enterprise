@@ -92,8 +92,8 @@ For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harne
 only as short identifier codes, never free text, and `fence` only as a nonnegative safe
 integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
 classes, the reason code an Agent is shown, Harness state and route generations.
-`command` (an `auth:maintain` command) and `hintCode` (named refusal guidance) are
-codes too. `installationId` and `orphanedConfigurationId` are kept only as
+`hintCode` (named refusal guidance) is a code too, and so is `command` on
+`auth:maintain` events. `installationId` and `orphanedConfigurationId` are kept only as
 OCC-assigned `ins_` and `cfg_` UUIDs.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,

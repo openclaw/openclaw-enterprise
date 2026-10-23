@@ -838,8 +838,12 @@ test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never
     ["hintCode", ["sandbox-gateway-identity"]],
   ];
   for (const [key, value] of rejected) {
-    const line = occLogLine({ event: "worker.completed", outcome: "permanent", [key]: value });
+    const line = occLogLine({ event: "auth-maintain.failed", code: "X", [key]: value });
     assert.equal(Object.hasOwn(line, key), false, `${key}: ${JSON.stringify(value)}`);
+  }
+  // A code-shaped command passes only on auth:maintain events, whose commands are a fixed list.
+  for (const event of ["worker.completed", "http.completed", "auth-maintainer.failed"]) {
+    assert.equal(Object.hasOwn(occLogLine({ event, command: "status" }), "command"), false, event);
   }
 });
 
