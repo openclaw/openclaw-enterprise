@@ -5811,10 +5811,13 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        resolved =
-          error instanceof RepositoryCredentialAuthorityError
-            ? { outcome: "permanent", code: error.code }
-            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          resolved = { outcome: "permanent", code: error.code };
+        } else {
+          resolved = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          // Say why the check failed, as a failure in dispatch does (finding 2272).
+          failureLogFields = revisionFailureLogFields(error);
+        }
       }
     }
     if (

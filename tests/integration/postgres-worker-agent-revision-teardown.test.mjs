@@ -266,6 +266,44 @@ test(
 );
 
 test(
+  "a repository authority check that fails before the pointer commit logs its cause",
+  requiresPostgres,
+  async (context) => {
+    const repository = repositoryBoundary();
+    const fixture = await setup(context, { repoDriver: repository.driver, maxAttempts: 1 });
+    const { candidate } = await fixture.admitInitialRevision("repository-commit-outage", {
+      revision: { repositoryCredentials: repository.snapshot },
+    });
+    let iamUnavailable = false;
+    let activations = 0;
+    const events = [];
+    // Preparation passes its own authority check; IAM then fails the one made again just
+    // before the pointer commit.
+    await fixture.start(
+      {
+        ...fixture.compute,
+        activationOrder: "beforeCommit",
+        async activateRevision() {
+          activations += 1;
+          iamUnavailable = true;
+        },
+      },
+      {
+        emit: (event) => events.push(event),
+        transformDrivers: withUnavailableIAM(() => iamUnavailable),
+      },
+    );
+    await fixture.work(candidate, "failed_permanent");
+    await fixture.stop();
+    assert.equal(activations, 1, "only the check after activation met the outage");
+    // The retry says why the check failed (finding 2272).
+    const ended = (await completedPasses(events, candidate, "retry")).at(-1);
+    assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(ended.cause, "Error");
+  },
+);
+
+test(
   "an expired exhausted repository maintenance claim keeps the active runtime",
   requiresPostgres,
   async (context) => {
