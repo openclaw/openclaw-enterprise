@@ -133,6 +133,18 @@ export async function reduceCredentialPolicy(
         : [];
     const gitWithdrawn =
       attempts.length > 0 && !attempts.some(({ phase }) => phase === "open" || phase === "opening");
+    // Only the active revision's policy is ever reduced. A recorded source withdrawal on any
+    // other revision (an unretired predecessor, or a later candidate that failed or is still
+    // deploying) cannot settle here, so require runtime retirement instead of retrying forever
+    // (finding 2235). The withdrawal stays pending, and egress refused, until that revision is
+    // retired or a replay finds it active.
+    if (
+      withdrawal &&
+      agent?.activeRevisionId !== undefined &&
+      agent.activeRevisionId !== revision.id
+    ) {
+      return "retire-runtime" as const;
+    }
     if (
       !agent ||
       agent.status !== "active" ||
@@ -209,6 +221,9 @@ export async function reduceCredentialPolicy(
   });
   if (!prepared) {
     return "pending";
+  }
+  if (prepared === "retire-runtime") {
+    return prepared;
   }
   const { recorded, dispatch } = prepared;
   const request = recorded.request;

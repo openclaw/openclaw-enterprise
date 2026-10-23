@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   CredentialProxyDriver,
   AcceptedEgressAssociation,
+  AgentRevision,
   EgressRequest,
   CredentialPolicyReducer,
   CredentialPolicyReduction,
@@ -19,6 +20,7 @@ import {
   InstalledDriver,
   type OpenClawController,
   PostgresPlatformState,
+  PostgresWorkQueue,
   reduceCredentialPolicy,
   type PlatformStateStore,
 } from "../../packages/occ/src/index.ts";
@@ -35,6 +37,7 @@ test(
   { ...requiresPostgres, timeout: 60_000 },
   async (t) => {
     let state!: PlatformStateStore;
+    let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
     let api!: Awaited<ReturnType<typeof postgresApp>>["request"];
     let restart!: () => void;
     let sourceB = "";
@@ -55,6 +58,7 @@ test(
         const app = await postgresApp(context, options);
         api = app.request;
         state = app.state;
+        pool = app.pool;
         restart = () => {
           state = new PostgresPlatformState(app.pool);
         };
@@ -222,6 +226,28 @@ test(
     assert.ok(revision?.egressPlan);
     await baseFixture.activateRevision(baseFixture.namespace.id, baseFixture.agent.id, revision.id);
     const f = { ...baseFixture, revision };
+    // Two later candidates admitted with both sources: one whose deployment failed for good,
+    // then one still deploying. Neither is the Agent's active revision.
+    const failedCandidate = await baseFixture.deployAgent(f.namespace.id, f.agent.id);
+    const queue = new PostgresWorkQueue(pool);
+    for (let claim = await queue.claim(); ; claim = await queue.claim()) {
+      assert.ok(claim, "the failed candidate's deployment is claimable");
+      if (claim.idempotencyKey === `agent_revision:${failedCandidate.id}:reconcile`) {
+        await queue.fail(claim, { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
+        break;
+      }
+      // Earlier deployments stay queued.
+      await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
+    }
+    const deployingCandidate = await baseFixture.deployAgent(f.namespace.id, f.agent.id);
+    const candidates: Readonly<AgentRevision>[] = [];
+    for (const { id } of [failedCandidate, deployingCandidate]) {
+      const candidate = await state.read((view) =>
+        view.revisions.findRevision(f.namespace.id, f.agent.id, id),
+      );
+      assert.ok(candidate);
+      candidates.push(candidate);
+    }
     const initial: EgressInstallation = {
       plan: revision.egressPlan,
       sandboxId: randomUUID(),
@@ -369,13 +395,13 @@ test(
     };
     await state.transact((unit) => unit.credentialSources.recordEgressInstallation(snapshot()));
     const signal = AbortSignal.timeout(50_000);
-    const reduce = async (sourceId: string, coordinated = true) => {
+    const reduce = async (sourceId: string, coordinated = true, target = revision) => {
       const source = await state.read((view) =>
         view.credentialSources.findCredentialSource(f.namespace.id, sourceId),
       );
       assert.ok(source);
       const result = await compute.withdrawCredentialSource(
-        revision,
+        target,
         source,
         signal,
         coordinated
@@ -481,10 +507,32 @@ test(
     assert.equal(await platformAllows(sourceB), true, JSON.stringify(refusal));
     await request(f.source.id, 200);
     await request(sourceB, 200);
+    for (const candidate of candidates) {
+      // Without a recorded withdrawal, a call is never turned into a retirement request.
+      await assert.rejects(reduce(f.source.id, true, candidate), /exact admitted owner/);
+    }
     await withdraw(f.source.id);
     await assert.rejects(reduce(f.source.id, false), {
       code: "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
     });
+    // Withdrawal also records each later candidate's row (finding 2235). Only the active
+    // revision's policy can be reduced, so each candidate asks for runtime retirement: a
+    // refusal the worker records once and leaves for a replay, not an error that maintenance
+    // re-queues forever. Nothing reaches the peer, and each row stays pending, so egress
+    // for the source stays refused on that revision.
+    for (const candidate of candidates) {
+      await assert.rejects(reduce(f.source.id, true, candidate), {
+        code: "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+      });
+      const withdrawal = await state.read((view) =>
+        view.credentialSources.findCredentialWithdrawal(f.namespace.id, candidate.id, f.source.id),
+      );
+      const reductions = await state.read((view) =>
+        view.credentialSources.listCredentialPolicyReductions(f.namespace.id, candidate.id),
+      );
+      assert.equal(withdrawal?.state, "pending");
+      assert.deepEqual(reductions, [], "a refused companion records no reduction operation");
+    }
     assert.equal(applies, 0, "a missing coordinator cannot consume the operation");
     beforeApply = async () => {
       const withdrawal = await state.read((view) =>
