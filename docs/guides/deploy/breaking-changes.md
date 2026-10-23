@@ -25,8 +25,8 @@ Installation listener that the chart Service cannot reach. That is
 or `::`, or with that chart listener disabled. Earlier builds started, or failed
 to bind, and then refused every protected request or Git call at first use.
 Since 2026-10-23 the check also refuses TLS or issuer file paths other than
-where the chart mounts them; a Recreate upgrade with such a path had no
-listener at all.
+where the chart mounts them; a Recreate upgrade with such a path left the API
+or worker unable to start after the old Pod stopped.
 
 **Who is affected.** Helm installs with a Credential Proxy authority or
 protected OpenShell Git.

@@ -343,10 +343,11 @@ test(
     const [check] = (await render(preparedGitHubValues, true)).hook.initContainers;
     const environment = Object.fromEntries(
       check.env
-        .filter(({ name }) => name.startsWith("OCC_"))
+        .filter(
+          ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+        )
         .map(({ name, value }) => [name, value]),
     );
-    delete environment.OCC_CONFIG_PATH;
     const authority = "drivers.credential_proxy.configuration.authority";
     for (const [field, configured, message] of [
       [

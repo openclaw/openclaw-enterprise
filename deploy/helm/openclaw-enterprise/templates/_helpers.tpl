@@ -873,7 +873,8 @@ capabilities:
 
 {{/* Each listener the chart routes through a Service: its port, or disabled. API and worker
      startup and the upgrade check refuse an Installation listener on another port, not on
-     all addresses, or without the chart listener (finding 2213). */}}
+     all addresses, without the chart listener (finding 2213), or naming TLS or issuer files
+     other than the chart's mounts. */}}
 {{- define "openclaw.listenerEnv" -}}
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
