@@ -31,6 +31,8 @@ export function createGitHubProtocol({
   revokeStatus = 204,
   issueStatus = 201,
 }) {
+  /** @type {string | undefined} */
+  let issueBody;
   const { privateKey, publicKey } = keyPair;
   const authority = createTokenAuthority({
     clock,
@@ -87,6 +89,14 @@ export function createGitHubProtocol({
         url.pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
       ) {
         await beforeIssue?.();
+        if (issueBody !== undefined) {
+          // A raw answer in place of minting: malformed or ambiguous provider bodies.
+          if (!disconnect(request, response, url)) {
+            response.writeHead(issueStatus, { "content-type": "application/json" });
+            response.end(issueBody);
+          }
+          return;
+        }
         if (issueStatus !== 201) {
           // GitHub refuses before minting: a rejected App key (401), an unknown installation
           // (404) or a repository outside it (422) answers with no token.
@@ -194,9 +204,13 @@ export function createGitHubProtocol({
     setRevokeStatus(status) {
       revokeStatus = status;
     },
-    /** Answer issue requests with this status and no token (201 issues again). */
-    setIssueStatus(status) {
+    /**
+     * Answer issue requests with this status and no token (201 issues again), or with this
+     * raw body in place of minting.
+     */
+    setIssueStatus(status, body = undefined) {
       issueStatus = status;
+      issueBody = body;
     },
     disconnectAfterMutation(method, target) {
       disconnectMutation = `${method} ${target}`;

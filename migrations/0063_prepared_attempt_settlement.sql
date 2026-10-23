@@ -12,6 +12,7 @@ ALTER TABLE occ.prepared_github_attempts ADD CONSTRAINT prepared_github_attempts
 ALTER TABLE occ.prepared_github_attempts ADD CONSTRAINT prepared_github_attempts_not_issued_check
   CHECK (custody <> 'not_issued' OR (state = 'quarantined' AND material_version IS NULL));
 --> statement-breakpoint
--- As with provider_expires_at, the application role may update it. At runtime only the insert
--- default sets it; tests move it to stand for elapsed time.
+-- The controller never writes it: only the insert default sets it. Tests move it to stand for
+-- elapsed time. This adds no authority over settlement: the application role already inserts
+-- attempts and sets their custody, including 'revoked'.
 GRANT UPDATE (started_at) ON occ.prepared_github_attempts TO occ_app;

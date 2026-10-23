@@ -23,6 +23,7 @@ import {
 import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
+import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
 
 test(
   "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
@@ -819,13 +820,13 @@ test(
       f.request("DELETE", `/namespaces/${f.namespace.id}/credential-sources/${id}`);
     const exists = async (id) =>
       (await f.request("GET", `/namespaces/${f.namespace.id}/credential-sources/${id}`)).status;
-    // The deadline is the attempt start plus ten minutes of App JWT acceptance, one hour of
-    // token life and one minute of skew, or a verified expiry plus skew if that is later.
+    // The deadline is the attempt start plus a minute to dispatch, ten minutes of App JWT
+    // acceptance, an hour of token life and a minute of skew, or a verified expiry plus skew.
     const unsettled = async (id) => {
       const {
         rows: [{ at }],
       } = await f.pool.query(
-        `SELECT greatest(started_at + interval '71 minutes', provider_expires_at + interval '1 minute') AS at
+        `SELECT greatest(started_at + interval '72 minutes', provider_expires_at + interval '1 minute') AS at
          FROM occ.prepared_github_attempts WHERE source_id=$1`,
         [id],
       );
@@ -849,7 +850,7 @@ test(
     assert.equal(await exists(refused), 404);
 
     await unsettled(lost);
-    await age(lost, "started_at", 72);
+    await age(lost, "started_at", 73);
     assert.equal((await remove(lost)).status, 204);
     assert.equal(await exists(lost), 404);
 
@@ -858,7 +859,7 @@ test(
     assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
     assert.equal(deletes(), 1);
     // The attempt bound alone is not enough while the verified expiry is still ahead.
-    await age(expired, "started_at", 72);
+    await age(expired, "started_at", 73);
     await unsettled(expired);
     await f.pool.query(
       `UPDATE occ.prepared_github_attempts SET provider_expires_at=clock_timestamp()-interval '2 minutes',
@@ -869,6 +870,105 @@ test(
     assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
     // Settlement never rewrites the recorded outcome.
     assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+test(
+  "PostgreSQL prepared custody: only a well-formed token-less refusal settles at once; a stale intent never dispatches",
+  requiresPostgres,
+  async (t) => {
+    const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(t);
+    const signal = new AbortController().signal;
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+      [source.key.source.id],
+    );
+    const attempts = async (sourceId) =>
+      (
+        await f.pool.query(
+          `SELECT state, custody, ${preparedAttemptSettled("a")} AS settled
+           FROM occ.prepared_github_attempts a WHERE source_id=$1`,
+          [sourceId],
+        )
+      ).rows;
+    const issues = () => gh.trace.filter((entry) => entry.method === "POST").length;
+
+    // Anything but a complete refusal with no token member stays uncertain until the bound.
+    const answers = [
+      ["duplicate member", 422, '{"message":"Unprocessable","message":"Entity"}'],
+      ["truncated refusal", 401, '{"message":"Bad cred'],
+      [
+        "success without a token",
+        201,
+        JSON.stringify({ expires_at: new Date(Date.now() + 3_600_000).toISOString() }),
+      ],
+    ];
+    for (const [name, status, body] of answers) {
+      gh.setIssueStatus(status, body);
+      const id = await registerSource(`prepared-${name.replaceAll(" ", "-")}`);
+      const before = issues();
+      assert.equal(await lifecycle.maintain(signal), "quarantined", name);
+      assert.equal(issues(), before + 1, name);
+      assert.deepEqual(
+        await attempts(id),
+        [{ state: "quarantined", custody: "intent", settled: false }],
+        name,
+      );
+    }
+    gh.setIssueStatus(201);
+
+    // Live custody never settles by time, even past both bounds.
+    const live = await registerSource("prepared-live");
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    await f.pool.query(
+      `UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-interval '1 day',
+       provider_expires_at=clock_timestamp()-interval '2 hours',
+       usable_until=clock_timestamp()-interval '3 hours' WHERE source_id=$1`,
+      [live],
+    );
+    assert.deepEqual(await attempts(live), [
+      { state: "committed", custody: "current", settled: false },
+    ]);
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+      [live],
+    );
+
+    // Settlement assumes no dispatch after the intent's one-minute window. A worker that resumes
+    // later (a suspended host does not advance its monotonic budget) is fenced before sending.
+    // Stand for that pause by recording the durable intent two minutes in the past.
+    const stale = await registerSource("prepared-stale-intent");
+    const intent = "INSERT INTO occ.prepared_github_attempts (id,source_id,admission,state) VALUES";
+    const query = pg.Client.prototype.query;
+    const aged = t.mock.method(pg.Client.prototype, "query", function (sql, ...args) {
+      return typeof sql === "string" && sql.startsWith(intent)
+        ? query.call(
+            this,
+            `INSERT INTO occ.prepared_github_attempts (id,source_id,admission,state,started_at)
+             VALUES ($1,$2,$3,$4,clock_timestamp()-interval '2 minutes')`,
+            ...args,
+          )
+        : query.call(this, sql, ...args);
+    });
+    const before = issues();
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    aged.mock.restore();
+    assert.equal(issues(), before, "a stale intent never reaches GitHub");
+    assert.deepEqual(await attempts(stale), [
+      { state: "quarantined", custody: "intent", settled: false },
+    ]);
+    // A refusal that carries a token is never not_issued: its token goes to retirement custody.
+    // Last, since the worker's next pass would try to revoke this synthetic token.
+    gh.setIssueStatus(
+      401,
+      JSON.stringify({ message: "Bad credentials", token: "ghs_" + "a".repeat(36) }),
+    );
+    const bearing = await registerSource("prepared-token-bearing-refusal");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.deepEqual(await attempts(bearing), [
+      { state: "quarantined", custody: "retire", settled: false },
+    ]);
     assert.deepEqual(gh.errors, []);
   },
 );

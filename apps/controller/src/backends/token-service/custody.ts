@@ -31,6 +31,8 @@ export interface TokenAttempt<A extends TokenAdmission> {
   candidate?: Uint8Array;
   /** Quarantined on a complete provider answer that refused issuance and carried no token. */
   notIssued?: true;
+  /** Set by the store once the durable intent is older than its dispatch window: never dispatch. */
+  readonly stale?: true;
 }
 
 /** Private repository fragment. Admission and recovery belong to OCC. */

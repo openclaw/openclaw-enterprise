@@ -774,12 +774,12 @@ for (const outcome of ["refused", "response lost"]) {
             "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1",
             [first.familyId, minutes],
           );
-        await age(70);
+        await age(71);
         await owner.maintain();
         assert.deepEqual(await read(), { absent: "unprepared" });
-        // Ten minutes for GitHub to accept the attempt's JWT, one hour of token life and the
-        // one-minute skew have passed: no token from that attempt can still be valid.
-        await age(72);
+        // The one-minute dispatch window, ten minutes for GitHub to accept the attempt's JWT, one
+        // hour of token life and the one-minute skew have passed: no token from it can be valid.
+        await age(73);
       }
       await owner.maintain();
       assert.equal(f.gh.issuesOfTokens.length, issued + 1);

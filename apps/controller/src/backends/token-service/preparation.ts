@@ -101,6 +101,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
                   (entry) =>
                     entry.id === attemptId &&
                     entry.state === "issuing" &&
+                    !entry.stale &&
                     sameTokenAdmission(entry.admission, admission),
                 ),
             );

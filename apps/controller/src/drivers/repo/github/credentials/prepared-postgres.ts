@@ -1,6 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { issueAttemptLiveBoundMs, providerClockSkewMs } from "./driver/lifetime.ts";
+import {
+  issueAttemptDispatchWindowMs,
+  issueAttemptLiveBoundMs,
+  providerClockSkewMs,
+} from "./driver/lifetime.ts";
 import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
 import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
@@ -65,6 +69,7 @@ type AttemptRow = {
   provider_expires_at: Date;
   usable_until: Date;
   sealed: Buffer;
+  stale: boolean;
 };
 
 const aad = (a: Admission, id: string) =>
@@ -395,8 +400,9 @@ export class PreparedGitHubPostgres {
         // query submitted in time may reach this row late. In-flight bytes cannot be recalled.
         const list = (
           await c.query(
-            `SELECT id,admission,state,custody,material_version,provider_expires_at,
-          usable_until,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
+            `SELECT id,admission,state,custody,material_version,provider_expires_at,usable_until,
+          started_at <= clock_timestamp() - ${issueAttemptDispatchWindowMs} * interval '1 millisecond'
+            AS stale,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
             AND clock_timestamp() < $3::timestamptz
             AND NOT EXISTS (
               SELECT 1 FROM occ.egress_rejected_material r JOIN occ.prepared_github_families f
@@ -432,6 +438,8 @@ export class PreparedGitHubPostgres {
             admission: a.admission,
             state: a.state,
             ...(a.material_version ? { materialVersion: a.material_version } : {}),
+            // Settlement assumes no dispatch after this window; the issuer rechecks it.
+            ...(a.stale ? { stale: true as const } : {}),
           })),
         };
         if (
