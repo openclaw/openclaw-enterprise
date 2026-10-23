@@ -30,6 +30,8 @@ export function createGitHubProtocol({
   /** Awaited after GitHub revokes a token, before its answer is sent. */
   revokeResponseGate,
   draftResponse = (body) => body,
+  /** Maps the repository metadata body, e.g. to GitHub's own spelling of the name. */
+  metadataResponse = (body) => body,
   revokeStatus = 204,
   issueStatus = 201,
 }) {
@@ -181,7 +183,16 @@ export function createGitHubProtocol({
           entry.forwardedOperationId = Object.hasOwn(request.headers, "x-oce-operation-id");
           entry.usedBearer = request.headers.authorization.startsWith("Bearer ");
         }
-        json(result.status, createPull ? draftResponse(result.body) : result.body, result.headers);
+        const metadata = request.method === "GET" && url.pathname === `/repos/${repository}`;
+        json(
+          result.status,
+          createPull
+            ? draftResponse(result.body)
+            : metadata
+              ? metadataResponse(result.body)
+              : result.body,
+          result.headers,
+        );
       }
     } catch (error) {
       // Keep failure evidence safe: assertion values may include signing input.
