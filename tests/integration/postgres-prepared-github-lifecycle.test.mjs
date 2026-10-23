@@ -875,7 +875,7 @@ test(
 );
 
 test(
-  "PostgreSQL prepared custody: only a well-formed token-less refusal settles at once; a stale intent never dispatches",
+  "PostgreSQL prepared custody: a malformed refusal stays uncertain; a stale or clock-skewed intent never dispatches",
   requiresPostgres,
   async (t) => {
     const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(t);
@@ -893,6 +893,12 @@ test(
         )
       ).rows;
     const issues = () => gh.trace.filter((entry) => entry.method === "POST").length;
+    // Keep each pass on the newest source: a quarantined family is never claimed again here.
+    const park = (id) =>
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+        [id],
+      );
 
     // Anything but a complete refusal with no token member stays uncertain until the bound.
     const answers = [
@@ -915,6 +921,7 @@ test(
         [{ state: "quarantined", custody: "intent", settled: false }],
         name,
       );
+      await park(id);
     }
     gh.setIssueStatus(201);
 
@@ -930,10 +937,7 @@ test(
     assert.deepEqual(await attempts(live), [
       { state: "committed", custody: "current", settled: false },
     ]);
-    await f.pool.query(
-      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
-      [live],
-    );
+    await park(live);
 
     // Settlement assumes no dispatch after the intent's one-minute window. A worker that resumes
     // later (a suspended host does not advance its monotonic budget) is fenced before sending.
@@ -954,10 +958,28 @@ test(
     const before = issues();
     assert.equal(await lifecycle.maintain(signal), "quarantined");
     aged.mock.restore();
+    await park(stale);
     assert.equal(issues(), before, "a stale intent never reaches GitHub");
     assert.deepEqual(await attempts(stale), [
       { state: "quarantined", custody: "intent", settled: false },
     ]);
+    // The JWT expiry comes from the worker's clock, settlement from the database's: a worker
+    // whose clock runs ten minutes ahead could sign a JWT GitHub accepts past the bound.
+    const skewed = await registerSource("prepared-skewed-clock");
+    const clock = lifecycle.clock;
+    lifecycle.clock = { ...clock, wallNow: () => Date.now() + 10 * 60_000 };
+    const beforeSkew = issues();
+    try {
+      assert.equal(await lifecycle.maintain(signal), "quarantined");
+    } finally {
+      lifecycle.clock = clock;
+    }
+    assert.equal(issues(), beforeSkew, "a skewed worker never reaches GitHub");
+    assert.deepEqual(await attempts(skewed), [
+      { state: "quarantined", custody: "intent", settled: false },
+    ]);
+    await park(skewed);
+
     // A refusal that carries a token is never not_issued: its token goes to retirement custody.
     // Last, since the worker's next pass would try to revoke this synthetic token.
     gh.setIssueStatus(

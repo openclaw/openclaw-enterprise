@@ -59,6 +59,7 @@ type FamilyRow = {
   admission: Admission;
   enabled: boolean;
   live: boolean;
+  observed_at?: string;
 };
 type AttemptRow = {
   id: string;
@@ -387,7 +388,8 @@ export class PreparedGitHubPostgres {
           await c.query(this.owner.lockIssuance, [source]);
         }
         const { rows } = await c.query(
-          `SELECT admission, enabled, ${this.owner.active} AS live
+          `SELECT admission, enabled, ${this.owner.active} AS live,
+          extract(epoch FROM clock_timestamp()) * 1000 AS observed_at
           FROM ${families} f WHERE ${matching}
           AND admission->>'issuerAuthority'=$3 FOR ${change ? "UPDATE" : "SHARE"} OF f`,
           [key, source, this.issuerAuthority],
@@ -433,6 +435,7 @@ export class PreparedGitHubPostgres {
           admission: f.admission,
           enabled: f.enabled && f.live,
           admittedGrantCount: 1,
+          observedAt: Number(f.observed_at),
           attempts: list.map((a) => ({
             id: a.id,
             admission: a.admission,

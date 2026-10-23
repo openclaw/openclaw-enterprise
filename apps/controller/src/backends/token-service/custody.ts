@@ -43,6 +43,8 @@ export interface TokenFamily<A extends TokenAdmission> {
   enabled: boolean;
   attempts: TokenAttempt<A>[];
   committed?: TokenMaterial<A>;
+  /** The store's own clock (epoch ms) when it read this row; an issuer must agree before dispatch. */
+  readonly observedAt?: number;
 }
 
 export interface TokenReadPort<A extends TokenAdmission> {
