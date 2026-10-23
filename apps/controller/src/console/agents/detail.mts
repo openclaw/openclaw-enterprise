@@ -3780,7 +3780,9 @@ export async function renderAgentDetail(
             // already knows this member lacks it, so it sends no grant that would be refused and
             // names who grants it, as Create Agent does (findings 2109, 2259).
             grantProblem = "refused";
-            say(grantText(grantProblem), "warning");
+            if (context.isCurrent()) {
+              say(grantText(grantProblem), "warning");
+            }
             return;
           }
           if (credential) {

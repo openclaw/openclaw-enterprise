@@ -187,6 +187,7 @@ export function harnessGrantSubject(kind: "secret" | "credential_source"): Grant
     saved: "Authentication source",
     credential: `the selected ${noun}`,
     access: `this Agent's ${noun} access`,
+    // Unused for now: this path reads no IAM policy, so it never reports a missing grant.
     bound: `its authentication ${noun}`,
     administratorStep: "Save authentication source",
     retry: "Retry credential access",
