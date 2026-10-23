@@ -6,11 +6,22 @@ rfc: index.md
 
 **Status: Proposed — awaiting decision.**
 
-Offer a fresh, single-namespace installation in which the operator provisions
-the physical Kubernetes Namespace. Enabling the usual authorized GitHub sign-in
-does not expand Kubernetes Namespace permissions. The default installation and its cluster-wide Namespace
-permissions remain unchanged. Profiles with a declared startup dependency also
-need the ordering below to run their first work.
+A fresh installation needs the OCE Namespace ID from database bootstrap before
+the operator can create the corresponding Kubernetes Namespace. We propose
+supporting that sequence with GitHub sign-in and granting the API and worker
+read access to exactly that Namespace. For profiles whose gateway depends on
+a worker-hosted service, we also propose starting the service before the worker
+can recover or claim queued work.
+
+The [closed OpenShell canary](https://github.com/openclaw/openclaw-enterprise/blob/31156790238dff36eaf29bce1a2f6ae5dce50834/deploy/helm/openclaw-enterprise/templates/_helpers.tpl)
+already binds an existing OCE Namespace ID and Kubernetes UID. Its
+[RBAC](https://github.com/openclaw/openclaw-enterprise/blob/31156790238dff36eaf29bce1a2f6ae5dce50834/deploy/helm/openclaw-enterprise/templates/rbac.yaml)
+limits Namespace reads to the derived name, and its
+[chart](https://github.com/openclaw/openclaw-enterprise/blob/31156790238dff36eaf29bce1a2f6ae5dce50834/deploy/helm/openclaw-enterprise/templates/jobs.yaml)
+omits initialization when that binding is supplied. The canary rejects external
+login. The proposed profile reuses the binding for a fresh installation and
+allows GitHub sign-in under the existing authorization policy. The default
+profile retains its current Namespace permissions.
 
 ## Two-stage installation and identity
 
@@ -47,7 +58,8 @@ reconcile needs the gateway. For a profile that declares such a dependency,
 start with the worker's claim gate closed, before recovery or claiming begins.
 The worker may load database and IAM state, run its compute preflight, and serve
 restricted authenticated admission and a healthy broker so the dependency can
-come up. Separately deny unwanted work and provider actions while gated.
+come up. While gated, admit only the requests required to bring up that dependency.
+Reject requests that would dispatch work or trigger a provider action.
 Publish a ready Service endpoint only when that transport can actually serve;
 do not publish unready endpoints or report reconciliation as complete.
 
@@ -74,7 +86,7 @@ independent check succeeds, then follow the normal recovery and claim rules.
   Namespace or forbidden lookup blocks binding and work without adoption.
 - With the dependency held unavailable, authenticated limited transport can be
   ready while the original work remains unclaimed and no attempts are consumed.
-  No unwanted work or provider action runs. Releasing the dependency permits the
+  Requests to dispatch work or trigger a provider action are denied. Releasing the dependency permits the
   original work to converge under normal claim rules, without a second bootstrap
   or an attempt-count reset.
 - A crash and restart closes the gate before recovery; retained identity,
