@@ -319,14 +319,16 @@ export async function createConsoleAppFixture(t, options = {}) {
       return super.transact((unit) => policyUnit.run(unit, () => work(unit)));
     }
   }
-  const platformState =
+  const basePlatformState =
     options.state ??
     new ConsolePlatformState({
+      preparedTokenProof: options.preparedTokenProof,
       auditSink,
       // Live lookup, so people enrolled after construction can be bound like in Postgres.
       resolveIAMIdentity: (identityId) =>
         policy.identities.find((identity) => identity.id === identityId),
     });
+  const platformState = options.wrapState?.(basePlatformState) ?? basePlatformState;
   const iamDriver = new NativeIAMDriver(
     {
       async loadNativeIAMState() {
@@ -338,22 +340,21 @@ export async function createConsoleAppFixture(t, options = {}) {
           const namespaces = await view.namespaces.listNamespaces();
           const roles = [];
           const bindings = [];
-          const identities = [];
+          const principals = [];
           for (const namespace of namespaces) {
-            // Browser-created Agents must participate in the same live IAM evaluation
-            // as their browser-created credential grants.
-            for (const agent of await view.agents.listAgents(namespace.id)) {
-              identities.push({
+            principals.push(...(await view.iamPolicy.listServicePrincipals(namespace.id)));
+            principals.push(
+              ...(await view.agents.listAgents(namespace.id)).map((agent) => ({
                 id: agent.servicePrincipalId,
-                kind: "service_principal",
                 namespaceId: agent.namespaceId,
                 agentId: agent.id,
-              });
-            }
+                kind: "service_principal",
+              })),
+            );
             roles.push(...(await view.iamPolicy.listRoles(namespace.id)));
             bindings.push(...(await view.iamPolicy.listAccessBindings(namespace.id)));
           }
-          return { roles, bindings, identities };
+          return { roles, bindings, principals };
         };
         const unit = policyUnit.getStore();
         const managed = await (unit ? readPolicy(unit) : platformState.read(readPolicy));
@@ -361,8 +362,8 @@ export async function createConsoleAppFixture(t, options = {}) {
           ...policy,
           identities: [
             ...policy.identities,
-            ...managed.identities.filter(
-              (identity) => !policy.identities.some((existing) => existing.id === identity.id),
+            ...managed.principals.filter(
+              (principal) => !policy.identities.some((identity) => identity.id === principal.id),
             ),
           ],
           roles: [...policy.roles, ...managed.roles],
@@ -430,6 +431,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        preparedTokens: options.preparedTokens,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
@@ -442,6 +444,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
+        ...(options.credentialProxyCapacity === undefined
+          ? {}
+          : { credentialProxyCapacity: options.credentialProxyCapacity }),
       });
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {
@@ -646,21 +651,34 @@ export async function createConsoleAppFixture(t, options = {}) {
     return configuration.data;
   }
 
-  function grantAgentSecretOperate(agent, source) {
+  // Grants the Agent operate on one Secret, as an Installation administrator's console does. The
+  // Agent's service principal and its role are added on the first grant; a repeat changes nothing.
+  // The evaluator reads this fixture policy, while the Namespace's IAM API lists only what it
+  // stored, so a `listed` grant is also written through that API: the console's policy reads
+  // then see it, as they see a production grant (finding 1920).
+  async function grantAgentSecretOperate(agent, source, { listed = true } = {}) {
     const roleId = `auth-${agent.id}`;
-    policy.identities.push({
-      id: agent.servicePrincipalId,
-      kind: "service_principal",
-      namespaceId: agent.namespaceId,
-      agentId: agent.id,
-    });
-    policy.roles.push({
-      id: roleId,
-      namespaceId: agent.namespaceId,
-      permissions: [{ action: "operate", resourceKind: "secret" }],
-    });
+    const bindingId = `${roleId}-${source.id}`;
+    if (policy.bindings.some((binding) => binding.id === bindingId)) {
+      return;
+    }
+    if (!policy.identities.some((identity) => identity.id === agent.servicePrincipalId)) {
+      policy.identities.push({
+        id: agent.servicePrincipalId,
+        kind: "service_principal",
+        namespaceId: agent.namespaceId,
+        agentId: agent.id,
+      });
+    }
+    if (!policy.roles.some((role) => role.id === roleId)) {
+      policy.roles.push({
+        id: roleId,
+        namespaceId: agent.namespaceId,
+        permissions: [{ action: "operate", resourceKind: "secret" }],
+      });
+    }
     policy.bindings.push({
-      id: roleId,
+      id: bindingId,
       namespaceId: agent.namespaceId,
       subjectKind: "identity",
       subjectId: agent.servicePrincipalId,
@@ -668,6 +686,34 @@ export async function createConsoleAppFixture(t, options = {}) {
       resourceKind: "secret",
       resourceId: source.id,
     });
+    if (listed) {
+      await listSecretOperate(agent, source);
+    }
+  }
+
+  async function listSecretOperate(agent, source) {
+    const iamPath = `/namespaces/${agent.namespaceId}/iam`;
+    const permissions = [{ action: "operate", resourceKind: "secret" }];
+    const roles = await request("GET", `${iamPath}/roles`);
+    assert.equal(roles.status, 200, JSON.stringify(roles.body));
+    let listedRole = roles.data.find(({ name }) => name === "Fixture Agent Secret operate");
+    if (!listedRole) {
+      const created = await request("POST", `${iamPath}/roles`, {
+        body: { name: "Fixture Agent Secret operate", permissions },
+      });
+      assert.equal(created.status, 201, JSON.stringify(created.body));
+      listedRole = created.data;
+    }
+    const binding = await request("POST", `${iamPath}/access-bindings`, {
+      body: {
+        subjectKind: "identity",
+        subjectId: agent.servicePrincipalId,
+        roleId: listedRole.id,
+        resourceKind: "secret",
+        resourceId: source.id,
+      },
+    });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
   }
 
   async function createAgent(namespaceId, name, values = {}, options = {}) {
@@ -697,8 +743,16 @@ export async function createConsoleAppFixture(t, options = {}) {
       },
     });
     assert.equal(agent.status, 201);
+    // The console's channel Secret checks read only bound channel Secrets' grants, so the model
+    // credential's grant need not be listed (Role counts in other cases stay as they were).
     if (harnessAuth?.method === "api_key") {
-      grantAgentSecretOperate(agent.data, harnessAuth.source);
+      await grantAgentSecretOperate(agent.data, harnessAuth.source, { listed: false });
+    }
+    // The console grants the Agent each Secret its Configuration binds when it binds it.
+    for (const { source } of Object.values(options.secretBindings ?? {})) {
+      if (source?.kind === "secret") {
+        await grantAgentSecretOperate(agent.data, source);
+      }
     }
     return agent.data;
   }
@@ -759,6 +813,33 @@ export async function createConsoleAppFixture(t, options = {}) {
     return { credentials: accountCredentials, principal: createdSeed.principal };
   }
 
+  /**
+   * A Namespace member: an account whose one Role in `namespaceId` holds exactly `grants`, as
+   * [action, resourceKind] pairs. It has no Installation access.
+   * @param {string} label
+   * @param {string} namespaceId
+   * @param {readonly (readonly [
+   *   import("../../packages/contracts/src/index.ts").Permission["action"],
+   *   import("../../packages/contracts/src/index.ts").Permission["resourceKind"],
+   * ])[]} grants
+   */
+  function createNamespaceMember(label, namespaceId, grants) {
+    return createAccountWithPolicy(label, (principal) => {
+      policy.roles.push({
+        id: `role-${label}`,
+        namespaceId,
+        permissions: grants.map(([action, resourceKind]) => ({ action, resourceKind })),
+      });
+      policy.bindings.push({
+        id: `binding-${label}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: principal.id,
+        roleId: `role-${label}`,
+      });
+    });
+  }
+
   return {
     origin,
     browserArgs,
@@ -783,6 +864,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     seedActiveAgentRevision,
     createSecret,
     createAccountWithPolicy,
+    createNamespaceMember,
     registerCleanupBeforeAppClose,
     app,
     get controller() {

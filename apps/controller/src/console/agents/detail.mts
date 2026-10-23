@@ -64,6 +64,8 @@ import {
 } from "./list.mjs";
 import {
   type CarriedChannelSecrets,
+  type OutstandingSecretGrants,
+  grantProblemFor,
   createChannelSecretsPanel,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
@@ -574,6 +576,22 @@ export async function renderAgentDetail(
   // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512). The
   // draft store keeps them too, for the page a failed reread reloads (finding 1525).
   let carriedChannelSecrets: CarriedChannelSecrets | null = null;
+  // Saved Slack Secrets whose Agent grant was refused or left unconfirmed. Rebuilt panels and
+  // later visits in this session keep warning and offer Retry Secret access (finding 1920).
+  let outstandingChannelGrants =
+    (context.drafts.get("channelSecretGrants") as OutstandingSecretGrants | undefined) ?? null;
+  // The newest channel Secrets panel: an older one's late grant check no longer speaks for the page.
+  let channelPanelCount = 0;
+  function setOutstandingChannelGrants(grants: OutstandingSecretGrants | null) {
+    outstandingChannelGrants = grants;
+    if (grants) {
+      context.drafts.track("channelSecretGrants", () => outstandingChannelGrants ?? undefined);
+      // Saved state: nothing a reload or tab close would lose.
+      context.drafts.unsavedWhen("channelSecretGrants", () => false);
+    } else {
+      context.drafts.forget("channelSecretGrants");
+    }
+  }
   const target = (revision = selected, tab = selectedTab) =>
     `agents/${agentId}?revision=${encodeURIComponent(revision)}&tab=${tab}`;
   const linkedKey = (revision = selected, tab = selectedTab) =>
@@ -2374,6 +2392,7 @@ export async function renderAgentDetail(
       null;
     carriedChannelSecrets = null;
     context.drafts.forget("channelSecrets");
+    const panelNumber = ++channelPanelCount;
     const credentials = !runtimeAuth
       ? createChannelSecretsPanel({
           context,
@@ -2383,6 +2402,11 @@ export async function renderAgentDetail(
           values,
           revisionsLoaded: revisionResult.status === "fulfilled",
           carried: carriedSecrets,
+          outstandingGrants: outstandingChannelGrants,
+          onOutstandingGrants: setOutstandingChannelGrants,
+          // Only an Installation administrator may read the IAM policy that shows a grant.
+          checkGrants: context.installationAdmin === true,
+          isCurrent: () => panelNumber === channelPanelCount,
           onChange() {
             updateNavigationControls();
             updateDeployControls();
@@ -2405,7 +2429,7 @@ export async function renderAgentDetail(
             }
             return reloadDraftInPlace(context, {
               saved: "Draft reloaded.",
-              focus: "Save channel Secrets",
+              focus: ["Save channel Secrets", "Retry Secret access"],
             });
           },
         })
@@ -3305,6 +3329,8 @@ export async function renderAgentDetail(
       content.append(plugins);
     } else if (selectedTab === "channels") {
       const { servicePrincipalId } = agent;
+      // Whether the last save left a Secret grant outstanding, for its saved notice.
+      let channelGrantOutstanding = false;
       const channels = renderChannels({
         values,
         executionMode,
@@ -3343,6 +3369,7 @@ export async function renderAgentDetail(
           if (!draft) {
             throw new Error("This version is read-only. Open the draft to edit its channels.");
           }
+          channelGrantOutstanding = false;
           let mutationStarted = false;
           let configurationSaved = false;
           try {
@@ -3372,22 +3399,42 @@ export async function renderAgentDetail(
             await saveConfigurationEdit(freshConfig, updatedValues, options.secretBindings);
             configurationSaved = true;
             details = null;
+            const ungranted = (options.changedSecrets ?? []).map((secret) => secret.ref);
             try {
-              if (options.changedSecrets !== undefined) {
-                for (const secret of options.changedSecrets) {
-                  if (!context.isCurrent()) {
-                    return;
-                  }
-                  await ensureCredentialOperateBinding(context, freshAgent, secret);
+              while (ungranted.length) {
+                if (!context.isCurrent()) {
+                  return;
                 }
+                await ensureCredentialOperateBinding(context, freshAgent, ungranted[0]!);
+                ungranted.shift();
               }
             } catch (cause) {
-              // Keep the refused grant's status and Request ID: the notice names the ID for the
-              // Namespace administrator, and a 401 still ends the session below.
               const { status, requestId } = requestFailure(cause);
+              const problem = grantProblemFor(status);
+              if (problem) {
+                // A refused grant is a known outcome, not an unknown one: the Configuration
+                // saved, and its Secrets wait in Credentials for Retry Secret access, which names
+                // who can grant them. Only a lost answer, a timeout or a 5xx is unknown (finding
+                // 1920).
+                const kept = (outstandingChannelGrants?.secrets ?? []).filter(
+                  (secret) => !ungranted.some((next) => next.id === secret.id),
+                );
+                setOutstandingChannelGrants({
+                  secrets: [...kept, ...ungranted],
+                  problem,
+                });
+                channelGrantOutstanding = true;
+                if (context.isCurrent()) {
+                  data.setDraftEditorState({ saving: false, outcomeUnknown: false });
+                  context.drafts.forget("channels");
+                }
+                return;
+              }
+              // Keep the failed grant's status and Request ID: the notice names the ID for the
+              // Installation administrator, and a 401 still ends the session below.
               throw Object.assign(
                 new Error(
-                  "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask a Namespace administrator to grant this Agent access to the saved Secret.",
+                  "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask an Installation administrator to grant this Agent access to the saved Secret.",
                   { cause },
                 ),
                 {
@@ -3395,6 +3442,16 @@ export async function renderAgentDetail(
                   ...(status === undefined ? {} : { status }),
                   ...(requestId === undefined ? {} : { requestId }),
                 },
+              );
+            }
+            const granted = new Set(options.changedSecrets?.map((secret) => secret.id));
+            const still = outstandingChannelGrants?.secrets.filter(({ id }) => !granted.has(id));
+            if (
+              outstandingChannelGrants &&
+              still?.length !== outstandingChannelGrants.secrets.length
+            ) {
+              setOutstandingChannelGrants(
+                still?.length ? { ...outstandingChannelGrants, secrets: still } : null,
               );
             }
             if (context.isCurrent()) {
@@ -3444,7 +3501,12 @@ export async function renderAgentDetail(
         },
         savedNotice,
         // The section calls these once its dialog has closed; both rebuild the tab in place.
-        onSaved: (focus) => refreshDraftInPlace({ saved: "Channels saved.", focus }),
+        // A grant left outstanding is not a finished save: the tab's warning says what remains.
+        onSaved: (focus) =>
+          refreshDraftInPlace({
+            saved: channelGrantOutstanding ? "Configuration saved." : "Channels saved.",
+            focus,
+          }),
         // The section forgets its editor draft first unless a save conflict carried it.
         onReload: () => reloadDraftInPlace(context, { saved: "Draft reloaded." }),
       });
@@ -3452,7 +3514,19 @@ export async function renderAgentDetail(
       showDraftEditorNavigationBlock = () => {
         navigationFeedback.textContent = draftEditorNavigationBlock;
       };
-      content.append(channels, navigationFeedback);
+      // Saved Slack Secrets the Agent cannot use yet; Credentials retries the grant (finding 1920).
+      const grantWarning = data.draft ? data.credentials?.grantWarning() : "";
+      content.append(
+        ...(grantWarning
+          ? [
+              statusBlock("warning", null, grantWarning, [
+                versionLink("Open Credentials", "draft", "credentials"),
+              ]),
+            ]
+          : []),
+        channels,
+        navigationFeedback,
+      );
     } else if (selectedTab === "credentials" && draft) {
       const { credentials, channelSecretsNote } = data;
       const retained = context.drafts.get("authentication") as AuthenticationDraft | undefined;

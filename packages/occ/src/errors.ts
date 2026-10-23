@@ -92,11 +92,31 @@ export class DeletionRetryOwnedError extends AuthorizationDeniedError {
  * remaining distinguishable from explicit denials for HTTP and audit handling.
  */
 export class DependencyUnavailableError extends AuthorizationDeniedError {
-  constructor(message = "A required platform dependency is unavailable.") {
+  /** Fixed Driver-owned request diagnostics; never copy supplier text or request values here. */
+  readonly requestDiagnostic?: {
+    readonly method: string;
+    readonly grpcStatus: number;
+    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+  };
+
+  constructor(
+    message = "A required platform dependency is unavailable.",
+    requestDiagnostic?: NonNullable<DependencyUnavailableError["requestDiagnostic"]>,
+  ) {
     super(message);
     this.name = "DependencyUnavailableError";
+    if (requestDiagnostic !== undefined) {
+      this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
+    }
   }
 }
+
+/**
+ * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
+ * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller
+ * that waits out outages must not wait on it forever.
+ */
+export class PersistedStateInvalidError extends DependencyUnavailableError {}
 
 /**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
@@ -506,6 +526,79 @@ export class ResourceStateConflictError extends ResourceConflictError {
 }
 
 /**
+ * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
+ * repository route. OCC returns the message; the policy worker fails the application at once.
+ */
+export class SandboxNetworkPolicyConflictError extends ResourceStateConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxNetworkPolicyConflictError";
+  }
+}
+
+const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
+  save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  apply:
+    "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
+  deploy:
+    "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+} as const;
+
+/**
+ * Finding 2053: a protected execution runs under its exact Credential Proxy egress policy, so
+ * an Agent's network policy additions are refused when saved, applied live or deployed, never
+ * dropped from the protected profile. HTTP returns 409 SANDBOX_POLICY_PROTECTED_EXECUTION.
+ */
+export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictError {
+  constructor(operation: keyof typeof PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES) {
+    super(PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES[operation]);
+    this.name = "ProtectedExecutionNetworkPolicyError";
+  }
+}
+
+/**
+ * Finding 2199: the selected Credential Proxy has no qualified enforcement for protected
+ * repository Git delivery (the `git-write` profile), so a revision admitted with it could only
+ * wait at Harness enrollment for the convergence deadline. No retry changes that: deploy
+ * refuses it with 409 REPOSITORY_GIT_SENDER_UNQUALIFIED, and the worker fails a revision
+ * admitted before this check at once with the same code. The message names only the
+ * Installation's capability, never the repository or grant.
+ */
+export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
+  static readonly description =
+    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.";
+  readonly code = RepositoryGitSenderUnqualifiedError.code;
+
+  constructor() {
+    super(RepositoryGitSenderUnqualifiedError.description);
+    this.name = "RepositoryGitSenderUnqualifiedError";
+  }
+}
+
+/**
+ * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
+ * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
+ * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
+ * several bindings, could never start. Deploy refuses it with 409
+ * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
+ * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
+ * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
+ * messages under 256 characters.
+ */
+export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
+  static readonly description =
+    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.";
+  readonly code = RepositoryGitProfileUnsupportedError.code;
+
+  constructor() {
+    super(RepositoryGitProfileUnsupportedError.description);
+    this.name = "RepositoryGitProfileUnsupportedError";
+  }
+}
+
+/**
  * The Configuration moved past the generation the update named. HTTP marks it with an
  * `/expectedGeneration` detail, so a caller can tell it from other Configuration conflicts,
  * such as one reserved for provisioning, and reread before saving again.
@@ -664,6 +757,13 @@ export const NAMESPACE_NAME_CONFLICT =
 export const DELETED_NAMESPACE_NAME_CONFLICT =
   "This name belongs to a deleted Namespace and cannot be reused. Choose a different name.";
 
+/**
+ * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
+ * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
+ */
+export const EGRESS_REVISION_INSTALLED_CONFLICT =
+  "Egress revision already has an installed execution.";
+
 export class AgentDeletingError extends ResourceConflictError {
   constructor(message = "The Agent is being deleted.") {
     super(message);
@@ -789,13 +889,19 @@ export class SandboxNamespaceRefusedError extends Error {
 }
 
 /** A step of dedicated activation that completes by itself once a workload catches up. */
-export type ActivationPendingCode = "WORKSPACE_NODE_PENDING" | "WORKSPACE_NODE_BINDING_PENDING";
+export type ActivationPendingCode =
+  | "WORKSPACE_NODE_PENDING"
+  | "WORKSPACE_NODE_BINDING_PENDING"
+  | "REPOSITORY_GIT_MATERIAL_PENDING"
+  | "WORKSPACE_NODE_RECONNECT_PENDING";
 
 /**
  * Activation found its workloads ready but is still waiting for one of them:
- * the Gateway has not applied the workspace node it was handed, or the Harness
- * node has not connected to the Gateway. The worker records `code` so status
- * names the wait. The message stays in the controller.
+ * the Gateway has not applied the workspace node it was handed, the Harness
+ * node has not connected to the Gateway, the Sandbox has not installed the
+ * version's first repository Git credential, or the node has not reconnected
+ * after that install reset the Sandbox's connections. The worker records
+ * `code` so status names the wait. The message stays in the controller.
  */
 export class ActivationPendingError extends Error {
   readonly code: ActivationPendingCode;
@@ -856,12 +962,28 @@ export class ActivationFailedError extends Error {
  * with `code`. The message stays in the controller; status shows a fixed text.
  */
 export class SandboxRevisionUnsupportedError extends Error {
-  readonly code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED" | "SANDBOX_HARNESS_UNSUPPORTED";
+  readonly code:
+    | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
+    | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/** The selected Sandbox cannot authenticate the required recipient of repository credentials. */
+export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUnsupportedError {
+  static readonly description =
+    "The selected Sandbox cannot verify the recipient required for repository session delivery. Select a Sandbox with repository access or a Compute-owned Harness.";
+
+  constructor() {
+    super(
+      "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+      SandboxRepositoryRecipientUnverifiedError.description,
+    );
   }
 }
 
@@ -957,7 +1079,10 @@ export class CredentialSourceRevisionError extends Error {
  * again. The message stays in the controller.
  */
 export class CredentialWithdrawalRefusedError extends Error {
-  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+  readonly code:
+    | "CREDENTIAL_WITHDRAWAL_MISCONFIGURED"
+    | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT"
+    | "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT";
 
   constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
     super(message);
@@ -979,6 +1104,23 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
       "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
     );
     this.name = "CredentialWithdrawalInProgressError";
+  }
+}
+
+/**
+ * Source deletion is refused only because a provider token issued for the source may still be
+ * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
+ * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.
+ */
+export class CredentialTokenUnsettledError extends ResourceStateConflictError {
+  constructor(settlesAt?: Date) {
+    super(
+      "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
+        (settlesAt
+          ? `Retry the deletion after ${settlesAt.toISOString()}, when GitHub's maximum token lifetime has passed.`
+          : "Retry the deletion after GitHub's maximum token lifetime has passed."),
+    );
+    this.name = "CredentialTokenUnsettledError";
   }
 }
 

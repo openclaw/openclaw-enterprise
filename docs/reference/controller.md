@@ -153,10 +153,16 @@ The worker emits fixed operational event classes through the same logger:
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials. A deployment pass that cannot read its stored refusal adds the work
-  identity and `cause`, then leaves its claim to lease recovery. A claim lost around
+  identity and `cause`, then leaves its claim to lease recovery. An unreadable
+  Namespace, Agent or candidate revision row cannot recover by itself, so that pass stays an
+  ordinary retry that the attempt limit ends. A claim lost around
   an external effect adds the work identity and `cause`: `CLAIM_RENEWAL_REFUSED`,
   `CLAIM_RENEWAL_LATE`, `CLAIM_RENEWAL_FAILED`, or `CLAIM_LEASE_LAPSED` (no renewal
-  was confirmed within the lease).
+  was confirmed within the lease). The repository
+  credential codes `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and
+  `PREPARED_GITHUB_RECOVERY_REQUIRED` add a `reason` class and the affected
+  Namespace, revision and `repositoryRef` (see
+  [Git through OpenShell](repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
 - `worker.claim-renewal-warning`: a lease renewal that succeeded but answered after
   the lease could have run out, at warn level with the work identity, code
   `CLAIM_RENEWAL_LATE` and the renewal's `durationMs`. The worker stops that work,
@@ -180,6 +186,8 @@ worker does not expose an HTTP health endpoint. Driver startup schema or semanti
 refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
 JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
 names and runtime image settings. Submitted values and exception text are omitted.
+A prepared repository App key that cannot sign stops the worker with
+`PREPARED_GITHUB_APP_KEY_INVALID` and a fixed `reason`.
 
 ## Failures and diagnostics
 

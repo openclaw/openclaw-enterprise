@@ -11,13 +11,19 @@ export const fullIntegrationLanes = Object.freeze([
   "openshell",
   "helper-timeout",
   "dev-up-k3d",
+  "skipper-prepared-git-installed",
   "logging-collector",
   "k3d-otel",
   "all",
 ]);
 
 const lanes = new Set(fullIntegrationLanes);
-const branchEligibleLanes = new Set(["k3d-model", "openshell", "dev-up-k3d"]);
+const branchEligibleLanes = new Set([
+  "k3d-model",
+  "openshell",
+  "dev-up-k3d",
+  "skipper-prepared-git-installed",
+]);
 const providerAccountEnvironment = "integration-provider-account";
 const laneEnvironments = Object.freeze({
   "qa-matrix": "integration-qa",

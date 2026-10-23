@@ -605,7 +605,7 @@ export const CredentialSourceStatusSchema = Type.Object(
   {
     additionalProperties: false,
     description:
-      "Live status reported by the selected Credential Gateway. It never contains credential values.",
+      "Source admission or selected Credential Gateway status. For protected sources, ready does not attest an installed enforcing Sandbox; current supervisor evidence is checked separately. Never contains credential values.",
   },
 );
 
@@ -615,7 +615,31 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    ownerCapability: Type.Union(
+      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      {
+        description:
+          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+      },
+    ),
     config: CredentialSourceConfig,
+    egress: Type.Optional(
+      Type.Object(
+        {
+          adoption: Type.Union([
+            Type.Literal("live"),
+            Type.Literal("prepared"),
+            Type.Literal("credential_free"),
+          ]),
+          retention: Type.Literal("none"),
+        },
+        {
+          additionalProperties: false,
+          description:
+            "Protected live static, eligible prepared, or explicitly credential-free metadata access. Each profile requires its own grant; missing material never selects credential-free access. Runtime readiness requires current authenticated supervisor evidence.",
+        },
+      ),
+    ),
     secrets: CredentialSourceSecrets,
     state: Type.Union([
       Type.Literal("registering"),
@@ -1109,10 +1133,7 @@ export const BackendListResponse = Type.Object(
 export const RepositoryOptionListResponse = Type.Object(
   {
     data: Type.Array(RepositoryOptionSchema, { maxItems: 1000 }),
-    meta: Type.Object(
-      { ...Meta.properties, descriptionsPending: Type.Boolean() },
-      { additionalProperties: false },
-    ),
+    meta: Meta,
   },
   { additionalProperties: false },
 );

@@ -208,6 +208,13 @@ export function installFixture(scenario, evidence) {
     // Simulates returning from a GitHub callback started in this tab.
     sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
   }
+  // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
+  // one whose tab had a session before it expired keeps it; a first visit has none.
+  if (scenario.expiredSession) {
+    sessionStorage.setItem("occ.console.signedIn", "1");
+  } else {
+    sessionStorage.removeItem("occ.console.signedIn");
+  }
   if (scenario.pendingGoogleAttempt) {
     // Simulates returning from a Google callback started in this tab.
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));
@@ -305,6 +312,25 @@ export function installFixture(scenario, evidence) {
         source: secretRef(`sec_demo_${key.toLowerCase()}`),
         delivery: { type: "env" },
       };
+    }
+    // The demo Agent was granted the Slack Secrets it binds, unless the scenario left one out:
+    // an administrator's console reads these grants (finding 1920).
+    roles.push({
+      id: "role_demo_secret_operate",
+      namespaceId,
+      name: "Agent Secret operate",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
+      bindings.push({
+        id: `binding_demo_${key.toLowerCase()}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: "identity_demo_agent",
+        roleId: "role_demo_secret_operate",
+        resourceKind: "secret",
+        resourceId: `sec_demo_${key.toLowerCase()}`,
+      });
     }
   }
   configs.set(config.id, config);
@@ -639,7 +665,7 @@ export function installFixture(scenario, evidence) {
     namespaceId,
     agentId: agent.id,
     version: 1,
-    additions: [],
+    additions: scenario.policyState === "protected" ? [policyGrant] : [],
   };
   if (scenario.policyState === "failed") {
     sandboxPolicy.application = {
@@ -1456,6 +1482,7 @@ export function installFixture(scenario, evidence) {
             policy: sandboxPolicy,
             configuration: policyDescriptor,
             editingEnabled: policyEditing,
+            protectedExecution: scenario.policyState === "protected",
             ceiling: [policyGrant],
             defaults:
               scenario.policyState === "unsupported"
@@ -1469,7 +1496,7 @@ export function installFixture(scenario, evidence) {
                       },
                     ],
                   },
-            ...(scenario.policyState === "unsupported"
+            ...(scenario.policyState === "unsupported" || scenario.policyState === "protected"
               ? {}
               : { defaultsRevisionId: candidateRevisionId }),
             capability:
@@ -1500,6 +1527,13 @@ export function installFixture(scenario, evidence) {
           }
           if (scenario.policyState === "editDenied") {
             return error(403, "AUTHORIZATION_DENIED");
+          }
+          if (scenario.policyState === "protected" && body.additions.length > 0) {
+            return error(
+              409,
+              "SANDBOX_POLICY_PROTECTED_EXECUTION",
+              "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+            );
           }
           if (body.expectedVersion !== sandboxPolicy.version) {
             return error(409, "RESOURCE_STATE_CONFLICT");

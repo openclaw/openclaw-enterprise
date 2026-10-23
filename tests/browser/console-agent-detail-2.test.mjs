@@ -18,6 +18,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expireSessions,
   holdRequests,
   login,
   setSlackSelection,
@@ -1520,9 +1521,7 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
@@ -1556,9 +1555,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     } else {
       await page.locator(".content form:not(.agent-access-form)").first().waitFor();
     }
-    for (const session of fixture.memoryDatabase.session) {
-      session.expiresAt = new Date(Date.now() - 1000);
-    }
+    expireSessions(fixture);
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
@@ -1602,9 +1599,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   });
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await held;
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await page.goBack();
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Configuration draft|Create new version|History refocus Agent/);
@@ -2204,9 +2199,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   assert.equal((await fixture.request("GET", `${policyPath}/roles`)).data.length, 2);
   assert.equal((await fixture.request("GET", `${policyPath}/access-bindings`)).data.length, 2);
   // A sharing read must preserve global expiry handling, including private panel removal.
-  for (const savedSession of fixture.memoryDatabase.session) {
-    savedSession.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -3613,15 +3606,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   });
   // Real admission requires exact Agent access to each projected credential.
   for (const secret of [app, bot, replacement]) {
-    fixture.policy.bindings.push({
-      id: `grant-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.id}`,
-      roleId: `auth-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // Mutate both current owners after admission; the read-only view must keep the old references.
@@ -4296,6 +4281,7 @@ test("Credentials preserves an existing OpenClaw credential source without offer
       type: "openai",
       config: {},
       secrets: { api_key: input.ref },
+      ownerCapability: "credential_gateway",
       driverId: gateway.id,
       state: "ready",
       createdAt: new Date().toISOString(),

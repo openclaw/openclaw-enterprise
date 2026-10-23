@@ -2349,6 +2349,9 @@ select:not([multiple])[size="1"] {
   font-weight: var(--weight-medium);
   color: var(--muted);
 }
+.agent-table tbody tr {
+  cursor: pointer;
+}
 .agent-table tbody tr:hover {
   background: var(--hover);
 }

@@ -30,7 +30,28 @@
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
     "tests/integration/postgres-transaction-commit.test.mjs",
-    "tests/integration/postgres-agent-sandbox-policy.test.mjs"
+    "tests/integration/postgres-agent-sandbox-policy.test.mjs",
+    "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-prepared-token-service.test.ts",
+    "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+    "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-standing-expiry.test.ts",
+    "tests/integration/postgres-protected-git-recipient-custody.test.ts",
+    "tests/integration/postgres-prepared-standing-removal.test.ts",
+    "tests/integration/postgres-prepared-github-git-use.test.mjs",
+    "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+    "tests/integration/postgres-openshell-git-routes.test.ts",
+    "tests/integration/postgres-openshell-standing-route.test.ts",
+    "tests/integration/postgres-external-protected-git.test.ts",
+    "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
+    "tests/integration/postgres-egress-send-receipts.test.mjs",
+    "tests/integration/postgres-protected-credential-free.test.mjs",
+    "tests/integration/postgres-standing-approval-api.test.ts",
+    "tests/integration/postgres-standing-repository-boundary.test.ts",
+    "tests/integration/postgres-standing-execution.test.ts",
+    "tests/integration/postgres-standing-session-worker.test.ts",
+    "tests/integration/postgres-standing-expiry-authority.test.ts",
+    "tests/integration/credential-proxy-withdrawal.test.ts"
   ],
   "files": [
     {
@@ -250,10 +271,203 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-prepared-token-service.test.ts",
+      "expectedTests": [
+        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue",
+        "rejected fresh GitHub material recovers once across separate owners without replay"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
+      "expectedTests": [
+        "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
+        "current proof preserves caller SQL limits and restores them in its unit",
+        "signed PostgreSQL dispatch uses one shared connection for current material proof",
+        "concurrent signed checks drain the shared single-connection pool",
+        "before-send bounds a real PostgreSQL lock wait and refuses late permission",
+        "before-send refuses expired material and an elapsed signed deadline",
+        "before-send refuses displaced material and accepts renewed material",
+        "before-send refuses a rejected prepared selection",
+        "before-send refuses a withdrawn prepared family"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-prepared-standing-expiry.test.ts",
+      "expectedTests": [
+        "prepared standing Git retirement preserves the skew boundary",
+        "prepared standing Git retirement preserves the refused boundary",
+        "prepared standing Git retirement preserves the response lost boundary",
+        "prepared standing Git retirement preserves the other issuer boundary",
+        "prepared standing Git retirement preserves the finite boundary",
+        "a lost standing Git issuance remains unresolved without a verified expiry",
+        "a protected successor binds the released Git recipient and preserves draft custody, limit one per grant",
+        "a protected successor binds the released Git recipient and preserves draft custody, limit none"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
+      "expectedTests": [
+        "only the installed Git recipient owner may use its material or retire its ended admission",
+        "changing between repository and installation scope waits for the previous owner to settle its token"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
+      "expectedTests": [
+        "standing removal orders prepared material and request authorization (removal first)",
+        "standing removal orders prepared material and request authorization (use first)"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",
+      "expectedTests": [
+        "OpenShell material delivery reads only an existing live revision token without issuing or authorizing use"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-online-git-journey.test.mjs",
+      "expectedTests": [
+        "OCE signed TLS Git authorization composes with PostgreSQL admission and material withdrawal"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-git-routes.test.ts",
+      "expectedTests": [
+        "OpenShell Git routes persist identity and custody facts under one fenced holder",
+        "a replacement lease cannot settle or replay an uncertain rotate installation",
+        "settlement policy and operation identity cannot be substituted",
+        "retained OpenShell detach settles after deletion without authorizing another apply"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-route.test.ts",
+      "expectedTests": [
+        "OpenShell standing rotation preserves custody when unsent",
+        "OpenShell standing rotation preserves custody when lost-reply",
+        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-external-protected-git.test.ts",
+      "expectedTests": [
+        "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
+        "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
+        "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
+        "a capable external Driver reduces Git on the original running execution through cleanup and worker replacement",
+        "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
+        "production composition separates repository policy from protected and explicitly selected native senders",
+        "external Git reduction authenticates and observes exact policy without mutation replay"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
+      "expectedTests": [
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-static-egress.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-egress-send-receipts.test.mjs",
+      "expectedTests": [
+        "PostgreSQL send receipts survive owner loss and fence exact static versions",
+        "after COMMIT and loss of the acknowledgment and caller process, recover the exact outcome and feedback",
+        "lost pre-send acknowledgment leaves possible evidence, never a retry verdict",
+        "closed outcomes, exact bindings, and concurrent duplicates preserve their original verdict"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-protected-credential-free.test.mjs",
+      "expectedTests": [
+        "explicit protected credential-free metadata: both gates, false selections, lost COMMIT and last withdrawal"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
       "expectedTests": [
+        "policy admission cannot acquire grants from a Driver snapshot",
+        "deployment cannot acquire grants from an empty Driver request",
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-approval-api.test.ts",
+      "expectedTests": [
+        "registered standing approval persists exact scope and fences removed generations"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-repository-boundary.test.ts",
+      "expectedTests": [
+        "expired finite admission cannot become standing through replacement or owner restart"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-execution.test.ts",
+      "expectedTests": [
+        "standing execution survives a State restart but stop cannot be undone by run intent"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-session-worker.test.ts",
+      "expectedTests": [
+        "standing maintenance supervises missing Git evidence across restart and still withdraws model authority"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-withdrawal.test.ts",
+      "expectedTests": [
+        "policy reduction preserves another binding then observes deny-all (PostgreSQL)",
+        "Git reduction v7 preserves earlier admission meanings and rejects widening"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-expiry-authority.test.ts",
+      "expectedTests": [
+        "standing expiry worker distinguishes model withdrawn",
+        "standing expiry worker distinguishes IAM denied",
+        "standing expiry worker distinguishes unsupported",
+        "standing expiry worker distinguishes replacement revision",
+        "standing expiry worker distinguishes unknown reply",
+        "standing expiry worker distinguishes transport unavailable",
+        "standing expiry worker distinguishes optional withdrawn",
+        "standing expiry worker distinguishes gateway unavailable",
+        "standing expiry worker distinguishes actor absent",
+        "standing expiry worker distinguishes principal absent",
+        "standing expiry worker distinguishes State unavailable",
+        "standing expiry worker distinguishes IAM unavailable",
+        "standing expiry worker distinguishes model withdrawn gateway unavailable",
+        "standing expiry worker distinguishes model withdrawn IAM unavailable",
+        "standing expiry worker distinguishes actor absent IAM unavailable",
+        "standing expiry worker distinguishes optional recovery pending",
+        "standing expiry worker distinguishes optional recovery withdrawn",
+        "standing expiry worker distinguishes optional manual replay",
+        "standing expiry worker distinguishes model withdrawn State unavailable",
+        "standing expiry worker distinguishes unsupported IAM unavailable",
+        "standing expiry worker distinguishes IAM invalid",
+        "standing expiry worker distinguishes handoff actor absent",
+        "standing expiry worker distinguishes handoff State unavailable",
+        "standing expiry worker distinguishes handoff healthy",
+        "standing expiry worker distinguishes handoff admitted exclusive successor",
+        "standing expiry worker distinguishes handoff admitted nonexclusive successor",
+        "standing expiry worker distinguishes handoff replacement revision",
+        "standing expiry worker distinguishes handoff actor absent IAM unavailable",
+        "standing expiry worker distinguishes handoff actor absent backend unavailable",
+        "standing expiry worker distinguishes handoff healthy backend unavailable",
+        "standing expiry worker distinguishes handoff admitted exclusive successor backend unavailable",
+        "standing expiry worker distinguishes handoff admitted nonexclusive successor backend unavailable",
+        "standing expiry worker distinguishes handoff actor absent service account unavailable",
+        "standing expiry worker distinguishes handoff healthy service account unavailable",
+        "ordinary revision authorization distinguishes actor absent",
+        "ordinary revision authorization distinguishes actor absent IAM unavailable",
+        "ordinary revision authorization distinguishes State unavailable",
+        "ordinary revision authorization distinguishes IAM unavailable",
+        "ordinary revision authorization distinguishes backend unavailable"
       ]
     }
   ]

@@ -14,6 +14,7 @@ import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpe
 import {
   apiRequests,
   expectNoText,
+  expireSessions,
   login,
   loginThroughForm,
   newPage,
@@ -1109,9 +1110,7 @@ test("console retained views clear after session expiry and exact Agent denial",
   await page.getByText("Denied retained Agent", { exact: true }).waitFor();
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   const sessionPattern = "**/api/auth/session";
   const expiredSession = await holdRoute(t, page, sessionPattern, (route, response) =>
     response ? route.fulfill({ response }) : route.continue(),
@@ -1204,6 +1203,54 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await expectNoText(page, /Private cached Agent|Admission failure/);
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  });
+}
+
+// An account can stay signed in after its IAM identity is removed, so /namespaces refuses it on
+// every load. Both checks that read it must offer a way out (finding 1894): a page load, and the
+// in-place recheck an open Agent page runs on refocus. Signing out then leaves a tab whose next
+// deep link is a first visit (finding 1893).
+for (const check of ["a page load", "an Agent page refocus"]) {
+  test(`an account refused Namespace access can sign out after ${check}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Removed identity", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Removed identity Agent");
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    if (check === "a page load") {
+      await login(page, fixture, "/console/namespaces");
+      await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    } else {
+      await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
+      await page.getByRole("heading", { name: "Removed identity Agent", exact: true }).waitFor();
+      await waitForSettledView(page);
+    }
+
+    fixture.policy.identities.length = 0;
+    const refused = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    if (check === "a page load") {
+      await page.reload();
+    } else {
+      await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    }
+    assert.equal((await refused).status(), 403);
+    await page.getByRole("heading", { name: "No access", exact: true }).waitFor();
+    await page
+      .getByText("Your account has no access to this Installation. Try again or sign out.")
+      .waitFor();
+    await expectNoText(page, /Removed identity/);
+    await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page.waitForURL(/\/console\/login$/);
+    const session = await page.request.get(`${fixture.origin}/api/auth/session`);
+    assert.notEqual((await session.json()).data?.authenticated, true);
+
+    await page.goto(`${fixture.origin}/console/namespaces`);
+    await page.getByLabel("Email", { exact: true }).waitFor();
+    await expectNoText(page, /Your session has expired/);
   });
 }
 
@@ -2126,10 +2173,7 @@ test("console clears private content after session expiry, access revocation, an
 
   await page.reload();
   await page.getByText("Revoked agent").waitFor();
-  // Better Auth's memory adapter stores session expiry as Date values.
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   // The list may still be reading its Agent rows. A row read refused after expiry shows the
   // expired sign-in itself and moves to /console/login, where a reload is an ordinary sign-in.
   // Load the private page again, so either way the console must find the expired session.
@@ -2347,6 +2391,25 @@ test("a cold console visit shows neither navigation nor sign-in until its sessio
   await navigation.waitFor();
 });
 
+test("a first visit to a deep link asks to sign in; a tab whose session expired says so", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture);
+  for (const path of ["/console/agents", "/console/namespaces"]) {
+    await page.goto(`${fixture.origin}${path}`);
+    await page.getByLabel("Email", { exact: true }).waitFor();
+    await expectNoText(page, /Your session has expired/);
+  }
+
+  await loginThroughForm(page, fixture, "/console/namespaces");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  expireSessions(fixture);
+  // A reload starts with no session in memory; the tab still knows it had one.
+  await page.goto(`${fixture.origin}/console/agents`);
+  await page.getByText("Your session has expired").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
+});
+
 test("login ignores untrusted returns and resolves an opaque Agent key only after authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2511,9 +2574,7 @@ test("a naturally expired session returns to the requested page after sign-in", 
   // and the Namespaces link would be gone. Expire only once the page has no read in flight.
   await waitForIdleFetches(page);
   // Expire the actual session: the controller must reject it before returning to login.
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Email", { exact: true }).waitFor();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
@@ -2542,9 +2603,7 @@ test("session expiry after a failed check returns to the requested page", async 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
@@ -2567,9 +2626,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Expired page Agent/);

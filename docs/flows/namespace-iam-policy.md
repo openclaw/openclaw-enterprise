@@ -146,9 +146,10 @@ items. A writing unit reuses it only until it issues any other statement, so its
 own IAM writes and any locks it takes come before the next read. Two
 back-to-back decisions in a writing unit do not see a commit another unit makes
 between them, as if it had committed just after; the read was never a fence.
-The policy is an immutable snapshot (`immutableSnapshot`), and the native Driver
-validates and indexes each snapshot once (identities by id, issuer and subject;
-bindings by subject; Restrictions by action and kind). Nothing outlives the
+The policy is built fresh from that read's rows and frozen in place as an
+immutable snapshot (`freezeSnapshot`), and the native Driver validates and
+indexes each snapshot once (identities by id, issuer and subject; bindings by
+subject; Restrictions by action and kind). Nothing outlives the
 unit: the next request reads the policy again.
 
 ### 5. Platform state commits policy and audit together

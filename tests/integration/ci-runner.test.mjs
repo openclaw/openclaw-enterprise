@@ -64,6 +64,30 @@ function run(root, args, env = {}, { timeout } = {}) {
   });
 }
 
+function mixedPrecisionEventBoundary({ namespace, pod, second, laterCount = 199 }) {
+  const event = (uid, reason, timestamp) => ({
+    metadata: { namespace, name: `${uid}.event`, uid },
+    involvedObject: { kind: "Pod", name: pod, namespace },
+    type: "Normal",
+    reason,
+    message: reason,
+    count: 1,
+    ...timestamp,
+  });
+  const older = event("older-whole-second", "OlderWholeSecond", {
+    lastTimestamp: `${second}Z`,
+  });
+  const newer = event("newer-fractional-second", "NewerFractionalSecond", {
+    eventTime: `${second}.100000Z`,
+  });
+  const later = Array.from({ length: laterCount }, (_, index) =>
+    event(`later-${index}`, `Later${index}`, {
+      eventTime: new Date(Date.parse(`${second}Z`) + (index + 1) * 1_000).toISOString(),
+    }),
+  );
+  return { older, newer, events: [older, newer, ...later] };
+}
+
 // run() without blocking this process, for the waiting tests below, which run side by side.
 // The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
 function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
@@ -636,7 +660,7 @@ test("QA inputs", async () => {
   assert.ok(!selection.requiredEnv.includes("OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE"));
   assert.equal(process.env.OCC_TEST_QA_INSTALLATION, "compose");
   assert.equal(process.env.OCC_TEST_QA_PRESET, "Codex");
-  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-full");
+  assert.equal(process.env.OCC_TEST_QA_SCENARIOS, "model-ui,calendar,git-write");
   await writeFile(join(process.env.OCC_TEST_QA_ARTIFACTS, "matrix.json"), JSON.stringify({ outcome: "inputs received" }));
 });
 `,
@@ -670,7 +694,7 @@ test("QA inputs", async () => {
       OCC_TEST_QA_ARTIFACTS: artifacts,
       OCC_TEST_QA_INSTALLATION: "compose",
       OCC_TEST_QA_PRESET: "Codex",
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-full",
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,git-write",
     },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -3438,7 +3462,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       message,
       count,
       firstTimestamp: "2026-09-29T00:00:01Z",
-      lastTimestamp: `2026-09-29T00:00:0${count}Z`,
+      lastTimestamp: `2026-09-29T00:10:0${count}Z`,
     },
   });
   const pods = [
@@ -3447,7 +3471,14 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     pod(true, "MODIFIED"),
     pod(true, "DELETED"),
   ];
+  const boundary = mixedPrecisionEventBoundary({
+    namespace: "occ-agent-a",
+    pod: "harness-0",
+    second: "2026-09-29T00:00:10",
+    laterCount: 196,
+  });
   const events = [
+    ...boundary.events.map((object) => ({ type: "ADDED", object })),
     event("occ-agent-a", "e1", "Pulled", "Successfully pulled image"),
     event("occ-agent-a", "e2", "Unhealthy", "Readiness probe failed"),
     event("occ-agent-a", "e2", "Unhealthy", "Readiness probe failed", 3),
@@ -3468,14 +3499,55 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     ].join("\n"),
   );
   await chmod(kubectl, 0o755);
-  await writeFile(
-    join(root, "tests/integration/agent.test.mjs"),
+  const captureBarrierDirectory = join(root, "state");
+  const watchAwareTest = ({ name, id }) =>
     [
+      'import { readdir, readFile, writeFile } from "node:fs/promises";',
+      'import { join } from "node:path";',
       'import test from "node:test";',
       'import { setTimeout as delay } from "node:timers/promises";',
-      'test("agent file passes", () => delay(300));',
+      `const clusterDirectory = ${JSON.stringify(clusterDirectory)};`,
+      `const captureBarrierDirectory = ${JSON.stringify(captureBarrierDirectory)};`,
+      "const expectedCaptures = Number(process.env.CI_RUNNER_TEST_EXPECTED_CAPTURES ?? 1);",
+      'const barrier = process.env.CI_RUNNER_TEST_CAPTURE_BARRIER ?? "single";',
+      "const markerPrefix = `capture-ready-${barrier}-`;",
+      `test(${JSON.stringify(name)}, async () => {`,
+      "  if (!process.env.OPENCLAW_CI_CONTAINER_LOG_DIR) return;",
+      "  let watchReady = false;",
+      "  for (let attempt = 0; attempt < 200; attempt += 1) {",
+      "    const names = await readdir(clusterDirectory);",
+      "    const streams = await Promise.all(",
+      '      names.filter((entry) => entry.startsWith("agent-activity-")).map(async (entry) => ({',
+      "        name: entry,",
+      '        lines: (await readFile(join(clusterDirectory, entry), "utf8").catch((error) =>',
+      '          error?.code === "ENOENT" ? "" : Promise.reject(error),',
+      '        )).split("\\n").filter(Boolean).length,',
+      "      })),",
+      "    );",
+      '    const podStreams = streams.filter(({ name: entry }) => entry.endsWith("-pods.ndjson"));',
+      '    const eventStreams = streams.filter(({ name: entry }) => entry.endsWith("-events.ndjson"));',
+      `    const podsReady = podStreams.length > 0 && podStreams.every(({ lines }) => lines >= ${pods.length});`,
+      `    const eventsReady = eventStreams.length > 0 && eventStreams.every(({ lines }) => lines >= ${events.length});`,
+      "    if (podStreams.length === expectedCaptures && eventStreams.length === expectedCaptures && podsReady && eventsReady) {",
+      "      watchReady = true;",
+      "      break;",
+      "    }",
+      "    await delay(10);",
+      "  }",
+      '  if (!watchReady) throw new Error("timed out waiting for Agent namespace watch output");',
+      `  await writeFile(join(captureBarrierDirectory, \`\${markerPrefix}${id}\`), "ready");`,
+      "  for (let attempt = 0; attempt < 200; attempt += 1) {",
+      "    const acknowledgements = (await readdir(captureBarrierDirectory)).filter((entry) => entry.startsWith(markerPrefix));",
+      "    if (acknowledgements.length === expectedCaptures) return;",
+      "    await delay(10);",
+      "  }",
+      '  throw new Error("timed out waiting for concurrent capture acknowledgements");',
+      "});",
       "",
-    ].join("\n"),
+    ].join("\n");
+  await writeFile(
+    join(root, "tests/integration/agent.test.mjs"),
+    watchAwareTest({ name: "agent file passes", id: "agent" }),
   );
   await writeJson(join(root, "scripts/ci/k3d-lane.json"), {
     files: [{ path: "tests/integration/agent.test.mjs", expectedTests: ["agent file passes"] }],
@@ -3500,7 +3572,11 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       "--results",
       resultsPath,
     ],
-    { OCC_KUBECTL_BIN: kubectl },
+    {
+      OCC_KUBECTL_BIN: kubectl,
+      CI_RUNNER_TEST_CAPTURE_BARRIER: "single",
+      CI_RUNNER_TEST_EXPECTED_CAPTURES: "1",
+    },
   );
 
   assert.equal(result.status, 0, result.stderr);
@@ -3522,8 +3598,15 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       ["DELETED", true],
     ],
   );
+  assert.equal(activity.events.length, 200);
+  assert.equal(activity.events[0].reason, boundary.newer.reason);
+  assert.equal(
+    activity.events.some(({ reason }) => reason === boundary.older.reason),
+    false,
+  );
+  assert.equal(activity.omitted.events, 1);
   assert.deepEqual(
-    activity.events.map(({ reason, count }) => [reason, count]),
+    activity.events.slice(-3).map(({ reason, count }) => [reason, count]),
     [
       ["Pulled", 1],
       ["Failed", 1],
@@ -3538,12 +3621,7 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
   // keeps its own watch streams, so neither truncates nor deletes the other's capture.
   await writeFile(
     join(root, "tests/integration/agent-sibling.test.mjs"),
-    [
-      'import test from "node:test";',
-      'import { setTimeout as delay } from "node:timers/promises";',
-      'test("sibling file passes", () => delay(300));',
-      "",
-    ].join("\n"),
+    watchAwareTest({ name: "sibling file passes", id: "sibling" }),
   );
   const pairFiles = [
     "tests/integration/agent.test.mjs",
@@ -3583,7 +3661,12 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
       "--results",
       pairResultsPath,
     ],
-    { OCC_KUBECTL_BIN: kubectl, CI_RUNNER_FILE_CONCURRENCY: "2" },
+    {
+      OCC_KUBECTL_BIN: kubectl,
+      CI_RUNNER_FILE_CONCURRENCY: "2",
+      CI_RUNNER_TEST_CAPTURE_BARRIER: "pair",
+      CI_RUNNER_TEST_EXPECTED_CAPTURES: "2",
+    },
   );
   assert.equal(pair.status, 0, pair.stderr);
   const pairSummary = JSON.parse(await readFile(pairResultsPath, "utf8"));
@@ -3654,6 +3737,38 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     /Agent namespace activity unavailable for tests\/integration\/agent\.test\.mjs/,
   );
   assert.deepEqual(await readdir(clusterDirectory), []);
+});
+
+test("k3d diagnostics preserve equal-instant event order across precision variants", async () => {
+  const { projectContainerLog } = await import("../../scripts/ci/k3d-diagnostics.mjs");
+  const { older, newer } = mixedPrecisionEventBoundary({
+    namespace: "occ-agent-a",
+    pod: "harness-0",
+    second: "2026-10-21T00:00:00",
+    laterCount: 0,
+  });
+  const projected = projectContainerLog({
+    lines: [],
+    snapshots: [
+      {
+        events: [
+          older,
+          {
+            ...older,
+            metadata: { ...older.metadata, uid: "equal-fractional" },
+            reason: "EqualFractional",
+            eventTime: "2026-10-21T00:00:00.000000Z",
+            lastTimestamp: undefined,
+          },
+          newer,
+        ],
+      },
+    ],
+  });
+  assert.deepEqual(
+    projected.snapshots[0].events.map(({ reason }) => reason),
+    [older.reason, "EqualFractional", newer.reason],
+  );
 });
 
 test("audit fails when a referenced lane cannot be loaded", async (t) => {
@@ -4749,6 +4864,13 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
     count: 1,
     lastTimestamp: "2026-10-08T07:43:53Z",
   };
+  const boundary = mixedPrecisionEventBoundary({
+    namespace: "occ-agent-a",
+    pod: "gateway-0",
+    second: "2026-10-08T07:43:52",
+    laterCount: 198,
+  });
+  const events = [...boundary.events, event];
   const logLines = [
     "2026-10-08T07:43:49.1Z [gateway] startup phase: config.auth starting",
     "2026-10-08T07:43:53.2Z [gateway] received SIGTERM; shutting down",
@@ -4776,7 +4898,7 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
       '} else if (args.includes("get") && args.includes("pods")) {',
       `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(pod)}] }));`,
       '} else if (args.includes("get") && args.includes("events")) {',
-      `  process.stdout.write(JSON.stringify({ items: [${JSON.stringify(event)}] }));`,
+      `  process.stdout.write(JSON.stringify({ items: ${JSON.stringify(events)} }));`,
       "} else {",
       "  setTimeout(() => {}, 60_000);",
       "}",
@@ -4893,9 +5015,24 @@ test("run publishes a failed wait's followed container log, redacted, beside Age
   assert.equal(snapshot.pods[0].deletedAt, "2026-10-08T07:43:53Z");
   assert.equal(snapshot.pods[0].deletionGracePeriodSeconds, 330);
   assert.equal(snapshot.pods[0].containers[0].startedAt, "t");
+  assert.equal(snapshot.events.length, 200);
+  assert.equal(snapshot.events[0].reason, boundary.newer.reason);
+  assert.equal(
+    snapshot.events.some(({ reason }) => reason === boundary.older.reason),
+    false,
+  );
   assert.deepEqual(
-    snapshot.events.map(({ reason, message }) => [reason, message]),
-    [["Killing", "Stopping container gateway"]],
+    snapshot.events.find(({ reason }) => reason === "Killing"),
+    {
+      namespace: "occ-agent-a",
+      kind: "Pod",
+      name: "gateway-0",
+      type: "Normal",
+      reason: "Killing",
+      message: "Stopping container gateway",
+      count: 1,
+      lastTimestamp: "2026-10-08T07:43:53Z",
+    },
   );
   assert.doesNotMatch(text, /do-not-publish|secretauthvalue|childonlysecret/);
   // The record directory lived in the cluster's private directory and is gone.

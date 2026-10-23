@@ -2,7 +2,7 @@ import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@opencla
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
-import { ScopeViolationError } from "../errors.ts";
+import { SandboxRepositoryRecipientUnverifiedError, ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
@@ -96,13 +96,35 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Workloads are ready; waiting for the Gateway to apply the workspace node.";
       break;
+    case "REPOSITORY_GIT_MATERIAL_PENDING":
+      // Fixed copy, like REPOSITORY_GIT_ROUTE_PENDING (finding 1045).
+      code = attempt.code;
+      message =
+        "Workloads are ready; waiting for the Sandbox to install this version's repository Git credential. If this persists, check the worker log for repository credential (PREPARED_GITHUB_RECOVERY_REQUIRED) or OpenShell gateway errors.";
+      break;
+    case "WORKSPACE_NODE_RECONNECT_PENDING":
+      code = attempt.code;
+      message =
+        "Workloads are ready; waiting for the workspace node to reconnect after the repository Git credential was installed.";
+      break;
     case "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING":
       code = attempt.code;
       message = "Waiting for harness credential initialization to finish.";
       break;
+    case "REPOSITORY_GIT_ROUTE_PENDING":
+      // Fixed copy: never the repository, grant or the gateway's answer (finding 1045).
+      code = attempt.code;
+      message =
+        "Workloads are ready; waiting for the controller to verify this version's repository Git access. If this persists, check the worker log for repository credential or OpenShell gateway errors.";
+      break;
     case "DEPENDENCY_UNAVAILABLE":
       code = attempt.code;
       message = "A dependency was unavailable. The controller will retry.";
+      break;
+    case "EXECUTION_ADMISSION_WITHDRAWAL_PENDING":
+      code = attempt.code;
+      message =
+        "This version can no longer run with its admitted access. The controller will keep checking that access is closed and the workload has stopped.";
       break;
     case "REFUSED_CANDIDATE_STOP_PENDING":
       // The refusal is the code this deployment's `error` carries once the stop succeeds,
@@ -574,12 +596,24 @@ export function deploymentErrorForWork(
 }
 
 /**
- * The guidance for a refusal whose next step does not depend on the operation. A stop, deletion
- * or credential withdrawal the Sandbox gateway refused has no status of its own, so the worker
- * logs this with the failed work, as the deployment status shows it (finding 1694).
+ * The fixed codes that name the guidance for a refusal whose next step does not depend on the
+ * operation. A stop, deletion or credential withdrawal the Sandbox gateway refused has no status
+ * of its own, so the worker logs the code with the failed work (finding 1694); the deployment
+ * status shows the same guidance as text, and the Sandbox Driver reference spells it out. The
+ * log carries the code, not the sentence, because the log sanitizer keeps no free text.
  */
-export function operationRefusalHint(code: string): string | undefined {
-  return code === "SANDBOX_GATEWAY_UNAUTHORIZED" ? deploymentErrorMessage(code) : undefined;
+export const OPERATION_REFUSAL_HINT_CODES = Object.freeze({
+  SANDBOX_GATEWAY_UNAUTHORIZED: "sandbox-gateway-identity",
+} as const);
+
+export type OperationRefusalHintCode =
+  (typeof OPERATION_REFUSAL_HINT_CODES)[keyof typeof OPERATION_REFUSAL_HINT_CODES];
+
+/** The guidance code a refusal with this result code logs, if any. */
+export function operationRefusalHintCode(code: string): OperationRefusalHintCode | undefined {
+  return Object.hasOwn(OPERATION_REFUSAL_HINT_CODES, code)
+    ? OPERATION_REFUSAL_HINT_CODES[code as keyof typeof OPERATION_REFUSAL_HINT_CODES]
+    : undefined;
 }
 
 export function deploymentWarningsForWork(
@@ -660,6 +694,8 @@ function deploymentErrorMessage(code: string): string {
       return "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.";
     case "RUNTIME_STARTUP_FAILED":
       return "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.";
+    case "EXECUTION_ADMISSION_WITHDRAWN":
+      return "This version can no longer run with its admitted access. The controller closed that access and observed the workload stopped. Deploy a new version to use the current installation.";
     case "REVISION_SUPERSEDED":
       return "Deployment was superseded by a newer revision.";
     case "REVISION_STOPPED":
@@ -678,6 +714,12 @@ function deploymentErrorMessage(code: string): string {
       return "The approval behind a repository this revision binds changed since admission, for example the access levels or push rules approved for the Agent's Namespace. Deploy again to admit a revision with the current approval.";
     case "REPOSITORY_DRIVER_MISMATCH":
       return "The Installation no longer selects the repository credential Driver this revision was admitted with. Deploy again to admit a revision for the selected Driver, choosing approved repository access first if the deploy is refused. If the Installation has none, remove the Agent's repository access or ask an admin to select one.";
+    case "REPOSITORY_GIT_ROUTE_BLOCKED":
+      return "This version's repository Git access was closed by the controller: its Sandbox or supervisor was replaced, a credential write's outcome is unknown, or the access was withdrawn. The worker log names the reason (OPENSHELL_GIT_RECONCILIATION_REQUIRED). Deploy a new version.";
+    case "REPOSITORY_GIT_SENDER_UNQUALIFIED":
+      return "This version was admitted with repository Git delivery that the selected Credential Proxy cannot enforce: no OpenShell release is qualified for the git-write profile, so it could never start. Use native prepared Git or a qualified installed sender, or remove the Agent's repository binding, then deploy again.";
+    case "REPOSITORY_GIT_PROFILE_UNSUPPORTED":
+      return "This version was admitted with repository Git delivery that has no delivery profile: a Credential Proxy delivers only one binding with the git-write or github-installation profile, so it could never start. Keep one binding with a supported profile, use native prepared Git, or remove the Agent's repository bindings, then deploy again.";
     case "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED":
       return "This revision's repository access deadline, fixed when the revision was admitted, has passed. Deploy again to admit a revision with a new deadline.";
     // Refusals the worker decides again on every pass (finding 1039). The status never names
@@ -710,6 +752,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.";
     case "KUBERNETES_API_UNAVAILABLE":
       return "The Kubernetes API was still unavailable at the deployment deadline.";
+    case "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED":
+      return SandboxRepositoryRecipientUnverifiedError.description;
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":
       return "The Sandbox Driver cannot deliver Secret-backed environment variables to the Harness.";
     case "SANDBOX_HARNESS_UNSUPPORTED":
@@ -724,6 +768,8 @@ function deploymentErrorMessage(code: string): string {
       return "The Installation no longer selects the Credential Gateway this revision was admitted with. Bind sources registered through the selected gateway, or remove them and change harnessAuth, then deploy again.";
     case "HARNESS_AUTH_SOURCE_UNAVAILABLE":
       return "The Harness authentication source this revision was admitted with is missing, being deleted, or changed since admission. Bind an available source, then deploy again.";
+    case "EGRESS_PROVIDER_UNAVAILABLE":
+      return "The protected egress provider this revision's Harness source was admitted with is no longer selected or available. Ask an admin to reselect it, or bind a source admitted under the selected provider, then deploy again.";
     case "CREDENTIAL_SOURCE_UNAVAILABLE":
       return "A credential source this revision lists is missing, being deleted, or changed since admission. Bind available sources, then deploy again.";
     case "SECRET_DRIVER_MISMATCH":

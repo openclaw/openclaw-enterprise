@@ -434,6 +434,7 @@ export function revision(driver, owner, agentId, number) {
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: harnessAuthentication.get(owner.id).snapshot,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };

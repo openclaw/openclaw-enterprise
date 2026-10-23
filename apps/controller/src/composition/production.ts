@@ -1,5 +1,6 @@
 import { nativeAdminOriginResolver } from "../gateway/native-admin-origin.ts";
-import { installationDriverConfigurations } from "./installation-config.ts";
+import { installEgressAuthority } from "./egress-authority.ts";
+import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -102,8 +103,10 @@ export async function composeProduction(
     sandboxDriver,
     credentialGatewayDriver,
     credentialRefreshDriver,
+    protectedDriver,
+    preparedGitHub,
     pluginDriver,
-    repoDriver,
+    repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
   if (
@@ -138,7 +141,9 @@ export async function composeProduction(
   });
 
   try {
-    const state = new PostgresPlatformState(pool);
+    const state = new PostgresPlatformState(pool, {
+      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
+    });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
       throw new Error("The singleton Installation must be bootstrapped before production startup.");
@@ -270,9 +275,9 @@ export async function composeProduction(
 
     phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
-      driverConfigurations: installationDriverConfigurations(config.drivers.installation),
-      sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
+      ...installationControllerOptions(config.drivers.installation),
       state,
+      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
       recordOperations: true,
       ...(config.nativeAdmin?.enabled === true
         ? { nativeAdminOrigin: nativeAdminOriginResolver(config.nativeAdmin, config.authBaseURL)! }
@@ -282,9 +287,6 @@ export async function composeProduction(
       bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],
       refreshBundledDefaultPresets: config.drivers.installation.presets?.includeDefaults === true,
       loggingLevel: config.drivers.installation.logging.level,
-      ...(installation.runtime === undefined
-        ? {}
-        : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
     });
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
@@ -306,7 +308,9 @@ export async function composeProduction(
       controller.registerDriver(channelDriver);
       controller.selectDriver("channel", channelDriver.id);
     }
-    if (sandboxDriver !== undefined) {
+    if (protectedDriver !== undefined) {
+      controller.installDriver(protectedDriver, ["sandbox", "credential_proxy"]);
+    } else if (sandboxDriver !== undefined) {
       controller.registerDriver(sandboxDriver);
       controller.selectDriver("sandbox", sandboxDriver.id);
     }
@@ -325,9 +329,9 @@ export async function composeProduction(
       controller.registerDriver(pluginDriver);
       controller.selectDriver("plugin", pluginDriver.id);
     }
-    if (repoDriver !== undefined) {
-      controller.registerDriver(repoDriver);
-      controller.selectDriver("repo", repoDriver.id);
+    if (repositoryPolicy !== undefined) {
+      controller.registerDriver(repositoryPolicy);
+      controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
     if (config.logger !== undefined) {
@@ -390,15 +394,24 @@ export async function composeProduction(
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
+    await preparedGitHub?.connect(pool);
+    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
-    app.addHook("onClose", async () => state.close());
+    app.addHook("onClose", async () => {
+      await exchange?.close();
+      await config.drivers.protectedDriver?.close();
+      await preparedGitHub?.close();
+      await state.close();
+    });
     phaseCompleted("routes");
     return app;
   } catch (error) {
+    await config.drivers.protectedDriver?.close();
+    await preparedGitHub?.close();
     await pool.end();
     throw error;
   }

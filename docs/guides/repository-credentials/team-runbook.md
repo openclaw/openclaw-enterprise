@@ -1,20 +1,20 @@
 # Set up repository access for a team
 
 Connect one team repository to an organization-owned GitHub App, then ask an
-embedded OpenClaw Agent to push a branch and open a draft PR. Start with an
+dedicated Codex Agent to push a branch and open a draft PR. Start with an
 existing [Kubernetes installation](../deploy/production-installation.md), an OCC
 Namespace, and a repository approved for this exercise.
 
 Repository access is opt-in: Helm's `repositoryCredentials.enabled` defaults to
-`false`, Installation `drivers.repo` is optional, and an Agent must request a
+`false`, Installation `repository.nativeSender` is optional, and an Agent must request a
 repository binding. Workflows without those settings need no GitHub App. This
 does not exempt a platform upgrade from its shared database prerequisites; follow
 the [upgrade operations guidance](../../reference/settings/operations.md).
 
 This path uses the App installation's authority. Personal GitHub user delegation
-is not implemented. This procedure uses Kubernetes Compute, embedded
-OpenClaw, `api_key` Harness authentication, and no Sandbox Driver. The separate
-credential service holds the App key and GitHub tokens. OCC gives the Agent
+is not implemented. This procedure uses Kubernetes Compute, dedicated Codex, compatible Harness
+authentication, and no Sandbox Driver. The separate
+worker Token Service holds the App key and GitHub tokens. OCC gives the Agent
 gateway session credentials with a time limit and repository permissions. Do not put keys, tokens, or gateway bearers
 in Agent configuration, images, examples, or logs.
 
@@ -32,15 +32,10 @@ access.
    authorization and device flow unused. This integration needs no webhook
    receiver: deselect webhook **Active**. Follow GitHub's
    [registration procedure](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
-2. For this PR workflow, set repository **Contents**, **Pull requests**, and
-   **Issues** to **Read and write**, with **Metadata**, **Checks** and **Commit
-   statuses** at **Read-only** to support all three
-   [access levels](../../reference/repository-credentials/access-levels.md).
-   OCE narrows each token to its selected level. This PR workflow uses
-   Contributor with issue management off (`git-write`), so its token requests
-   Issues read, not write. In the Console, choose **Contributor**, open
-   **Customize access**, and turn off **Create and manage issues**. Leave other
-   permissions unselected; workflow editing is not part of these levels.
+2. For this draft workflow, grant repository **Contents** and **Pull requests**
+   read/write access and **Metadata** read access. Select `git-and-draft-pr`, one
+   exact writable ref, and the intended base in the registry. Do not add issue
+   management or a ruleset bypass for this workflow.
 3. [Install the App](https://docs.github.com/en/apps/using-github-apps/installing-your-own-github-app)
    on the organization and select **Only select repositories**, including the
    intended repository. For an existing installation, have its administrator
@@ -58,8 +53,8 @@ access.
 
 5. [Generate an App private key](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps).
    Transfer the downloaded PEM through your approved secret-management process
-   to the credential service's protected input. Keep it out of the Agent, API,
-   worker container, source tree, shell arguments, and diagnostic output.
+   to the worker Token Service's protected input. Keep it out of the Agent, API,
+   native sender, source tree, shell arguments, and diagnostic output.
 
 `example/project`, the numeric IDs in the examples, and `agent@example.invalid`
 are hypothetical placeholders. Replace them before contacting GitHub.
@@ -80,21 +75,22 @@ install -m 600 deploy/examples/repository-credentials/service-config.json \
 Edit `registry.json`: replace the three GitHub IDs, canonical `owner/repository`,
 and `replace-with-occ-namespace-id` with the server-assigned ID from
 `occ namespace list`. Keep `application` as the Agent-facing repository reference.
-The sample allows all three profiles for that Namespace and sets a 24-hour
-maximum. Reduce its allowed profiles when the team needs less access.
+The sample allows `git-write` on one exact branch ref for that Namespace and sets a 24-hour
+maximum. For this draft workflow, change `transport` to `git-and-draft-pr`,
+set `pullRequestBase: main`, and authorize `refs/heads/agent-repository-check`.
 
 Merge the [Installation fragment](../../../deploy/examples/repository-credentials/installation.fragment.yaml)
 into the existing Installation YAML. Preserve the existing Backend list and
 Driver settings, including Compute images and network rules: the fragment is not
 a complete Installation. Its Backend ID, registry Backend ID, and service
-`backend.backendId` must all be `repository-backend`. The repo Driver ID must
+`backend.backendId` must all be `repository-backend`. The repository policy ID must
 match its Backend member. Adjust the release label `oce` if your release differs.
 
 The [service config](../../../deploy/examples/repository-credentials/service-config.json)
-is a Kubernetes projection input. The sidecar supplies protected App-key,
+is a Kubernetes projection input. The sidecar supplies protected
 registry, and TLS paths; this file alone is not a standalone-service config.
 Follow [installation](installation.md) to provision the immutable registry
-ConfigMap and separate service-config, App-key, TLS, and public-CA Secrets, then
+ConfigMap, worker-only App-key and custody Secrets, and separate service-config, TLS, and public-CA Secrets, then
 set the documented `repositoryCredentials` Helm values. Build from the intended
 source and select immutable controller, credential-service, and full Agent runtime
 images. Use one worker/service owner with `Recreate`.
@@ -147,12 +143,13 @@ git config user.email "agent@example.invalid"
 git add repository-access-check.md
 git commit -m "Verify team repository access"
 git push origin HEAD:refs/heads/agent-repository-check
-gh pr create -R github.com/example/project --base main --head agent-repository-check \
+oce-github pr-create --base main --head agent-repository-check \
   --draft --title "Repository access check" --body "Verify the team Agent workflow."
 ```
 
-Replace the branch if it already exists and use the repository's actual base
-branch. Native Git and the bundled `gh` router select the admitted binding. The
+The head and base must match the approved registry policy. If the branch already
+exists, stop and review the task before changing that approval. Native Git and
+the draft helper select the admitted binding. The
 Agent does not run `gh auth login`, receive a PAT, or open a session manually.
 
 ## Verify, troubleshoot, and finish
@@ -177,3 +174,35 @@ only its temporary branch through your team's GitHub workflow. Keep the shared
 App and platform Secrets while other Agents depend on them. For permanent
 offboarding, retire affected Agents, resolve cleanup, and then remove the
 repository from the App installation and publish a new immutable registry policy.
+
+## Fix an App key the worker refuses
+
+The worker reads and parses the mounted key at startup. A key that cannot sign stops it
+with `PREPARED_GITHUB_APP_KEY_INVALID` and a `reason`: `app_key_unreadable` (missing,
+empty, over 32 KiB, or open to group write or other users), `app_key_unparsable` (a
+public key, certificate or passphrase-protected key) or `app_key_unsupported` (not
+RSA of 2048 to 8192 bits). The log never includes key bytes. The worker restarts until
+the Secret holds a usable key; put one there as in the next section. A key that goes
+bad while the worker runs is read at the next preparation, which logs `worker.error`
+with the same code and `reason`; the worker keeps running and retries every 5 seconds.
+
+## Replace a rejected App key
+
+Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
+`blocked`) for the affected revision and repository. Already issued material can
+remain usable until expiry. An active Agent or a working model reply does not
+prove Git access. After expiry, the OpenShell route reports unavailable material;
+a new deployment can wait at `REPOSITORY_GIT_MATERIAL_PENDING` and fail at its
+convergence deadline.
+
+Put a key GitHub accepts in `private-key.pem` of the Secret selected by
+`repositoryCredentials.appKeySecretName`, using the protected-input procedure in
+[installation](installation.md#prepare-the-registry-and-protected-inputs).
+Keep it worker-only. Allow the mounted Secret to update, then deploy a new
+revision of each affected Agent and verify a fresh fetch. The worker re-reads the
+key; restoring it alone does not reopen a quarantined preparation. The new revision
+gets material at once when GitHub refused the old attempt. If GitHub's answer was
+lost, it waits until no token from that attempt can be valid, 72 minutes after the
+attempt began. Preserve
+unresolved retirement with its original owner; see
+[Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).

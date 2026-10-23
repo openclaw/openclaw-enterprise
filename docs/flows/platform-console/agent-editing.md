@@ -204,9 +204,10 @@ reservation explains the refusal. PATCH sends
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
-IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
-and asks a Namespace administrator to grant access without repeating the
-channel save. An uncertain PATCH blocks another
+IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
+Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. An administrator's console
+also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
+An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)

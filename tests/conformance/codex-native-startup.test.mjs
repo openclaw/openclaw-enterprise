@@ -53,6 +53,46 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   const completedTurn = (...events) => [started, ...events, assistant, completed];
   const scenarios = [
     {
+      name: "protected profile without enrollment refuses before any native process",
+      protectedInference: "missing",
+      native: [],
+    },
+    {
+      name: "protected probe retains zero retry settings despite ignoring user config",
+      protectedInference: "signed",
+      events: completedTurn(),
+      expect: ready,
+    },
+    {
+      name: "protected probe timeout never starts a second business request",
+      protectedInference: "signed",
+      native: [login(), probe([], timedOut, 30000)],
+      expect: probeTimeout,
+    },
+    {
+      name: "protected probe refuses an unexpected native stream retry",
+      protectedInference: "signed",
+      events: completedTurn(recoveredStreamError),
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }),
+    },
+    {
+      // Finding 1599: a protected profile retries nothing, so a transient failure that earns
+      // an unprotected probe its one retry is held at once, after one business request.
+      name: "protected transient probe error never starts a second business request",
+      protectedInference: "signed",
+      native: [login(), probe([started, errorEvent("connection refused")], { status: 1 })],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "error-event" }),
+    },
+    {
+      name: "protected transient failed turn never starts a second business request",
+      protectedInference: "signed",
+      native: [
+        login(),
+        probe([started, failedTurn("unexpected status 502: upstream")], { status: 1 }),
+      ],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 502 }),
+    },
+    {
       name: "provider PAT placeholder uses native auth storage before the model probe",
       providerPat: true,
       events: completedTurn(),
@@ -432,7 +472,7 @@ test("Codex runtime gates startup and readiness on a successful native authentic
   ];
   for (const scenario of scenarios) {
     await t.test(scenario.name, (t) => {
-      checkCodexStartup(t, scenario);
+      return checkCodexStartup(t, scenario);
     });
   }
 });
@@ -951,9 +991,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
     },
   ];
   for (const scenario of scenarios) {
-    await t.test(scenario.name, (t) => {
-      checkCodexStartup(t, scenario);
-    });
+    await t.test(scenario.name, (t) => checkCodexStartup(t, scenario));
   }
 });
 
@@ -1278,6 +1316,16 @@ test("Codex runtime retries a reliability failure of its login or model check, n
       expect: exitFailure("exit-1"),
     },
     {
+      // Finding 1599: a protected profile retries nothing, including a Codex exit whose
+      // output names a reliability class.
+      name: "a protected model check that exits with a network failure is held at once",
+      protectedInference: "signed",
+      native: [login(), exited("Error: error sending request for url")],
+      expect: exitFailure("exit-1"),
+      probeCodes: ["MODEL_PROBE_FAILED"],
+      probeFailureClasses: ["network"],
+    },
+    {
       name: "a model check timeout then a network exit holds without a second retry",
       native: [login(), probe([], timedOut, 30000), exited("connection refused")],
       retryAfterMs: 1000,
@@ -1287,9 +1335,8 @@ test("Codex runtime retries a reliability failure of its login or model check, n
     },
   ];
   for (const scenario of [...loginScenarios, ...probeScenarios]) {
-    await t.test(scenario.name, (t) => {
-      checkCodexStartup(t, scenario);
-    });
+    // checkCodexStartup is async since protected startup awaits its release.
+    await t.test(scenario.name, (t) => checkCodexStartup(t, scenario));
   }
 });
 
@@ -1534,8 +1581,8 @@ test("Codex runtime logs a failed login or model check's output class, never the
     },
   ];
   for (const scenario of scenarios) {
-    await t.test(scenario.name, (t) => {
-      const { status, diagnostics } = checkCodexStartup(t, scenario);
+    await t.test(scenario.name, async (t) => {
+      const { status, diagnostics } = await checkCodexStartup(t, scenario);
       assert.doesNotMatch(JSON.stringify(status) + diagnostics.join("\n"), leaked);
       // The held status keeps its existing shape: the class is a log field only.
       assert.equal(JSON.stringify(status).includes("failureClass"), false);
@@ -1790,8 +1837,8 @@ test("Codex runtime classifies a failed model check's stdout error events, never
     },
   ];
   for (const scenario of scenarios) {
-    await t.test(scenario.name, (t) => {
-      const { status, diagnostics } = checkCodexStartup(t, scenario);
+    await t.test(scenario.name, async (t) => {
+      const { status, diagnostics } = await checkCodexStartup(t, scenario);
       assert.doesNotMatch(JSON.stringify(status) + diagnostics.join("\n"), leaked);
       assert.equal(JSON.stringify(status).includes("failureClass"), false);
     });

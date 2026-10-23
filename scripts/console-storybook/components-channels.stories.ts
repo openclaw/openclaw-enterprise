@@ -68,6 +68,10 @@ export const ChannelChangedElsewhere = story("channelChangedElsewhere");
 export const ChannelChangedElsewhereWithEdits = story("channelChangedElsewhereWithEdits");
 export const ChannelChangedElsewhereMerged = story("channelChangedElsewhereMerged");
 export const ChannelSavePending = { ...story("channelSavePending"), name: "Channel save pending" };
+export const ChannelSecretGrantRefused = {
+  ...story("channelSecretGrantRefused"),
+  name: "Slack token saved, grant refused",
+};
 export const ChannelSaveUnknown = {
   ...story("channelSaveUnknown"),
   name: "Channel save outcome unknown",

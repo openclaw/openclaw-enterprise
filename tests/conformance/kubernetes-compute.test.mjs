@@ -1,3 +1,4 @@
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   requireConfiguration,
   ConfigurationValidationError as SharedConfigurationValidationError,
@@ -60,6 +61,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
   tenant,
@@ -246,7 +248,7 @@ test("repository capability admits only configured Compute-owned native topologi
         new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
           harness,
         ),
-      unsupported,
+      { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
     );
   }
   for (const [id, mode] of [
@@ -887,6 +889,7 @@ function dedicatedFirstDeployFixture({
   clock,
   modelEndpoint,
   sandboxDriver,
+  openShellGit,
   revision: revisionOverrides = {},
 } = {}) {
   const state = {
@@ -924,6 +927,7 @@ function dedicatedFirstDeployFixture({
     }),
     {
       sandboxDriver,
+      ...(openShellGit === undefined ? {} : { openShellGit }),
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -2784,6 +2788,179 @@ test("an unacknowledged workspace node binding costs at most one bounded wait ac
   state.gatewayWorkspaceNodeId = "node-1";
   await driver.activateRevision(revision, authContext(revision));
   assert.equal(clock.now, 20_000);
+});
+
+// The worker issues a version's first prepared Git token once the version is active, and
+// OpenShell resets every Sandbox connection when it installs it, the workspace node's
+// included (finding 2141). Activation names that wait, then the node's reconnection, so the
+// deployment does not report success a moment before the node drops.
+test("activation waits for the first repository Git credential install and the node's reconnection", async () => {
+  const clock = { now: 1_000_000 };
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    repositoryAccess: openShellRepositoryAccess(
+      {
+        route: (id) => openShellGit.route(id),
+        materialInstalledAt: (id) => openShellGit.materialInstalledAt(id),
+      },
+      () => undefined,
+    ),
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const git = { route: { state: "pending", reason: "awaiting_material" }, installedAt: undefined };
+  const reads = { route: 0, installedAt: 0 };
+  const openShellGit = {
+    route(revisionId) {
+      assert.equal(revisionId, revision.id);
+      reads.route++;
+      return git.route;
+    },
+    materialInstalledAt(revisionId) {
+      assert.equal(revisionId, revision.id);
+      reads.installedAt++;
+      const value = git.installedAt;
+      if (git.moveOnRead) {
+        // A renewal lands while this pass reads the node.
+        git.moveOnRead = false;
+        git.installedAt = clock.now;
+      } else if (git.closeOnRead) {
+        // The route closes while this pass reads the node (a failed read, lost material).
+        git.closeOnRead = false;
+        git.installedAt = undefined;
+      }
+      return value;
+    },
+  };
+  const { state, driver, revision, namespace, gatewayName, prepare, markReady } =
+    dedicatedFirstDeployFixture({
+      clock,
+      sandboxDriver,
+      openShellGit,
+      revision: {
+        sandboxDriverId: sandboxDriver.id,
+        repositoryCredentials: {
+          driver: { id: "repository", implementation: "github" },
+          bindings: [
+            {
+              repositoryRef: "project",
+              profile: "git-write",
+              backendId: "github-primary",
+              grant: { providerInstanceId: "github", repositoryId: "42", grantId: "write-project" },
+            },
+          ],
+          deadlineWallMs: Date.now() + 600_000,
+        },
+      },
+    });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  state.connected = true;
+  // A verified route still waiting for its first material is ready to activate (finding 2139).
+  const observation = await prepare();
+  assert.equal(observation.ready, true, inspect(observation));
+  assert.ok(reads.route > 0, "readiness consulted the route");
+  driver.now = () => clock.now;
+  const pending = (code, message) =>
+    assert.rejects(driver.activateRevision(revision, authContext(revision)), (error) => {
+      assert.ok(error instanceof ActivationPendingError);
+      assert.equal(error.code, code);
+      assert.match(error.message, message);
+      return true;
+    });
+  // Active, but the worker has not installed the token yet. The install is checked before
+  // the node is read: a node that is down meanwhile does not change the named wait.
+  state.connected = false;
+  await pending(
+    "REPOSITORY_GIT_MATERIAL_PENDING",
+    /has not installed its repository Git credential/,
+  );
+  assert.equal(reads.installedAt, 1);
+  state.connected = true;
+  // The route verified the install this instant: the Gateway may still show the connection
+  // the Sandbox is closing, so the node is not read inside the settle margin.
+  git.route = { state: "installed" };
+  git.installedAt = clock.now;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  clock.now += 1_999;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  assert.equal(reads.installedAt, 3);
+  // The margin passed and the node is still reconnecting: the node read holds the pass.
+  clock.now += 1;
+  state.connected = false;
+  await pending("WORKSPACE_NODE_PENDING", /is not ready/);
+  assert.equal(reads.installedAt, 4, "the install is read once before the node");
+  // The node is back, but a new install lands while it is read: that read may predate the
+  // new reset, so the pass waits again.
+  state.connected = true;
+  git.moveOnRead = true;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /installed .* while its node was read/);
+  assert.equal(reads.installedAt, 6, "the install is read again after the node");
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  // The route closes while the node is read (a failed read, lost material): the install is
+  // no longer verified, which is that wait, not a reconnection.
+  clock.now += 2_000;
+  git.closeOnRead = true;
+  await pending("REPOSITORY_GIT_MATERIAL_PENDING", /was not verified after its node was read/);
+  assert.equal(reads.installedAt, 9);
+  await pending(
+    "REPOSITORY_GIT_MATERIAL_PENDING",
+    /has not installed its repository Git credential/,
+  );
+  // Verified again, settled and reconnected after the newest install: the version activates.
+  git.installedAt = clock.now - 2_000;
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(reads.installedAt, 12);
+  // A later pass (maintenance) with the same install does not wait again.
+  clock.now += 3_600_000;
+  await driver.activateRevision(revision, authContext(revision));
+});
+
+// The wait is for repository-bound versions only: the route is never consulted otherwise.
+test("activation of a version without repository credentials never consults the Git route", async () => {
+  const openShellGit = {
+    route() {
+      assert.fail("the route is consulted only for repository-bound versions");
+    },
+    materialInstalledAt() {
+      assert.fail("the install time is read only for repository-bound versions");
+    },
+  };
+  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
+    dedicatedFirstDeployFixture({ openShellGit });
+  assert.equal(revision.repositoryCredentials, undefined);
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  state.gatewayWorkspaceNodeId = "node-1";
+  assert.equal((await prepare()).ready, true);
+  await driver.activateRevision(revision, authContext(revision));
 });
 
 // A node that has not paired within the pass's wait leaves the pass pending; the
@@ -7594,20 +7771,24 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
       },
     },
   });
+  const source = {
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    namespaceId: tenant.id,
+    type: "openai",
+    ownerCapability: "credential_gateway",
+    driverId: credentialGatewayDriver.id,
+  };
   const revision = {
     id: "rev-withdraw",
     namespaceId: tenant.id,
     agentId: "agent-withdraw",
     compute: { id: driver.id, implementation: driver.implementation },
     sandboxDriverId: sandboxDriver.id,
+    credentialSources: [
+      { sourceId: source.id, sourceType: source.type, credentialGatewayId: source.driverId },
+    ],
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     createdAt: "2026-09-28T00:00:00.000Z",
-  };
-  const source = {
-    id: "cs_00000000-0000-4000-8000-000000000002",
-    namespaceId: tenant.id,
-    type: "openai",
-    driverId: credentialGatewayDriver.id,
   };
   const signal = AbortSignal.timeout(5_000);
 
@@ -8105,6 +8286,7 @@ test("credential-source authentication renders no model Secret and requires the 
     type: "openai",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -8293,6 +8475,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     type: "bearer-token",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -8337,6 +8520,7 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg-native-approvers",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -9017,6 +9201,7 @@ test("native channel providers require Secret bindings and project them only to 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -10142,6 +10327,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     harnessAuth: apiKeyAuth,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: "service-principal-embedded-recovery",
     createdAt: tenant.createdAt,
   };
@@ -12036,6 +12222,7 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     namespaceId: tenant.id,
     agentId: "agent-foreign",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -12781,6 +12968,110 @@ test("provider Harness requires its assigned network profile before readiness an
   }
 });
 
+test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
+  const provider = await harnessTlsFixture(t);
+  const execution = await harnessTlsFixture(t);
+  for (const crossCluster of [false, true]) {
+    const configured = crossCluster
+      ? twoClusterOptions()
+      : routedOptions({
+          runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        });
+    configured.network.providerHarness = {
+      namespace: "provider",
+      podLabels: { app: "provider" },
+      address: "10.43.0.50",
+      port: 8443,
+    };
+    if (crossCluster) {
+      configured.executionCluster.caBundle = execution.caBundle;
+    }
+    const driver = new KubernetesComputeDriver(configured);
+    const revision = routedRevision(driver);
+    const target = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
+    const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+    const configuration = driver.gatewayConfiguration(revision, "node", target);
+    const endpoint = {
+      url: "wss://harness.example.test:8443/",
+      tls: { caBundle: provider.caBundle },
+    };
+    const render = (value) =>
+      driver.deployment(
+        `gateway-${digest(revision.agentId)}`,
+        ownership,
+        target,
+        configured.images.gateway,
+        "gateway-account",
+        "gateway",
+        {},
+        "info",
+        configuration,
+        false,
+        undefined,
+        undefined,
+        [],
+        [],
+        undefined,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        value,
+      );
+    const writes = [];
+    driver.apiClients = Promise.resolve({
+      core: {
+        async readNamespacedConfigMap() {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        },
+        async patchNamespacedConfigMap({ body }) {
+          writes.push(body);
+        },
+      },
+    });
+    await driver.reconcileHarnessTrust(revision, endpoint, target);
+    assert.deepEqual(writes[0].data, {
+      "ca-bundle.pem": provider.caBundle + (crossCluster ? "\n" + execution.caBundle : ""),
+    });
+    const pod = render(endpoint).spec.template.spec;
+    const roots = pod.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS");
+    assert.deepEqual(roots, [
+      { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" },
+    ]);
+    const system = render({ url: endpoint.url }).spec.template.spec;
+    assert.equal(
+      system.volumes.some(({ name }) => name === "harness-trust"),
+      false,
+    );
+    assert.deepEqual(
+      system.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+      crossCluster
+        ? [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/execution-ca.pem" }]
+        : [],
+    );
+    for (const tls of [
+      { caBundle: "" },
+      { caBundle: "not a certificate" },
+      { caBundle: provider.cert },
+      { caBundle: provider.caBundle + provider.key },
+      { caBundle: provider.caBundle, privateKey: provider.key },
+      { caBundlePath: provider.rootCertificatePath },
+    ]) {
+      assert.throws(() => render({ url: endpoint.url, tls }), /TLS trust/);
+      const before = writes.length;
+      await assert.rejects(
+        driver.reconcileHarnessTrust(revision, { url: endpoint.url, tls }, target),
+        /TLS trust/,
+      );
+      assert.equal(writes.length, before, "invalid trust must fail before any ConfigMap write");
+    }
+    assert.throws(
+      () => render({ ...endpoint, url: "ws://harness.example.test:8443/" }),
+      /TLS trust requires a WSS endpoint/,
+    );
+  }
+});
+
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
   const fixture = providerReadinessFixture();
   fixture.driver.waitBeforeRetry = async () => {};
@@ -12937,6 +13228,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     namespaceId: tenant.id,
     agentId: "agent-a",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -15449,7 +15741,8 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
 // Finding 860: retiring the last OpenShell revision left the workspace-node pair
 // (supervisor egress to the Gateway, Gateway ingress from supervisors) in the namespace.
 for (const stopped of [false, true]) {
-  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async () => {
+  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async (t) => {
+    const tls = await harnessTlsFixture(t);
     const cleanupCalls = [];
     const driver = new KubernetesComputeDriver(
       options({
@@ -15538,6 +15831,32 @@ for (const stopped of [false, true]) {
     );
     save(sibling);
 
+    const trustName = `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    const trust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        trustName,
+        { ...ownership, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(trust);
+    const siblingTrust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
+        { ...ownership, agentId: "agent-sibling", revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(siblingTrust);
+
     const deleted = [];
     const missing = (kind, name) =>
       Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
@@ -15593,6 +15912,12 @@ for (const stopped of [false, true]) {
 
     await driver.retireRevision(revision);
     assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(
+      objects.has(key("ConfigMap", trustName)),
+      false,
+      "retirement removes exact public trust",
+    );
+    assert.deepEqual(objects.get(key("ConfigMap", siblingTrust.metadata.name)), siblingTrust);
     assert.equal(objects.has(key("Deployment", gatewayName)), false);
     for (const name of policyNames) {
       assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
@@ -16805,6 +17130,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
     type: snapshot.sourceType,
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: snapshot.credentialGatewayId,
     state: "ready",
     createdAt: tenant.createdAt,

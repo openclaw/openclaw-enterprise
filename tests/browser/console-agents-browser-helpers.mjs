@@ -14,6 +14,27 @@ import {
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
 
+// What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
+// persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
+// or write IAM policy.
+/** @type {readonly (readonly [import("../../packages/contracts/src/index.ts").Permission["action"], import("../../packages/contracts/src/index.ts").Permission["resourceKind"]])[]} */
+export const MEMBER_WRITE = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["update", "agent"],
+  ["deploy", "agent"],
+  ["operate", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+  ["update", "configuration"],
+  ["read", "secret"],
+  ["operate", "secret"],
+  ["create", "agent"],
+  ["create", "configuration"],
+  ["create", "secret"],
+  ["read", "preset"],
+];
+
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
 // message and data that the API and occ return for that failure.
@@ -263,17 +284,6 @@ export async function loginThroughForm(
   await page.waitForURL(signedInPath);
 }
 
-// Browser storage the console wrote, except the tab-scoped Installation-access probe answer
-// (session owner key, admin flag and observability URL), which never holds drafts or
-// credentials.
-export async function consoleStorage(page) {
-  return page.evaluate(() => {
-    const session = { ...sessionStorage };
-    delete session["occ.console.installationAccess"];
-    return { local: { ...localStorage }, session };
-  });
-}
-
 /** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
   return requests.filter(
@@ -289,6 +299,14 @@ export async function selectSecret(scope, label, secret, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? secret.name);
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
+}
+
+// Expires every session the app holds, as time passing would: the API then refuses each one.
+// Better Auth's memory adapter stores session expiry as Date values.
+export function expireSessions(fixture) {
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
 }
 
 export async function expectNoText(page, pattern) {

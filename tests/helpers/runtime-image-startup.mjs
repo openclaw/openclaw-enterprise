@@ -365,6 +365,34 @@ export function jsonLogEntries(output) {
     .filter((entry) => entry !== undefined);
 }
 
+// A new volume owned by the Gateway user, for mounting at `mountPath` (the
+// Gateway home or its ~/.openclaw) as its PersistentVolume is. `seed`, a shell
+// command run first as root with `seedVolumes` also mounted, can fill it.
+export async function gatewayStateVolume(t, mountPath, { seed, seedVolumes = [] } = {}) {
+  const volume = `oce-runtime-image-state-${randomBytes(6).toString("hex")}`;
+  await runDocker(["volume", "create", volume]);
+  t.after(() => runDocker(["volume", "rm", "-f", volume]).catch(() => {}));
+  // As root, like the Docker Driver's workspace setup: a new volume mounted
+  // below the image's home can be root-owned.
+  await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "0:0",
+    "--network",
+    "none",
+    "--volume",
+    `${volume}:${mountPath}`,
+    ...seedVolumes.flatMap((value) => ["--volume", value]),
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    `${seed === undefined ? "" : `${seed} && `}chown -R 1000:1000 ${mountPath}`,
+  ]);
+  return volume;
+}
+
 export async function runGatewaySmoke(t, harnessId, options = {}) {
   const {
     collectPlugins = harnessId === "codex",

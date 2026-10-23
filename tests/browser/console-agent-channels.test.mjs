@@ -9,7 +9,9 @@ import {
   detailUrl,
   expectNoText,
   fileBrowser,
+  holdRequests,
   login,
+  MEMBER_WRITE,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -22,6 +24,12 @@ import {
   waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
+
+// The Agent's grant of a saved Slack Secret was refused, or the IAM policy shows none (finding 1920).
+const GRANT_REFUSED =
+  "Configuration saved, but this Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.";
+const GRANT_MISSING =
+  "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Select Retry Secret access to grant it.";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -735,7 +743,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
     assert.deepEqual(nonAuthWriteRequests(requests), []);
   });
 
-  test("Channel drawer reports partial save when post-PATCH Secret grant is rejected", async (t) => {
+  // Only a grant whose answer is lost or failed (5xx) leaves its outcome unknown; a refusal is
+  // known (the member case below, finding 1920).
+  test("Channel drawer reports an unknown grant outcome when the post-PATCH Secret grant fails", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Partial Slack grant");
     const slackAppSecret = await fixture.createSecret(
       namespace.id,
@@ -750,8 +760,8 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
     await failMethod(page, `**/namespaces/${namespace.id}/iam/access-bindings`, "POST", {
-      status: 403,
-      error: { code: "ACCESS_DENIED", message: "masked IAM denial" },
+      status: 503,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked IAM failure" },
       requestId: "req_00000000-0000-4000-8000-000000000433",
     });
 
@@ -765,7 +775,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     // the operator to (finding 2195: #3207 wrapped the error and dropped it).
     await page
       .getByText(
-        "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask a Namespace administrator to grant this Agent access to the saved Secret. Request ID: req_00000000-0000-4000-8000-000000000433",
+        "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask an Installation administrator to grant this Agent access to the saved Secret. Request ID: req_00000000-0000-4000-8000-000000000433",
         { exact: true },
       )
       .waitFor();
@@ -798,9 +808,122 @@ describe("Agent channels", { concurrency: 3 }, () => {
     await appToken.waitFor();
     assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
     await waitForInputValue(appToken, secretOptionLabel(slackAppSecret));
+    // The reloaded page no longer knows of the failed grant, but an Installation administrator's
+    // console reads the IAM policy: the saved app token is not plainly Bound (finding 1920). The
+    // bot token is still missing, so nothing can be saved or retried yet.
+    await page.getByText("Bound · Agent access not confirmed", { exact: true }).waitFor();
+    await page.getByText(GRANT_MISSING, { exact: true }).waitFor();
     assert.equal(
-      await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
+      await page.getByRole("button", { name: "Retry Secret access" }).isDisabled(),
       true,
+    );
+  });
+
+  // A member cannot write IAM policy, so the real Native IAM Driver refuses the Agent's grant of a
+  // Slack token Secret saved from the drawer. That is a known partial save, not an unknown
+  // outcome: it says who can grant it, and an Installation administrator retries it (finding 1920).
+  test("Channel drawer reports a member's refused Slack Secret grant for an administrator to retry", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "Member Slack grant");
+    const appSecret = await fixture.createSecret(
+      namespace.id,
+      "Member Slack app token",
+      "hidden-member-app",
+    );
+    const botSecret = await fixture.createSecret(
+      namespace.id,
+      "Member Slack bot token",
+      "hidden-member-bot",
+    );
+    const { agent } = await createSlackAgent(fixture, namespace, {
+      name: "Member Slack Grant Agent",
+      slug: "member-slack-grant",
+      slack: { channels: { CMEMBER123: { requireMention: true } } },
+      secretBindings: { SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } } },
+    });
+    const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "channels"),
+      writer.credentials,
+    );
+    await page.getByRole("heading", { name: "Member Slack Grant Agent" }).waitFor();
+    await page.getByRole("button", { name: "Edit Slack" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+    await selectSecret(dialog, "Slack app token", appSecret);
+    const policyRead = page.waitForResponse((response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/iam/roles`),
+    );
+    await dialog.getByRole("button", { name: "Save configuration", exact: true }).click();
+    assert.equal((await policyRead).status(), 403);
+    // The Configuration saved, so the drawer closes; the page names the refusal and a way on.
+    await dialog.waitFor({ state: "hidden" });
+    const warning = page.getByText(GRANT_REFUSED, { exact: true });
+    await warning.waitFor();
+    assert.equal(
+      await warning.evaluate((node) => node.closest(".status")?.getAttribute("data-tone")),
+      "warning",
+    );
+    await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
+    // Not a finished save: the notice says only what saved.
+    await page.getByText("Configuration saved.", { exact: true }).waitFor();
+    await expectNoText(page, /outcome is unknown|Outcome unknown|Channels saved\./);
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    assert.equal(await page.getByRole("button", { name: "Edit Slack" }).isDisabled(), false);
+    const configuration = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    );
+    assert.deepEqual(configuration.data.secretBindings, {
+      SLACK_APP_TOKEN: { source: appSecret.ref, delivery: { type: "env" } },
+      SLACK_BOT_TOKEN: { source: botSecret.ref, delivery: { type: "env" } },
+    });
+
+    // Credentials marks the saved app token and keeps the grant for a retry.
+    await page.getByRole("link", { name: "Open Credentials" }).click();
+    await page.getByRole("button", { name: "Retry Secret access" }).waitFor();
+    await page.locator(".channel-secrets").getByText(GRANT_REFUSED, { exact: true }).waitFor();
+    assert.deepEqual(
+      await page
+        .locator(".credential-status-list .badge")
+        .evaluateAll((badges) => badges.map((badge) => badge.textContent)),
+      ["Bound · Agent access not confirmed", "Bound"],
+    );
+
+    // The administrator the warning names opens the Agent: its policy read finds no grant. The
+    // answer updates the panel in place, so a reader already in a picker keeps focus.
+    const { page: adminPage } = await newPage(t, fixture, { browser });
+    const bindingsRead = await holdRequests(
+      t,
+      adminPage,
+      `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+      { once: true, method: "GET" },
+    );
+    await openDraft(adminPage, fixture, agent, "Member Slack Grant Agent", "credentials");
+    await bindingsRead.requested;
+    const appPicker = adminPage
+      .locator(".channel-secrets")
+      .getByLabel("Slack app token", { exact: true });
+    await appPicker.focus();
+    bindingsRead.release();
+    await adminPage.getByText(GRANT_MISSING, { exact: true }).waitFor();
+    assert.equal(
+      await appPicker.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
+    await adminPage.getByRole("button", { name: "Retry Secret access" }).click();
+    await adminPage
+      .getByText(
+        "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
+      )
+      .waitFor();
+    await adminPage.getByText("Ready to deploy.", { exact: true }).waitFor();
+    assert.deepEqual(
+      await adminPage
+        .locator(".credential-status-list .badge")
+        .evaluateAll((badges) => badges.map((badge) => badge.textContent)),
+      ["Bound", "Bound"],
     );
   });
 
@@ -1011,8 +1134,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
   });
 
   // Every grant failure keeps the saved binding blocked. An unavailable IAM API (503) still leaves a
-  // known saved Configuration, not an unknown outcome. Retryable failures (429, 503) retry the
-  // pending grant on its own; 403 keeps it pending for the channel-edit check below.
+  // known saved Configuration, not an unknown outcome. A refusal (403) says who can grant it
+  // (finding 1920). Retry Secret access retries the pending grant on its own, without another
+  // Configuration write; 403 keeps it pending for the channel-edit check below.
   const grantErrorCodes = {
     403: "ACCESS_DENIED",
     429: "TOO_MANY_REQUESTS",
@@ -1053,13 +1177,19 @@ describe("Agent channels", { concurrency: 3 }, () => {
       await selectSecret(page, "Slack app token", replacementAppSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
       const grantWarning = page.getByText(
-        "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
+        grantStatus === 403
+          ? GRANT_REFUSED
+          : "Configuration saved, but Secret access grants could not be confirmed. Select Retry Secret access; if it is refused, ask an Installation administrator.",
       );
       await grantWarning.waitFor();
       // The Configuration saved, so the unconfirmed grant is a warning from the start, not a
       // refusal that turns into one when another Secret is picked (finding 2003).
       assert.equal(await grantWarning.getAttribute("data-tone"), "warning");
-      await waitForEnabled(page.getByRole("button", { name: "Save channel Secrets" }));
+      assert.equal(
+        await page.getByText("Bound · Agent access not confirmed", { exact: true }).count(),
+        1,
+      );
+      await waitForEnabled(page.getByRole("button", { name: "Retry Secret access" }));
       await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
       assert.equal(
         await page.getByRole("button", { name: "Deploy new version" }).isDisabled(),
@@ -1081,15 +1211,23 @@ describe("Agent channels", { concurrency: 3 }, () => {
       if (grantStatus !== 403) {
         // The pending grant is retried on its own once IAM answers again.
         await page.unroute(`**/namespaces/${namespace.id}/iam/access-bindings`);
-        await page.getByRole("button", { name: "Save channel Secrets" }).click();
+        await page.getByRole("button", { name: "Retry Secret access" }).click();
         await page
-          .getByText("Channel Secret bindings saved. Deploy the new version to deliver them.")
+          .getByText(
+            "This Agent can use its saved Slack Secrets. Deploy the new version to deliver them.",
+          )
           .waitFor();
         assert.deepEqual(
           accessBindingPostRequests(requests, namespace.id).map(
             (request) => request.body.resourceId,
           ),
           [replacementAppSecret.id, replacementAppSecret.id],
+        );
+        const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+        assert.equal(
+          requests.filter(({ method, path }) => method === "PATCH" && path === configurationPath)
+            .length,
+          1,
         );
         assert.equal(
           await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
