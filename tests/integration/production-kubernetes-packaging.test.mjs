@@ -6127,7 +6127,17 @@ test(
       [{ "openshellGit.port": "8443" }, /distinct from repository/],
       [{ "openshellGit.port": "65536" }, /unprivileged TCP port/],
       [{ "openshellGit.port": "8445.5" }, /positive safe integer/],
-      [{ "openshellGit.port": "08445" }, /openshellGit.port must be a TCP port without leading/],
+      // Sprig int read "02000" as octal 1024 and startup refused the text, after the install.
+      [{ "openshellGit.port": "02000" }, /openshellGit.port must be a TCP port without leading/],
+      // The provider egress rule read "02000" as port 1024 and "0x7d0" as 2000.
+      [
+        { "repositoryCredentials.upstreamPort": "02000" },
+        /repositoryCredentials.upstreamPort must be a TCP port without leading/,
+      ],
+      [
+        { "repositoryCredentials.upstreamPort": "0x7d0" },
+        /repositoryCredentials.upstreamPort must be a positive safe integer/,
+      ],
       [{ "openshellGit.tlsSecretName": "repository-app-key" }, /must name a dedicated Secret/],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
