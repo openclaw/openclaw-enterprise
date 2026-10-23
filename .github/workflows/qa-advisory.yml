@@ -160,7 +160,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y podman python3-venv acl
           python3 -m venv "$RUNNER_TEMP/podman-compose"
-          "$RUNNER_TEMP/podman-compose/bin/pip" install podman-compose==1.5.0
+          "$RUNNER_TEMP/podman-compose/bin/pip" install --require-hashes --only-binary=:all: -r scripts/ci/podman-compose-requirements.txt
           echo "$RUNNER_TEMP/podman-compose/bin" >> "$GITHUB_PATH"
           sudo systemctl start podman.socket
           # This disposable CI user already has passwordless sudo. Socket access

@@ -202,6 +202,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
+		if r.composeUnsettled {
+			result = errors.Join(result, fmt.Errorf("Compose provider termination is unconfirmed; preserving %s without rollback", directory))
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		var cleanupErr error
@@ -241,7 +245,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
 	started = true
-	if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
+	if err := r.compose(ctx, state, "build", "postgres", "migrate", "bootstrap"); err != nil {
+		return err
+	}
+	if err := r.compose(ctx, state, "up", "--no-build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
 		return err
 	}
 	for _, service := range []string{"migrate", "bootstrap"} {
@@ -337,18 +344,21 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
-	buildOption := "--build"
 	if routing != nil {
 		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
 			return err
 		}
-		buildOption = "--no-build"
 	}
-	services := []string{"up", buildOption, "-d", "controller", "worker-kubernetes"}
+	services := []string{"controller", "worker-kubernetes"}
 	if state.BrowserPort != 0 {
 		services = append(services, "browser-proxy")
 	}
-	if err := r.compose(ctx, state, services...); err != nil {
+	if routing == nil {
+		if err := r.compose(ctx, state, append([]string{"build"}, services...)...); err != nil {
+			return err
+		}
+	}
+	if err := r.compose(ctx, state, append([]string{"up", "--no-build", "-d"}, services...)...); err != nil {
 		return err
 	}
 	if routing != nil {

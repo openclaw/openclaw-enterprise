@@ -11,6 +11,7 @@
       "expectedTests": [
         "Podman dev-up bounds failed initialization and removes only its owned resources",
         "Podman dev-up bounds blocked initialization and removes only its owned resources",
+        "Podman dev-up bounds cancelled build and removes only its owned resources",
         "Podman QA preserves private routing after theme and Preset preparation"
       ]
     }

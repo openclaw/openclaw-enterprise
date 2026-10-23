@@ -1,7 +1,7 @@
 ---
 created: 2026-09-09
 updated: 2026-10-23
-last_updated_session: authoring-run/790088f0-b0c7-4f0d-a10c-084b2a240b18
+last_updated_session: authoring-run/48e43403-e548-4470-9266-d52763a0c1dd
 ---
 
 # Compose development startup
@@ -10,10 +10,9 @@ last_updated_session: authoring-run/790088f0-b0c7-4f0d-a10c-084b2a240b18
 
 ## Overview
 
-`scripts/dev-up` starts Docker or Kubernetes Compute. Compose-backed profiles run
-PostgreSQL, migration, bootstrap, API, and worker in Compose; the Kubernetes-only
-profile runs them in the owned k3d cluster. Startup requires authenticated
-Installation and bootstrap Namespace readiness, plus Workspace readiness for OpenShell.
+`scripts/dev-up` starts Docker or Kubernetes Compute, with OCC in Compose or
+k3d. Readiness requires authenticated Installation, bootstrap Namespace, and
+OpenShell Workspace checks.
 
 ## Entry Points
 
@@ -260,16 +259,19 @@ owns both OpenShell control-plane sequences.
 `internal/occdev/kubernetes.go:writeInstallation`,
 `internal/occdev/openshell.go:prepareOpenShell`.
 
-Compose starts PostgreSQL, migration, and bootstrap. Each Compose command uses
-the configured startup timeout. `internal/occdev/command.go:composeServiceID`
-finds service containers through exact engine project/service labels. After both one-shot
-services succeed, startup creates k3d on the Compose network.
+Compose builds separately without a readiness deadline, then starts PostgreSQL,
+migration, and bootstrap with `--no-build`. Other Compose commands use the startup
+timeout. `internal/occdev/compose_process_unix.go:ownComposeProcessGroup` kills
+and drains the provider process group on cancellation, including inherited pipes.
+Unconfirmed termination preserves state without rollback.
+`internal/occdev/command.go:composeServiceID` uses exact project/service labels.
+After both one-shot services succeed, startup creates k3d on the Compose network.
 With the default Sandbox profile, `OCC_DEVELOPMENT_K3S_IMAGE` selects the node
 image; its default `+v1.35` resolves the latest K3s 1.35 patch. An explicit
 image skips lookup. OpenShell uses its pinned image in both control-plane modes.
 Both profiles use `internal/occdev/kubernetes.go:developmentImageGCArgs` to retain
 local images (GC thresholds 100/99); disk-pressure eviction remains enabled.
-The API binds loopback and preserves the default kubeconfig/context. Non-root
+The API binds loopback; default kubeconfig/context stay unchanged. Non-root
 API/worker mounts use the TLS-verified load balancer without an engine socket.
 
 `internal/occdev/kubernetes.go:engineImageReference` resolves Podman/Docker names,
@@ -331,14 +333,13 @@ Both Kubernetes profiles pass `OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` to `k3d 
 permission, write or close failures, including partial external keys. It preserves
 existing targets and reports removal failures with the original error.
 
-Failure triggers cleanup. Shutdown validates marker, state and snapshot, stops
-reconcilers, then removes owned k3d and Compose resources through the recorded
-engine. Podman uses exact project labels and direct removal, retrying while
+Shutdown validates recorded ownership, stops reconcilers, then removes owned
+k3d and Compose resources through the recorded engine. Podman uses exact project labels and direct removal, retrying while
 container dependencies disappear. It verifies container/volume/network absence;
 no dependency cascades or image pruning. Shutdown has five minutes; rollback has
-two. Cleanup continues after errors and retains failed state for recovery.
+two. Cleanup retains failed state.
 Success removes state and owned keys. External `--key-output` files remain
-operator-owned unless later OpenShell readiness fails during startup.
+operator-owned unless OpenShell readiness fails.
 
 ### 15. Start and remove the optional Keycloak profile
 
@@ -380,6 +381,8 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 22:35: Separate builds from readiness deadlines and join Compose descendants before rollback. (authoring-run/48e43403-e548-4470-9266-d52763a0c1dd - 79ed9f58723db02f465553c97f94405380c53aa2)
 
 - 2026-10-23 15:01: Retain local images in both profiles. (authoring-run/790088f0-b0c7-4f0d-a10c-084b2a240b18 - 2392382f6f2f00a87ddf504b3bb090798381138d)
 

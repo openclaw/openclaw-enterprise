@@ -9,8 +9,8 @@ Install Node.js 24+, repository-pinned pnpm, the Go version from `go.mod`, k3d,
 kubectl, Helm, and Docker or Podman. Kubernetes-only mode uses the engine for
 k3d and images, not OCE services.
 
-On Linux, install Podman and `podman-compose`, then start the rootful API socket:
-No VM is required.
+On Linux, install Podman and `podman-compose`. No VM is required. Start the
+rootful API socket:
 
 ```bash
 sudo systemctl enable --now podman.socket
@@ -20,7 +20,9 @@ Run the launcher through `sudo` with the profile below. Startup selects and
 checks the API socket and k3d mount; no Docker variables are required.
 Rootful and rootless Podman use separate container storage.
 
-On macOS, use a rootful Podman machine sharing the checkout and state directory.
+On macOS, or Linux without host root access, use a rootful Podman machine
+sharing the checkout and state directory. VM creation needs an available
+virtualization provider.
 Run the launcher as your normal host user:
 
 ```bash
@@ -178,8 +180,8 @@ containing kubeconfig and credentials. Its default is `openclaw-development`
 under the temporary directory (macOS: `/private/var/folders/<id>/T`). Set absolute
 `OCC_DEVELOPMENT_STATE_DIRECTORY` for startup and cleanup to override it; parent
 paths cannot contain symlinks (macOS: use `/private/tmp/...`, not `/tmp/...`).
-`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds each Compose command, cluster
-readiness, and later waits. Allow enough time for a cold image build.
+`OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS` bounds Compose startup commands, cluster
+readiness, and later waits. Separate image builds run until completion or cancellation.
 Failures roll back owned resources; retained state includes cleanup instructions.
 Failed exclusive key writes remove partial outputs, never existing files, and
 report removal errors alongside write errors.
@@ -370,17 +372,17 @@ a durable private state directory, not `/tmp`.
 
 ## Rebuild after a source edit
 
-The environment registers immutable image digests, so running containers do not
-pick up source edits. Recreate it after controller, runtime, migration, Helm, or
-OpenShell integration changes; startup rebuilds both images from the current
-checkout unless an existing controller or runtime image was selected explicitly:
+Source edits require recreation because the environment uses immutable images.
+Startup rebuilds images unless you select existing ones. Manual Compose recreation
+can change controller/worker IPs and break their exact `/32` gateway policy.
+Use the standard lifecycle:
 
 ```bash
 ./scripts/dev-down
 ./scripts/dev-up
 ```
 
-This discards the owned Installation; it is not an in-place upgrade. If
+This deletes the owned Installation and database; it is not an in-place upgrade. If
 repository access was enabled, check the
 [credential cleanup limitation](local-repository-credentials.md) before removing
 the cluster. For a persistent Helm-installed k3d environment, complete the

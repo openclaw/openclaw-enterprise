@@ -229,10 +229,12 @@ sudo env PATH="$PATH" OCC_TEST_DEV_UP_CONTAINER_ENGINE=podman \
   tests/integration/dev-up-openshell-k3d-real.test.mjs
 ```
 
-The first proof fails initialization in real containers and checks rollback,
-including preservation of an unrelated volume, then verifies private routing
+The first proof fails initialization and cancels a delayed image build through
+the real provider. It checks descendant exit, no late resources, rollback, and
+preservation of a volume labelled with a near-miss project name. It verifies private routing
 after the browser QA fixture recreates OCC for theme and Preset changes. The
-fixture retains the exact controller/worker addresses admitted by the launcher.
+fixture retains the exact controller/worker addresses admitted by the launcher;
+this is a fixture constraint, not support for arbitrary Compose recreation.
 It explicitly enables bundled Presets, which OpenShell leaves opt-in.
 The second starts Compose OCC,
 OpenShell, and Kubernetes Compute through `scripts/dev-up`, checks authenticated
@@ -256,10 +258,11 @@ use the [Podman QA matrix selection](#qa-matrix) with authorized credentials.
 `OCC_TEST_QA_CONTAINER_ENGINE` selects `docker` (default) or `podman`;
 `OCC_TEST_QA_SANDBOX_DRIVER` selects `none` (default) or `openshell`.
 Podman browser proof requires `compose` and `openshell`. The advisory job uses
-native rootful Podman with `podman-compose` 1.5.0 and runs the
+native rootful Podman with hash-locked `podman-compose` 1.5.0 and dependencies, and runs the
 [`dev-up-podman` lane](../../scripts/ci/test-suites/dev-up-podman.json) alongside
 credentialed QA. Chromium runs as a normal user with access to the disposable
-runner's rootful socket. It trusts the launcher's CA and uses its native-admin
+runner's rootful socket through a job-scoped ACL. This differs from the documented
+local `sudo` path; the startup commands above exercise that path separately. It trusts the launcher's CA and uses its native-admin
 route; it does not install the older Compose QA relay.
 
 `OCC_TEST_QA_SCENARIOS` accepts `all` (default) or comma-separated selectors.
