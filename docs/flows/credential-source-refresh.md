@@ -269,8 +269,8 @@ expired read cannot start an exchange, and uncertain issuance blocks another att
 
 The grant names one Agent. Once that Agent's deletion begins, the shared live predicate
 stops claims, renewal and use. The worker's next pass disables the family and retires its
-current token for revocation. Agent deletion never waits on GitHub; deleting the source
-settles custody.
+current token for revocation. Agent deletion never waits on GitHub. Deleting the source
+waits up to 25 seconds for a revocation in flight; other unsettled custody still returns `409`.
 
 `apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts:store`
 clears the previous committed buffer and token buffers still on the publication

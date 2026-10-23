@@ -215,16 +215,22 @@ export class PreparedGitHubPostgres {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
         `SELECT count(*)::integer AS unsettled, CASE WHEN NOT bool_or(custody='current')
-          THEN max(${settledAfter("a")}) END AS "settlesAt"
+          THEN max(${settledAfter("a")}) END AS "settlesAt", bool_and(custody='revoking') AS revoking
         FROM ${attempts} a JOIN ${families} f USING (source_id)
         WHERE ${matching} AND NOT enabled AND NOT ${preparedAttemptSettled("a")}`,
         [source.key.source.id, source],
       );
-      const { unsettled, settlesAt } = rows[0] as { unsettled: number; settlesAt: Date | null };
+      const { unsettled, settlesAt, revoking } = rows[0] as {
+        unsettled: number;
+        settlesAt: Date | null;
+        revoking: boolean | null;
+      };
       return unsettled === 0
         ? { settled: true as const }
         : {
             settled: false as const,
+            // Every unsettled attempt is a revocation another owner has in flight.
+            revoking: revoking === true,
             ...(settlesAt instanceof Date && Number.isFinite(settlesAt.getTime()) && { settlesAt }),
           };
     });

@@ -685,7 +685,8 @@ test(
       let bytes;
       t.mock.method(client, "query", async (sql, ...args) => {
         const result = await query(sql, ...args);
-        // The pass first commits its Agent discovery on this same connection; lose the claim's.
+        // The pass first commits its Agent discovery on this connection, which the one-connection
+        // pool hands back to the retirement claim; lose only the claim's acknowledgment.
         if (sql === "COMMIT" && open.mock.callCount()) {
           bytes = open.mock.calls[0].result;
           assert.ok(
@@ -882,10 +883,12 @@ test(
     // Finding 2215: the worker renewed an Agent-bound source forever after its Agent was deleted.
     // A nine-minute provider lifetime keeps renewal due on every pass of a live family.
     let onIssue;
+    let onRevoke;
     const { gh, f, lifecycle, source } = await preparedLifecycleFixture(t, {
       tokenLifetimeMs: 9 * 60_000,
-      // GitHub has minted the token; its answer is still on the way.
+      // GitHub has minted or revoked the token; its answer is still on the way.
       issueResponseGate: () => onIssue?.(),
+      revokeResponseGate: () => onRevoke?.(),
     });
     const signal = new AbortController().signal;
     const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
@@ -932,11 +935,25 @@ test(
 
     // The next passes withdraw the family and revoke both tokens; nothing is issued again.
     await due();
-    const passes = [];
-    for (let pass = 0; pass < 5 && passes.at(-1) !== "idle"; pass++) {
-      passes.push((await lifecycle.maintain(signal)) ?? "idle");
-    }
-    assert.deepEqual(passes, ["retired", "retired", "idle"]);
+    assert.equal(await lifecycle.maintain(signal), "retired");
+    // Deleting the source while the worker's revocation is in flight waits for its answer,
+    // instead of reporting a token that may stay valid for an hour.
+    let release;
+    const answered = new Promise((resolve) => (release = resolve));
+    const revoking = new Promise((resolve) => {
+      onRevoke = () => {
+        onRevoke = undefined;
+        resolve();
+        return answered;
+      };
+    });
+    const pass = lifecycle.maintain(signal);
+    await revoking;
+    const withdrawn = lifecycle.withdraw(source, AbortSignal.timeout(30_000));
+    await delay(1000);
+    release();
+    assert.equal(await pass, "retired");
+    await withdrawn;
     await due();
     assert.equal((await lifecycle.maintain(signal)) ?? "idle", "idle");
     assert.equal(gh.issuesOfTokens.length, 2, "a deleted Agent's source was renewed");
