@@ -1,0 +1,18 @@
+{
+  "env": {
+    "OCC_TEST_DEV_UP_CONTAINER_ENGINE": "podman",
+    "OCC_TEST_DEV_UP_PODMAN_REAL": "1",
+    "OCC_TEST_QA_CONTAINER_ENGINE": "podman",
+    "OCC_TEST_QA_SANDBOX_DRIVER": "openshell"
+  },
+  "files": [
+    {
+      "path": "tests/integration/dev-up-podman-real.test.ts",
+      "expectedTests": [
+        "Podman dev-up bounds failed initialization and removes only its owned resources",
+        "Podman dev-up bounds blocked initialization and removes only its owned resources",
+        "Podman QA preserves private routing after theme and Preset preparation"
+      ]
+    }
+  ]
+}
