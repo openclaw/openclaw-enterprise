@@ -62,7 +62,7 @@ processors:
           # login that could not start keeps its reason and bounded failure (such as TimeoutError).
           - set(attributes["occ.code"], cache["record"]["code"]) where attributes["event.name"] == "database.idle-client-error" and IsString(cache["record"]["code"]) and IsMatch(cache["record"]["code"], "^[0-9A-Z]{5}$$")
           - set(attributes["occ.device_authorization.reason"], cache["record"]["reason"]) where attributes["event.name"] == "device_authorization.start_failed" and IsString(cache["record"]["reason"]) and IsMatch(cache["record"]["reason"], "^(unreachable|unavailable)$$")
-          - set(attributes["occ.device_authorization.failure"], cache["record"]["failure"]) where attributes["event.name"] == "device_authorization.start_failed" and IsString(cache["record"]["failure"]) and IsMatch(cache["record"]["failure"], "^[A-Za-z][A-Za-z0-9_]{0,63}$$")
+          - set(attributes["occ.device_authorization.failure"], cache["record"]["failure"]) where attributes["event.name"] == "device_authorization.start_failed" and IsString(cache["record"]["failure"]) and IsMatch(cache["record"]["failure"], "^[A-Za-z][A-Za-z0-9_]{0,63}$$") and not IsMatch(cache["record"]["failure"], "(?i)(^|[^A-Za-z0-9_])(sk-(proj-)?[A-Za-z0-9_-]{12,}|(gh[oprsu]|github_pat)_[A-Za-z0-9_]{12,}|xox[abeoprs]-[A-Za-z0-9-]{10,}|akia[0-9a-z]{16}($$|[^A-Za-z0-9_]))")
           # A stuck repository cleanup keeps its bounded cause code.
           - set(attributes["occ.worker.cause"], cache["record"]["cause"]) where attributes["event.name"] == "worker.repository-cleanup-warning" and IsString(cache["record"]["cause"]) and IsMatch(cache["record"]["cause"], "^[A-Z][A-Z0-9_]{0,63}$$")
           # A kept default-Preset copy names the Preset; its name, the refusal text and the

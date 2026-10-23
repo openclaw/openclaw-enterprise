@@ -1358,6 +1358,14 @@ test(
                 reason: "unreachable",
                 failure: "TimeoutError",
               }),
+              // A token-shaped failure class is dropped, as the sanitizer drops it elsewhere.
+              line({
+                severity: "WARN",
+                event: "device_authorization.start_failed",
+                requestId,
+                reason: "unavailable",
+                failure: `ghp_${canary}`,
+              }),
               // The denied call and Kubernetes namespace stay in local logs.
               line({
                 severity: "WARN",
@@ -1512,6 +1520,11 @@ test(
           "occ.device_authorization.failure": "TimeoutError",
         }),
         api("WARN", {
+          "event.name": "device_authorization.start_failed",
+          "request.id": requestId,
+          "occ.device_authorization.reason": "unavailable",
+        }),
+        api("WARN", {
           "event.name": "agent_runtime_credentials.cluster_denied",
           "request.id": requestId,
         }),
@@ -1645,6 +1658,18 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
       record: { event: "worker.openshell-git-denied", reasonCode: "xghp_abcdefghijklmnop" },
       exported: { "occ.reason_code": "xghp_abcdefghijklmnop" },
     },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: "a_ghp_abcdefghijklmnop" },
+      exported: { "occ.reason_code": "a_ghp_abcdefghijklmnop" },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(17)}` },
+      exported: { "occ.reason_code": `AKIA${"Q".repeat(17)}` },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(16)}_x` },
+      exported: { "occ.reason_code": `AKIA${"Q".repeat(16)}_x` },
+    },
   ];
   // Values the sanitizer drops lose the field, never the event: text, a leading digit or
   // punctuation, more than 64 characters, a token shape, a non-string code, and a fence
@@ -1660,6 +1685,7 @@ function codeFieldCases({ canary, identity, exportedIdentity }) {
     { event: "worker.openshell-git-denied", reasonCode: `sk-proj-${"c".repeat(12)}` },
     { event: "worker.openshell-git-denied", reasonCode: `XOXB-${"1".repeat(10)}` },
     { event: "worker.openshell-git-denied", reasonCode: `x-AKIA${"Q".repeat(16)}` },
+    { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(16)}-x` },
     { event: "worker.completed", hintCode: `akia${"q".repeat(16)}`, harnessState: { state: "a" } },
     { event: "worker.completed", hintCode: "sandbox gateway", harnessState: `starting${canary}!` },
     { event: "worker.openshell-git-route", fence: -1 },
@@ -1791,6 +1817,11 @@ test(
       assert.equal(actual.resource["service.name"], "occ-worker");
       assert.equal(actual.record.body.stringValue, record.event);
       assert.equal(actual.record.severityText, "INFO");
+      if (fields["occ.fence"] !== undefined) {
+        // A fence is exported as an integer, never a double or string.
+        const fence = actual.record.attributes.find(({ key }) => key === "occ.fence");
+        assert.equal(String(fence.value.intValue), fields["occ.fence"]);
+      }
       assert.deepEqual(
         actual.fields,
         {
