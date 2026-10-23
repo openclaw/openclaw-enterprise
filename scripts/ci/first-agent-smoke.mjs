@@ -1663,7 +1663,8 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
 // Finding 2224: `kubectl --sort-by=.lastTimestamp` put events that carry only eventTime (written
 // through events.k8s.io) first, so the 20 kB tail printed could drop the newest of them. Order by the
 // last observed instant, parsed rather than compared as text: whole-second lastTimestamp and
-// microsecond eventTime in the same second do not sort lexically. Newest last; ties keep order.
+// microsecond eventTime in the same second do not sort lexically. Newest last; ties (to the
+// millisecond Date.parse keeps) keep the API's order.
 function eventObservedAt(event) {
   const time =
     event.series?.lastObservedTime ??
