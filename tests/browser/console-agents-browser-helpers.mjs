@@ -652,6 +652,56 @@ export const nextFrames = (page) =>
       }),
   );
 
+// Records every node that holds focus from now until stopFocusTrail(), in
+// globalThis.focusFrames.trail: the focused node at every frame and the target of every focusin,
+// so a node that holds focus for less than a frame (a busy page paints late) still shows. Nodes
+// are numbered, so a replaced heading is a new entry. `loadingShown` turns true once the content
+// shows one of `loadingTexts`; `frames` counts sampled frames.
+export const recordFocusTrail = (page, loadingTexts) =>
+  page.evaluate((loadingTexts) => {
+    const ids = new WeakMap();
+    let next = 0;
+    const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
+    const record = (node) => {
+      if (node && node !== globalThis.document.body && !ids.has(node)) {
+        ids.set(node, ++next);
+      }
+      const entry =
+        !node || node === globalThis.document.body
+          ? "BODY"
+          : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+      if (state.trail.at(-1) !== entry) {
+        state.trail.push(entry);
+      }
+    };
+    const focused = (event) => {
+      if (!state.stopped) {
+        record(event.target);
+      }
+    };
+    const sample = () => {
+      if (state.stopped) {
+        globalThis.document.removeEventListener("focusin", focused, true);
+        return;
+      }
+      state.frames += 1;
+      record(globalThis.document.activeElement);
+      const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+      state.loadingShown ||= loadingTexts.some((text) => shown.includes(text));
+      globalThis.requestAnimationFrame(sample);
+    };
+    globalThis.document.addEventListener("focusin", focused, true);
+    globalThis.focusFrames = state;
+    sample();
+  }, loadingTexts);
+
+// Stops the focus trail recordFocusTrail() started and returns it.
+export const stopFocusTrail = (page) =>
+  page.evaluate(() => {
+    globalThis.focusFrames.stopped = true;
+    return globalThis.focusFrames;
+  });
+
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
