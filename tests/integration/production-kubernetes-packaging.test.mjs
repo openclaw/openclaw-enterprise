@@ -5892,6 +5892,11 @@ test(
       [{ "egressAuthority.clients[0].podSelector": "null" }, /podSelector.matchLabels/],
       [{ "egressAuthority.port": "8080" }, /distinct TCP port/],
       [{ "egressAuthority.port": "65536" }, /distinct TCP port/],
+      // Sprig int read "09444" as 0 and startup refused the text, after the install.
+      [
+        { "egressAuthority.port": "09444" },
+        /egressAuthority.port must be a TCP port without leading/,
+      ],
       [
         { "backend.openshell.clientSecretName": "authority-server-tls" },
         /egressAuthority.tlsSecretName must name a dedicated Secret.*backend.openshell.clientSecretName/,
@@ -5911,7 +5916,7 @@ test(
     };
     // Kubernetes interprets a null NetworkPolicyPort.port as every TCP port to this peer.
     const portKey = "preparedGitHub.issuerPort";
-    for (const invalid of [null, "", "https", 0, 65536]) {
+    for (const invalid of [null, "", "https", 0, 65536, "0443"]) {
       await assert.rejects(
         render({ ...prepared, [portKey]: invalid }),
         /preparedGitHub.issuerPort must be/,
@@ -6122,6 +6127,7 @@ test(
       [{ "openshellGit.port": "8443" }, /distinct from repository/],
       [{ "openshellGit.port": "65536" }, /unprivileged TCP port/],
       [{ "openshellGit.port": "8445.5" }, /positive safe integer/],
+      [{ "openshellGit.port": "08445" }, /openshellGit.port must be a TCP port without leading/],
       [{ "openshellGit.tlsSecretName": "repository-app-key" }, /must name a dedicated Secret/],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);

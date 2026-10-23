@@ -317,7 +317,7 @@ spec:
 {{- end }}
 {{- if .Values.preparedGitHub.custodySecretName }}
 {{- if not .Values.preparedGitHub.issuerCidrs }}{{ fail "preparedGitHub.issuerCidrs requires exact GitHub API IPv4 destinations" }}{{ end }}
-{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort) | atoi }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort "port" true) | atoi }}
 {{- if gt $port 65535 }}{{ fail "preparedGitHub.issuerPort must be a TCP port from 1 to 65535" }}{{ end }}
 ---
 apiVersion: networking.k8s.io/v1
