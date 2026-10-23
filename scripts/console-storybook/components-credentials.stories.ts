@@ -33,6 +33,14 @@ export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),
   name: "Secret list denied",
 };
+export const CredentialsSecretListScrolling = {
+  ...story("credentialsSecretListScrolling"),
+  name: "Scrolling Secret list",
+};
+export const CredentialsSecretListFailsAfterStaging = {
+  ...story("credentialsSecretListFailsAfterStaging"),
+  name: "Secret list fails after a staged Secret",
+};
 export const CredentialsSlackGrantDenied = {
   ...story("credentialsSlackGrantDenied"),
   name: "Slack grant denied",

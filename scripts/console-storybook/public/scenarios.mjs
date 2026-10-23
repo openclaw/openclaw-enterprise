@@ -904,9 +904,25 @@ export const scenarios = {
       "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
-      "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
+      "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
+      "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",
+      "Drag across an Agent ID to select text. Releasing the mouse keeps the list visible so the ID can be copied.",
       "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
+    ],
+  },
+  agentsRowNavigation: {
+    group: "Pages/Agents",
+    name: "Row navigation",
+    description:
+      "Open an Agent from row padding or text. Name and version links, row actions, and text selection keep their existing behavior.",
+    steps: [
+      "Click padding in Execution mode or Created. The Agent detail opens. Use ← Agents and confirm focus returns to its name. Repeat at phone width.",
+      "Press Enter on the focused name to open the same Agent, then return.",
+      "Open a current-version or latest-deployment link and confirm its version is selected.",
+      "Open Stop or Delete and cancel. The list stays visible. In Row restricted, disabled buttons and their icons do not open the Agent.",
+      "Select part of an Agent ID with the mouse. Releasing the mouse keeps the selected text and list visible.",
     ],
   },
   navigationFirstVisit: {
@@ -6496,6 +6512,48 @@ export const scenarios = {
     ],
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
+  },
+  credentialsSecretListScrolling: {
+    group: "Components/Credentials",
+    name: "Scrolling Secret list",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
+      id: `sec_story_scroll_${index}`,
+      name: `Scrolling Secret ${index} (simulated)`,
+    })),
+    description:
+      "With more readable Secrets than fit, the open API key Secret list scrolls. It is not a Tab stop: focus stays in the field and moves on with Tab.",
+    steps: [
+      "Click API key Secret. The list opens and scrolls.",
+      "Press Tab. The list closes and focus moves to the metadata link below the field, not to the page.",
+      "Click the field, type Scrolling, then drag the list's scrollbar. The list stays open with the search kept, and the field keeps focus.",
+    ],
+  },
+  credentialsSecretListFailsAfterStaging: {
+    group: "Components/Credentials",
+    name: "Secret list fails after a staged Secret",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "GET",
+        delayMs: 4000,
+        status: 503,
+      },
+    ],
+    actions: [
+      { selector: "#harness-auth-secret", value: "__openclaw_create_secret__" },
+      { selector: "#create-harness-auth-secret-name", value: "Created while loading (simulated)" },
+      { selector: "#create-harness-auth-secret-value", value: "synthetic-demo-key" },
+      click("Create Secret"),
+    ],
+    description:
+      "A Secret created while the list loads is staged. The list read then fails, and the hint still says the binding is staged instead of showing a list error.",
+    steps: [
+      "Wait four seconds for the simulated list failure. The hint under API key Secret still reads Secret binding staged. Save changes to apply it.",
+      "Choose Reset story to replay it.",
+    ],
+    gap: "The list failure is simulated; a lost session (401) still ends the session as before.",
   },
   credentialsSlackGrantDenied: {
     group: "Components/Credentials",

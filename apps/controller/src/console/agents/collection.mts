@@ -827,52 +827,68 @@ export function renderAgentList(context: AgentListContext) {
       );
       cells.set(deployment, { item, current });
       showDeployment(item, deployment, current);
-      body.append(
+      const row = element(
+        "tr",
+        {},
         element(
-          "tr",
+          "td",
           {},
-          element(
-            "td",
-            {},
-            name,
-            element("span", { className: "resource-id" }, item.id),
-            item.status === "deleting"
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
-                  "Deleting",
-                )
-              : null,
-            // New Agents start stopped; only a stop with a selected version awaits shutdown.
-            item.status === "active" &&
-              item.desiredRuntimeState === "stopped" &&
-              item.activeRevisionId
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
-                  "Stop requested",
-                )
-              : null,
-            "configurationReadError" in item && item.configurationReadError
-              ? element(
-                  "span",
-                  { className: "badge", "data-tone": "danger" },
-                  "Saved configuration unreadable",
-                )
-              : null,
-          ),
-          // On a phone each cell shows its column's name (console.css, `data-label`).
-          element(
-            "td",
-            { "data-label": "Execution mode" },
-            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
-          ),
-          current,
-          deployment,
-          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
-          cell,
+          name,
+          element("span", { className: "resource-id" }, item.id),
+          item.status === "deleting"
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "warning", id: `agent-row-badge-${item.id}` },
+                "Deleting",
+              )
+            : null,
+          // New Agents start stopped; only a stop with a selected version awaits shutdown.
+          item.status === "active" &&
+            item.desiredRuntimeState === "stopped" &&
+            item.activeRevisionId
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "info", id: `agent-row-badge-${item.id}` },
+                "Stop requested",
+              )
+            : null,
+          "configurationReadError" in item && item.configurationReadError
+            ? element(
+                "span",
+                { className: "badge", "data-tone": "danger" },
+                "Saved configuration unreadable",
+              )
+            : null,
         ),
+        // On a phone each cell shows its column's name (console.css, `data-label`).
+        element(
+          "td",
+          { "data-label": "Execution mode" },
+          item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
+        ),
+        current,
+        deployment,
+        element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
+        cell,
       );
+      row.addEventListener("click", (event) => {
+        if (
+          event.defaultPrevented ||
+          event.button !== 0 ||
+          event.metaKey ||
+          event.ctrlKey ||
+          event.shiftKey ||
+          event.altKey ||
+          (event.target instanceof Element && event.target.closest("a, button")) ||
+          window.getSelection()?.isCollapsed === false
+        ) {
+          return;
+        }
+        // Reuse the name link so navigation and return focus follow the same path.
+        name.focus({ preventScroll: true });
+        name.click();
+      });
+      body.append(row);
     }
     table.append(body);
     // On a phone the rows stack (console.css), and a table part whose CSS display changes can

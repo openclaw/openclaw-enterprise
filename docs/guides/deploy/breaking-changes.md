@@ -17,6 +17,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: saves refuse a model without its provider
+
+**What breaks.** Configuration create and update, Agent provisioning, Agent
+create preflight and Preset save refuse an `agents.defaults.model` or `agents.entries.<id>.model` primary
+or fallback that is not `<provider>/<model>`, such as `fast` or OpenClaw's
+`openrouter:auto`, and fallbacks that are not a list. Every deployment already
+refused them. A stored Configuration still reads; an edit must fix the model.
+
+**Who is affected.** Configurations and Presets that hold such a model. They
+never deployed.
+
+**How to tell.** A `400` names the setting: `... must name each model as
+<provider>/<model>, ...` or `... fallbacks must be an array.` Deployment
+now gives the same text.
+
+**Steps.** Write each model as `<provider>/<model>`, for example
+`openai/gpt-5.1`, then save.
+
 ## 2026-10-23: chart ports refuse leading zeros
 
 **What breaks.** Helm rendering refuses `egressAuthority.port`,

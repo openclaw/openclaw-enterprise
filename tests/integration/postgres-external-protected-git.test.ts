@@ -43,6 +43,7 @@ import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import {
   expireStoppedClaims,
+  settleRevisionMaintenance,
   waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
@@ -1756,6 +1757,10 @@ function externalGitJourney(
           releaseReduction = resolve;
         });
         peer.reduction.beforeApply = () => hold;
+        // Withdraw between worker passes. A pass that checked the approval just before removal
+        // may still prepare after it commits; its Git is still denied per request and cleanup
+        // reduces after it. Every pass that starts after the withdrawal must never prepare.
+        await settleRevisionMaintenance(f, revision);
       }
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;

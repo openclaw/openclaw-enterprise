@@ -2894,12 +2894,18 @@ test("failed Preset form construction retains chooser edits for both origins", a
         values: { ...configuration?.values, agents: { defaults: { model: { primary: 42 } } } },
       },
     };
-    const updated = await fixture.request(
+    // Preset save refuses a model that is not <provider>/<model> (finding 1828), but a Preset an
+    // older release stored with one still reaches the form.
+    const refused = await fixture.request(
       "PATCH",
       `/namespaces/${namespace.id}/presets/${starter.id}`,
       { body: { template: invalidTemplate } },
     );
-    assert.equal(updated.status, 200);
+    assert.equal(refused.status, 400);
+    const stored = await fixture.controller.transact((state: PlatformUnitOfWork) =>
+      state.presets.updatePreset(namespace.id, starter.id, { template: invalidTemplate }),
+    );
+    assert.ok(stored);
 
     await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
     if (origin === "shortcut") {

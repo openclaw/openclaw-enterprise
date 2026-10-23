@@ -68,6 +68,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
@@ -326,6 +327,11 @@ function revisionFailureLogFields(error: unknown): {
   return record === undefined
     ? { cause: errorClass }
     : { cause: errorClass, ...causeStatusLogFields(record) };
+}
+
+/** An invalid row: reading it again fails the same way until someone repairs it. */
+function unrecoverableRead(error: unknown): boolean {
+  return error instanceof ScopeViolationError || error instanceof PersistedStateInvalidError;
 }
 
 /**
@@ -6210,9 +6216,11 @@ export class ControllerWorker {
    * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
    * next pass prepared the candidate again, and at the attempt limit the work failed with the
    * candidate running and the refusal lost (finding 1041). If this read fails too, the error
-   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
-   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
-   * attempt limit ends instead of a wait repeated forever.
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. An
+   * invalid row (a ScopeViolationError, or persisted state its reader cannot decode) cannot
+   * recover by itself, so it stays a retry that the attempt limit ends instead of a wait repeated
+   * forever (finding 1801). After one, the wait is kept only if the stop can still read its
+   * Namespace, Agent and revision: an unreadable active revision alone does not block the stop.
    */
   private async rereadRefusalWait(
     claim: ClaimedWork,
@@ -6228,9 +6236,14 @@ export class ControllerWorker {
       return;
     }
     try {
-      const current =
-        agent ??
-        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      const current = await this.state.read(async (view) => {
+        if (unrecoverableRead(error)) {
+          // The rows `stopRefusedCandidate` reads.
+          await view.namespaces.findNamespace(claim.namespaceId);
+          await view.revisions.findRevision(claim.namespaceId, agentId, revisionId);
+        }
+        return agent ?? view.agents.findAgent(claim.namespaceId, agentId);
+      });
       if (current !== undefined) {
         await this.readRefusalWait(claim, current, revisionId);
       }
@@ -6238,7 +6251,7 @@ export class ControllerWorker {
       if (reread instanceof WorkClaimLostError) {
         throw reread;
       }
-      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+      if (unrecoverableRead(reread) || unrecoverableRead(error)) {
         return;
       }
       // The run loop's own log names no work.

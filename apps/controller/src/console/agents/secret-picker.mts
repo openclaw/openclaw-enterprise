@@ -238,6 +238,9 @@ export function createSecretReferenceField({
     className: "secret-typeahead-listbox",
     role: "listbox",
     "aria-label": "Available Secrets",
+    // The combobox keeps DOM focus and points at options with aria-activedescendant. A
+    // scrolling list is otherwise a Tab stop that hides on blur and drops focus (finding 1919).
+    tabindex: "-1",
     hidden: "",
   });
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
@@ -726,8 +729,13 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        setStatusTone(status, "danger");
         const expired = requestFailure(error).status === 401;
+        // A binding staged while this read was pending keeps its hint, as on success: Save
+        // still applies it (finding 1748). A lost session is still reported.
+        if (staged && !expired) {
+          return;
+        }
+        setStatusTone(status, "danger");
         status.textContent = expired
           ? "Your session has expired."
           : `Secrets unavailable. ${message(error)}`;
@@ -737,7 +745,21 @@ export function createSecretReferenceField({
       });
   }
 
-  input.addEventListener("focus", () => {
+  const withinListbox = (node: EventTarget | null) =>
+    node instanceof Node && listbox.contains(node);
+  // Pressing the list's scrollbar can still focus it; hand focus back without closing the list.
+  listbox.addEventListener("focus", () => {
+    if (input.disabled) {
+      closeListbox({ restoreSelection: true });
+    } else {
+      input.focus();
+    }
+  });
+  input.addEventListener("focus", (event) => {
+    // Focus coming back from the picker's own list keeps the search and the open list.
+    if (withinListbox(event.relatedTarget)) {
+      return;
+    }
     searchQuery = "";
     input.select();
     // A field showing its error opens on click, typing or ArrowDown, not on focus: the console's
@@ -796,7 +818,11 @@ export function createSecretReferenceField({
       closeListbox({ restoreSelection: true });
     }
   });
-  input.addEventListener("blur", () => {
+  input.addEventListener("blur", (event) => {
+    // Focus moving into the open list stays within the picker; only leaving it closes the list.
+    if (withinListbox(event.relatedTarget)) {
+      return;
+    }
     const typed = listboxOpen && !manuallyDisabled ? typedSecret() : undefined;
     if (typed !== undefined) {
       selectOption({ kind: "secret", secret: typed });

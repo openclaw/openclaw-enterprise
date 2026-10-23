@@ -55,17 +55,22 @@ follows `:focus-visible`. No part of any ring may be cut off.
     but inactive during the access check, then regains focus. Repeat while
     moving focus to the sidebar during the check; focus stays where you moved it.
 
-12. Links are ink, not accent; the accent marks actions, the current nav item,
+13. Links are ink, not accent; the accent marks actions, the current nav item,
     selection and the selected tab. On **Pages / Agents / Latest Deployment
     Failed**, each Agent name is dark text with no underline until you hover or
     Tab to it. The **v6** current version link and the **v7 · Failed**
     deployment link stay underlined. On **Pages / Namespaces / Ready and provisioning**, hovering
     anywhere on a row underlines its name.
-13. On **Pages / Agent detail / Deployment Failed**, the credential link in the
+14. On **Pages / Agent detail / Deployment Failed**, the credential link in the
     Configuration snapshot is dark text with a grey underline that darkens on
     hover. **View admitted native configuration** is dark and underlined, not
     accent, and still opens the JSON. In **Components / Dialogs / Plugins
     (wide)**, **Access and credential setup** looks the same.
+
+15. Open **Components / Credentials / Scrolling Secret list**. Click **API key
+    Secret**: the list scrolls. Press Tab: the list closes and focus moves to
+    the metadata link, not the page. The list is never a Tab stop; Up and Down
+    move through its options from the field (finding 1919).
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).

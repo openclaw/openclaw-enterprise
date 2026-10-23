@@ -153,7 +153,9 @@ The worker emits fixed operational event classes through the same logger:
   stop work carry no deployment timing.
 - `worker.error`: reports `CLAIM_LOST` or `WORKER_UNAVAILABLE` without exposing
   credentials. A deployment pass that cannot read its stored refusal adds the work
-  identity and `cause`, then leaves its claim to lease recovery. A claim lost around
+  identity and `cause`, then leaves its claim to lease recovery. An unreadable
+  Namespace, Agent or candidate revision row cannot recover by itself, so that pass stays an
+  ordinary retry that the attempt limit ends. A claim lost around
   an external effect adds the work identity and `cause`: `CLAIM_RENEWAL_REFUSED`,
   `CLAIM_RENEWAL_LATE`, `CLAIM_RENEWAL_FAILED`, or `CLAIM_LEASE_LAPSED` (no renewal
   was confirmed within the lease). The repository

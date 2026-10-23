@@ -6,6 +6,7 @@ import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   detailUrl,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -21,8 +22,6 @@ const heldView = '.content [aria-live="polite"][inert]';
 const hiddenView = '.content [aria-live="polite"][hidden]';
 const NAMESPACES = { name: "Namespaces", exact: true };
 const SUMMARY = { name: "Agent state at a glance" };
-const isFocused = (locator) =>
-  locator.evaluate((node) => node === globalThis.document.activeElement);
 // Refocusing the window rechecks the session and Namespace access.
 const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 // Holds only the first matching request (the session check unless named).
@@ -254,7 +253,7 @@ for (const moveToSidebar of [false, true]) {
     const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
     const sidebar = page.getByRole("link", NAMESPACES);
     await action.focus();
-    assert.equal(await isFocused(action), true);
+    assert.equal(await hasFocus(action), true);
 
     const session = await holdOnce(t, page);
     await refocus(page);
@@ -266,7 +265,7 @@ for (const moveToSidebar of [false, true]) {
     }
     session.release();
     await page.locator(settledView).waitFor();
-    assert.equal(await isFocused(moveToSidebar ? sidebar : action), true);
+    assert.equal(await hasFocus(moveToSidebar ? sidebar : action), true);
   });
 }
 
@@ -509,7 +508,7 @@ for (const c of [
       await agentShown(page);
       assert.deepEqual(await shownFrames(page), openingFrames("Fast Agent"));
       assert.equal(
-        await isFocused(page.getByRole("heading", { level: 1, name: "Fast Agent" })),
+        await hasFocus(page.getByRole("heading", { level: 1, name: "Fast Agent" })),
         true,
       );
       await page.goBack();
@@ -592,7 +591,7 @@ for (const c of [
       const main = page.getByRole("main");
       await main.getByText("Loading agent details…", { exact: true }).waitFor();
       if (c.focus) {
-        assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+        assert.equal(await hasFocus(main.getByRole("heading", { name: "Agent details" })), true);
       }
     } else {
       // The Agent page has rendered, waiting for its overview.
@@ -607,7 +606,7 @@ for (const c of [
     assert.deepEqual(await shownFrames(page), c.frames);
     if (c.focus) {
       const heading = page.getByRole("heading", { level: 1, name: agent.name });
-      assert.equal(await isFocused(heading), true);
+      assert.equal(await hasFocus(heading), true);
     } else if (!c.opening) {
       assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
     }
@@ -838,10 +837,10 @@ test("Opening an Agent focuses its heading before the tab's reads settle", async
   await page.clock.runFor(FIRST_ACTIVITY_WAIT_MS);
   const heading = page.getByRole("heading", { level: 1, name: "Opening Focus" });
   await heading.waitFor();
-  assert.equal(await isFocused(heading), true);
+  assert.equal(await hasFocus(heading), true);
   configuration.release();
   await agentShown(page);
-  assert.equal(await isFocused(heading), true);
+  assert.equal(await hasFocus(heading), true);
 });
 
 // Opens the Agent from the list by keyboard while its read is held (`once`, unless options say
@@ -881,7 +880,7 @@ for (const back of ["Browser Back", "Back to Agents"]) {
     }
     await page.waitForURL(`**${listUrl}`);
     await link.waitFor();
-    assert.equal(await isFocused(link), true);
+    assert.equal(await hasFocus(link), true);
     read.release();
     await abandoned;
     assert.equal(await link.isVisible(), true);
@@ -950,7 +949,7 @@ for (const shown of ["is loading", "has loaded"]) {
     await link.waitFor();
     await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
     const trail = await page.evaluate(() => globalThis.focusTrail);
-    assert.equal(await isFocused(link), true, trail.join(" | "));
+    assert.equal(await hasFocus(link), true, trail.join(" | "));
     const heading = shown === "is loading" ? "Agent details" : agent.name;
     // The Agent page's heading, the held page's heading under the same name, then the link.
     assert.deepEqual(
@@ -1015,7 +1014,7 @@ for (const focusTarget of [
       : removed
         ? page.getByRole("heading", { name: "Agents", exact: true })
         : link;
-    assert.equal(await isFocused(expected), true);
+    assert.equal(await hasFocus(expected), true);
     detail.release();
   });
 }
@@ -1077,7 +1076,7 @@ for (const how of ["Enter", "a click"]) {
     await agentLink.waitFor();
     await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
     const trail = await page.evaluate(() => globalThis.focusTrail);
-    assert.equal(await isFocused(agentLink), true, trail.join(" | "));
+    assert.equal(await hasFocus(agentLink), true, trail.join(" | "));
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
       trail.map((entry) => entry.replace(/#\d+/, "")),
@@ -1146,13 +1145,13 @@ for (const target of [
     session.release();
     await page.locator(settledView).waitFor();
     assert.equal(await viewTag(page), "refocused", "the list remounted unchanged");
-    assert.equal(await isFocused(heading), false, "focus stays off the heading");
+    assert.equal(await hasFocus(heading), false, "focus stays off the heading");
     if (deployment) {
       assert.equal(await focusedIn(cell), true, "focus waits in the pending deployment");
       await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
     }
     assert.equal(
-      await isFocused(moved ? sidebar : control),
+      await hasFocus(moved ? sidebar : control),
       true,
       moved ? "focus stays where the reader moved it" : "focus is back on the control",
     );
@@ -1174,12 +1173,12 @@ test("a list recheck never reclaims focus moved to the Namespace selector", asyn
   await read.requested;
   const selector = page.locator("#namespace-selector:not(:disabled)");
   await selector.focus();
-  assert.equal(await isFocused(selector), true);
+  assert.equal(await hasFocus(selector), true);
   read.release();
   await page.locator(settledView).getByRole("link", { name: agent.name }).waitFor();
   // Unlike the sidebar link, the selector is replaced during remount. Even if focus falls to
   // the body, the reader left the Agent link deliberately; do not move them back to it.
-  assert.equal(await isFocused(link), false);
+  assert.equal(await hasFocus(link), false);
 });
 
 for (const [outcome, failsAgain, leaveFocus] of [
@@ -1214,7 +1213,7 @@ for (const [outcome, failsAgain, leaveFocus] of [
     await session.requested;
     assert.equal(await main.getByText("Loading agent details…").isVisible(), true);
     const loading = main.getByRole("heading", { name: "Agent details" });
-    assert.equal(await isFocused(loading), true);
+    assert.equal(await hasFocus(loading), true);
     const sidebar = page.getByRole("link", NAMESPACES);
     if (leaveFocus) {
       await sidebar.focus();
@@ -1226,7 +1225,7 @@ for (const [outcome, failsAgain, leaveFocus] of [
     await result.waitFor();
     // Focus moves to the result once the load settles, after the heading has rendered.
     await page.locator(settledView).waitFor();
-    assert.equal(await isFocused(leaveFocus ? sidebar : result), true);
+    assert.equal(await hasFocus(leaveFocus ? sidebar : result), true);
     assert.equal(await pageHeading.innerText(), failsAgain ? "Agent details" : "Retry Agent");
     assert.equal(
       await page.evaluate(() => globalThis.history.length),
@@ -1727,7 +1726,7 @@ test("Refocusing the window keeps the pending Agent panel and its way back", asy
   assert.equal(await main.getByText("Checking Namespace access.").count(), 0);
   assert.equal(await main.getByText("Reading this Agent.").count(), 0);
   assert.equal(await page.locator(heldView).count(), 0);
-  assert.equal(await isFocused(main.getByRole("heading", { name: "Agent details" })), true);
+  assert.equal(await hasFocus(main.getByRole("heading", { name: "Agent details" })), true);
 
   // The opening load is the access check: it finishes and shows the Agent.
   read.release();

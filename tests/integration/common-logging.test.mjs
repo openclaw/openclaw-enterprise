@@ -13,7 +13,10 @@ import {
   skippedUserLogFields,
 } from "../../apps/controller/src/logging.ts";
 import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
-import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import {
+  bindRepositoryGitTransport,
+  RepositoryDeliveryPendingLog,
+} from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import {
   OPERATION_REFUSAL_HINT_CODES,
   operationRefusalHintCode,
@@ -750,6 +753,30 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
   }
 });
 
+function refusedReconcile() {
+  throw new Error("The gateway refused the reconcile.");
+}
+
+/** Binds the protected Git transport of an OpenShell Sandbox Driver whose reconcile is `reconcile`. */
+function bindDeliveryTransport(reconcile, emit, pendingLog) {
+  const driver = {
+    ref: { id: "openshell-sandbox", implementation: "openshell", configurationId: "c".repeat(64) },
+    requireRepositoryGitTransport: () => async () => ({
+      async reconcile() {
+        await reconcile();
+      },
+      async close() {},
+    }),
+  };
+  return bindRepositoryGitTransport(
+    { repositoryGitDriver: driver, protectedDriver: driver },
+    { protectedGit: {} },
+    undefined,
+    emit,
+    pendingLog,
+  );
+}
+
 test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {
   // The shapes the bootstrap and auth:maintain scripts and the worker emit (finding 2245).
   const installationId = `ins_${randomUUID()}`;
@@ -794,21 +821,7 @@ test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never
   const emitted = new Promise((resolve) => {
     emit = resolve;
   });
-  const driver = {
-    ref: { id: "openshell-sandbox", implementation: "openshell", configurationId: "c".repeat(64) },
-    requireRepositoryGitTransport: () => async () => ({
-      async reconcile() {
-        throw new Error("The gateway refused the reconcile.");
-      },
-      async close() {},
-    }),
-  };
-  const transport = await bindRepositoryGitTransport(
-    { repositoryGitDriver: driver, protectedDriver: driver },
-    { protectedGit: {} },
-    undefined,
-    emit,
-  );
+  const transport = await bindDeliveryTransport(refusedReconcile, emit);
   const pending = await emitted;
   await transport.close();
   assert.deepEqual(pending, {
@@ -844,6 +857,60 @@ test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never
   // A code-shaped command passes only on auth:maintain events, whose commands are a fixed list.
   for (const event of ["worker.completed", "http.completed", "auth-maintainer.failed"]) {
     assert.equal(Object.hasOwn(occLogLine({ event, command: "status" }), "command"), false, event);
+  }
+});
+
+test("a delivery that keeps failing logs when it starts pending, then at most once a minute", async (t) => {
+  // Finding 2251: the reconcile retries every second, and every failed pass logged a line.
+  // The loop runs on its own one-second timer, mocked here, and the log reads a fake clock.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const now = { value: 5_000_000 };
+  const events = [];
+  let refuse = true;
+  // Let the pass's reconcile settle and schedule the next one.
+  const settle = async () => {
+    for (let turn = 0; turn < 5; turn += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  const pass = async () => {
+    now.value += 1_000;
+    t.mock.timers.tick(1_000);
+    await settle();
+  };
+  const pendingLines = () =>
+    events.filter(({ event }) => event === "worker.repository-delivery-pending").length;
+  const transport = await bindDeliveryTransport(
+    () => {
+      if (refuse) {
+        refusedReconcile();
+      }
+    },
+    (event) => events.push(event),
+    new RepositoryDeliveryPendingLog(() => now.value),
+  );
+  try {
+    await settle();
+    assert.equal(pendingLines(), 1, "the first failed pass logs");
+    for (let second = 1; second < 60; second += 1) {
+      await pass();
+    }
+    assert.equal(pendingLines(), 1, "a minute of failed passes logs once");
+    await pass();
+    assert.equal(pendingLines(), 2, "a delivery still pending a minute later logs again");
+    refuse = false;
+    await pass();
+    refuse = true;
+    await pass();
+    assert.equal(pendingLines(), 3, "a failure after a completed pass logs at once");
+    await pass();
+    assert.equal(pendingLines(), 3);
+    assert.deepEqual(events.at(-1), {
+      event: "worker.repository-delivery-pending",
+      sandboxDriverId: "openshell-sandbox",
+    });
+  } finally {
+    await transport.close();
   }
 });
 

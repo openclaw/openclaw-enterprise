@@ -69,6 +69,7 @@ import {
   CREDENTIAL_SOURCE_NAME_CONFLICT,
   DELETED_NAMESPACE_NAME_CONFLICT,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
   EGRESS_REVISION_INSTALLED_CONFLICT,
   IAMPolicyValidationError,
   IAMRoleInUseError,
@@ -256,7 +257,7 @@ function rows(value: unknown[]): PostgresRow[] {
 function text(row: PostgresRow, key: string): string {
   const value = row[key];
   if (typeof value !== "string" || value.length === 0) {
-    throw new DependencyUnavailableError("Persisted platform state is invalid or incomplete.");
+    throw new PersistedStateInvalidError("Persisted platform state is invalid or incomplete.");
   }
   return value;
 }
@@ -273,7 +274,7 @@ function timestamp(row: PostgresRow, key: string): string {
   const value = row[key];
   const date = value instanceof Date ? value : typeof value === "string" ? new Date(value) : null;
   if (date === null || Number.isNaN(date.getTime())) {
-    throw new DependencyUnavailableError("Persisted platform state has an invalid timestamp.");
+    throw new PersistedStateInvalidError("Persisted platform state has an invalid timestamp.");
   }
   return date.toISOString();
 }
@@ -281,12 +282,12 @@ function timestamp(row: PostgresRow, key: string): string {
 function jsonObject(value: unknown): Record<string, unknown> {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new DependencyUnavailableError("Persisted platform state contains invalid JSON.");
+    throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
   }
   return parsed as Record<string, unknown>;
 }
 
-class SavedConfigurationReadError extends DependencyUnavailableError {
+class SavedConfigurationReadError extends PersistedStateInvalidError {
   readonly field: ConfigurationReadError["field"];
 
   constructor(field: ConfigurationReadError["field"], message: string) {
@@ -307,7 +308,7 @@ function configurationRead<T>(field: ConfigurationReadError["field"], read: () =
 }
 
 function invalidPersistedPluginState(message: string): never {
-  throw new DependencyUnavailableError(message);
+  throw new PersistedStateInvalidError(message);
 }
 
 function browseSavedConfiguration<T extends object, M extends object>(
@@ -367,10 +368,10 @@ function repositoryBindingsFromJson(value: unknown): Agent["repositoryBindings"]
   try {
     parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   } catch {
-    throw new DependencyUnavailableError("Persisted Agent repository bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent repository bindings are invalid.");
   }
   if (!validRepositoryBindingSelections(parsed)) {
-    throw new DependencyUnavailableError("Persisted Agent repository bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent repository bindings are invalid.");
   }
   return parsed;
 }
@@ -386,7 +387,7 @@ function installationFromRow(row: PostgresRow): Readonly<Installation> {
 function namespaceFromRow(row: PostgresRow): Readonly<PersistedNamespace> {
   const status = text(row, "status");
   if (!["provisioning", "ready", "failed", "deleting"].includes(status)) {
-    throw new DependencyUnavailableError("Persisted Namespace status is invalid.");
+    throw new PersistedStateInvalidError("Persisted Namespace status is invalid.");
   }
   const deletedAt =
     row.deleted_at === null || row.deleted_at === undefined
@@ -418,7 +419,7 @@ function agentMetadataFromRow(row: PostgresRow): Readonly<AgentMetadata> {
 
   const desiredRuntimeState = text(row, "desired_runtime_state");
   if (desiredRuntimeState !== "running" && desiredRuntimeState !== "stopped") {
-    throw new DependencyUnavailableError("Persisted Agent desired runtime state is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent desired runtime state is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -569,7 +570,7 @@ const CREDENTIAL_WITHDRAWAL_COLUMNS = `namespace_id, agent_id, revision_id, cred
 function credentialWithdrawalFromRow(row: PostgresRow): Readonly<StoredCredentialWithdrawal> {
   const state = text(row, "state");
   if (state !== "pending" && state !== "revoked") {
-    throw new DependencyUnavailableError("Persisted credential withdrawal state is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential withdrawal state is invalid.");
   }
   const completedAt = row.completed_at === null ? undefined : timestamp(row, "completed_at");
   const lastReason = optionalText(row, "last_reason");
@@ -593,7 +594,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   const namespaceId = text(row, "namespace_id");
   const state = text(row, "state");
   if (state !== "registering" && state !== "ready" && state !== "deleting") {
-    throw new DependencyUnavailableError("Persisted credential source state is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential source state is invalid.");
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
@@ -604,7 +605,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
-    throw new DependencyUnavailableError("Persisted credential source metadata is invalid.");
+    throw new PersistedStateInvalidError("Persisted credential source metadata is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -632,7 +633,7 @@ function revisionMetadataFromRow(row: PostgresRow): Readonly<AgentRevisionMetada
   const rawNumber = row.revision_number;
   const revision = typeof rawNumber === "string" ? Number(rawNumber) : rawNumber;
   if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision <= 0) {
-    throw new DependencyUnavailableError("Persisted AgentRevision numbering is invalid.");
+    throw new PersistedStateInvalidError("Persisted AgentRevision numbering is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -660,7 +661,7 @@ function revisionSummaryFromRow(row: PostgresRow): Readonly<AgentRevisionSummary
     typeof harness.version !== "string" ||
     (harness.mode !== "embedded" && harness.mode !== "dedicated")
   ) {
-    throw new DependencyUnavailableError("Persisted AgentRevision summary is invalid.");
+    throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
   }
   return immutableCopy({
     ...metadata,
@@ -792,23 +793,23 @@ function revisionForBrowsingFromRow(row: PostgresRow): Readonly<AgentRevisionRea
 
 function secretBindingsFromJson(value: unknown, namespaceId: string): SecretBindings | undefined {
   if (!NAMESPACE_IDENTIFIER.test(namespaceId)) {
-    throw new DependencyUnavailableError("Persisted Secret bindings have an invalid Namespace.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings have an invalid Namespace.");
   }
   let parsed: unknown;
   try {
     parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   } catch {
-    throw new DependencyUnavailableError("Persisted Secret bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings are invalid.");
   }
   let normalized: SecretBindings;
   try {
     normalized = normalizeSecretBindings(parsed);
   } catch {
-    throw new DependencyUnavailableError("Persisted Secret bindings are invalid.");
+    throw new PersistedStateInvalidError("Persisted Secret bindings are invalid.");
   }
   for (const { source } of Object.values(normalized)) {
     if (source.namespaceId !== namespaceId || !SECRET_IDENTIFIER.test(source.id)) {
-      throw new DependencyUnavailableError("Persisted Secret bindings reference invalid Secrets.");
+      throw new PersistedStateInvalidError("Persisted Secret bindings reference invalid Secrets.");
     }
   }
   return Object.keys(normalized).length === 0 ? undefined : immutableCopy(normalized);
@@ -998,7 +999,7 @@ function auditFromRow(row: PostgresRow, installationId: string): Readonly<AuditE
     !["success", "denied", "failure"].includes(outcome) ||
     !["bootstrap", "mutation", "access", "authorization_denial"].includes(kind)
   ) {
-    throw new DependencyUnavailableError("Persisted audit evidence contains an invalid event.");
+    throw new PersistedStateInvalidError("Persisted audit evidence contains an invalid event.");
   }
 
   const rawDetails = row.details === null ? undefined : jsonObject(row.details);
@@ -1057,7 +1058,7 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
     status !== "succeeded" &&
     status !== "cancelled"
   ) {
-    throw new DependencyUnavailableError("Persisted Agent provisioning status is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent provisioning status is invalid.");
   }
   const completedPhase = text(row, "completed_phase");
   if (
@@ -1066,7 +1067,7 @@ function provisioningRecordFromRow(row: PostgresRow): Readonly<AgentProvisioning
     completedPhase !== "transport" &&
     completedPhase !== "handoff"
   ) {
-    throw new DependencyUnavailableError("Persisted Agent provisioning phase is invalid.");
+    throw new PersistedStateInvalidError("Persisted Agent provisioning phase is invalid.");
   }
   const agentId = optionalText(row, "agent_id");
   const configurationId = optionalText(row, "configuration_id");
@@ -1163,7 +1164,7 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
     !RESOURCE_KINDS.has(resourceKind) ||
     text(row, "effect") !== "deny"
   ) {
-    throw new DependencyUnavailableError("Persisted IAM restriction is invalid.");
+    throw new PersistedStateInvalidError("Persisted IAM restriction is invalid.");
   }
   return immutableCopy({
     id: text(row, "id"),
@@ -1178,7 +1179,7 @@ function restrictionFromRow(row: PostgresRow): Readonly<Restriction> {
 function permissions(value: unknown): readonly Permission[] {
   const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (!Array.isArray(parsed)) {
-    throw new DependencyUnavailableError("Persisted IAM permissions must be an array.");
+    throw new PersistedStateInvalidError("Persisted IAM permissions must be an array.");
   }
   return Object.freeze(
     parsed.map((permission): Permission => {
@@ -1190,7 +1191,7 @@ function permissions(value: unknown): readonly Permission[] {
         typeof permission.resourceKind !== "string" ||
         !RESOURCE_KINDS.has(permission.resourceKind)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM permissions are invalid.");
+        throw new PersistedStateInvalidError("Persisted IAM permissions are invalid.");
       }
       // A new object of two strings: freezing it is all a copy would add.
       return Object.freeze({
@@ -1315,7 +1316,7 @@ export class PostgresPlatformState implements PlatformStateStore {
     const collection = (key: keyof PersistedNativeIAMState): PostgresRow[] => {
       const value = snapshot?.[key];
       if (!Array.isArray(value)) {
-        throw new DependencyUnavailableError("Persisted IAM collections are invalid.");
+        throw new PersistedStateInvalidError("Persisted IAM collections are invalid.");
       }
       return rows(value);
     };
@@ -1341,7 +1342,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       if (kind === "service_principal") {
         const agentId = optionalText(row, "agent_id");
         if (agentId !== undefined && namespaceId === undefined) {
-          throw new DependencyUnavailableError("Persisted IAM identity has an invalid owner.");
+          throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
         }
         return {
           id,
@@ -1350,7 +1351,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ...(agentId === undefined ? {} : { agentId }),
         };
       }
-      throw new DependencyUnavailableError("Persisted IAM identity has an invalid owner.");
+      throw new PersistedStateInvalidError("Persisted IAM identity has an invalid owner.");
     });
 
     const roles = roleRows.map((row): Role => {
@@ -1390,12 +1391,12 @@ export class PostgresPlatformState implements PlatformStateStore {
         (resourceKind === undefined) !== (resourceId === undefined) ||
         (resourceKind !== undefined && !RESOURCE_KINDS.has(resourceKind))
       ) {
-        throw new DependencyUnavailableError("Persisted IAM binding has an invalid resource.");
+        throw new PersistedStateInvalidError("Persisted IAM binding has an invalid resource.");
       }
       const identitySubjectId = optionalText(row, "identity_subject_id");
       const groupSubjectId = optionalText(row, "group_subject_id");
       if ((identitySubjectId === undefined) === (groupSubjectId === undefined)) {
-        throw new DependencyUnavailableError("Persisted IAM binding has an ambiguous subject.");
+        throw new PersistedStateInvalidError("Persisted IAM binding has an ambiguous subject.");
       }
       return {
         id: text(row, "id"),
@@ -5145,7 +5146,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               if (agentId === undefined) {
                 const target = text(row, "namespace_target");
                 if (target !== "ready" && target !== "deleted") {
-                  throw new DependencyUnavailableError(
+                  throw new PersistedStateInvalidError(
                     "Persisted Namespace work has an invalid target.",
                   );
                 }
@@ -5154,7 +5155,7 @@ export class PostgresPlatformState implements PlatformStateStore {
               if (revisionId === undefined) {
                 const target = text(row, "agent_target");
                 if (target !== "stopped" && target !== "deleted" && target !== "sandbox_policy") {
-                  throw new DependencyUnavailableError(
+                  throw new PersistedStateInvalidError(
                     "Persisted Agent work has an invalid target.",
                   );
                 }
@@ -5164,7 +5165,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 const key = text(row, "idempotency_key");
                 const prefix = `agent:${agentId}:reconcile:${target}:`;
                 if (!key.startsWith(prefix) || key.length === prefix.length) {
-                  throw new DependencyUnavailableError(
+                  throw new PersistedStateInvalidError(
                     "Persisted Agent work has an invalid operation identity.",
                   );
                 }
@@ -5184,7 +5185,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                 text(row, "idempotency_key"),
               );
               if (revisionTarget !== CREDENTIAL_WITHDRAWAL_TARGET || operationId === undefined) {
-                throw new DependencyUnavailableError(
+                throw new PersistedStateInvalidError(
                   "Persisted AgentRevision work has an invalid target.",
                 );
               }
@@ -5264,13 +5265,13 @@ export class PostgresPlatformState implements PlatformStateStore {
     const restrictionIds = new Set<string>();
     for (const identity of state.identities) {
       if (identities.has(identity.id)) {
-        throw new DependencyUnavailableError("Persisted IAM identities are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM identities are invalid or ambiguous.");
       }
       identities.set(identity.id, identity);
     }
     for (const group of state.groups) {
       if (groups.has(group.id)) {
-        throw new DependencyUnavailableError("Persisted IAM groups are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM groups are invalid or ambiguous.");
       }
       groups.set(group.id, group);
     }
@@ -5284,13 +5285,13 @@ export class PostgresPlatformState implements PlatformStateStore {
         group.namespaceId !== membership.namespaceId ||
         membershipKeys.has(key)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM group memberships violate scope.");
+        throw new PersistedStateInvalidError("Persisted IAM group memberships violate scope.");
       }
       membershipKeys.add(key);
     }
     for (const role of state.roles) {
       if (roles.has(role.id)) {
-        throw new DependencyUnavailableError("Persisted IAM roles are invalid or ambiguous.");
+        throw new PersistedStateInvalidError("Persisted IAM roles are invalid or ambiguous.");
       }
       permissions(role.permissions);
       roles.set(role.id, role);
@@ -5317,7 +5318,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           binding.resourceId !== undefined &&
           binding.resourceId !== binding.namespaceId)
       ) {
-        throw new DependencyUnavailableError("Persisted IAM access bindings violate exact scope.");
+        throw new PersistedStateInvalidError("Persisted IAM access bindings violate exact scope.");
       }
       bindingIds.add(binding.id);
     }
@@ -5333,7 +5334,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           restriction.resourceId !== restriction.namespaceId) ||
         (restriction.namespaceId !== undefined && restriction.resourceKind === "installation")
       ) {
-        throw new DependencyUnavailableError("Persisted IAM restrictions violate exact scope.");
+        throw new PersistedStateInvalidError("Persisted IAM restrictions violate exact scope.");
       }
       restrictionIds.add(restriction.id);
     }
@@ -5343,7 +5344,7 @@ export class PostgresPlatformState implements PlatformStateStore {
         state.roles.length === 0 ||
         state.bindings.length === 0)
     ) {
-      throw new DependencyUnavailableError("Persisted native IAM state is incomplete.");
+      throw new PersistedStateInvalidError("Persisted native IAM state is incomplete.");
     }
   }
 
