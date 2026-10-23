@@ -208,6 +208,16 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 instance ID stays local.
 `worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
+Every exported OCC event keeps the sanitizer's codes under the same checks (a
+letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
+`check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
+`occ.failure` (a device login keeps its own, below), `occ.harness_state`,
+`occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
+`occ.fence`. So `worker.openshell-git-expiry` names the OpenShell Git expiry step
+and why it is pending, with `work.outcome` `pending`, `withdrawn` or
+`retire-runtime`, and `worker.repository-delivery-pending` shows that protected Git
+delivery is retrying; its Sandbox Driver ID stays local, as do Installation and
+Configuration IDs.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
@@ -300,6 +310,8 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-23 13:00: Export `worker.openshell-git-expiry` and `worker.repository-delivery-pending`, and keep the sanitizer's codes and route fence, so the bundled Collector shows why Git expiry or delivery is stuck. (collector-export-1023)
+
 - 2026-10-23 20:00: Preserve current logging documentation and both histories while retaining demo repository-casing validation. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - e1788c775)
 
 - 2026-10-23 12:30: Keep `work.id` for credential withdrawal keys that end in `activation` or `:recovery:<n>`; the Collector dropped them. (fix-2249 - #3302)
@@ -334,19 +346,4 @@ for panels, correlation, and authorization limits.
 - 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
 - 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
 
-- 2026-10-01 16:37: Added the sanitized Compute preparation diagnostic boundary. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
-
-- 2026-10-01 14:45: Export sign-in provider outage warnings with allowed provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
-
-- 2026-09-25 11:31: Documented query-time operational summaries and filtering in the accompanying demo dashboard change. (redacted - 1a458b227585c572ec0ac70fd10efc3834165075)
-
-- 2026-09-25 09:56: Documented worker teardown correlation with the accompanying Collector allowlist repair. (redacted - 939ae63ac2be06d424cdbd5c626cfa675561d127)
-
-- 2026-09-25 09:53: Documented preflight warning export and message exclusion with the accompanying Collector allowlist repair. (redacted - 939ae63ac2be06d424cdbd5c626cfa675561d127)
-
-- 2026-09-23 17:40: Documented private Collector scraping and selected in-cluster export in the accompanying observability change. (redacted - faf0b0ae467a3bebfd5b5ed0a92f259248e5da74)
-
-- 2026-09-04 21:04: Documented that native logging admission drops the retired redaction key while preserving JSON levels, disabled OTLP logs, runtime redaction ownership and read-only Kubernetes config mounting. (redacted - 87234e1766e5802b45424523246a52a4b2d45590)
-
-- 2026-09-02 10:42: Added the source-backed common logging flow for startup policy, version admission, runtime rendering, and Collector export. (redacted - 1242406b6863c8953abe4827c601c2173129ee50)
-- 2026-09-03 17:56: Simplified repeated settings and guide detail while preserving the logging lifecycle, admission, Collector filtering, and audit boundaries. (redacted - 61ef68bc61129c90130bb65b0fc48373f0c70866)
+[Common logging documentation history](common-logging/history.md) preserves the earlier dated entries.
