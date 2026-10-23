@@ -3606,15 +3606,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   });
   // Real admission requires exact Agent access to each projected credential.
   for (const secret of [app, bot, replacement]) {
-    fixture.policy.bindings.push({
-      id: `grant-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.id}`,
-      roleId: `auth-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // Mutate both current owners after admission; the read-only view must keep the old references.

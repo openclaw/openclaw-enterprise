@@ -6375,6 +6375,25 @@ export const scenarios = {
     description:
       "A pending channel save disables deployment and revision navigation. The real client times out after 15 seconds; reset the story to replay it.",
   },
+  channelSecretGrantRefused: {
+    group: "Components/Channels",
+    name: "Slack token saved, grant refused",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    rules: [{ suffix: "/iam/roles", status: 403 }],
+    description:
+      "A member saves a Slack token from the editor. The Configuration saves, but granting the Agent the Secret needs Installation administration access, so the IAM read is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+    steps: [
+      "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
+      "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
+    ],
+    gap: "The member browser test uses a member account and the real Native IAM refusal.",
+  },
   channelSaveUnknown: {
     group: "Components/Channels",
     name: "Channel save outcome unknown",
@@ -6572,7 +6591,20 @@ export const scenarios = {
       },
     ],
     description:
-      "A saved Secret reference remains visible when the follow-up exact Secret access grant is denied.",
+      "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
+  },
+  credentialsSlackGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack Secret bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
+    ],
   },
   credentialsSavePending: {
     group: "Components/Credentials",

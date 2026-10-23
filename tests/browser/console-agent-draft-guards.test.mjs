@@ -1258,7 +1258,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
 
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(
         t,
         mutation === "channel Secrets" ? { secretDriver: createTestSecretDriver() } : {},
@@ -1314,28 +1314,9 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     });
     assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
     if (mutation === "channel Secrets") {
-      const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-        body: {
-          name: "Channel access",
-          permissions: [{ action: "operate", resourceKind: "secret" }],
-        },
-      });
-      assert.equal(role.status, 201, JSON.stringify(role.body));
-      for (const secret of [appSecret, botSecret]) {
-        const binding = await fixture.request(
-          "POST",
-          `/namespaces/${namespace.id}/iam/access-bindings`,
-          {
-            body: {
-              subjectKind: "identity",
-              subjectId: agent.servicePrincipalId,
-              roleId: role.data.id,
-              resourceKind: "secret",
-              resourceId: secret.id,
-            },
-          },
-        );
-        assert.equal(binding.status, 201, JSON.stringify(binding.body));
+      // The replacement too: a reloaded draft must find every saved Secret granted to be ready.
+      for (const secret of [appSecret, botSecret, replacementSecret]) {
+        await grantSecretAccess(agent, secret);
       }
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     }
@@ -1562,7 +1543,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
 
 for (const changed of ["generation", "identity"]) {
   test(`Channel Secret save rejects a stale Configuration ${changed} before writing`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(t, { secretDriver: createTestSecretDriver() });
     const appSecret = await fixture.createSecret(namespace.id, "Slack app", "xapp-original");
     const botSecret = await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original");
@@ -1592,6 +1573,9 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const agent = created.data;
     await grantModelAccess(agent);
+    for (const secret of [appSecret, botSecret]) {
+      await grantSecretAccess(agent, secret);
+    }
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     assert.equal(
       (

@@ -24,7 +24,11 @@ type SecretContext = Partial<AgentAccessContext> & {
 };
 
 export function secretIdForBinding(binding: unknown) {
-  return secretSource(responseFields(binding).source)?.id ?? null;
+  return secretSourceForBinding(binding)?.id ?? null;
+}
+
+export function secretSourceForBinding(binding: unknown) {
+  return secretSource(responseFields(binding).source);
 }
 
 function secretSource(value: unknown): SecretReference | null {

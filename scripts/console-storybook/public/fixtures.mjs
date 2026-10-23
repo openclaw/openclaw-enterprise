@@ -313,6 +313,25 @@ export function installFixture(scenario, evidence) {
         delivery: { type: "env" },
       };
     }
+    // The demo Agent was granted the Slack Secrets it binds, unless the scenario left one out:
+    // an administrator's console reads these grants (finding 1920).
+    roles.push({
+      id: "role_demo_secret_operate",
+      namespaceId,
+      name: "Agent Secret operate",
+      permissions: [{ action: "operate", resourceKind: "secret" }],
+    });
+    for (const key of keys.filter((name) => name !== scenario.slackGrantMissing)) {
+      bindings.push({
+        id: `binding_demo_${key.toLowerCase()}`,
+        namespaceId,
+        subjectKind: "identity",
+        subjectId: "identity_demo_agent",
+        roleId: "role_demo_secret_operate",
+        resourceKind: "secret",
+        resourceId: `sec_demo_${key.toLowerCase()}`,
+      });
+    }
   }
   configs.set(config.id, config);
   const selectedAuth =

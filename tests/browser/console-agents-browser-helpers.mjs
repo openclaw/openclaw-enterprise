@@ -14,6 +14,27 @@ import {
   deploymentProgressForWork,
 } from "../../packages/occ/src/state/controller-work.ts";
 
+// What a member who writes Agents holds in one Namespace (the ux-audit-1018 member-write
+// persona), for fixture.createNamespaceMember. It has no Installation access, so it cannot read
+// or write IAM policy.
+/** @type {readonly (readonly [import("../../packages/contracts/src/index.ts").Permission["action"], import("../../packages/contracts/src/index.ts").Permission["resourceKind"]])[]} */
+export const MEMBER_WRITE = [
+  ["read", "namespace"],
+  ["read", "agent"],
+  ["update", "agent"],
+  ["deploy", "agent"],
+  ["operate", "agent"],
+  ["read", "agent_revision"],
+  ["read", "configuration"],
+  ["update", "configuration"],
+  ["read", "secret"],
+  ["operate", "secret"],
+  ["create", "agent"],
+  ["create", "configuration"],
+  ["create", "secret"],
+  ["read", "preset"],
+];
+
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
 // message and data that the API and occ return for that failure.

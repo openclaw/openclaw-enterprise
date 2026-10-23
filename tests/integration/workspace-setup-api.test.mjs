@@ -238,7 +238,7 @@ test("Agent save and deployment refuse initial workspace files the Configuration
     harnessAuth: { method: "api_key", source: key.ref },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  f.grantAgentSecretOperate(created.data, key.ref);
+  await f.grantAgentSecretOperate(created.data, key.ref, { listed: false });
   await f.updateConfiguration(
     f.namespace.id,
     valid.id,
