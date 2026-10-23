@@ -6387,12 +6387,31 @@ export const scenarios = {
     ],
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
-      "A member saves a Slack token from the editor. The Configuration saves, but granting the Agent the Secret needs Installation administration access, so the IAM read is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+      "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
     steps: [
       "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
       "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
     ],
     gap: "The member browser test uses a member account and the real Native IAM refusal.",
+  },
+  channelSecretGrantMemberUnverified: {
+    group: "Components/Channels",
+    name: "Member Slack token saved, access not verified",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    observabilityDenied: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    description:
+      "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
+    steps: [
+      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
   },
   channelSaveUnknown: {
     group: "Components/Channels",
@@ -6716,6 +6735,18 @@ export const scenarios = {
       "Read the partial-save message and disabled authentication controls.",
       "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
       "The form refreshes without another Agent PATCH.",
+    ],
+  },
+  authSecretGrantMissing: {
+    group: "Components/Credentials",
+    name: "Authentication Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    harnessGrantMissing: true,
+    description:
+      "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
+    steps: [
+      "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
+      "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
     ],
   },
   authSecretGrantMemberUnverified: {

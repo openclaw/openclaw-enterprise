@@ -1228,8 +1228,13 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     effect: "deny",
   });
   assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  // Granting these writes IAM policy, which only an Installation administrator can do (finding
+  // 2260).
   await page
-    .getByText("Deployment denied. Check Agent deploy permission", { exact: false })
+    .getByText(
+      "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them needs Installation administration access: ask an Installation administrator to check these grants.",
+      { exact: true },
+    )
     .waitFor();
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();

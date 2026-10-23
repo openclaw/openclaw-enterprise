@@ -1013,9 +1013,11 @@ test("Run diagnostics access and outcomes", async (t) => {
         // As the live walk did: the button at the bottom of the screen, pressed by pointer.
         await run.evaluate((node) => node.scrollIntoView({ block: "end" }));
         await run.click();
-        const alert = observations
-          .getByRole("alert")
-          .filter({ hasText: "Diagnostics require Agent read and operate access" });
+        const alert = observations.getByRole("alert").filter({
+          // An Installation administrator grants access, not a Namespace one (finding 2260).
+          hasText:
+            "Diagnostics require Agent read and operate access plus read access to this version. Granting them needs Installation administration access: ask an Installation administrator to check those grants.",
+        });
         await alert.waitFor();
         const view = await refusalView(alert);
         t.diagnostic(JSON.stringify(view));

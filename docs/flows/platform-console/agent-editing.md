@@ -205,7 +205,8 @@ reservation explains the refusal. PATCH sends
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
 IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
-Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. An administrator's console
+Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
+session sends no grant and says access was not verified until **Reload draft**. An administrator's console
 also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
 An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
@@ -237,7 +238,8 @@ administrator, and offers no retry. A refused or unconfirmed grant request offer
 authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
 **Reload authentication source** before saving or granting. Pending access
-survives navigation and blocks deployment until confirmed or reloaded. Admission
+survives navigation and blocks deployment until confirmed or reloaded. An administrator's
+tab blocks deployment while Namespace IAM shows no grant. Admission
 remains authoritative; preflight/authorization errors stay separate from credential
 metadata. Confirmed access does not prove provider readiness.
 

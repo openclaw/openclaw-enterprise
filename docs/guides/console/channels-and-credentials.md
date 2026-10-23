@@ -77,7 +77,8 @@ that exact Secret. Granting needs Installation `administer`. When a member saves
 the source, the binding saves, but the member's session sends no grant, so it
 does not verify the Agent's access. The console asks an Installation administrator
 to open the Agent's Credentials and select **Save authentication source**, which
-grants it. The administrator's tab does not show whether the grant is missing.
+grants it. An administrator's Credentials tab reads Namespace IAM, says when that
+grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.
@@ -97,7 +98,7 @@ This section appears when Slack is enabled in the saved Configuration.
 | Component                                         | Purpose                                                                                                          |
 | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | **Slack app token / bot token: Bound/Missing**    | Reports saved Secret references, not whether Slack accepts the tokens.                                           |
-| **Bound · Agent access not confirmed**            | The Secret is saved, but the Agent may not use it yet: its access grant was refused or is missing.               |
+| **Bound · Agent access not confirmed**            | The Secret is saved, but the Agent may not use it yet: its grant was refused, missing or not verified.           |
 | **Retry Secret access**                           | Retries only the Agent's access grant for saved Slack Secrets; it saves no Configuration.                        |
 | **Slack app token** / **Slack bot token** pickers | Select a readable Namespace Secret or **Create new Secret...**. Missing tokens need a selected binding.          |
 | **Save channel Secrets**                          | Saves Configuration Secret bindings, grants the Agent access, and requires an explicit deployment to apply them. |
@@ -107,9 +108,11 @@ generated credentials are missing; deployment also requires `deploy`.
 Saving channel Secrets additionally requires Secret,
 Configuration, and Namespace IAM permissions. These are multiple writes, so a
 failure can leave partial progress. Granting the Agent a Secret needs Installation
-`administer`: when a member saves a token, the Configuration saves and the console asks an
-Installation administrator to open the Agent's Credentials and select **Retry Secret
-access**. Deploy waits until the grant succeeds. **Outcome unknown** means refresh and inspect
+`administer`: when a member saves a token, the Configuration saves, but the member's session
+sends no grant, so it does not verify the Agent's access. The console asks an Installation
+administrator to open the Agent's Credentials and select **Retry Secret access**, and offers
+no retry itself. Deploy waits only until **Reload draft** or a browser reload: the member's
+console cannot read the grant, so the API refuses a deployment it does not cover. **Outcome unknown** means refresh and inspect
 saved state before retrying. Save requires at least one changed selection and a
 bound Secret for each token. Changing the picker switches the referenced Secret;
 it does not overwrite an existing shared Secret value. Existing values are never

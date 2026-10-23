@@ -84,6 +84,10 @@ export const AuthSecretGrantDenied = {
   ...story("authSecretGrantDenied"),
   name: "Authentication saved, grant denied",
 };
+export const AuthSecretGrantMissing = {
+  ...story("authSecretGrantMissing"),
+  name: "Authentication Secret without an Agent grant",
+};
 export const AuthSecretGrantMemberUnverified = {
   ...story("authSecretGrantMemberUnverified"),
   name: "Member authentication saved, access not verified",
