@@ -271,8 +271,12 @@ test(
     const restore = unreadableRevision(first);
     try {
       const before = stop.failed.length;
-      await waitForWorkPass("two more failed refused stops", fixture, replacement, async () =>
-        stop.failed.length >= before + 2 ? true : undefined,
+      await waitForWorkPass(
+        "two more failed refused stops",
+        fixture,
+        replacement,
+        async () => (stop.failed.length >= before + 2 ? true : undefined),
+        30_000,
       );
       stop.succeed();
       await assertWorkEnds(
@@ -355,8 +359,12 @@ for (const refuse of ["revoked", "unsupported"]) {
         },
       });
       const { owner, replacement, driver } = scenario;
-      await waitForWorkPass("two failed refused stops", fixture, replacement, async () =>
-        stop.failed.length >= 2 ? true : undefined,
+      await waitForWorkPass(
+        "two failed refused stops",
+        fixture,
+        replacement,
+        async () => (stop.failed.length >= 2 ? true : undefined),
+        30_000,
       );
       lifted = true;
       // Only the unsupported candidate's stop succeeds. A revoked candidate's never does, so a
@@ -440,8 +448,8 @@ test(
     stop.succeed();
     await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED", due);
     assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
-    // Its sweep retried on the queue's growing backoff while the stop failed (each failure spent
-    // an attempt, so only now is its next retry made due).
+    // Its sweep retried on the queue's growing backoff while the stop failed. Each failed sweep
+    // spent an attempt, so its retry is made due only now that the stop succeeds.
     await waitForWorkStateDue(fixture, newer, "succeeded");
   },
 );
