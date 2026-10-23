@@ -24,8 +24,8 @@ type Faults = {
   duringObserve?: () => void;
   /** The error a named gateway call throws instead of answering, if any. */
   gatewayCall?: (method: string, name?: string) => unknown;
-  /** Runs while the provider write is in flight, before it answers. */
-  duringWrite?: () => unknown;
+  /** Runs while the provider write is in flight, before it answers; given the caller's signal. */
+  duringWrite?: (signal: AbortSignal) => unknown;
   /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
   sandboxMissing?: boolean;
 };
@@ -268,13 +268,19 @@ export function openShellGitRuntimeFixture({
         ...supervisor,
       });
     },
-    rotate: async (binding: Entry["binding"], release: () => Promise<Material | undefined>) => {
+    rotate: async (
+      binding: Entry["binding"],
+      release: () => Promise<Material | undefined>,
+      signal: AbortSignal,
+    ) => {
       const token = await release();
-      if (!token) {
+      // Like the real rotate(): a caller out of time sends nothing; once sent, the write is
+      // not tied to the caller's signal.
+      if (!token || signal.aborted) {
         return;
       }
       calls.rotate += 1;
-      await faults.duringWrite?.();
+      await faults.duringWrite?.(signal);
       if (faults.rotate) {
         throw faults.rotate;
       }

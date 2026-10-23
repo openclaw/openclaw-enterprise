@@ -1061,6 +1061,16 @@ test("a provider write that answers after withdrawal or replacement opens nothin
   await expectDenied(f, "route_blocked");
   assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
 
+  // Withdrawn by another worker, in the store only: the write's result is not recorded and
+  // the route is dropped.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.withdraw({ revisionId: f.revision.id });
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  assert.equal(f.store.rows.get(f.revision.id).material, undefined);
+  await expectDenied(f, "no_binding");
+
   // Another worker adopted the route: this one drops it, and the pending write stays for the
   // adopter to read as unknown.
   f = fixture({ store: routeStore() });
@@ -1089,6 +1099,30 @@ test("a provider write that answers after withdrawal or replacement opens nothin
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal((await f.lookup())?.executionId, f.revision.id);
+
+  // The write answers only after the pass's budget is spent: its result is recorded, the
+  // route is verified again by the next pass, and nothing is written twice.
+  f = fixture({ store: routeStore() });
+  f.runtime.observeTimeoutMs = 1_000;
+  f.faults.duringWrite = async (signal) => {
+    if (!signal.aborted) {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+  };
+  await f.reconcile();
+  const row = f.store.rows.get(f.revision.id);
+  assert.deepEqual(
+    [row.writePending, row.generation.credentialState, row.material?.materialVersion],
+    [undefined, "active", "version-one"],
+  );
+  // Not installed by a pass out of time, even though this fake gateway still answers.
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
+  await expectDenied(f, "route_pending");
+  f.faults.duringWrite = undefined;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {
