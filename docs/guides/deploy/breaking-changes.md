@@ -15,6 +15,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: chart ports refuse leading zeros
+
+**What breaks.** Helm rendering refuses `egressAuthority.port`,
+`openshellGit.port`, `repositoryCredentials.upstreamPort` or
+`preparedGitHub.issuerPort` given as text with a leading zero, such as
+`--set preparedGitHub.issuerPort=0443`. Earlier builds rendered issuer `0443`
+as 443, other ports wrongly.
+
+**Who is affected.** Helm installs that set such a port.
+
+**How to tell.** Helm fails with `<setting> must be a TCP port without leading
+zeros`.
+
+**Steps.** Write the port without leading zeros, for example `443`.
+
 ## 2026-10-23: the worker refuses an App key that cannot sign
 
 **What breaks.** With prepared repository Git, worker startup reads and parses
