@@ -69,10 +69,12 @@ export function waitForRevisionPass(description, fixture, revision, read, option
 
 // For a test that changes authority between worker passes rather than during one. A pass
 // checks authority before it prepares, so a pass already running when the change commits may
-// still prepare after it (later Git use is authorized per request). Defer this revision's queued
-// maintenance and wait until no pass of its Agent is claimed. Claims are serial per Agent, and
-// waitForRevisionPass or advanceRevisionQueue makes the deferred pass due again.
-export async function settleRevisionMaintenance(fixture, revision, timeoutMs = 25_000) {
+// still prepare after it. That is safe: later Git use is authorized per request, and claims are
+// serial per Agent, so the cleanup that reduces access runs after that pass. Stopping the worker
+// also drains passes; this keeps it running. Defer this revision's queued maintenance and wait
+// until no pass of its Agent is claimed and neither of its preparing passes (reconcile,
+// maintenance) is due. waitForRevisionPass or advanceRevisionQueue makes the deferred pass due.
+export async function settleRevisionMaintenance(fixture, revision, options = 25_000) {
   const maintenance = `agent_revision:${revision.id}:maintenance:%`;
   await waitFor(
     "no worker pass in flight for the Agent and its maintenance deferred",
@@ -88,15 +90,16 @@ export async function settleRevisionMaintenance(fixture, revision, timeoutMs = 2
       } = await fixture.observerPool.query(
         `SELECT EXISTS (
            SELECT 1 FROM occ.controller_work
-           WHERE (state = 'claimed' AND agent_id = $3)
-              OR (revision_id = $1 AND state = 'queued' AND idempotency_key LIKE $2
+           WHERE (state = 'claimed' AND agent_id = $4)
+              OR (revision_id = $1 AND state = 'queued'
+                  AND (idempotency_key LIKE $2 OR idempotency_key = $3)
                   AND available_at < clock_timestamp() + interval '30 minutes')
          ) AS busy`,
-        [revision.id, maintenance, revision.agentId],
+        [revision.id, maintenance, `agent_revision:${revision.id}:reconcile`, revision.agentId],
       );
       return busy ? undefined : true;
     },
-    timeoutMs,
+    options,
   );
 }
 

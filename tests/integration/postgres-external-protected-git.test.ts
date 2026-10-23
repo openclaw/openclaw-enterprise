@@ -1757,8 +1757,9 @@ function externalGitJourney(
           releaseReduction = resolve;
         });
         peer.reduction.beforeApply = () => hold;
-        // Withdraw between maintenance passes: a pass that checked the approval just before
-        // removal may still prepare after it commits. Every pass that starts later must not.
+        // Withdraw between worker passes. A pass that checked the approval just before removal
+        // may still prepare after it commits; its Git is still denied per request and cleanup
+        // reduces after it. Every pass that starts after the withdrawal must never prepare.
         await settleRevisionMaintenance(f, revision);
       }
       preparationsBeforeWithdrawal = preparations;
