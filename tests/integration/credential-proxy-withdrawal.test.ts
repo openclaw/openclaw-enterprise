@@ -55,7 +55,8 @@ test(
         },
       ],
       appFactory: async (context: TestContext, options: object = {}) => {
-        const app = await postgresApp(context, options);
+        // Recorded deployment work tells a failed candidate from one still deploying.
+        const app = await postgresApp(context, { ...options, recordOperations: true });
         api = app.request;
         state = app.state;
         pool = app.pool;
