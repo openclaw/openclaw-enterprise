@@ -82,8 +82,9 @@ keeps reviewed scalar fields and drops unapproved fields, credentials, provider
 payloads, request/reply objects, and unsafe strings. This source boundary precedes
 the separate Collector filter in step 7. For worker records, the Collector retains
 allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
-and credential withdrawal keys include the operation UUID; deletion keys have no
-operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
+include the operation UUID. Credential withdrawal keys end in the operation UUID or
+`activation` (the attempt a candidate's activation queues), optionally followed by
+`:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
 lowercase hexadecimal characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
 The local worker emitter also retains `stopYields` from throttled drain-yield and
@@ -295,6 +296,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 12:30: Keep `work.id` for credential withdrawal keys that end in `activation` or `:recovery:<n>`; the Collector dropped them. (fix-2249)
 
 - 2026-10-23 10:45: Keep the auth:maintain command, refusal guidance codes, OCC-assigned Installation and orphaned Configuration IDs, and the delivery-pending Sandbox Driver ID through the local logging sanitizer. (fix-2245)
 

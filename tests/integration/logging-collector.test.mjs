@@ -982,11 +982,36 @@ test(
         operation: "agent_revision.credential_withdrawal",
         workId: `${withdrawalWorkId}:${randomUUID()}`,
       },
+      // The attempt a candidate's activation queues has the fixed operation ID `activation`,
+      // and each later attempt series appends `:recovery:<n>` to its request's key.
       {
         operation: "agent_revision.credential_withdrawal",
-        workId: `${withdrawalWorkId}:CANARY_SESSION`,
-        discardWorkId: true,
+        workId: `${withdrawalWorkId}:activation`,
       },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:activation:recovery:1`,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:${randomUUID()}:recovery:15`,
+      },
+      ...[
+        `${withdrawalWorkId}:CANARY_SESSION`,
+        `${withdrawalWorkId}:activation_CANARY`,
+        `${withdrawalWorkId}:ACTIVATION`,
+        `${withdrawalWorkId}:recovery:1`,
+        `${withdrawalWorkId}:activation:recovery`,
+        `${withdrawalWorkId}:activation:recovery:0`,
+        `${withdrawalWorkId}:activation:recovery:01`,
+        `${withdrawalWorkId}:activation:recovery:1:recovery:2`,
+        `${withdrawalWorkId}:activation:retry:1`,
+        `${withdrawalWorkId}:${randomUUID()}:recovery:CANARY_SESSION`,
+      ].map((workId) => ({
+        operation: "agent_revision.credential_withdrawal",
+        workId,
+        discardWorkId: true,
+      })),
       {
         operation: "agent_revision.credential_withdrawal",
         workId: withdrawalWorkId,
