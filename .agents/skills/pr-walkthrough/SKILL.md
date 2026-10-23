@@ -43,9 +43,9 @@ await recordWalkthrough(page, {
 `action` runs once. If a response matters, start waiting for that response inside
 the action before triggering it. Omit `target` for an outside event or a keyboard
 interaction whose focus you need to preserve. `verify` runs before and after the
-reading pause. Make it wait for the specific result in the viewport. For example,
-if the result depends on a sheet reaching the bottom edge, wait for that position
-instead of checking its coordinates once during the opening animation.
+reading pause. Check the specific visible result, such as a sheet meeting the bottom
+edge. The recorder waits for ordinary transitions; when the application loads data
+later, use a check that waits for that data to appear.
 
 Play the saved WebM at normal speed. Its adjacent JSON gives approximate seek times,
 including when the last result was visible and when the recorder checked it again.

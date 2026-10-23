@@ -62,6 +62,8 @@ export async function recordWalkthrough(page: Page, { outputPath, ready, steps }
         timing.push(times);
         await saveTiming("recording");
         await step.action();
+        // A click can resolve while a sheet is still sliding. Let it arrive before checking geometry.
+        await settleTransitions(page);
         await step.verify();
         await settleTransitions(page);
         times.resultAtMs = elapsed();
@@ -88,10 +90,17 @@ async function cueTarget(target: Locator) {
   await target.scrollIntoViewIfNeeded({ timeout: 5000 });
   // Playwright's showActions and locator.highlight can display input or locator text.
   // Animate just an outline: it works in native dialogs, preserves focus, and restores itself.
-  await target.evaluate(async (element) => {
-    const ring = { outline: "4px solid #1769df", outlineOffset: "3px" };
-    await element.animate([ring, ring], 1250).finished;
-  });
+  await Promise.race([
+    target.evaluate(async (element) => {
+      const ring = { outline: "4px solid #1769df", outlineOffset: "3px" };
+      await element.animate([ring, ring], 1250).finished;
+    }),
+    hold(4000, undefined, { ref: false }).then(() => {
+      throw new Error(
+        "The action cue did not finish in 4 seconds; stopped before this step's action.",
+      );
+    }),
+  ]);
 }
 
 async function settleTransitions(page: Page) {
