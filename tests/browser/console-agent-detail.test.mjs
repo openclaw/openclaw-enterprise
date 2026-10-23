@@ -1015,6 +1015,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assert.equal(draft.generation, 3);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -1029,13 +1030,17 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
 
   await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, second.revision.id);
 
   await page.getByRole("button", { name: "View version v1" }).click();
@@ -1048,7 +1053,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, "draft");
 
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -1147,7 +1154,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
+  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
+    waitForIdleFetches(page),
+  );
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   // Edit current Configuration opens the draft's editor on the saved document (finding 2061).

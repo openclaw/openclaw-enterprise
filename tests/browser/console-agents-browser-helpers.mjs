@@ -309,10 +309,26 @@ export function expireSessions(fixture) {
   }
 }
 
-export async function expectNoText(page, pattern) {
-  await assert.rejects(
-    page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
-    /Timeout/,
+// Checks that no visible text matches `pattern`. `settled` resolves once the page has done what
+// could have shown the text: the read behind it settled (waitForIdleFetches,
+// waitForSettledFetches), or the request that would precede it is held (holdRoute's
+// waitForRelease). The check runs once that has rendered, without a fixed wait. Without
+// `settled`, it watches the page for 300 ms: keep that only where a timer, not a read or a
+// render, would show the text.
+export async function expectNoText(page, pattern, settled) {
+  if (settled === undefined) {
+    await assert.rejects(
+      page.getByText(pattern).waitFor({ state: "visible", timeout: 300 }),
+      /Timeout/,
+    );
+    return;
+  }
+  await settled();
+  await nextFrames(page);
+  assert.equal(
+    await page.getByText(pattern).filter({ visible: true }).count(),
+    0,
+    `no visible text matches ${pattern}`,
   );
 }
 

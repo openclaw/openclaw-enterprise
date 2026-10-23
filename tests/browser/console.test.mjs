@@ -10,7 +10,10 @@ import {
   describePendingBrowserRequests,
   noteBrowserEvent,
 } from "../helpers/browser-failure-diagnostics.mjs";
-import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
+import {
+  createConsoleAppFixture as createBaseConsoleAppFixture,
+  fileConsoleApp,
+} from "../helpers/console-app.mjs";
 import {
   apiRequests,
   expectNoText,
@@ -19,6 +22,7 @@ import {
   loginThroughForm,
   newPage,
   settledFetches,
+  settledView,
   settlePageRequests,
   trackSettledFetches,
   waitForEnabled,
@@ -31,6 +35,9 @@ const defaultCodexPreset = JSON.parse(
 );
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+// The sign-in page tests share one app (fileConsoleApp): they make no Namespace, change no
+// policy and end no session. Every other test keeps an app of its own.
+const signInApp = fileConsoleApp({ defaultPresets: [defaultCodexPreset] });
 
 test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "occ-browser-theme-"));
@@ -356,6 +363,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   const alphaAgent = await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
   const betaAgent = await fixture.createAgent(beta.id, "Beta agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
 
@@ -385,7 +393,9 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("heading", { name: "Backends" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${beta.id}$`));
   await page.getByText("openai-primary").waitFor();
-  await expectNoText(page, /apiKeyPath|workspaceId|credentialTtlSeconds/);
+  await expectNoText(page, /apiKeyPath|workspaceId|credentialTtlSeconds/, () =>
+    waitForIdleFetches(page),
+  );
 
   // Changing scope on an Installation-wide page preserves the page and browser history.
   await chooseNamespace(page, "Alpha");
@@ -419,7 +429,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL(/\/console\/login$/);
   await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /Alpha|Beta|openai-primary/);
+  await expectNoText(page, /Alpha|Beta|openai-primary/, () => waitForIdleFetches(page));
   assert.deepEqual(
     await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
     { local: {}, session: {} },
@@ -610,8 +620,9 @@ test("console ignores stale collection successes and errors while switching Name
   slowSuccess.release();
   await slowSuccess.waitForCompletion();
   // The page has settled the stale read (aborted or answered) and run its handler.
-  await waitForSettledFetches(page, slowAgentsPath, slowSuccessRead);
-  await expectNoText(page, /Slow (new )?agent|unavailable|failed|interrupted/i);
+  await expectNoText(page, /Slow (new )?agent|unavailable|failed|interrupted/i, () =>
+    waitForSettledFetches(page, slowAgentsPath, slowSuccessRead),
+  );
   assert.equal(await page.getByText("Current agent").isVisible(), true);
   assert.equal(new URL(page.url()).searchParams.get("namespace"), current.id);
 
@@ -625,9 +636,10 @@ test("console ignores stale collection successes and errors while switching Name
   await page.getByText("Current agent").waitFor();
   slowError.release();
   await slowError.waitForCompletion();
-  await waitForSettledFetches(page, slowAgentsPath, slowErrorRead);
   // A failed read the console still treated as current would show "Request interrupted".
-  await expectNoText(page, /Slow (new )?agent|unavailable|failed|interrupted/i);
+  await expectNoText(page, /Slow (new )?agent|unavailable|failed|interrupted/i, () =>
+    waitForSettledFetches(page, slowAgentsPath, slowErrorRead),
+  );
   assert.equal(await page.getByText("Current agent").isVisible(), true);
 });
 
@@ -643,6 +655,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
   };
   fixture.policy.restrictions.push(denyAll);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, "/console/backends");
   await page.getByText("openai-primary", { exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("namespace"), null);
@@ -670,7 +683,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
     await page.getByRole("combobox", { name: "Namespace", exact: true }).inputValue(),
     selection,
   );
-  await expectNoText(page, /No readable Namespaces/);
+  await expectNoText(page, /No readable Namespaces/, () => waitForIdleFetches(page));
 });
 
 async function releaseHeldRoute(page, pattern, hold) {
@@ -1125,7 +1138,7 @@ test("console retained views clear after session expiry and exact Agent denial",
   );
   await releaseHeldRoute(page, sessionPattern, expiredSession);
   await page.getByText("Your session has expired").waitFor();
-  await expectNoText(page, /Denied retained Agent/);
+  await expectNoText(page, /Denied retained Agent/, () => waitForIdleFetches(page));
 
   fixture.memoryDatabase.session.length = 0;
   await login(page, fixture, "/console/agents/" + agent.id + "?namespace=" + namespace.id);
@@ -1165,7 +1178,7 @@ test("console retained views clear after session expiry and exact Agent denial",
       "You do not have access to this Agent or its settings, or it was deleted. Ask its owner to share it with you.",
     )
     .waitFor();
-  await expectNoText(page, /Configuration draft|Selected revision/);
+  await expectNoText(page, /Configuration draft|Selected revision/, () => waitForIdleFetches(page));
 });
 
 // Both shared admission reads must revoke every preview when their outcome is unknown.
@@ -1176,6 +1189,7 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     const namespace = await fixture.createNamespace("Admission failure", { ready: true });
     await fixture.createAgent(namespace.id, "Private cached Agent");
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByText("Private cached Agent").waitFor();
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
@@ -1189,7 +1203,9 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
         exact: true,
       })
       .waitFor();
-    await expectNoText(page, /Private cached Agent|Admission failure/);
+    await expectNoText(page, /Private cached Agent|Admission failure/, () =>
+      waitForIdleFetches(page),
+    );
     await page.unroute(`**${gate}`);
 
     // Returning to the other cached route cannot resurrect it while admission is pending.
@@ -1200,7 +1216,9 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await page.goBack();
     await pending.waitForRelease();
     assert.equal(await page.locator(".content [inert]").count(), 0);
-    await expectNoText(page, /Private cached Agent|Admission failure/);
+    await expectNoText(page, /Private cached Agent|Admission failure/, () =>
+      pending.waitForRelease(),
+    );
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   });
@@ -1241,7 +1259,7 @@ for (const check of ["a page load", "an Agent page refocus"]) {
     await page
       .getByText("Your account has no access to this Installation. Try again or sign out.")
       .waitFor();
-    await expectNoText(page, /Removed identity/);
+    await expectNoText(page, /Removed identity/, () => waitForIdleFetches(page));
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.waitForURL(/\/console\/login$/);
@@ -1250,7 +1268,7 @@ for (const check of ["a page load", "an Agent page refocus"]) {
 
     await page.goto(`${fixture.origin}/console/namespaces`);
     await page.getByLabel("Email", { exact: true }).waitFor();
-    await expectNoText(page, /Your session has expired/);
+    await expectNoText(page, /Your session has expired/, () => waitForIdleFetches(page));
   });
 }
 
@@ -1300,9 +1318,9 @@ test("a session replaced by another tab signs this tab out instead of being adop
 });
 
 test("an abandoned GitHub attempt does not turn password sign-in into a GitHub failure", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   await page.goto(`${fixture.origin}/console/login`);
@@ -1314,12 +1332,14 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
-  await expectNoText(page, /Could not sign in with GitHub/);
+  await expectNoText(page, /Could not sign in with GitHub/, async () => {
+    await page.locator(settledView).waitFor();
+    await waitForIdleFetches(page);
+  });
 });
 
 test("Google sign-in accepts only a Google authorization URL and confirms through its own result", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   const requests = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
@@ -1366,9 +1386,9 @@ test("Google sign-in accepts only a Google authorization URL and confirms throug
 });
 
 test("OIDC sign-in uses the discovered label and accepts only the discovered endpoint", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   const envelope = (data) => ({
@@ -1425,13 +1445,13 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
   };
   await page.goto(`${fixture.origin}/console/login`);
   await page.getByLabel("Email", { exact: true }).waitFor();
-  await expectNoText(page, /Continue with Acme SSO/);
+  await expectNoText(page, /Continue with Acme SSO/, () => waitForIdleFetches(page));
 });
 
 test("GitHub allowlist refusals tell the person why, and other reasons stay generic", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   let password = true;
   // Discovery models GitHub sign-in with password sign-in for everyone, then recovery-only.
   await page.route("**/api/auth/providers", (route) =>
@@ -1475,13 +1495,13 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   password = true;
   await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
   await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /organization/);
+  await expectNoText(page, /organization/, () => waitForIdleFetches(page));
 });
 
 test("a disabled account's provider sign-in says the account is disabled", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   let password = true;
   await page.route("**/api/auth/providers", (route) =>
     route.fulfill({
@@ -1510,20 +1530,20 @@ test("a disabled account's provider sign-in says the account is disabled", async
           { exact: true },
         )
         .waitFor();
-      await expectNoText(page, /attach your|use your password/);
+      await expectNoText(page, /attach your|use your password/, () => waitForIdleFetches(page));
     }
   }
   // Without a provider error the reason means nothing.
   password = true;
   await page.goto(`${fixture.origin}/console/?authReason=account-disabled`);
   await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /disabled/);
+  await expectNoText(page, /disabled/, () => waitForIdleFetches(page));
 });
 
 test("a provider outage says sign-in is unavailable, not to get attached", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   let password = true;
   await page.route("**/api/auth/providers", (route) =>
     route.fulfill({
@@ -1566,7 +1586,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
         `${fixture.origin}/console/?authError=${provider}&authReason=provider-unavailable`,
       );
       await page.getByText(outage, { exact: true }).waitFor();
-      await expectNoText(page, /attach your/);
+      await expectNoText(page, /attach your/, () => waitForIdleFetches(page));
       // The callback failed inside OCE: no fallback finishes a sign-in either.
       await page.goto(`${fixture.origin}/console/?authError=${provider}&authReason=unavailable`);
       await page
@@ -1575,19 +1595,18 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
           { exact: true },
         )
         .waitFor();
-      await expectNoText(page, /attach your|use your password/);
+      await expectNoText(page, /attach your|use your password/, () => waitForIdleFetches(page));
     }
   }
   // Without a provider error the reason means nothing.
   password = true;
   await page.goto(`${fixture.origin}/console/?authReason=provider-unavailable`);
   await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /unavailable/);
+  await expectNoText(page, /unavailable/, () => waitForIdleFetches(page));
 });
 
 test("recovery-only password sign-in keeps the form behind Recovery sign-in", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   // This controller admits every password; discovery models OCC_AUTH_PASSWORD_SIGN_IN.
   await page.route("**/api/auth/providers", (route) =>
@@ -1635,8 +1654,7 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
 });
 
 test("password sign-in stays visible unless discovery reports it recovery-only", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   await page.route("**/api/auth/providers", (route) =>
     route.fulfill({
@@ -1661,6 +1679,7 @@ test("known Namespace revocation invalidates a cached global collection with ano
   const revoked = await fixture.createNamespace("Removed from access", { ready: true });
   await fixture.createAgent(allowed.id, "Allowed Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/namespaces?namespace=${allowed.id}`);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
@@ -1681,10 +1700,10 @@ test("known Namespace revocation invalidates a cached global collection with ano
   t.after(() => pending.release());
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await pending.waitForRelease();
-  await expectNoText(page, /Removed from access/);
+  await expectNoText(page, /Removed from access/, () => pending.waitForRelease());
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
-  await expectNoText(page, /Removed from access/);
+  await expectNoText(page, /Removed from access/, () => waitForIdleFetches(page));
 });
 
 // Namespace rows were inert and their status badges showed raw lowercase enum values in one grey
@@ -1773,7 +1792,7 @@ test("known Backend denial invalidates previews across Namespace selections", as
   await page.goBack();
   await pending.waitForRelease();
   assert.equal(new URL(page.url()).searchParams.get("namespace"), alpha.id);
-  await expectNoText(page, /openai-primary/);
+  await expectNoText(page, /openai-primary/, () => pending.waitForRelease());
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
 });
@@ -1836,7 +1855,7 @@ test("pagehide clears private content before persisted pageshow revalidates", as
     globalThis.dispatchEvent(new globalThis.PageTransitionEvent("pageshow", { persisted: true })),
   );
   await pending.waitForRelease();
-  await expectNoText(page, /Before pagehide Agent|Page lifecycle/);
+  await expectNoText(page, /Before pagehide Agent|Page lifecycle/, () => pending.waitForRelease());
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
@@ -1851,6 +1870,7 @@ test("mobile header switches Namespace without opening the navigation drawer", a
   await fixture.createAgent(alpha.id, "Alpha mobile agent");
   await fixture.createAgent(beta.id, "Beta mobile agent");
   const { page } = await newPage(t, fixture, mobile);
+  await trackSettledFetches(page);
 
   await login(page, fixture, `/console/agents?namespace=${alpha.id}`);
   await page.getByText("Alpha mobile agent").waitFor();
@@ -1862,6 +1882,7 @@ test("mobile header switches Namespace without opening the navigation drawer", a
   await expectNoText(
     page,
     /Use your account email|Your session has expired|Could not confirm logout/,
+    () => waitForIdleFetches(page),
   );
 });
 
@@ -1926,6 +1947,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       const requested = back ? alpha.id : "ns_00000000-0000-4000-8000-000000000099";
       const target = `/console/${feature}?namespace=${requested}`;
       const { page } = await newPage(t, fixture, mobile);
+      await trackSettledFetches(page);
       await login(page, fixture, target);
       await page
         .getByText("Previously readable", { exact: true })
@@ -1995,7 +2017,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       if (back) {
         await page.getByText("Your session has expired").waitFor();
         assert.equal(await selector.count(), 0);
-        await expectNoText(page, /Previously readable/);
+        await expectNoText(page, /Previously readable/, () => waitForIdleFetches(page));
         await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
         await page.getByLabel("Password").fill(fixture.credentials.password);
         await page.getByRole("button", { name: "Sign in" }).click();
@@ -2005,7 +2027,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       await admission.waitForRelease();
       await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
       assert.equal(page.url(), fixture.origin + target);
-      await expectNoText(page, /Previously readable/);
+      await expectNoText(page, /Previously readable/, () => admission.waitForRelease());
       if (placement === "inline" && back) {
         // Sign-in cleared the previous list. Inline recovery appears only once this read returns.
         assert.equal(await selector.count(), 0);
@@ -2127,6 +2149,7 @@ test("console clears private content after session expiry, access revocation, an
   const namespace = await fixture.createNamespace("Revoked", { ready: true });
   await fixture.createAgent(namespace.id, "Revoked agent");
   const { page, artifacts } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByText("Revoked agent").waitFor();
 
@@ -2136,7 +2159,7 @@ test("console clears private content after session expiry, access revocation, an
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.getByText("Could not confirm logout").waitFor();
-  await expectNoText(page, /Revoked agent/);
+  await expectNoText(page, /Revoked agent/, () => waitForIdleFetches(page));
   await page.unroute("**/api/auth/sign-out");
   await page.getByRole("button", { name: "Retry" }).click();
   await page.waitForURL(/\/console\/login$/);
@@ -2157,7 +2180,7 @@ test("console clears private content after session expiry, access revocation, an
     "",
   );
   assert.equal(await page.getByRole("option", { name: "Revoked", exact: true }).count(), 0);
-  await expectNoText(page, /Revoked agent/);
+  await expectNoText(page, /Revoked agent/, () => waitForIdleFetches(page));
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   const revokedReturn = await holdRoute(t, page, "**/api/auth/session", (route, response) =>
@@ -2166,7 +2189,7 @@ test("console clears private content after session expiry, access revocation, an
   t.after(() => revokedReturn.release());
   await page.goBack();
   await revokedReturn.waitForRelease();
-  await expectNoText(page, /Revoked agent/);
+  await expectNoText(page, /Revoked agent/, () => revokedReturn.waitForRelease());
   await releaseHeldRoute(page, "**/api/auth/session", revokedReturn);
   await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
   fixture.policy.restrictions.length = 0;
@@ -2180,7 +2203,7 @@ test("console clears private content after session expiry, access revocation, an
   await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in" }).waitFor();
-  await expectNoText(page, /Revoked agent/);
+  await expectNoText(page, /Revoked agent/, () => waitForIdleFetches(page));
 
   await page.screenshot({ path: join(artifacts, "session-isolation.png"), fullPage: true });
 });
@@ -2360,8 +2383,7 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
 });
 
 test("a cold console visit shows neither navigation nor sign-in until its session is known", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await signInApp(t);
   const { page } = await newPage(t, fixture);
   const pattern = "**/api/auth/session";
   const navigation = page.getByRole("navigation", { name: "Main navigation" });
@@ -2395,10 +2417,11 @@ test("a first visit to a deep link asks to sign in; a tab whose session expired 
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   for (const path of ["/console/agents", "/console/namespaces"]) {
     await page.goto(`${fixture.origin}${path}`);
     await page.getByLabel("Email", { exact: true }).waitFor();
-    await expectNoText(page, /Your session has expired/);
+    await expectNoText(page, /Your session has expired/, () => waitForIdleFetches(page));
   }
 
   await loginThroughForm(page, fixture, "/console/namespaces");
@@ -2629,7 +2652,7 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   expireSessions(fixture);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
-  await expectNoText(page, /Expired page Agent/);
+  await expectNoText(page, /Expired page Agent/, () => waitForIdleFetches(page));
   fixture.policy.restrictions.push({
     id: "deny-expired-agent-read",
     namespaceId: namespace.id,

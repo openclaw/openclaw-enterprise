@@ -410,6 +410,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   assert.equal((await fixture.request("DELETE", path)).status, 202);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   const ownership =
@@ -438,7 +439,9 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an administrator for Agent delete access");
+  await expectNoText(page, "Ask an administrator for Agent delete access", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(writes, 1);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
@@ -764,6 +767,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
   const holder = await fixture.createNamespace("Z link holder", { ready: true });
   const agent = await fixture.createAgent(holder.id, "Linked Agent", nativeValues("link"));
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const missed = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${selected.id}/agents/${agent.id}` &&
@@ -778,7 +782,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
       url.searchParams.get("namespace") === holder.id,
   );
   await page.getByRole("heading", { name: "Linked Agent" }).first().waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
 });
 
 test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {
@@ -812,6 +816,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   const other = await fixture.createNamespace("Z uncertain other", { ready: true });
   const agentId = `agt_${randomUUID()}`;
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.route(`${fixture.origin}/namespaces/${other.id}/agents/${agentId}`, (route) =>
     route.fulfill({
       status: 503,
@@ -826,7 +831,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   await login(page, fixture, `/console/agents/${agentId}`);
   await page.getByRole("heading", { name: "Agent not in this Namespace" }).waitFor();
   await page.getByText("not in the A uncertain default Namespace", { exact: false }).waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
   await page.getByRole("button", { name: "Switch Namespace" }).click();
   assert.equal(
     await page
@@ -1518,6 +1523,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
     });
     const agent = await fixture.createAgent(namespace.id, "Revoked revision Agent");
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
     await login(page, fixture, url);
     await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1539,7 +1545,9 @@ for (const kind of ["agent", "configuration", "namespace"]) {
         exact: true,
       })
       .waitFor();
-    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/);
+    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -1549,6 +1557,7 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const namespace = await fixture.createNamespace("Revision session expired", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Expired revision Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1557,7 +1566,9 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
-  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
+  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/, () =>
+    waitForIdleFetches(page),
+  );
 });
 
 // Agent detail rechecks in place, so a mounted form must not suppress the refocus check.
@@ -1577,6 +1588,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     }
     const tab = variant === "sharing" ? "access" : variant;
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
     await login(page, fixture, url);
     await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
@@ -1590,7 +1602,9 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
-    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`));
+    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`), () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -2885,6 +2899,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   let status = "running";
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, second.id), (route) =>
@@ -2978,7 +2993,9 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const answered = page.waitForResponse((response) => response.url().endsWith(userPath));
   userReread.release();
   await answered;
-  await expectNoText(page, "USER.md reloaded with its current contents.");
+  await expectNoText(page, "USER.md reloaded with its current contents.", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(await user.inputValue(), "# Typed during the reread\n");
   assert.equal(
     requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
