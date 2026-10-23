@@ -56,10 +56,10 @@ history, repeat the startup model probe, or prove message delivery.
 
 **Save authentication source** stores the binding and confirms exact
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
-Secret. Grant changes require Namespace IAM authority; issued ChatGPT accounts
-and operator-managed authentication skip the grant. A failed grant reports
-partial success and offers **Retry credential access** without repeating the
-Agent update. Partial saves survive navigation. Grants do not prove runtime or
+Secret. Grant changes require Installation `administer`; issued ChatGPT accounts
+and operator-managed authentication skip the grant. A member's save reports
+partial success and names the Installation administrator. An administrator's
+failed grant offers **Retry credential access** without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed

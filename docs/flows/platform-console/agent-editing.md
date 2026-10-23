@@ -229,7 +229,11 @@ or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
 Grant failure preserves saved authentication and freezes controls.
-**Retry credential access** checks that the Agent still has the same service principal and
+`apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
+Slack Secret path does. A session known not to administer the Installation sends
+no grant: the warning names the Installation administrator and offers no retry.
+An administrator's refused or unconfirmed grant offers
+**Retry credential access**, which checks that the Agent still has the same service principal and
 authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
 **Reload authentication source** before saving or granting. Pending access
