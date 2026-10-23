@@ -575,13 +575,14 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
  * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
  * several bindings, could never start. Deploy refuses it with 409
  * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
- * 500, and the worker fails such a revision at once with the same code. HTTP keeps messages
- * under 256 characters.
+ * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
+ * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
+ * messages under 256 characters.
  */
 export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
   static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
   static readonly description =
-    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's binding can never start. Change its profile, use native prepared Git, or remove the binding, then deploy again.";
+    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.";
   readonly code = RepositoryGitProfileUnsupportedError.code;
 
   constructor() {

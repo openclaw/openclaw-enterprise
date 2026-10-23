@@ -225,7 +225,7 @@ const cases = [
       status: 409,
       code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
       message:
-        "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's binding can never start. Change its profile, use native prepared Git, or remove the binding, then deploy again.",
+        "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.",
     },
   ],
   [

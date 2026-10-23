@@ -1019,7 +1019,7 @@ export const ErrorResponse = Type.Object(
           }),
           Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
             description:
-              "Deploy is refused because a selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:

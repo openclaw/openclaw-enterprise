@@ -166,7 +166,7 @@ function sshCompute() {
   });
 }
 
-function registryFor(namespaceId) {
+function registryFor(namespaceId, extraRepositories = []) {
   return {
     version: 1,
     backendId,
@@ -187,6 +187,12 @@ function registryFor(namespaceId) {
         repository: "example/foreign-project",
         namespaces: [{ namespaceId: `ns_${randomUUID()}`, profiles: ["git-read", "git-write"] }],
       },
+      ...extraRepositories.map((repositoryRef, index) => ({
+        repositoryRef,
+        repositoryId: String(800 + index),
+        repository: `example/${repositoryRef}`,
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      })),
     ],
   };
 }
@@ -214,6 +220,7 @@ async function fixture(
     harness = "openclaw",
     configurationDriver = createTestConfigurationDriver(),
     controllerOptions = {},
+    extraRepositories = [],
   } = {},
 ) {
   const installation = {
@@ -298,7 +305,7 @@ async function fixture(
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
-  const registry = registryFor(namespace.id);
+  const registry = registryFor(namespace.id, extraRepositories);
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -1308,6 +1315,10 @@ async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}
     controllerOptions: {
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
     },
+    // Every bound repository other than the fixture's own is approved for the Namespace too.
+    extraRepositories: bindings
+      .map(({ repositoryRef }) => repositoryRef)
+      .filter((repositoryRef) => repositoryRef !== "project"),
   });
   const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
@@ -1374,15 +1385,22 @@ test("Deploy refuses a repository profile a Credential Proxy cannot deliver by n
   // Finding 2204: git-read and git-full map to no delivery profile, so admission checked the
   // counterpart as an ordinary egress plan. Stock 0.1.5 answered a generic 503; a gateway that
   // advertises the execution profile admitted a v4 plan that assertExecutionAdmission rejected
-  // as a 500. Deploy now names the supported profiles before contacting the gateway.
-  for (const profile of ["git-read", "git-full"]) {
+  // as a 500. Deploy now names the supported profiles before contacting the gateway. Two
+  // bindings map to no profile either, even when one of them is git-write.
+  const several = [
+    { repositoryRef: "project", profile: "git-write" },
+    { repositoryRef: "second-project", profile: "git-read" },
+  ];
+  for (const [name, bindings] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }]],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }]],
+    ["two bindings", several],
+  ]) {
     for (const advertised of [false, true]) {
-      const label = `${profile}${advertised ? " with the execution profile" : ""}`;
-      const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(
-        t,
-        [{ repositoryRef: "project", profile }],
-        { advertised },
-      );
+      const label = `${name}${advertised ? " with the execution profile" : ""}`;
+      const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(t, bindings, {
+        advertised,
+      });
       assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
       assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
       assert.equal(response.error.message, RepositoryGitProfileUnsupportedError.description);
