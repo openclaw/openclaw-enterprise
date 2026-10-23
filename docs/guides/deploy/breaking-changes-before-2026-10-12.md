@@ -2,6 +2,7 @@
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-11;
 newer ones are on that page, in the
+[notices before 2026-10-15](breaking-changes-before-2026-10-15.md), in the
 [earlier notices](breaking-changes-archive.md) and in the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md), and older ones are in the
 [notices before 2026-10-11](breaking-changes-before-2026-10-11.md). They still
@@ -115,7 +116,7 @@ instead, then restart the controller. _untested_
 a `plugins.entries.codex.config.appServer.approvalPolicy` other than `never`,
 `on-request` or `on-failure`, and for a literal `gateway.auth.password` (one
 that is not a `${NAME}` or `{source, id}` reference). Kubernetes deployment and
-provisioning refuse, before the running revision stops, what preparation or the
+provisioning refuse, before the running version stops, what preparation or the
 Gateway refused only after it: those policies and a `gateway.auth.password`
 other than the `OPENCLAW_GATEWAY_PASSWORD` reference (`409`); an enabled channel
 on an embedded Agent or on an Installation without `runtime.channels`, and,
@@ -152,7 +153,7 @@ the Installation input, rerender when using a profile, and restart the controlle
 **What breaks.** `occ` refuses an empty `--revision=`, `--pod=`, `--level=`,
 `--source=`, `--file=`, `--out=`, `--service-principal=`, `--url=`,
 `--service-key-file=` or `dev up --key-output=` before it does any work.
-Earlier builds treated most of these as omitted and used the default revision,
+Earlier builds treated most of these as omitted and used the default version,
 Pod, level or key path.
 
 **Who is affected.** Scripts that pass one of these flags a variable that can be

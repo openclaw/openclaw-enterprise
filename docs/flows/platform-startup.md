@@ -1,6 +1,6 @@
 ---
 created: 2026-08-20
-updated: 2026-10-18
+updated: 2026-10-21
 last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
 ---
 
@@ -22,7 +22,7 @@ requests and the worker begins polling durable work.
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/server.mjs:start`,
+- Source: `apps/controller/src/api-startup.mjs:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -46,7 +46,7 @@ graph TD
   end
 
   subgraph API["OCC API process"]
-    A["server.mjs validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
+    A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
     C --> E["Listen for requests and enqueue durable work"]
   end
@@ -60,7 +60,7 @@ graph TD
   subgraph Runtime["Compute-owned tenant runtimes"]
     N["One isolated backing namespace per Namespace"]
     J["One OpenClaw gateway per deployed Agent"]
-    K["Embedded OpenClaw or dedicated Codex revision"]
+    K["Embedded OpenClaw or dedicated Codex Agent revision"]
   end
 
   Y --> B
@@ -78,7 +78,7 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
@@ -131,7 +131,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `server.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.mjs` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates
@@ -162,10 +162,23 @@ also runs optional Compute preflight before initializing authentication or
 registering routes. The default unconfigured development API retains its existing
 startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
+Both compositions pass the loader's resolved `drivers.credential_proxy.requestCapacity`
+to the `OpenClawController` constructor, which validates it again;
+`packages/occ/src/index.ts:createCredentialProxy` then builds the exchange registry
+with those bounds when `installEgressAuthority` binds the selected transport. The worker
+validates the block but builds no registry. The
+[Credential Proxy reference](../reference/drivers/credential-proxy.md#request-time-capacity)
+owns the limits.
 It registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,
 exact-resource-authorized API routes.
+Route request validators and response serializers come from
+[`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
+[`precompile-route-schemas.mjs`](../../apps/controller/src/precompile-route-schemas.mjs)
+has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
+loads code generated for exactly the same schema, options, Node version and lockfile
+instead of compiling it; anything else compiles at start, as before.
 
 Development with `OCC_DATABASE_URL` instead calls
 [`composePostgresDevelopment`](../../apps/controller/src/composition/development-postgres.ts)
@@ -217,7 +230,7 @@ own selected ComputeDriver under the claim's ownership and cancellation scope.
 Compute prepares Namespace backing infrastructure and creates one gateway for
 each deployed Agent. Default PostgreSQL-backed development uses Docker networks
 and runtime containers; the bundled Kubernetes Driver prepares either an
-embedded OpenClaw or dedicated Codex revision, activates its exact Agent-owned
+embedded OpenClaw or dedicated Codex Agent revision, activates its exact Agent-owned
 gateway route, and retires any predecessor. Reviewed installed Compute Drivers
 can also be selected in development and production. Docker containers and
 Kubernetes Pods are downstream tenant
@@ -253,7 +266,7 @@ execution begins in the adjacent
 - [Controller worker operation](../reference/controller.md)
 - [Controller and Installation configuration](../reference/settings.md)
 - [ComputeDriver contract](../reference/drivers/compute.md)
-- [Configuration Driver and Agent Revision flow](configuration-driver.md)
+- [Configuration Driver and Agent revision flow](configuration-driver.md)
 - [Installation Driver package loading flow](driver-plugin-loading.md)
 - [Compute Driver lifecycle-hook flow](compute-driver-lifecycle-hooks.md)
 - [Service Account Driver credential delivery flow](service-account-driver-credential-delivery.md)
@@ -265,6 +278,10 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
+
+- 2026-10-21: Load the route validators and serializers the image build precompiled.
 
 - 2026-10-18 15:15: Match protected OpenShell transport admission to case-insensitive HTTPS schemes. (authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 

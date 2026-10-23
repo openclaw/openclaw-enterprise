@@ -12,7 +12,7 @@ adopted.
 ## Adopt in place
 
 Each `oce-gateways-<hash>` namespace becomes its tenant's namespace. OCC's database is not changed, so IDs, Namespace names,
-revisions, Secrets, service-account credentials, chat history and Harness
+versions, Secrets, service-account credentials, chat history and Harness
 workspaces all stay. The old namespace's workspace and embedded Gateway claims
 move into it by PersistentVolume rebind, and its Agent Secrets are copied.
 
@@ -100,7 +100,7 @@ not come back:
 
 - chat history and other Gateway state (the copy keeps the transcripts for
   reference; loading them into the new Gateway is untested);
-- Agent revision history and bindings to old revisions;
+- Agent revision history and bindings to old versions;
 - group, Installation-wide and resource-less bindings (re-create them by hand);
 - issued service-account credentials and Agent runtime credentials;
 - the old IDs and Namespace names, so update anything outside OCE that uses them.

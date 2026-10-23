@@ -21,9 +21,15 @@ Review its exact executable and endpoint, or select **Review suggestion**.
    `outside.example.org` rule and use the combined action. Confirm the error
    receives focus and is visible without scrolling. The attempted rule remains
    editable; the saved policy version and rules stay unchanged.
+6. In **Policy preview omits the validated rules**, review a suggestion. Confirm
+   the preview leaves the proposal editable and offers no Save action.
+7. In **Policy save returns different rules than reviewed**, use the combined
+   action. Confirm the Console asks you to refresh, then shows which rules were
+   saved. Live application requires a separate, explicit action.
 
 Compare empty, disabled, unsupported, gap, missing-metadata, permission-denied,
 loading, unavailable-credential, and unconfirmed-application stories. Confirm
-manual editing remains available without logs or suggestions. These previews
+manual editing remains available without logs or suggestions. The unsupported
+story shows one sentence and no editor. A permission refusal offers no retry. These previews
 prove simulated presentation only; use the OpenShell real-runtime lane for
 persistence and enforcement proof.

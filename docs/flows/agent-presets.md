@@ -10,7 +10,7 @@ last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
 
 The Console renders a Namespace Preset and saves an independent Configuration
 and Agent through existing APIs. This flow stops at the draft; deployment follows
-[revision admission](configuration-driver/persistence-and-revisions.md).
+[version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -26,7 +26,7 @@ and Agent through existing APIs. This flow stops at the draft; deployment follow
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
-- [Console selector](../../apps/controller/src/console/agents/presets.mjs):
+- [Console selector](../../apps/controller/src/console/agents/presets.mts):
   `createPresetFields` requires a selected Namespace and an authenticated user.
   Saving also needs the existing Configuration, Agent, and credential grants.
 
@@ -56,7 +56,7 @@ graph TD
   O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and revision admission"]
+  J --> L["Credential preparation and version admission"]
 ```
 
 ## Execution Trace
@@ -146,9 +146,9 @@ path records mutations and denials without template or variable contents.
 
 ### 3. Read and render the selected copy
 
-`apps/controller/src/console/agents/presets.mjs:createPresetFields`
+`apps/controller/src/console/agents/presets.mts:createPresetFields`
 
-[`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
+[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
 lists readable Preset summaries, requiring Namespace read, then reads the selection
 once. **Start with default Preset** reads the listed `default-codex` resource.
 Variable-free templates apply immediately; customized variables keep the chooser
@@ -196,7 +196,7 @@ page exit clears captures, not a failed `/namespaces` read. A known Create refus
 the capture and its saved resources, unless repository policy refused it or an Agent,
 provisioning job or credential registration exists.
 
-`agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
+`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced
 primary is retired. Temporary clearing retains fallback entries and transport.
 The saved Configuration goes through the existing configured-Harness resolver;
@@ -204,9 +204,9 @@ model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent`
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
-[The creation form](../../apps/controller/src/console/agents/create.mjs) copies
+[The creation form](../../apps/controller/src/console/agents/create.mts) copies
 rendered settings into editable fields and checks their form representation.
 A method-only Preset authentication default selects API key or Service Accounts
 without binding a Secret. The shared Secret picker requires a same-Namespace
@@ -253,9 +253,9 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [revision admission](configuration-driver/persistence-and-revisions.md)
+settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
 read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable admitted revision.
+or an immutable saved version.
 
 ## Debugging and Verification
 
@@ -267,7 +267,7 @@ or an immutable admitted revision.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
-  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.mjs)
+  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
   exercises the real selection form. Coverage names are not proof of a live model response.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)
   covers source builds with cold dependency caches behind an enforcing HTTPS

@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
@@ -521,17 +523,21 @@ test(
     assert.equal((await fixture.currentAgent(stopped)).activeRevisionId, stopping.id);
     assert.equal((await fixture.currentAgent(deleted))?.activeRevisionId, deleting.id);
     assert.notEqual((await fixture.currentAgent(recovered)).activeRevisionId, recovering.id);
-    // The guidance is logged with the failed stop and deletion only, not with their retries.
-    const completed = events.filter(
-      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
-    const terminal = completed.filter(({ hint }) => hint !== undefined);
+    // The guidance code is logged with the failed stop and deletion only, not with their
+    // retries. These are the lines the worker log keeps (finding 2245).
+    const completed = events
+      .filter(
+        ({ event, code }) =>
+          event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+      )
+      .map(occLogLine);
+    const terminal = completed.filter(({ hintCode }) => hintCode !== undefined);
     assert.deepEqual(
       terminal.map(({ agentId }) => agentId).sort(),
       [stopped.id, deleted.id].sort(),
     );
-    for (const { hint } of terminal) {
-      assert.match(hint, /restore that identity's Workspace role/);
+    for (const { hintCode } of terminal) {
+      assert.equal(hintCode, "sandbox-gateway-identity");
     }
     // Attempt 1 is the Driver's retry and the queue's; attempt 2 is still the Driver's retry
     // but the queue's permanent failure, which is what the line reports with the guidance.
@@ -539,11 +545,11 @@ test(
       assert.deepEqual(
         completed
           .filter(({ agentId }) => agentId === agent.id)
-          .map(({ attempt, result, outcome, hint }) => [
+          .map(({ attempt, result, outcome, hintCode }) => [
             attempt,
             result,
             outcome,
-            hint !== undefined,
+            hintCode !== undefined,
           ]),
         [
           [1, "retry", "retry", false],
@@ -554,7 +560,7 @@ test(
     // Every retried attempt was logged without it (the deployments never get it: their status
     // shows the guidance).
     const retried = completed.filter(
-      ({ outcome, hint }) => outcome === "retry" && hint === undefined,
+      ({ outcome, hintCode }) => outcome === "retry" && hintCode === undefined,
     );
     assert.deepEqual(
       new Set(retried.map(({ agentId }) => agentId)),
@@ -620,12 +626,14 @@ revisionTest(
       },
       { emit: (event) => events.push(event) },
     );
-    await Promise.all(busy.map((candidate) => fixture.work(candidate, "succeeded")));
+    // Each deployment's worker.completed follows the commit that marks its Work succeeded, so
+    // wait for the events counted below, not the rows (finding 2283).
+    await Promise.all(busy.map((candidate) => completedPasses(events, candidate)));
+    const indices = (name) => events.flatMap(({ event }, index) => (event === name ? [index] : []));
     await waitFor("both listed exposures to be withdrawn", async () =>
-      withdrawals.length >= 2 ? true : undefined,
+      indices("worker.harness-exposure-withdrawn").length >= 2 ? true : undefined,
     );
     assert.deepEqual(new Set(withdrawals), new Set([active.id, failed.id]));
-    const indices = (name) => events.flatMap(({ event }, index) => (event === name ? [index] : []));
     const completed = indices("worker.completed");
     const withdrawn = indices("worker.harness-exposure-withdrawn");
     assert.ok(completed.length >= 8, `claimed passes: ${completed.length}`);

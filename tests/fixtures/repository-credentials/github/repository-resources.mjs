@@ -33,7 +33,15 @@ export function createRepositoryResources({
   }
   function issuePull(input, native = false) {
     const number = nextNumber++;
+    const branch = (sha) =>
+      input.draft === true
+        ? { sha: sha.repeat(40), repo: { id: repositoryId, temp_clone_token: "must-not-escape" } }
+        : {};
     const pull = {
+      ...(input.draft === true && {
+        draft: true,
+        maintainer_can_modify: input.maintainer_can_modify,
+      }),
       id: number,
       node_id: `PR_${number}`,
       number,
@@ -42,8 +50,8 @@ export function createRepositoryResources({
       body: input.body ?? "",
       html_url: `https://github.com/${repository}/pull/${number}`,
       url: `https://api.github.com/repos/${repository}/pulls/${number}`,
-      head: { ref: input.head ?? input.headRefName ?? "native-feature" },
-      base: { ref: input.base ?? input.baseRefName ?? "main" },
+      head: { ref: input.head ?? input.headRefName ?? "native-feature", ...branch("a") },
+      base: { ref: input.base ?? input.baseRefName ?? "main", ...branch("b") },
       native,
     };
     pulls.set(number, pull);

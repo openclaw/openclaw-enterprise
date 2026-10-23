@@ -25,6 +25,7 @@ import {
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -62,6 +63,10 @@ export function hash(value, length = 12) {
 }
 
 export async function kubectl(...args) {
+  const answered = await kubectlGetJson({ kubeconfigPath, kubernetesContext }, args);
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute(
     "kubectl",
     ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args],
@@ -429,6 +434,7 @@ export function revision(driver, owner, agentId, number) {
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: harnessAuthentication.get(owner.id).snapshot,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };

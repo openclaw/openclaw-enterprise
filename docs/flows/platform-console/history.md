@@ -8,6 +8,10 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-20 08:40: Create Agent sends no IAM grant a session knows is refused; a failed permission read offers Retry permission check. (fix-1020c)
+
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
+
 - 2026-10-18 10:30: Count the row loading text's 150 ms from the frame it shows in. (lows-1018f)
 
 - 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)

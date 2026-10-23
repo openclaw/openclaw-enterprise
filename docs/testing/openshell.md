@@ -4,7 +4,7 @@
 
 Use these tests to check OpenShell setup and real Agent execution. Run commands
 from the repository root. The current setup selects official OpenShell
-`v0.1.4`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
+`v0.1.5`; see [images and trust](openshell-oauth.md#prepare-images-and-trust)
 for the exact versions and qualification boundary.
 
 ## Start a reusable development environment
@@ -67,7 +67,8 @@ Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
-For direct Codex file runs, also provide the
+Preparation requires the Codex credential and model; running the complete lane
+also requires the separate native OpenAI key. For direct Codex file runs, also provide the
 [policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).
 
 The suite delivers initial workspace files through real `ExecSandbox` and reads
@@ -168,7 +169,7 @@ only one. Then run:
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful model turn prints `Model response verified:`. An active revision or
+A successful model turn prints `Model response verified:`. A selected version or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
 `--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.

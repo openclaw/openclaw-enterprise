@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,8 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceSha = "a".repeat(40);
 const digest = `sha256:${"b".repeat(64)}`;
@@ -110,8 +112,7 @@ test("staged release chart records both verified digests and defaults to the con
     t.skip("Helm is required for the staged chart proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-release-chart-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-release-chart-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -147,8 +148,7 @@ test("a chart retry accepts matching files across Helm package timestamps and re
     t.skip("Helm is required for the chart retry proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-retry-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-retry-");
   const staged = await stageReleaseChart(directory, {
     sourceSha,
     version: "0.1.0",
@@ -158,12 +158,14 @@ test("a chart retry accepts matching files across Helm package timestamps and re
   const second = join(directory, "second");
   const changed = join(directory, "changed");
   await Promise.all([mkdir(first), mkdir(second), mkdir(changed)]);
-  for (const destination of [first, second]) {
-    execFileSync(helm, ["package", staged, "--destination", destination]);
-    if (destination === first) {
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  }
+  execFileSync(helm, ["package", staged, "--destination", first]);
+  // Helm 3.19 stamps each tar entry with the time it writes it, rounded to the nearest second
+  // (Go's archive/tar). Every first entry rounds to at most the second nearest to now, so
+  // packaging again once now is past the next half second gives every entry a later timestamp,
+  // without waiting a fixed 2 s.
+  const laterSecond = (Math.round(Date.now() / 1_000) + 0.5) * 1_000 + 50;
+  await new Promise((resolve) => setTimeout(resolve, Math.max(0, laterSecond - Date.now())));
+  execFileSync(helm, ["package", staged, "--destination", second]);
   const archiveName = "openclaw-enterprise-0.1.0.tgz";
   const firstArchive = join(first, archiveName);
   const secondArchive = join(second, archiveName);
@@ -191,8 +193,7 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
     t.skip("Helm is required for the chart bootstrap package proof.");
     return;
   }
-  const directory = await mkdtemp(join(tmpdir(), "oce-chart-bootstrap-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-chart-bootstrap-");
   await writeBootstrapChart(directory, "0.0.0-bootstrap.123.1");
   execFileSync(helm, ["package", directory, "--destination", directory]);
   const archive = join(directory, "openclaw-enterprise-0.0.0-bootstrap.123.1.tgz");
@@ -220,15 +221,14 @@ test("chart push accepts a digest on stderr only after a successful exit", async
   process.env.OCC_HELM_BIN = helm;
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\n`);
-  await chmod(helm, 0o700);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
   assert.equal(pushChart("chart.tgz", "oci://registry.invalid/charts"), reported);
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\nexit 1\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     actual: 1,
     expected: 0,
   });
-  await writeFile(helm, `#!/bin/sh\nprintf 'Digest: ${reported}\\n'\n`);
+  await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n'\n`);
   assert.throws(() => pushChart("chart.tgz", "oci://registry.invalid/charts"), {
     message: /^Helm did not report the chart digest on stderr\./,
   });
@@ -656,8 +656,7 @@ async function writeOciBlob(layout, value) {
 }
 
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "enterprise-oci-platforms-");
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
   const blob = (value) => writeOciBlob(directory, value);
   const manifests = [];
@@ -802,8 +801,7 @@ test("metadata GET transport retries are bounded, diagnostic and do not retry de
 });
 
 test("separate platform exports assemble into a digest-bound archive and reject corrupt inputs", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "container-platform-assembly-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "container-platform-assembly-");
   async function prepare(name, fault, created = "2026-09-25T07:23:02Z") {
     const output = join(directory, name);
     const env = {

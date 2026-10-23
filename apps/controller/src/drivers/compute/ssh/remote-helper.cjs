@@ -554,22 +554,23 @@ function launchEnvironment(input) {
 }
 
 // Resolve only the native main workspace, within this Agent's durable directories.
+// Like Kubernetes and Docker Compute (workspaceSetupMainEntry), the one roster key may name
+// main in any letter case: OpenClaw normalizes Agent ids.
 function workspaceDirectory(input, agentDir) {
   const agents = input.revision.configuration.agents ?? {};
+  const { entries } = agents;
+  const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  const ids = record(entries) ? Object.keys(entries) : undefined;
+  const main = ids?.length === 1 ? entries[ids[0]] : undefined;
   if (
-    (agents.entries !== undefined &&
-      (typeof agents.entries !== "object" ||
-        agents.entries === null ||
-        Array.isArray(agents.entries) ||
-        Object.keys(agents.entries).some((id) => id !== "main"))) ||
+    (entries !== undefined &&
+      (ids?.length !== 1 || ids[0].trim().toLowerCase() !== "main" || !record(main))) ||
     agents.list !== undefined
   ) {
     throw new ConfigurationFailure("Workspace setup supports only the native main Agent.");
   }
   const configured =
-    agents.entries?.main?.workspace ??
-    agents.defaults?.workspace ??
-    join(agentDir, "state", "workspace");
+    main?.workspace ?? agents.defaults?.workspace ?? join(agentDir, "state", "workspace");
   if (
     typeof configured !== "string" ||
     !isAbsolute(configured) ||

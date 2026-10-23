@@ -48,11 +48,17 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 	for _, test := range []struct {
 		name, format, fixed string
 		fallback            bool
+		wantDelay           time.Duration
 	}{
 		{name: "HTTP date", format: http.TimeFormat},
 		{name: "obsolete RFC850 date", format: time.RFC850},
 		{name: "obsolete asctime date", format: time.ANSIC},
-		{name: "seconds", fixed: "5"},
+		{name: "seconds", fixed: "5", wantDelay: 5 * time.Second},
+		{name: "leading zero seconds", fixed: "05", wantDelay: 5 * time.Second},
+		{name: "maximum seconds", fixed: "3600", wantDelay: time.Hour},
+		{name: "seconds beyond supported hour", fixed: "3601", fallback: true},
+		{name: "signed positive seconds", fixed: "+3600", fallback: true},
+		{name: "signed negative seconds", fixed: "-5", fallback: true},
 		{name: "invalid", fixed: "not a date", fallback: true},
 		{name: "zero", fixed: "0", fallback: true},
 		{name: "past date", format: http.TimeFormat, fallback: true},
@@ -99,8 +105,8 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 					t.Fatalf("fallback wait=%v; want 2s", delay)
 				}
 			case test.fixed != "":
-				if delay != 5*time.Second {
-					t.Fatalf("seconds wait=%v; want 5s", delay)
+				if delay != test.wantDelay {
+					t.Fatalf("seconds wait=%v; want %v", delay, test.wantDelay)
 				}
 			default:
 				if delay < 20*time.Second || delay > 30*time.Second {

@@ -15,7 +15,7 @@ principal receives `operate` on the source only, not on the Secret.
 
 The default Codex scenario uses the production Driver path. Compute sends only
 `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
-one-shot node setup credential through a revision-owned provider. The test
+one-shot node setup credential through a provider for that Agent revision. The test
 checks that the raw app-server token and model key are absent from Pod specs and
 nonsecret provider data. It then verifies missing, incorrect, and correct bearer
 requests through the exposed route. Two HTTP chat turns through the Agent Gateway
@@ -28,8 +28,13 @@ Missing prerequisites fail rather than skip.
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
-and real OpenShell policy RPCs. It exercises a Python denial, an explicitly
-applied grant, removal, and isolation from a second Agent. Denial logs and native
+and real OpenShell policy RPCs. Trusted Installation defaults allow its Python
+control request on port 8082; the target on port 8083 requires a runtime grant.
+Both listeners are separate from the echo Service's credential-injection port.
+The fixture proves target reachability independently, then exercises the actual
+Agent's Python denial, descriptor discovery, write-free preview, save, confirmed
+application, removal, and isolation from a second Agent. The allowed default
+control remains reachable after revocation. Denial logs and native
 recommendations are checked separately.
 
 It revokes each required permission after work is queued and checks failure
@@ -39,7 +44,7 @@ succeeds but before OCC records its receipt. A restarted worker must confirm
 the loaded policy without issuing the write again. These cases require the
 real runtime; local wire fixtures do not establish their outcomes.
 
-The scope check temporarily enables OIDC on the real Namespace gateway using
+The full scenario's scope check temporarily enables OIDC on the real Namespace gateway using
 the disposable HTTPS Keycloak issuer. Signed identities with `sandbox:read`,
 `config:read`, `config:write`, or no scope exercise policy status, recommendations,
 and `UpdateConfig`. Missing authentication and insufficient scopes must fail;
@@ -92,7 +97,7 @@ asserting:
   the Service is restored.
 - **Model provider.** For a DNS endpoint, cluster DNS sends the model host to a
   Service with no endpoints. The turn must fail without exposing the model
-  credential, and the same revision must serve the next turn once DNS is
+  credential, and the same version must serve the next turn once DNS is
   restored. An IP endpoint reports this check as not run.
 - **OpenShell gateway.** The Namespace's gateway StatefulSet is scaled to zero.
   While it is down, the running Agent cannot serve a turn, a source read
@@ -101,11 +106,16 @@ asserting:
   and stays queued. Once the gateway is back, the redeploy activates and serves
   a turn without operator action.
 
-After the restart, an OAuth2 source whose refresh was due may fail with
-`refresh_configuration_invalid` and be retried only an hour later
-([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526)).
-The test accepts that state and requires a forced rotation to restore the
-token.
+After the restart, each OAuth2 source must mint a fresh token without a forced
+rotation. OpenShell keeps refresh status across restarts, so a `ready` read alone
+can describe an earlier mint. The test takes each source's first post-restart
+`lastRefreshAt` as a baseline and requires `ready` with a strictly later one,
+for all three sources under one deadline. A `refresh_configuration_invalid`
+failure fails at once: it means the gateway checked the Workspace before loading
+its namespace allowlist
+([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526),
+fixed in v0.1.5). The outage summary records, for each source, whether it was
+due when the gateway restarted.
 
 ## Absence checks and a second Agent
 
@@ -114,7 +124,7 @@ attaches one of the tool sources. When the first Agent withdraws that source,
 the second Agent still receives its token. The scenario then checks that:
 
 - no Pod of the Agent mounts or references the stored source Secret;
-- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
+- the Pod specs, the Secrets for the Agent and its Agent revisions, and the workspace PVC
   files hold no upstream credential. Files are matched outside the Pod, so no
   credential-derived value enters it;
 - deployment diagnostics, runtime status and logs, and the Namespace's audit
@@ -128,3 +138,27 @@ same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
 [complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
 trusted pull requests when a maintainer requests it with the `full-qa` label.
+
+### QA matrix selector
+
+The explicit `sandbox-policy` scenario runs the complete network-policy lifecycle
+with this real OpenShell setup and production API/worker. It selects
+`OCC_TEST_OPENSHELL_SCENARIO=network-policy`, which provisions no unrelated OAuth
+refresh sources and excludes the separate filesystem, credential rotation, and
+outage qualification phases. The default `full` scenario retains those phases
+and the policy lifecycle. This selector is separate from the matrix's default
+Sandbox-free installations. Prepare the
+OpenShell lane and its Sandbox test file first, then provide that file's private
+`--github-env` output as `OCC_TEST_QA_SANDBOX_ENV` and the authorized token file as
+`OCC_TEST_QA_CODEX_TOKEN_FILE`:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=sandbox-policy \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The selected workflow must pass without skips. Its sanitized runtime log is
+written to the matrix artifacts directory. Cleanup remains with the owner of the
+prepared OpenShell lane; run the documented cleanup even on failure. The existing
+OpenShell advisory job exercises this workflow with the rest of its runtime suite.

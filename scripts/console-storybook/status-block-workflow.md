@@ -41,3 +41,13 @@ at 390.
 13. Open **Pages / Agent detail / Current observations refused**. Scroll
     until Run diagnostics sits at the bottom of the screen and click it. The
     refusal below it comes into view; focus stays on the button.
+14. Open **Pages / Agent detail / New version failed**. The failed-deployment
+    block above the facts is a danger block with 20/24 px padding (16 px at
+    390). Its label reads "Deployment failed · v7", its title is one 16 px
+    semibold line, and `CONVERGENCE_DEADLINE_EXCEEDED` ends its first sentence
+    in mono. Open v7 Logs is its one filled button.
+15. Open **Pages / Agent detail / New version failed, deploy again** at 390.
+    Deploy again (filled) and Open v7 Logs (edged) stack, each the block's
+    full width and at least 44 px tall. Any status block's actions stack this
+    way under 520 px. In **New version failed, viewer cannot edit**, Open v7
+    Logs is the only action and the filled one.

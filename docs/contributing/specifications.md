@@ -166,7 +166,7 @@ RFC decision; adding frontmatter does not establish acceptance or release proof.
 
 `implementation_status` is **Not implemented**, **Partially implemented**, or
 **Implemented**. Audit the scoped delivery against current source and references;
-record the audited revision and verification limits in the index. Keep explicitly
+record the audited commit and verification limits in the index. Keep explicitly
 separate future phases distinct from unfinished delivery. Update this field and
 the index together without rewriting historical decisions or Manual Notes.
 Implementation does not establish acceptance, live verification, or release readiness.
@@ -221,7 +221,7 @@ rewrite historical content to match the new template.
 
 This first phase moves non-archived specifications and supporting evidence.
 `specs/.archive/` retains its content and placement.
-The console spec's image links point to a preserved Git revision after removal
+The console spec's image links point to a preserved Git commit after removal
 of `specs/assets/`. Archived links may point to removed files; forwarding pages
 are not required. A future archive reorganization requires a separate change.
 
@@ -253,3 +253,12 @@ Plan filenames and historical commit links retain their original names.
 | `40-agent-egress-0x`                         | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
 | `2026-09-28-installation-profiles-design`    | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
 | `0021-driver-configuration-contributions.md` | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md) |
+
+Earlier versions of the Credential Proxy proposal used these provisional paths.
+RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
+
+| Previous RFC path                         | Current RFC                                                                  |
+| ----------------------------------------- | ---------------------------------------------------------------------------- |
+| `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |

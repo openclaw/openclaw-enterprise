@@ -6,6 +6,7 @@ import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  asksBeforeUnload,
   detailUrl,
   holdRequests,
   login,
@@ -14,6 +15,8 @@ import {
   pathRequests,
   repositoryCheckbox,
   selectSecret,
+  settlePageRequests,
+  waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -38,13 +41,6 @@ const standardCodexPreset = JSON.parse(
 const createConsoleAppFixture = (t) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
 
-// Whether a reload or tab close would ask first: the console cancels beforeunload.
-const asksBeforeUnload = (page) =>
-  page.evaluate(() => {
-    const event = new Event("beforeunload", { cancelable: true });
-    globalThis.dispatchEvent(event);
-    return event.defaultPrevented;
-  });
 const sidebarLink = (page, name) =>
   page
     .getByRole("navigation", { name: "Main navigation" })
@@ -375,15 +371,15 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     await sidebarLink(page, "Namespaces").click();
     assert.equal(page.url(), pageUrl);
     // So does Back to another page (the Agents list, before the Agent and its three tab
-    // changes): the page stays and its URL is restored before the history event ends.
+    // changes). The browser returns to this entry without discarding the intervening tabs.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
-          globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
+          globalThis.addEventListener("popstate", resolve, { once: true });
           globalThis.history.go(-4);
         }),
     );
-    assert.equal(page.url(), pageUrl);
+    await page.waitForURL(pageUrl);
     assert.equal(await deploy.isDisabled(), true);
     await note.waitFor();
     // On a phone the refusal closes the navigation drawer, which would hide the reason.
@@ -399,13 +395,14 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     held.release();
   }
   await page.getByText(/Configuration .*generation 2/).waitFor();
-  // The refused Back kept the Agents list in history, so Back now reaches it.
-  await page.goBack();
+  // The refused traversal kept all four entries, so the same traversal now reaches the list.
+  await page.evaluate(() => globalThis.history.go(-4));
   await heading(page, "Agents").waitFor();
 });
 
 // Each write that holds the page names itself beside its control when the sidebar, Back or
-// ← Agents is refused; they refused in silence before (findings 1962, 1965).
+// ← Agents is refused; they refused in silence before (findings 1962, 1965). A reload or tab
+// close asks first while it runs (finding 2125).
 for (const pending of [
   {
     kind: "a deploy",
@@ -488,19 +485,17 @@ for (const pending of [
       await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
       await leave();
       await reason.waitFor();
-      assert.equal(page.url(), pageUrl);
+      await page.waitForURL(pageUrl);
     };
     try {
+      assert.equal(await asksBeforeUnload(page), true);
       await refusedWithReason(() => sidebarLink(page, "Agents").click());
-      // Back to the Agents list (past the tab change, where one was made): the URL returns
-      // before the history event ends.
+      // Back to the Agents list, past the tab change where one was made.
       await refusedWithReason(() =>
         page.evaluate(
           (steps) =>
             new Promise((resolve) => {
-              globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), {
-                once: true,
-              });
+              globalThis.addEventListener("popstate", resolve, { once: true });
               globalThis.history.go(steps);
             }),
           pending.tab === "configuration" ? -1 : -2,
@@ -558,8 +553,159 @@ for (const pending of [
     }
     // The note goes with the hold.
     await reason.waitFor({ state: "detached" });
+    // The save's reread may still be settling the form; then a reload asks no more.
+    await waitForCondition(
+      async () => !(await asksBeforeUnload(page)),
+      "a reload still asks after the write",
+    );
   });
 }
+
+// A plugin save keeps its editor locked until the tab rebuilds. After Delete there is no tab to
+// rebuild, so the settled save held ← Agents, the sidebar and a reload for good (finding 2125).
+test("a plugin save that settles after Delete lets the page go", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Plugin save delete", { ready: true });
+  const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  // The controller applies the save; its answer waits until after Delete.
+  const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
+    method: "PATCH",
+    once: true,
+    afterServer: true,
+  });
+  await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+  await page
+    .getByLabel("Plugin selections JSON")
+    .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+  await page.getByRole("button", { name: "Save plugin selections" }).click();
+  await held.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Plugin Delete Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  const reason = page.getByText(
+    "Wait for plugin selections to finish saving before leaving this tab.",
+    { exact: true },
+  );
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await reason.waitFor();
+  assert.equal(await asksBeforeUnload(page), true);
+
+  held.release();
+  await reason.waitFor({ state: "detached" });
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await heading(page, "Agents").waitFor();
+});
+
+test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Save and Back", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Draft history", nativeValues("before"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("tab", { name: "Channels" }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  const channelsUrl = page.url();
+  await page.getByRole("tab", { name: "Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  const configurationUrl = page.url();
+
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const values = nativeValues("after");
+  await editor.fill(JSON.stringify(values, null, 2));
+  const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const requests = apiRequests(page, fixture.origin);
+  // The controller applies the edit once. Back arrives while this editor still awaits its answer.
+  const held = await holdRequests(t, page, `**${path}`, { method: "PATCH", afterServer: true });
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await held.requested;
+  try {
+    await page.goBack();
+    await page
+      .getByText("Wait for Configuration save to finish before leaving the editor.", {
+        exact: true,
+      })
+      .waitFor();
+    await page.waitForURL(configurationUrl);
+    assert.equal(await editor.evaluate((node) => node.readOnly), true);
+  } finally {
+    held.release();
+  }
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  const saved = await fixture.request("GET", path);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.values, values);
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after the save should reach Channels");
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  assert.equal(page.url(), configurationUrl);
+  await settlePageRequests(page);
+  assert.equal(pathRequests(requests, "PATCH", path).length, 1);
+});
+
+test("Back refused by unsaved repository changes preserves the previous Agent tab", async (t) => {
+  const repository = "example/application";
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1965",
+      repository,
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repository history",
+    nativeValues("draft"),
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("tab", { name: "Channels" }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  const channelsUrl = page.url();
+  await page.getByRole("tab", { name: "Repositories" }).click();
+  const choice = repositoryCheckbox(page, repository);
+  await choice.check();
+  await page.locator("#repository-default-git-read").check();
+  const repositoriesUrl = page.url();
+
+  await page.goBack();
+  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  await page.waitForURL(repositoriesUrl);
+  assert.equal(await choice.isChecked(), true, "Back kept the unsaved selection");
+
+  // Cancel rereads the saved access in place. Wait for its unselected repository before Back.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await choice.and(page.locator("input:not(:checked):enabled")).waitFor();
+  assert.equal(await choice.isChecked(), false);
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after Cancel should reach Channels");
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter(({ method }) => method !== "GET"),
+    [],
+    "no repository write",
+  );
+});
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -749,13 +895,16 @@ async function fillProvisionedAgent(page, fixture, namespace, name) {
 // Admits one provisioning job and answers its status reads with `read`.
 async function routeProvisioningJob(page, namespace, read) {
   const url = `/namespaces/${namespace.id}/agents/provision/work_1`;
-  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
-    route.fulfill({
+  let requestId;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) => {
+    requestId = route.request().postDataJSON().requestId;
+    return route.fulfill({
       status: 202,
       contentType: "application/json",
       body: JSON.stringify({
         data: {
           provisioning: {
+            requestId,
             workId: "work_1",
             status: "queued",
             phase: "accepted",
@@ -766,9 +915,9 @@ async function routeProvisioningJob(page, namespace, read) {
         },
         meta: { requestId: "req_00000000-0000-4000-8000-000000000202" },
       }),
-    }),
-  );
-  await page.route(`**${url}`, (route) => route.fulfill(read(url)));
+    });
+  });
+  await page.route(`**${url}`, (route) => route.fulfill(read(url, requestId)));
 }
 
 test("an uncertain Create outcome keeps no draft", async (t) => {
@@ -819,11 +968,12 @@ test("a failed provisioning job that names its Agent keeps no draft", async (t) 
   await routeInstallationProvisioning(page, fixture);
   // The job created its Agent and first version, then the deployment failed: no Retry, and a
   // kept draft would create the Agent again.
-  await routeProvisioningJob(page, namespace, (url) => ({
+  await routeProvisioningJob(page, namespace, (url, requestId) => ({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
       data: {
+        requestId,
         workId: "work_1",
         status: "failed",
         phase: "handoff",

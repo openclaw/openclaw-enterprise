@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
-import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -11,17 +9,23 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  hasFocus,
   holdRequests,
   login,
+  loginThroughForm,
   nativeValues,
   newPage,
   pathRequests,
-  persistedDeploymentError,
+  recordFocusTrail,
   repositoryCheckbox,
+  routeFailedDeployment,
   secretOptionLabel,
   setSlackSelection,
   selectSecret,
+  settlePageRequests,
+  stopFocusTrail,
   waitForCondition,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -30,99 +34,47 @@ import {
   focusedText,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
-
-async function createPolicyConsole(t, ceiling = []) {
-  const sandboxDriver = new OpenShellSandboxDriver(
-    {
-      gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
-      policy: {
-        process: { runAsUser: "1000", runAsGroup: "1000" },
-        networkPolicies: [
-          {
-            name: "python-default",
-            binaries: [{ path: "/usr/bin/python3.11" }],
-            endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
-          },
-        ],
-      },
-    },
-    {
-      id: "policy-openshell",
-      implementation: "openshell",
-      backend: {
-        id: "openshell",
-        drivers: { sandbox: "policy-openshell", credential_gateway: "policy-credentials" },
-        client: new OpenShellGateway({ serviceName: "openshell-gateway" }),
-      },
-    },
-  );
-  const fixture = await createConsoleAppFixture(t, {
-    sandboxDriver,
-    sandboxNetworkPolicyCeiling: ceiling,
-  });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Policy rejection", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Policy rejection",
-    createHarnessConfiguration("codex", "gpt-5.1"),
-    { executionMode: "dedicated" },
-  );
-  const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
-  assert.equal(
-    (await fixture.request("PATCH", `${base}/editing`, { body: { enabled: true } })).status,
-    200,
-  );
-  return { fixture, namespace, agent, base };
-}
+import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t);
-  // No operator ceiling delegates access. The actual OCC admission path must reject the save;
+  // No operator ceiling delegates access. The actual OCC admission path must reject the preview;
   // no response interception or provider behavior is substituted for that decision.
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 600 } },
   });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  // Through the sign-in form: a cold deep link to a draft's tab keeps its Namespace, revision
+  // and tab across password sign-in.
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "policy");
+  await loginThroughForm(page, fixture, url);
+  await page.waitForURL(url.href);
   const requests = apiRequests(page, fixture.origin);
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
-  await page.getByRole("button", { name: "Remove proposed rule 1", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
   assert.equal(
-    await page.getByRole("textbox", { name: "Executable path 1", exact: true }).count(),
+    await page.getByRole("textbox", { name: "Executable path", exact: true }).count(),
     0,
   );
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill("/usr/bin/python3.11");
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill("outside.example.org");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("outside");
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  const rejected = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   assert.equal(pathRequests(requests, "PUT", base).length, 0, "proposing rules does not save");
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save and apply to current revision", exact: true })
-      .isDisabled(),
-    true,
-    "a draft has no current running revision to apply to",
-  );
-  const rejected = page.waitForResponse(
-    (response) => response.request().method() === "PUT" && response.url().endsWith(base),
-  );
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  assert.equal((await rejected).status(), 409);
-  const message = "The requested network grant exceeds the Installation delegation ceiling.";
+  assert.equal((await rejected).status(), 200);
+  const message = "Review the configuration errors. Your proposal has not been saved or applied.";
   const alert = page.getByText(message, { exact: true });
   await alert.waitFor();
   const displayed = await alert.evaluate((node) => {
@@ -136,17 +88,114 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   assert.equal(
     displayed.inView,
     true,
-    "a rejected save must show its reason without manual scrolling",
+    "a rejected preview must show its reason without manual scrolling",
   );
   assert.equal(displayed.role, "alert");
   assert.equal(displayed.focused, true);
   assert.equal(
-    await page.getByRole("textbox", { name: "Destination hostname 1", exact: true }).inputValue(),
+    await page.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
     "outside.example.org",
   );
   const unchanged = await fixture.request("GET", base);
   assert.equal(unchanged.data.policy.version, 1);
   assert.deepEqual(unchanged.data.policy.additions, []);
+});
+
+// Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
+// and no suggestions. The tab read both, showed their refusals and a full editor (finding 2060).
+test("Policy denials says once that the Sandbox Driver lacks per-Agent network policy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No policy driver", { ready: true });
+  const created = await fixture.createAgent(
+    namespace.id,
+    "No policy driver",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, created.id);
+  const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
+  // The real API answers the policy read with no capability.
+  assert.equal((await fixture.request("GET", base)).data.capability, null);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, created.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+  for (const name of [
+    "Enable policy editing",
+    "Refresh denials",
+    "Refresh suggestions",
+    "Refresh policy",
+    "Add proposed rule",
+  ]) {
+    assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
+  }
+  assert.equal(await tab.getByRole("alert").count(), 0);
+  // Neither unavailable read is made.
+  assert.deepEqual(
+    requests
+      .map(({ path }) => path)
+      .filter((path) => path.includes("/runtime/logs") || path.endsWith("/recommendations")),
+    [],
+  );
+  // The draft tab reads neither, but says the same instead of offering the editor.
+  await page.goto(detailUrl(fixture, namespace.id, created.id, "draft", "policy").href);
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Enable policy editing" }).count(), 0);
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+});
+
+// A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
+// ask again for the same answer (finding 2060).
+test("A refused policy read offers no Retry", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-policy-member",
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-policy-member",
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-policy-member",
+    });
+  });
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"),
+    member.credentials,
+  );
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("alert")
+    .filter({ hasText: "You do not have permission to read this Agent’s policy." })
+    .waitFor();
+  await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
+  assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+  // No policy descriptor is visible, but the independent log read must not wait forever.
+  await waitForCondition(
+    () => requests.some(({ path }) => path.includes("/runtime/logs")),
+    "Independent log reads must continue without a policy descriptor.",
+  );
+  // Only the refusals stand in for the omitted controls.
+  assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });
 
 const delegatedPolicyGrant = {
@@ -164,25 +213,49 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill(delegatedPolicyGrant.binary);
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill(delegatedPolicyGrant.host);
-  await page.getByRole("textbox", { name: "Rule ID 1", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   assert.equal(
     await page
       .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
       .isDisabled(),
     true,
   );
+  // Delay a real successful preview while the user edits; the old response must not replace the draft.
+  const preview = await holdRequests(t, page, `${fixture.origin}${base}/validate`, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await preview.requested;
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("newer-draft");
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`${base}/validate`),
+  );
+  preview.release();
+  await previewResponse;
+  await page.getByText("Draft changed. Review again before saving.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    "newer-draft",
+  );
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   // Returning from review must retain the proposal and permit further edits.
   await page.getByRole("button", { name: "Back to editing", exact: true }).click();
   assert.equal(
-    await page.getByRole("textbox", { name: "Destination hostname 1", exact: true }).inputValue(),
+    await page.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
     delegatedPolicyGrant.host,
   );
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
@@ -200,7 +273,7 @@ test("Agent policy proposals save separately or save then apply the newly saved 
 
   // The combined action must submit the accepted version, rather than applying the
   // old saved version while silently leaving a local proposal behind.
-  await page.getByRole("textbox", { name: "Rule ID 1", exact: true }).fill("python-reviewed");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("python-reviewed");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page
     .getByRole("button", { name: "Save and apply to current revision", exact: true })
@@ -220,26 +293,133 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   );
 });
 
+test("Agent policy under protected execution offers only removal of saved network rules", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  // Rules saved before protected execution applied block every protected deploy. This fixture
+  // selects no Credential Proxy, so only the view's protectedExecution flag is set on the read;
+  // the removal itself goes through real HTTP, IAM and OCC admission.
+  const saved = await fixture.request("PUT", base, {
+    body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const { page } = await newPage(t, fixture);
+  await page.route(`${fixture.origin}${base}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data.protectedExecution = true;
+    await route.fulfill({ response, json: body });
+  });
+  const requests = apiRequests(page, fixture.origin);
+  const read = page.waitForResponse(
+    (response) => response.request().method() === "GET" && response.url().endsWith(base),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  const readResponse = await read;
+  t.diagnostic(`Policy GET status: ${readResponse.status()}`);
+  assert.equal(readResponse.status(), 200);
+  await page
+    .getByText(
+      "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
+      { exact: true },
+    )
+    .waitFor();
+  // Neither adding a rule nor widening a saved rule is available under protected execution.
+  for (const [role, name] of [
+    ["button", "Add Network rules"],
+    ["button", "Add Port ranges"],
+    ["textbox", "Rule ID"],
+    ["textbox", "Executable path"],
+    ["textbox", "Destination hostname"],
+    ["spinbutton", "Start port"],
+    ["spinbutton", "End port"],
+  ]) {
+    assert.equal(await page.getByRole(role, { name, exact: true }).isDisabled(), true, name);
+  }
+  const preview = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
+  await page.getByRole("button", { name: "Remove saved network rules", exact: true }).click();
+  const previewResponse = await preview;
+  t.diagnostic(`Policy preview POST status: ${previewResponse.status()}`);
+  assert.equal(previewResponse.status(), 200);
+  assert.deepEqual((await previewResponse.json()).data, {
+    success: true,
+    data: { additions: [] },
+  });
+  await page.getByRole("heading", { name: "Review policy changes", exact: true }).waitFor();
+  await page.getByText("Remove all Agent-specific rules.", { exact: true }).waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "POST", `${base}/validate`).map(({ body }) => body),
+    [{ expectedVersion: 2, additions: [] }],
+  );
+  // Removal is only a proposal until explicit Save; preview must preserve the saved grants.
+  assert.equal(pathRequests(requests, "PUT", base).length, 0);
+  const unchanged = await fixture.request("GET", base);
+  assert.equal(unchanged.status, 200);
+  assert.equal(unchanged.data.policy.version, 2);
+  assert.deepEqual(unchanged.data.policy.additions, [delegatedPolicyGrant]);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Save and apply to current revision", exact: true })
+      .isDisabled(),
+    true,
+  );
+  const removal = page.waitForResponse(
+    (response) => response.request().method() === "PUT" && response.url().endsWith(base),
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const removalResponse = await removal;
+  t.diagnostic(`Policy removal PUT status: ${removalResponse.status()}`);
+  assert.equal(removalResponse.status(), 200);
+  await page.getByText(/Policy v3 saved without network rules\./).waitFor();
+  assert.deepEqual(
+    pathRequests(requests, "PUT", base).map(({ body }) => body),
+    [{ expectedVersion: 2, additions: [] }],
+  );
+  const cleared = await fixture.request("GET", base);
+  t.diagnostic(`Policy readback GET status: ${cleared.status}`);
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.data.policy.version, 3);
+  assert.deepEqual(cleared.data.policy.additions, []);
+  assert.equal(cleared.data.policy.application, undefined);
+  assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Remove saved network rules", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Add Network rules", exact: true }).isDisabled(),
+    true,
+  );
+});
+
 test("Agent policy combined save distinguishes ceiling rejection from a saved policy whose application is rejected", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill(delegatedPolicyGrant.binary);
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill("outside.example.org");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page
-    .getByRole("button", { name: "Save and apply to current revision", exact: true })
-    .click();
-  await page
     .getByRole("alert")
-    .filter({ hasText: "exceeds the Installation delegation ceiling" })
+    .filter({ hasText: "The grant exceeds the Installation delegation ceiling" })
+    .first()
     .waitFor();
   assert.equal(
     pathRequests(requests, "POST", `${base}/apply`).length,
@@ -249,7 +429,7 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   assert.equal((await fixture.request("GET", base)).data.policy.version, 1);
 
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill(delegatedPolicyGrant.host);
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   // Another operator stops the Agent after review. Saving remains valid, while the
@@ -273,6 +453,96 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   assert.equal(persisted.additions[0].host, delegatedPolicyGrant.host);
   assert.equal(persisted.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+});
+
+test("Agent policy conflict reload retains the draft and revalidates the new version", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page
+    .getByRole("textbox", { name: "Executable path", exact: true })
+    .fill(delegatedPolicyGrant.binary);
+  await page
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
+    .fill(delegatedPolicyGrant.host);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).waitFor();
+  // A separate supported API save advances the version after this browser's successful preview.
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [] } })).status,
+    200,
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "The policy changed" }).waitFor();
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await page.getByText(/Policy v2 reloaded. Your draft is retained/).waitFor();
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    delegatedPolicyGrant.id,
+  );
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText(/Policy v3 saved/).waitFor();
+  assert.deepEqual((await fixture.request("GET", base)).data.policy.additions, [
+    delegatedPolicyGrant,
+  ]);
+});
+
+test("overlapping policy refreshes retain the newest read and continue pending polling", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  await page.getByText("Matches saved policy v1.", { exact: false }).waitFor();
+  const url = `${fixture.origin}${base}`;
+  const first = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await first.requested;
+  // Another operator saves between the two reads. The older successful response arrives
+  // first and must not invalidate the later read or overwrite its version.
+  assert.equal(
+    (
+      await fixture.request("PUT", base, {
+        body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+      })
+    ).status,
+    200,
+  );
+  const second = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await second.requested;
+  const firstResponse = page.waitForResponse((response) => response.url() === url);
+  first.release();
+  await (await firstResponse).finished();
+  await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+  const secondResponse = page.waitForResponse((response) => response.url() === url);
+  second.release();
+  await secondResponse;
+  await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    delegatedPolicyGrant.id,
+  );
+
+  await page
+    .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+    .click();
+  await page.getByText(/Application to the current revision is pending/).waitFor();
+  const reads = pathRequests(requests, "GET", base).length;
+  // This fixture has no worker: real admission stays pending, so observing multiple polls
+  // proves refresh continues rather than claiming provider enforcement or confirmation.
+  await waitForCondition(
+    () => pathRequests(requests, "GET", base).length >= reads + 2,
+    "pending policy stopped polling",
+    10_000,
+  );
+  assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
 });
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {
@@ -306,7 +576,7 @@ test("Agent deployment requires a reload after repository access changes", async
   );
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByText("application · Read-only", { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 
   // A second operator changes effective access after this draft was loaded.
   const bindingChange = await fixture.request("PATCH", path, {
@@ -335,7 +605,7 @@ test("Agent deployment requires a reload after repository access changes", async
 
   await page.reload();
   await page.getByText("application · Contributor", { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   // Intent can change even when the resolved permissions stay the same.
   const intentChange = await fixture.request("PATCH", path, {
     body: {
@@ -355,7 +625,7 @@ test("Agent deployment requires a reload after repository access changes", async
 
   await page.reload();
   await page.getByText("application · Contributor", { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 });
 
 test("Agent deployment reports preflight errors and requires reload for changed draft state", async (t) => {
@@ -389,7 +659,7 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   await page
     .getByText("Service unavailable. The read could not be completed. Try again.")
     .waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
   await page.unroute(`${fixture.origin}${path}`);
 
@@ -402,7 +672,7 @@ test("Agent deployment reports preflight errors and requires reload for changed 
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
   await page.reload();
   await page.getByText(/generation 2/).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   const authChange = await fixture.request("PATCH", path, {
     body: { configurationId: agent.configurationId, harnessAuth: null },
   });
@@ -592,36 +862,9 @@ for (const [scenario, heldRead, heldMs, reader] of [
     if (reader === "moves on") {
       await page.evaluate(() => globalThis.document.activeElement?.blur());
     }
-    // Every frame from admission until the new version shows: the focused node (numbered, so a
-    // replaced heading counts as a new one), and whether the loading page stood in.
-    await page.evaluate(() => {
-      const ids = new WeakMap();
-      let next = 0;
-      const trail = [];
-      const state = { trail, loadingShown: false, stopped: false };
-      const sample = () => {
-        if (state.stopped) {
-          return;
-        }
-        const node = globalThis.document.activeElement;
-        if (node && node !== globalThis.document.body && !ids.has(node)) {
-          ids.set(node, ++next);
-        }
-        const entry =
-          !node || node === globalThis.document.body
-            ? "BODY"
-            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-        if (trail.at(-1) !== entry) {
-          trail.push(entry);
-        }
-        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
-        state.loadingShown ||=
-          shown.includes("Reading this Agent.") || shown.includes("Checking Namespace access.");
-        globalThis.requestAnimationFrame(sample);
-      };
-      globalThis.focusFrames = state;
-      sample();
-    });
+    // Every focused node from admission until the new version shows (numbered, so a replaced
+    // heading counts as a new one), and whether the loading page stood in.
+    await recordFocusTrail(page, ["Reading this Agent.", "Checking Namespace access."]);
     const heldPath = {
       agent: path,
       namespaces: "/namespaces",
@@ -634,8 +877,8 @@ for (const [scenario, heldRead, heldMs, reader] of [
     admitted.release();
     await versionRead.requested;
     if (reader === "goes back") {
-      // The Loading page has replaced the held draft by now; Back returns to the draft.
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      // Once the Loading page has replaced the held draft, Back returns to the draft.
+      await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
       await page.goBack({ waitUntil: "commit" });
       versionRead.release();
       await page.waitForURL(/revision=draft/);
@@ -651,10 +894,7 @@ for (const [scenario, heldRead, heldMs, reader] of [
         !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
         globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
     );
-    const { trail, loadingShown } = await page.evaluate(() => {
-      globalThis.focusFrames.stopped = true;
-      return globalThis.focusFrames;
-    });
+    const { trail, loadingShown } = await stopFocusTrail(page);
     if (heldRead !== "revision" && heldMs > 250) {
       assert.ok(loadingShown, trail.join(" | "));
     }
@@ -726,7 +966,7 @@ for (const [field, change] of [
     );
     const deploy = page.getByRole("button", { name: "Deploy new version" });
     await ready();
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
 
     // A second operator changes the desired Agent state without editing its Configuration.
     const updated = await fixture.request("PATCH", path, {
@@ -751,35 +991,91 @@ for (const [field, change] of [
     assert.equal(await deploy.isDisabled(), true);
     await page.reload();
     await ready();
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
   });
 }
 
+async function deployableRepositoryAgent(t, name) {
+  const { fixture, namespace, modelSecret, grantModelAccess } =
+    await createConsoleRepositoryLaunchFixture(t);
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+  );
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: modelSecret.ref },
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = created.data;
+  await grantModelAccess(agent);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
+    headers: { origin: fixture.origin },
+    body: {},
+  });
+  assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
+  return { fixture, namespace, agent, path };
+}
+
+test("A recovery link refused by unsaved repository changes preserves Back and Forward", async (t) => {
+  const { fixture, namespace, agent } = await deployableRepositoryAgent(t, "Recovery Agent");
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  // The controller admitted this revision. Supply its failed status so the real recovery link
+  // is available while the reader edits the draft; no worker or external service runs.
+  await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code: "RUNTIME_MODEL_PROBE_FAILED",
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "channels"));
+  const channels = page.getByRole("tab", { name: "Channels", selected: true });
+  await channels.waitFor();
+  const channelsUrl = page.url();
+  const requests = apiRequests(page, fixture.origin);
+  const repositories = page.getByRole("tab", { name: "Repositories" });
+  await repositories.click();
+  const choice = repositoryCheckbox(page, "example/application");
+  await choice.check();
+  const repositoriesUrl = page.url();
+
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Open Configuration" })
+    .click();
+  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  assert.equal(await hasFocus(repositories), true);
+  assert.equal(await choice.isChecked(), true);
+
+  // Cancel rereads the saved selection in place. Back should not revisit a duplicate entry.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await choice.and(page.locator("input:enabled:not(:checked)")).waitFor();
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after Cancel returns to Channels");
+  await channels.waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter((request) => request.method !== "GET"),
+    [],
+  );
+});
+
 for (const tab of ["configuration", "repositories"]) {
   test(`Agent deployment keeps ${tab} edits unavailable until the request finishes`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
-      await createConsoleRepositoryLaunchFixture(t);
-    const configuration = await fixture.createConfiguration(
-      namespace.id,
-      createHarnessConfiguration("codex", "gpt-5.1"),
+    const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+      t,
+      `Deploying from ${tab}`,
     );
-    const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-      body: {
-        name: `Deploying from ${tab}`,
-        configurationId: configuration.id,
-        executionMode: "dedicated",
-        harnessAuth: { method: "api_key", source: modelSecret.ref },
-      },
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    const agent = created.data;
-    await grantModelAccess(agent);
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
-      headers: { origin: fixture.origin },
-      body: {},
-    });
-    assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
     const { page } = await newPage(t, fixture);
     await login(
       page,
@@ -792,7 +1088,7 @@ for (const tab of ["configuration", "repositories"]) {
         : repositoryCheckbox(page, "example/application");
     await edit.waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     const preflightStarted = Promise.withResolvers();
     const releasePreflight = Promise.withResolvers();
     const deployCommitted = Promise.withResolvers();
@@ -858,7 +1154,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   );
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   const deployResponse = () =>
     page.waitForResponse(
       (response) =>
@@ -881,14 +1177,14 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     new RegExp(`^The Agent service principal ${agent.servicePrincipalId} is not authorized`),
   );
   await page.getByText(denied, { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 
   // With that grant in place, the next refusal is the Configuration setting itself.
   await grantModelAccess(agent);
   const conflict = await refusal(409);
   assert.match(conflict, /^Configuration setting gateway\.bind /);
   await page.getByText(conflict, { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   const revisions = await fixture.request("GET", `${path}/revisions`);
   assert.equal(revisions.status, 200);
   assert.equal(revisions.data.length, 0, "a refused deployment creates no version");
@@ -904,10 +1200,15 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     effect: "deny",
   });
   assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  // Granting these writes IAM policy, which only an Installation administrator can do (finding
+  // 2260).
   await page
-    .getByText("Deployment denied. Check Agent deploy permission", { exact: false })
+    .getByText(
+      "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them needs Installation administration access: ask an Installation administrator to check these grants.",
+      { exact: true },
+    )
     .waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
 
   // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
@@ -927,14 +1228,14 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     await page
       .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
       .waitFor();
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     await page.unroute(`${fixture.origin}${path}/deploy`);
   }
 });
 
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(
         t,
         mutation === "channel Secrets" ? { secretDriver: createTestSecretDriver() } : {},
@@ -990,28 +1291,9 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     });
     assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
     if (mutation === "channel Secrets") {
-      const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-        body: {
-          name: "Channel access",
-          permissions: [{ action: "operate", resourceKind: "secret" }],
-        },
-      });
-      assert.equal(role.status, 201, JSON.stringify(role.body));
-      for (const secret of [appSecret, botSecret]) {
-        const binding = await fixture.request(
-          "POST",
-          `/namespaces/${namespace.id}/iam/access-bindings`,
-          {
-            body: {
-              subjectKind: "identity",
-              subjectId: agent.servicePrincipalId,
-              roleId: role.data.id,
-              resourceKind: "secret",
-              resourceId: secret.id,
-            },
-          },
-        );
-        assert.equal(binding.status, 201, JSON.stringify(binding.body));
+      // The replacement too: a reloaded draft must find every saved Secret granted to be ready.
+      for (const secret of [appSecret, botSecret, replacementSecret]) {
+        await grantSecretAccess(agent, secret);
       }
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     }
@@ -1024,7 +1306,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     );
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     if (mutation === "authentication") {
       fixture.policy.restrictions.push({
         id: "deny-authentication-save",
@@ -1041,7 +1323,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
           "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
         )
         .waitFor();
-      assert.equal(await deploy.isEnabled(), true);
+      await waitForEnabled(deploy);
       fixture.policy.restrictions.pop();
     }
     const mutationPath =
@@ -1231,14 +1513,14 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         pathRequests(requests, "PATCH", configurationPath).length,
         previousConfigurationWrites + 1,
       );
-      assert.equal(await deploy.isEnabled(), true);
+      await waitForEnabled(deploy);
     }
   });
 }
 
 for (const changed of ["generation", "identity"]) {
   test(`Channel Secret save rejects a stale Configuration ${changed} before writing`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(t, { secretDriver: createTestSecretDriver() });
     const appSecret = await fixture.createSecret(namespace.id, "Slack app", "xapp-original");
     const botSecret = await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original");
@@ -1268,6 +1550,9 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const agent = created.data;
     await grantModelAccess(agent);
+    for (const secret of [appSecret, botSecret]) {
+      await grantSecretAccess(agent, secret);
+    }
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     assert.equal(
       (
@@ -1287,7 +1572,7 @@ for (const changed of ["generation", "identity"]) {
     );
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     await selectSecret(page, "Slack app token", replacementSecret);
 
     const configurationPath = `/namespaces/${namespace.id}/configurations/${configuration.id}`;
@@ -1306,7 +1591,7 @@ for (const changed of ["generation", "identity"]) {
       assert.equal(pathRequests(requests, "PATCH", secretPath).length, 0);
       // The failed save re-renders the panel; its pickers reload the Secret list before naming.
       await waitForInputValue(page.getByLabel("Slack app token"), secretOptionLabel(appSecret));
-      assert.equal(await deploy.isEnabled(), true);
+      await waitForEnabled(deploy);
       await page.unroute(`${fixture.origin}${configurationPath}`);
       await selectSecret(page, "Slack app token", replacementSecret);
     }
@@ -1372,7 +1657,7 @@ for (const changed of ["generation", "identity"]) {
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     }
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
   });
 }
 
@@ -1448,7 +1733,7 @@ for (const action of ["disable", "drawer"]) {
       false,
     );
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     if (action === "disable") {
       await page.getByRole("button", { name: "Disable Slack" }).click();
     } else {
@@ -1502,7 +1787,7 @@ for (const action of ["disable", "drawer"]) {
       release.resolve();
     }
     await page.getByText(/Configuration .*generation 2/).waitFor();
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
   });
 }
 
@@ -1529,8 +1814,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
   await login(page, fixture, url);
-  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await page
     .getByText(/Outcome unknown/)
@@ -1545,6 +1829,51 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   await page.getByText(/Configuration .*generation 2/).waitFor();
   const saved = await fixture.request("GET", configurationPath);
   assert.equal(saved.data.values.channels.slack.enabled, false);
+});
+
+test("Channel Secrets withholds access grants when the save response contains other bindings", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfirmed channel bindings", { ready: true });
+  const agent = await createSlackBoundAgent(fixture, namespace, "Unconfirmed Agent", "unconfirmed");
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement app token",
+    "synthetic",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const original = await fixture.request("GET", path);
+  assert.equal(original.status, 200);
+  await page.route(`**${path}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    const bindings = body.data.secretBindings;
+    assert.equal(bindings.SLACK_APP_TOKEN.source.id, replacement.id);
+    // Keep the new generation but replace the returned bindings with those from before the save.
+    body.data.secretBindings = original.data.secretBindings;
+    await route.fulfill({ response, json: body });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await selectSecret(page, "Slack app token", replacement);
+  const save = page.getByRole("button", { name: "Save channel Secrets" });
+  await save.click();
+  await page
+    .getByText("Outcome unknown. Reload this Agent to confirm the saved Secret bindings.", {
+      exact: true,
+    })
+    .waitFor({ timeout: 5_000 });
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await waitForInputValue(page.getByLabel("Slack app token"), replacement.name);
+  assert.equal(pathRequests(requests, "PATCH", path).length, 1);
+  assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
 });
 
 test("Agent credentials block tab changes until Slack Secret grants finish", async (t) => {
@@ -1636,65 +1965,37 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
 });
 
 test("Agent deployment guides a rejected model credential and gates unsaved authentication edits", async (t) => {
-  const { fixture, namespace, modelSecret, grantModelAccess } =
-    await createConsoleRepositoryLaunchFixture(t);
-  const configuration = await fixture.createConfiguration(
-    namespace.id,
-    createHarnessConfiguration("codex", "gpt-5.1"),
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Rejected credential",
   );
-  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "Rejected credential",
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-      harnessAuth: { method: "api_key", source: modelSecret.ref },
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agent = created.data;
-  await grantModelAccess(agent);
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
-    headers: { origin: fixture.origin },
-    body: {},
-  });
-  assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  const failure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
-  // The in-memory fixture has no worker records; supply the persisted failure shape.
-  await page.route(`${fixture.origin}${path}/deployments/${revision.id}`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          deploymentId: revision.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          status: "failed",
-          error: failure,
-          warnings: [],
-          progress: null,
-        },
-        meta: { requestId: "req_test_rejected_credential" },
-      }),
-    });
+  const failure = await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code: "RUNTIME_AUTHENTICATION_FAILED",
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
   await login(page, fixture, url);
 
   const activity = page.locator(".deployment-status");
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
-  // 1393); the console shows it once and adds only the link to Credentials.
+  // 1393); the console shows it once, in the failure's card, and adds only the link to
+  // Credentials. The card folds Deployment details, which repeat it (finding 2094).
   assert.match(
     failure.message,
     /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
   );
-  await activity
-    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
-    .waitFor();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText(failure.message, { exact: false }).waitFor();
+  assert.equal(
+    await activity
+      .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
+      .isVisible(),
+    false,
+  );
   assert.match(
     await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
@@ -1707,14 +2008,26 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     new RegExp(`revision=${revision.id}&tab=logs`),
   );
   // Secret values can be updated in place, so the rejected binding warns instead of blocking.
+  // It never reads "Ready to deploy.", and the next step keeps the credentials step open:
+  // deploying again does not fix a rejected credential (UX spec 3.7).
   await page
     .getByText(
-      "Ready to deploy. The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
+      "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
       { exact: true },
     )
     .waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
+  const nextStep = page.locator(".agent-draft-actions");
+  assert.equal(await nextStep.getByText("Ready to deploy.").count(), 0);
+  const credentialStep = nextStep.getByRole("listitem").filter({
+    hasText: "Check authentication and credentials",
+  });
+  assert.equal(await credentialStep.getAttribute("data-state"), "pending");
+  assert.equal(
+    await credentialStep.locator(".checklist-detail").textContent(),
+    "The last deployment's model credential was rejected",
+  );
 
   // Creating a Secret from the picker stages it without reopening the listbox over Save.
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
@@ -1742,7 +2055,8 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   assert.equal((await saved).status(), 200);
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
+  assert.equal(await credentialStep.getAttribute("data-state"), "done");
 });
 
 test("a reload asks first while an Agent editor holds unsaved work", async (t) => {

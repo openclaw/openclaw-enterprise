@@ -8,7 +8,7 @@ last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
 
 ## Overview
 
-Authorized revision reads return bounded, redacted Compute records; downloads stay local.
+Authorized version reads return redacted Compute records within size limits; downloads stay local.
 
 ## Entry Points
 
@@ -21,8 +21,8 @@ Authorized revision reads return bounded, redacted Compute records; downloads st
   `readAgentRuntimeLogs`, `packages/occ/src/runtime-logs/`, and
   `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.describeAgentRuntime`
   and `readAgentRuntimeLogs`.
-- Assumptions: `deploymentId` names an admitted revision of the exact Agent.
-  Status requires Agent `operate`/`read` plus revision `read`. Logs require Agent
+- Assumptions: `deploymentId` identifies this Agent's saved version.
+  Status requires Agent `operate`/`read` and Agent revision `read`. Logs require Agent
   `read` and `read_logs` (or `administer`, unless a Restriction denies `read_logs`),
   covering every Agent revision. `authorizeRuntimeLogRead` checks
   `read_logs` first.
@@ -31,7 +31,7 @@ Authorized revision reads return bounded, redacted Compute records; downloads st
 
 ```mermaid
 graph TD
-  V["CLI revision probe"] --> W{"Pods?"}
+  V["CLI version probe"] --> W{"Pods?"}
   W -->|yes| Z{"Proven older?"}
   Z -->|no or unreadable| X["Select candidate"]
   Z -->|yes| Y["Retain active"]
@@ -42,20 +42,20 @@ graph TD
   Y --> A
   A --> B["Feature switch"]
   B -->|off| C["Return 501"]
-  B -->|on| E["OCC authorizes revision and Agent tier"]
+  B -->|on| E["OCC authorizes version and Agent tier"]
   E -->|denied| F["Audit denial, return 403"]
   E -->|authorized| G["Select recorded Compute Driver"]
   G -->|no method or driver-owned logging| C
   G -->|supported| S["Rate and concurrency limits"]
   S -->|limited| D["Return 429 with Retry-After, or 503"]
-  S -->|admitted| H["Driver lists revision Pods and Pod Events per plane"]
+  S -->|admitted| H["Driver lists version Pods and Pod Events per plane"]
   H --> I["OCC validates and redacts the description"]
   I -->|status route| J["Return runtime description"]
   I -->|logs route| K["Validate cursor and listed Pod"]
   K -->|invalid| L["Return 400"]
   K -->|new view or download| M["Write view or download audit event"]
   M -->|failed| N["Return 503, no content"]
-  M -->|written| O["Driver reads bounded container log and re-reads Pod"]
+  M -->|written| O["Driver limits log reads and re-reads Pod"]
   K -->|cursor poll| O
   O --> P["De-duplicate, label gaps, classify and redact"]
   P --> Q["Return sanitized page and signed cursor"]
@@ -74,34 +74,34 @@ proven newer. Status is reused.
 `packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes with
 a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
 `agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
-the tier action and Agent `read` (plus revision `read` for status only), resolves
-the revision within the exact Agent, then rejects a Driver without
+the tier action and Agent `read` (plus Agent revision `read` for status only), resolves
+the version within the exact Agent, then rejects a Driver without
 `describeAgentRuntime` or with `runtimeLogging: "driver"`. `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admits reads;
-audited denials spend no token. Elapsed-time buckets ignore clock corrections.
+audited denials spend no token; time buckets ignore clock changes.
 
 ### 2. Describe the runtime
 
 `KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace and
-lists Pods by exact Agent, revision and role labels. A single cluster holds
-Gateways and Harnesses in one tenant namespace; a two-cluster profile reads
+lists Pods with matching Agent, Agent revision ID, and role labels. Single-cluster profiles read
+Gateways and Harnesses in the tenant namespace; two-cluster profiles read
 Gateways from control and Harnesses from execution. It reports a terminated
 container's current termination, otherwise the prior one. Event
-reads keep only the Pod's newest 100 eligible Events across continuation pages,
+reads keep the Pod's 100 newest eligible Events across pages,
 drop a settled `FailedScheduling` PVC retry, and derive `container` from
 `involvedObject.fieldPath` (`null` for Pod Events). A log read passes
 `{ source, events: false }`. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
-checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
-or offset Driver timestamp, Kubernetes Pod and Event time strings included, makes
-runtime status unavailable instead of being normalized to a different instant.
+checks names, UIDs, counts and RFC 3339 UTC timestamps. Malformed, impossible
+or offset timestamps, including Kubernetes Pod and Event times, make runtime status
+unavailable; they are never normalized to another instant.
 `runtime-logs/redact.ts:maskRuntimeEventText` masks node, image and Secret names;
 reasons and Event messages are redacted.
 
 ### 3. Read one page
 
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the cursor HMAC against principal,
-Agent, revision and source (`runtime-logs/cursor.ts`). Select a listed Pod and main or
+Agent, version and source (`runtime-logs/cursor.ts`). Select a listed Pod and main or
 init `container` (default: first main). A different stream, missing or expired cursor (one hour),
 or departed Pod starts a new view. First record the admitting action in the `openclaw.agents.runtime_logs.view`
 access audit. The Driver rechecks Pod ownership and the declared container, then calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
@@ -164,7 +164,7 @@ requires the provisioning Sandbox Driver's `readSandboxLogs`, resolves Compute
 placement through `resolveSandboxNamespace`, then runs
 `runtime-logs/sandbox.ts:readSandboxLogPage`.
 `OpenShellSandboxDriver.readSandboxLogs` derives the Sandbox name from the
-revision and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
+version and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
 exposes nothing else. The client rejects impossible `since_time` dates before gRPC. OpenShell batches
 timestamped supervisor lines and filters by those timestamps. Resume overlaps
 `SANDBOX_LOG_OVERLAP_MS` (5 s); the cursor retains up to 48 delivered line hashes,
@@ -174,7 +174,7 @@ Signed checkpoints retain prefix digest/count, query floor and baseline, with
 ambiguous replacements reset with gaps. Sandbox pins short/unordered windows,
 untimed rows and overflowing groups. Full timed groups use counted overlap;
 cuts retain a rollover witness. Uncertain context resets with a gap and replay;
-container recovery retains reset gaps without duplicates.
+container recovery gaps once unless a short uncut window precedes the delivered frontier.
 All-untimed Driver byte cuts retain progress;
 mixed cuts advance through time with an explicit reset that may replay untimed rows.
 Matching checkpoints retain positional proof. Stable windows drain overflowing groups. UID/restarts reset progress; PEM recovery
@@ -183,7 +183,7 @@ anchors or overflowing timestamp groups report gaps. gRPC `NOT_FOUND` (absent
 Sandbox, or concealed from a non-member) maps to
 `RUNTIME_LOGS_SANDBOX_NOT_FOUND`, never to an empty page. Lines naming two
 Sandbox IDs are refused; a new Sandbox ID emits `stream_replaced`.
-OpenShell decorates decisions; OCC redacts them. See [policy evidence](agent-sandbox-policy.md).
+The OpenShell Driver adds decision fields; OCC removes sensitive values. See [policy evidence](agent-sandbox-policy.md).
 
 Downloads (`download=true`) force `tailLines=1000`, reject cursors (`400`), and start
 a new view; `apps/controller/src/index.ts:auditAction`
@@ -196,7 +196,7 @@ reject reserved `content`. Container headers label `instance` without Pods. Cons
 take `-previous.log` from the request; current and Sandbox names stay unchanged.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
-`console/agents/logs.mjs` clears output when status selects another source, Pod or instance.
+`console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
 Filters use loaded rows; debug is opt-in. Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 
@@ -246,7 +246,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 - 2026-10-15 10:38: Verify Podless Harness recency; unknown ordering retains active. (authoring-run/7163351c-af75-410f-bd45-a2809e178c9e - c1a15e2e953c)
 
-- 2026-10-15 09:08: Select newer provider Harness status before revision Pods exist. (authoring-run/7163351c-af75-410f-bd45-a2809e178c9e - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
+- 2026-10-15 09:08: Select newer provider Harness status before version Pods exist. (authoring-run/7163351c-af75-410f-bd45-a2809e178c9e - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
 
 - 2026-10-15 09:25: Honor HTTP-date Retry-After in CLI follow. (authoring-run/613fa018-dc4e-4c4d-b05b-f2f8f79e3244 - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
 - 2026-10-15 16:14: Move OpenShell decision parsing into its Driver; redact shared metadata. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
@@ -322,9 +322,9 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 - 2026-10-09 21:59: Count delivered occurrences when de-duplicating container lines at the cursor time. (authoring-run/ce414344-4cec-4d51-accd-f66b2ece9e0f - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
 
-- 2026-10-07 05:26: Point CLI runtime reads and log polling to their dedicated source owner; clarify the existing revision selection. (authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b - 61590165cdbb)
+- 2026-10-07 05:26: Point CLI runtime reads and log polling to their dedicated source owner; clarify the existing version selection. (authoring-run/9ac89b09-043f-44ba-8069-d0a90859ed7b - 61590165cdbb)
 
-- 2026-10-05 11:38: Document clean CLI follow cancellation during initial revision lookup with the accompanying fix. (authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262 - 0698d533b97dc3abe7bef7ff7907a0f4335c3182)
+- 2026-10-05 11:38: Document clean CLI follow cancellation during initial version lookup with the accompanying fix. (authoring-run/2afba01b-8db4-41d7-a942-e14bd7f44262 - 0698d533b97dc3abe7bef7ff7907a0f4335c3182)
 - 2026-10-05 10:51: Preserve shared tenant placement while incorporating main startup and runtime diagnostics. (01a0fe72-58b2-7cc3-b770-7310f5401deb - 71a1cedb)
 
 - 2026-10-04 07:00: Authorize before the rate and concurrency limits so every denial is audited. (bh11-runtime-log-authz)
@@ -341,12 +341,12 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 - 2026-09-30 20:37: Receive cursor-context masking with current runtime-log guidance and preserve the current view behavior. (authoring-run/e2da7c2d-8080-4dd4-9ce9-d494b890234c - fb22aa07c1613218280cff25d6b62bfb4cff6b5d)
 
-- 2026-09-30 19:43: Carry authenticated PEM context across bounded container polls without closing on ambiguous overlap. (authoring-run/b5fcaf0e-328a-4fe2-b53f-e72268ef70af - affac2bfc1370e590e6da570bcaaad4a207c9f09)
+- 2026-09-30 19:43: Carry authenticated PEM context across container polls with read limits without closing on ambiguous overlap. (authoring-run/b5fcaf0e-328a-4fe2-b53f-e72268ef70af - affac2bfc1370e590e6da570bcaaad4a207c9f09)
 
 - 2026-09-30 08:30: Document runtime status and container log reads for Kubernetes Compute. (build-1/agent-logs-slice-1 - 0918be781)
 - 2026-09-30 11:40: Add downloads, console filters and the `occ agent runtime|logs` callers. (build-2/agent-logs-slice-2)
 - 2026-09-30 13:00: Add the OpenShell sandbox source. (build-logs-3/agent-logs-slice-3)
 - 2026-09-30 15:30: Overlapping sandbox resume with counted de-duplication; NOT_FOUND is a 503. (fix-3/agent-logs-slice-3)
 - 2026-09-30 18:10: Console remembers a runtime status denial per page and points unready-Harness Gateway views to the Harness source. (dogfood3-fix-7)
-- 2026-09-30 18:30: Without an active revision the CLI reads the latest revision; a failed deployment links to its version's Logs tab. (fix/dogfood3-5)
+- 2026-09-30 18:30: Without a selected version the CLI reads the latest version; a failed deployment links to its version's Logs tab. (fix/dogfood3-5)
 - 2026-09-30 20:00: Key remembered denials by operator; the Harness hint ignores a rollout's old Pod and covers a missing Pod. (dogfood3-refix-7)

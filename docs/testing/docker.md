@@ -92,7 +92,7 @@ images selected below. These checks make no model calls.
 
 ### Check published images
 
-On a native host for each target architecture, use the source revision that
+On a native host for each target architecture, use the source commit that
 produced the images. Follow [image selection and registry authentication](../guides/deploy/production-installation.md#use-published-images).
 Set the immutable `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` references, then run:
 
@@ -102,8 +102,10 @@ docker pull "$RUNTIME_IMAGE"
 OCC_TEST_PRODUCTION_IMAGE="$CONTROLLER_IMAGE" OCC_TEST_RUNTIME_IMAGE="$RUNTIME_IMAGE" \
   node --test tests/integration/production-image-startup.test.mjs \
     tests/integration/runtime-image-startup.test.mjs \
+    tests/integration/runtime-image-gateway-workspace.test.mjs \
     tests/integration/runtime-image-startup-probe.test.mjs \
     tests/integration/runtime-image-startup-termination.test.mjs \
+    tests/integration/runtime-image-gateway-unclean-restart.test.mjs \
     tests/integration/runtime-image-gateway-peer.test.mjs \
     tests/integration/runtime-image-native-worker.test.mjs \
     tests/integration/runtime-image-state-migration.test.mjs \

@@ -1,15 +1,16 @@
 # OpenShell Credential Gateway
 
-The OpenShell Credential Gateway stores OCC [credential sources](../credential-sources.md)
-as providers. Its supervisor substitutes credentials at the egress proxy, outside
-the Harness. It implements the
-[CredentialGatewayDriver contract](credential-gateway.md) and works only with the
-[OpenShell SandboxDriver](openshell-sandbox.md), through one shared `openshell`
+The [Credential Gateway](credential-gateway.md) stores OCC [credential sources](../credential-sources.md)
+as OpenShell providers. The supervisor substitutes credentials outside the Harness.
+Select it with the [OpenShell SandboxDriver](openshell-sandbox.md) on one `openshell`
 [Backend](../backends.md#openshell-gateway).
 
 **OpenShell remains unsupported for production.** Workload identity, writable state,
 authentication, admission, and provider-file proof follow the
 [OpenShell qualification contract](openshell-sandbox.md#qualification-contract).
+
+[Protected static inference](../credential-sources/protected-inference.md)
+requires a separate authenticated counterpart.
 
 ## Configure the Driver
 
@@ -23,13 +24,14 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
-      credential_refresh: openshell-refresh # enables OAuth2 and Codex device types
+      credential_refresh: openshell-refresh # enables OAuth2; Codex also needs operatorTls
 drivers:
   sandbox:
     id: openshell-sandbox
@@ -57,7 +59,7 @@ The development profile lists Node and both
 x64/ARM64 Codex paths independently of the launcher host.
 A stale path fails the Harness startup model probe with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
-rejects the missing credential, and the active revision keeps serving.
+rejects the missing credential, and the current Agent revision keeps serving.
 
 `toolBinaries` is optional: nonempty absolute paths inside the Sandbox image that
 may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent) to
@@ -160,7 +162,7 @@ before retrieval and discovery; Namespace-scoped OpenShell identities remain def
 Refresh exchanges the device grant into OpenShell custody; OCC stores an opaque
 session. `withSourceToken` requests five-minute validity; OpenShell may refresh
 and persists successors. Tokens enter only the trusted callback, never the Console.
-Cancellation cannot undo refresh. Revisions reuse metadata and placeholders.
+Cancellation cannot undo refresh. Agent revisions reuse metadata and placeholders.
 
 The Sandbox wraps the stable placeholder in the documented JWT alias for Codex's
 local account metadata. OpenShell replaces the whole alias, enforcing identity,
@@ -173,7 +175,7 @@ directory discovery does not prove execution. See
 - **Connection recovery and metadata.** Grant configuration and account metadata
   are separate writes; interrupted handoff may require reconnecting. An initial
   device-poll timeout closes the session and requires a fresh login. Metadata
-  is a login-time snapshot, so account changes require a new login and revision.
+  is a login-time snapshot, so account changes require a new login and Agent revision.
 
 ## OAuth2 refresh sources
 
@@ -230,14 +232,14 @@ The source ID identifies its profile even with an invalid persisted endpoint.
 Deletion refuses an unowned provider; unknown source types and gateway errors
 remain failures.
 
-For a revision, `attachForRevision` updates each source's profile and returns
-its provider name. It fails when two of the revision's sources would use
+For an Agent revision, `attachForRevision` updates each source's profile and returns
+its provider name. It fails when two of the Agent revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
-`pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
+`pending`. `withdraw` calls `DetachSandboxProvider` for the Agent revision's Sandbox,
 then reads that receipt's status. Only `REVOKED` reports `revoked`: the
 Sandbox's placeholders then stop resolving, even in running processes. OpenShell
 reports `REVOKED` once the supervisor sees a running process without the
@@ -327,22 +329,21 @@ and selection rules.
 
 ## Troubleshooting
 
-| Symptom or message                                                                                | Cause and fix                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                                                  |
-| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                                                    |
-| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                                                           |
-| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                                                     |
-| Registering, updating, or deploying an OAuth2 type returns `409`: the gateway does not offer it   | Configure `toolBinaries` and select `drivers.credential_refresh` on the same Backend.                                                         |
-| OAuth2 registration returns `503` with `oauth_token_endpoint_unavailable`                         | Let the gateway Pod reach `token_url`, and mount a bundle with the issuer's CA over its `SSL_CERT_FILE`.                                      |
-| After a gateway restart, an OAuth2 source reports `failed` with `refresh_configuration_invalid`   | OpenShell retries it an hour later ([NVIDIA/OpenShell#4526](https://github.com/NVIDIA/OpenShell/issues/4526)). Rotate the source to mint now. |
-| A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                                                         |
-| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.                                        |
-| Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables.                              |
-| Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                                                  |
-| Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                                             |
-| The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                                          |
-| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the selected Harness executable (Codex or Node), the Harness trusts the Sandbox CA, and the credential is valid.     |
+| Symptom or message                                                                                | Cause and fix                                                                                                                             |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `drivers.credential_gateway requires an owning backend entry with type openshell.`                | Add the `openshell` Backend.                                                                                                              |
+| `backend[…].drivers.credential_gateway must match …`                                              | Make the Backend member IDs match the selected Driver IDs.                                                                                |
+| `OpenShell Credential Gateway binaries must be a nonempty list of absolute paths.`                | Correct `binaries`.                                                                                                                       |
+| Registering, updating, or deploying `bearer-token` returns `409`: the gateway does not offer it   | Configure `toolBinaries`.                                                                                                                 |
+| Registering, updating, or deploying an OAuth2 type returns `409`: the gateway does not offer it   | Configure `toolBinaries` and select `drivers.credential_refresh` on the same Backend.                                                     |
+| OAuth2 registration returns `503` with `oauth_token_endpoint_unavailable`                         | Let the gateway Pod reach `token_url`, and mount a bundle with the issuer's CA over its `SSL_CERT_FILE`.                                  |
+| A tool request reaches the endpoint with the placeholder, or OpenShell denies it                  | Call it from a `toolBinaries` executable, at the source's exact host, port, and path.                                                     |
+| Deployment fails with `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT`                                    | Two sources share a variable. Bind one `openai` source; give each `bearer-token` a distinct `env_var`.                                    |
+| Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables.                          |
+| Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                                              |
+| Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                                         |
+| The Agent revision stays inactive with a `failed` or `withheld` attachment                        | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                                      |
+| Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the selected Harness executable (Codex or Node), the Harness trusts the Sandbox CA, and the credential is valid. |
 
 ## Related
 

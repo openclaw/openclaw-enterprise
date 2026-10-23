@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRequire } from "node:module";
+import {
+  kubernetesNamespaceName,
+  PreprovisionedKubernetesNamespace,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+
+const controllerRequire = createRequire(
+  new URL("../../apps/controller/package.json", import.meta.url),
+);
+const { ObjectSerializer } = controllerRequire("@kubernetes/client-node/dist/serializer.js");
 
 const namespace = "ownership-conformance";
 const ownership = {
@@ -217,4 +228,101 @@ test("runtime resource deletion rejects foreign resources and retains exact UID 
   assert.deepEqual(deletions, [
     { name: "gateway", namespace, body: { preconditions: { uid: "service-uid" } } },
   ]);
+});
+
+test("sealed Namespace compares SDK-deserialized ingress exactly", async () => {
+  const driver = createTestKubernetesComputeDriver();
+  const target = { name: kubernetesNamespaceName(ownership.namespaceId), plane: "execution" };
+  const policy = {
+    ...driver.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      "operator-ingress",
+      ownership,
+      target,
+    ),
+    spec: {
+      podSelector: { matchLabels: { app: "gateway" } },
+      policyTypes: ["Ingress"],
+      ingress: [
+        {
+          from: [{ podSelector: { matchLabels: { app: "worker" } } }],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ],
+    },
+  };
+  driver.preprovisionedNamespace = new PreprovisionedKubernetesNamespace(
+    JSON.stringify({
+      namespaceId: ownership.namespaceId,
+      uid: "00000000-0000-4000-8000-000000000001",
+    }),
+    { gatewayNamespace: "controller", gatewayName: "gateway" },
+    [{ ...policy, metadata: { name: policy.metadata.name } }],
+  );
+  let wire = structuredClone(policy);
+  let extra;
+  driver.apiClients = Promise.resolve({
+    networking: {
+      async listNamespacedNetworkPolicy() {
+        // Use the same SDK deserializer as NetworkingV1Api's response processor.
+        const result = ObjectSerializer.deserialize({ items: [wire] }, "V1NetworkPolicyList");
+        assert.deepEqual(
+          JSON.parse(JSON.stringify(result.items[0].spec.ingress[0]._from ?? null)),
+          wire.spec.ingress[0].from ?? null,
+        );
+        extra?.(result.items[0].spec);
+        return result;
+      },
+    },
+  });
+
+  await driver.verifyExistingNetworkPolicies(target, ownership);
+  assert.ok(policy.spec.ingress[0].from);
+  assert.equal(policy.spec.ingress[0]._from, undefined);
+
+  // Additive policies and changes to either peers or ports must still fail closed.
+  for (const mutate of [
+    (value) => {
+      value.metadata.name = "undeclared-allow-all";
+      value.spec.podSelector = {};
+      value.spec.ingress = [{}];
+    },
+    (value) => {
+      value.spec.ingress[0].from = [{}];
+    },
+    (value) => {
+      value.spec.ingress[0].ports[0].port = 9090;
+    },
+  ]) {
+    wire = structuredClone(policy);
+    mutate(wire);
+    await assert.rejects(
+      driver.verifyExistingNetworkPolicies(target, ownership),
+      /undeclared or changed NetworkPolicy/,
+    );
+  }
+  wire = structuredClone(policy);
+  // Unknown fields surviving transport must not disappear during projection.
+  for (const add of [
+    (spec) => {
+      spec.unexpected = true;
+    },
+    (spec) => {
+      spec.ingress[0].unexpected = true;
+    },
+    (spec) => {
+      spec.ingress[0].from = [{}];
+    },
+    (spec) => {
+      // Plain objects carrying SDK aliases are not SDK ingress models.
+      spec.ingress[0] = { ...spec.ingress[0] };
+    },
+  ]) {
+    extra = add;
+    await assert.rejects(
+      driver.verifyExistingNetworkPolicies(target, ownership),
+      /undeclared or changed NetworkPolicy/,
+    );
+  }
 });

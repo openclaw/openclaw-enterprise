@@ -1,3 +1,5 @@
+import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -808,12 +810,28 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     additionalProperties: false,
     properties: {
       binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-      toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
+      toolBinaries: { type: "array", items: { type: "string", pattern: "^/" }, minItems: 1 },
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    validateOptions(configuration as OpenShellCredentialGatewayOptions);
+  static validateConfiguration(
+    configuration: Readonly<OpenShellCredentialGatewayOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateOptions(configuration as OpenShellCredentialGatewayOptions);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   readonly id: string;
@@ -828,7 +846,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     options: OpenShellCredentialGatewayOptions,
     selection: OpenShellCredentialGatewaySelection,
   ) {
-    validateOptions(options);
+    options = requireConfiguration(OpenShellCredentialGatewayDriver, options);
     this.id = selection.id ?? "credential-gateway-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {
