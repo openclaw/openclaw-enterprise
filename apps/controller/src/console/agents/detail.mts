@@ -65,7 +65,10 @@ import {
 import {
   type CarriedChannelSecrets,
   type OutstandingSecretGrants,
+  type SecretGrantProblem,
   grantProblemFor,
+  grantWarning,
+  harnessGrantSubject,
   createChannelSecretsPanel,
   hasRequiredChannelCredentials,
   channelCredentialBlockReason,
@@ -117,6 +120,8 @@ interface AuthenticationDraft {
   baseline: Pick<Agent, "configurationId" | "harnessAuth" | "servicePrincipalId">;
   savedAuthentication: Agent | null;
   outcomeUnknown: boolean;
+  // Why the saved source's grant is outstanding, once a grant attempt answered (finding 2259).
+  grantProblem?: SecretGrantProblem;
 }
 
 interface DraftDetails {
@@ -3614,6 +3619,28 @@ export async function renderAgentDetail(
         }
       });
       let savedAuthentication = retained?.savedAuthentication ?? null;
+      let grantProblem = retained?.grantProblem ?? null;
+      // The credential the Agent's grant covers: its credential source or its Secret, if any.
+      const grantedCredential = (binding: HarnessAuthBinding | null | undefined) =>
+        binding?.method === "credential_source"
+          ? {
+              kind: "credential_source" as const,
+              namespaceId: context.namespaceId,
+              id: binding.sourceId,
+            }
+          : binding && "source" in binding && binding.source.kind === "secret"
+            ? binding.source
+            : null;
+      // The shared grant wording (finding 1920), for the saved source's credential kind.
+      const grantText = (problem: SecretGrantProblem) =>
+        grantWarning(
+          problem,
+          harnessGrantSubject(
+            savedAuthentication?.harnessAuth?.method === "credential_source"
+              ? "credential_source"
+              : "secret",
+          ),
+        );
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({
         method,
@@ -3646,15 +3673,19 @@ export async function renderAgentDetail(
               baseline,
               savedAuthentication,
               outcomeUnknown: outcomeUnknown || pending,
+              ...(grantProblem ? { grantProblem } : {}),
             }
           : undefined;
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
+        // A refused grant needs an Installation administrator; a Retry here would be refused too.
+        save.hidden = grantProblem === "refused";
         auth.setDisabled(true);
         setStatusTone(feedback, "warning");
-        feedback.textContent =
-          "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
+        feedback.textContent = grantProblem
+          ? grantText(grantProblem)
+          : "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
       }
       if (outcomeUnknown) {
         save.disabled = true;
@@ -3743,20 +3774,22 @@ export async function renderAgentDetail(
             savedAgent = updated;
             details = null;
           }
-          if (harnessAuth?.method === "credential_source") {
-            say("Authentication saved. Checking credential source access…");
-            await ensureCredentialOperateBinding(context, current, {
-              kind: "credential_source",
-              namespaceId: context.namespaceId,
-              id: harnessAuth.sourceId,
-            });
-          } else if (
-            harnessAuth &&
-            "source" in harnessAuth &&
-            harnessAuth.source.kind === "secret"
-          ) {
-            say("Authentication saved. Checking Secret access…");
-            await ensureCredentialOperateBinding(context, current, harnessAuth.source);
+          const credential = grantedCredential(harnessAuth);
+          if (credential && context.installationAdmin === false) {
+            // Granting writes IAM policy, which needs Installation administration. The session
+            // already knows this member lacks it, so it sends no grant that would be refused and
+            // names who grants it, as Create Agent does (findings 2109, 2259).
+            grantProblem = "refused";
+            say(grantText(grantProblem), "warning");
+            return;
+          }
+          if (credential) {
+            say(
+              credential.kind === "credential_source"
+                ? "Authentication saved. Checking credential source access…"
+                : "Authentication saved. Checking Secret access…",
+            );
+            await ensureCredentialOperateBinding(context, current, credential);
           }
           if (context.isCurrent()) {
             context.drafts.forget("authentication");
@@ -3773,10 +3806,17 @@ export async function renderAgentDetail(
           if (requestFailure(error).status === 401) {
             context.onExpired();
           } else if (savedAuthentication) {
+            // The shared classifier: a refusal (403) is known and names who grants it, with no
+            // Retry that would be refused again. An Installation administrator keeps Retry, and
+            // any other failure stays unconfirmed with Retry (findings 1920, 2259).
+            const { status, requestId } = requestFailure(error);
+            const problem = grantProblemFor(status) ?? "unconfirmed";
+            grantProblem =
+              problem === "refused" && context.installationAdmin === true ? "unconfirmed" : problem;
             say(
-              savedAuthentication.harnessAuth?.method === "credential_source"
-                ? `Authentication source saved, but this Agent's credential source access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent operate access to the selected credential source, then retry credential access. Deployment readiness is not confirmed.`
-                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`,
+              grantText(grantProblem) +
+                (grantProblem === "refused" ? "" : ` ${message(error)}`) +
+                (requestId ? ` Request ID: ${requestId}` : ""),
               "warning",
             );
           } else {
@@ -3798,6 +3838,7 @@ export async function renderAgentDetail(
             save.textContent = savedAuthentication
               ? "Retry credential access"
               : "Save authentication source";
+            save.hidden = savedAuthentication !== null && grantProblem === "refused";
             pending = false;
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;

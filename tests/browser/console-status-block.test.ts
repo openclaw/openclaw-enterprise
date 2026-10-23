@@ -528,9 +528,10 @@ test("Authentication source save outcomes", async (t) => {
 
       await page.getByRole("tab", { name: "Configuration", exact: true }).click();
       await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+      // The rebuilt tab repeats the shared grant warning (finding 2259).
       const kept = page.getByRole("alert").filter({
         hasText:
-          "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.",
+          "Authentication source saved, but this Agent's Secret access could not be confirmed. Select Retry credential access; if it is refused, ask an Installation administrator.",
       });
       await kept.waitFor();
       assert.deepEqual(await statusTone(kept), {
