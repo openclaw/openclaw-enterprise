@@ -84,9 +84,9 @@ export const AuthSecretGrantDenied = {
   ...story("authSecretGrantDenied"),
   name: "Authentication saved, grant denied",
 };
-export const AuthSecretGrantMemberRefused = {
-  ...story("authSecretGrantMemberRefused"),
-  name: "Member authentication saved, grant needs an administrator",
+export const AuthSecretGrantMemberUnverified = {
+  ...story("authSecretGrantMemberUnverified"),
+  name: "Member authentication saved, access not verified",
 };
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),

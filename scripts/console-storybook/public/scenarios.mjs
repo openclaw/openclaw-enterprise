@@ -6718,9 +6718,9 @@ export const scenarios = {
       "The form refreshes without another Agent PATCH.",
     ],
   },
-  authSecretGrantMemberRefused: {
+  authSecretGrantMemberUnverified: {
     group: "Components/Credentials",
-    name: "Member authentication saved, grant needs an administrator",
+    name: "Member authentication saved, access not verified",
     path: `${draft}&tab=credentials`,
     observabilityDenied: true,
     extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
