@@ -579,8 +579,38 @@ jobs:
           else
             node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
           fi
+      # GitHub can refuse artifact downloads for minutes at a time ("Egress is
+      # over the account limit"), and the action gives up after about 25 s.
+      # Every lane has already passed or failed by now, so try again after a
+      # pause rather than report each lane's result as missing.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        id: results-download
+        continue-on-error: true
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
+        with:
+          pattern: ci-results-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - name: Wait before downloading CI results again
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download.outcome == 'failure' }}
+        run: |
+          rm -rf "$RUNNER_TEMP/results"
+          sleep 60
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        id: results-download-retry
+        continue-on-error: true
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download.outcome == 'failure' }}
+        with:
+          pattern: ci-results-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+      - name: Wait before downloading CI results again
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download-retry.outcome == 'failure' }}
+        run: |
+          rm -rf "$RUNNER_TEMP/results"
+          sleep 120
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download-retry.outcome == 'failure' }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
