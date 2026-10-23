@@ -10,6 +10,12 @@ import { waitFor } from "./wait-for.mjs";
 // Waits until a backend waits for a lock that `holderPid` holds and returns the lowest waiting
 // pid (callers expect one waiter). With `count`, waits until at least that many do; with
 // `queryLike`, counts only waiters whose current statement matches that LIKE pattern.
+/**
+ * @param {any} pool
+ * @param {number} holderPid
+ * @param {string | (() => string)} description
+ * @param {{ count?: number, queryLike?: string, timeoutMs?: number, intervalMs?: number }} [options]
+ */
 export function waitForLockWaiter(
   pool,
   holderPid,

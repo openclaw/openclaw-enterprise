@@ -9,6 +9,7 @@ import {
 } from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 
 // Exercise the real prepared owner with isolated rows at the clock boundary. Only these
 // controls move stored test timestamps; the standing OpenShell transfer test waits for expiry.
@@ -407,22 +408,12 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         [admissionId],
       );
       const both = Promise.all([read(), exact.authorize(racing, installed, signal)]);
-      const limit = performance.now() + 900;
-      for (;;) {
-        const waiters = (
-          await f.pool.query(
-            "select pid from pg_stat_activity where $1=any(pg_blocking_pids(pid))",
-            [id],
-          )
-        ).rowCount;
-        if (waiters === 2) {
-          break;
-        }
-        assert.ok(
-          performance.now() < limit,
-          "installer and authorizer must meet the withdrawal transaction",
-        );
-      }
+      await waitForLockWaiter(
+        f.pool,
+        id,
+        "the installer and authorizer to meet the withdrawal transaction",
+        { count: 2, timeoutMs: 900 },
+      );
       await withdraw.query("COMMIT");
       assert.deepEqual(await both, [
         { absent: "withdrawn" },
