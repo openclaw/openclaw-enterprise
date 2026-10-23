@@ -71,9 +71,45 @@ implementation; the credential-free prototype does not prove this handoff.
 
 ## Runtime and transport
 
+### External Linux execution
+
+Qualify an alternative placement for the same dedicated Codex Harness. Each
+revision owns a Restricted provider Pod and Service in its tenant namespace.
+The provider owns the external Linux VM allocation, immutable runtime
+installation, durable Agent workspace and revocation of superseded revisions.
+The VM runs the unmodified Box. The Pod terminates the authenticated provider
+connection and routes the approved Gateway and Harness protocols. The Gateway
+keeps its private volume. Both the file node and model tools must access the
+same canonical workspace, including after VM replacement or restart.
+
+Provider configuration must identify a trusted provider endpoint and identity
+issuer. Pin the installation's trust root and bind each session to the Namespace,
+Agent, revision and allocated peer. A provider must refuse provisioning when it
+cannot satisfy the prepared image, workload identity, workspace mounts or
+authenticated routes. A local-path claim on another host is insufficient.
+Retirement must invalidate the old peer before a successor can serve the Agent.
+
+Readiness must depend on a current, authenticated exchange with the exact Agent
+Gateway and a fresh application-protocol response from the assigned Box Harness.
+Closing either connection, restarting either peer or seeing an incorrect
+revision must withdraw readiness. Bootstrap must work while the ordinary
+Service has zero Ready endpoints. Keep any pre-activation authentication path
+private to the exact peers and enforce the same identity checks on live traffic.
+The VM supervisor must restore the correct allocation automatically on boot.
+An acceptance run must cover cold deploy, initial pairing, refused credentials,
+disconnect/reconnect, both storage boundaries, native file and Skill tools,
+fresh Memory recall, and a full VM reboot. Preserve the Gateway volume and
+the Harness workspace across that reboot. This alternative is pending this
+qualification.
+
+### In-Pod prototype
+
 One revision owns one Box workload. A trusted adapter inside Box starts the
-original Harness command, with its log streams separated from the adapter
-protocol. The Harness keeps its native WebSocket listener and authentication.
+prepared Harness command, including its process supervisor, with its log streams
+separated from the adapter protocol. The fixed Linux Box syscall policy rejects
+calls required by this runtime. Qualification must distinguish the unchanged
+upstream build from local compatibility patches. The Harness keeps its native
+WebSocket listener and authentication.
 An outer adapter exposes the provider-owned endpoint, checks the exact Agent
 transport token, and relays independent connections over the inherited pipe to
 the inner adapter. The inner adapter connects to the native listener inside
