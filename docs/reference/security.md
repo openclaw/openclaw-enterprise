@@ -57,9 +57,9 @@ Each tenant namespace also receives:
 - A temporary Agent-only TCP/443 internet-egress exception that excludes
   private network ranges and cloud metadata addresses. Replace it with an
   approved model egress proxy before treating destination isolation as complete.
-- While a replacement is prepared beside a serving revision of the same Agent,
+- While a replacement is prepared beside a serving version of the same Agent,
   the Agent-scoped transport, model-egress, and plugin-status grants select
-  every revision of that Agent; activation narrows them to the active revision.
+  every version of that Agent; activation narrows them to the selected version.
 
 These admission labels, quota, and limit policies apply to both driver-owned
 and operator-owned tenant namespaces. The controller namespace is created and
@@ -92,14 +92,14 @@ Tenant Gateway and Agent Pods that set `fsGroup: 1000` for private state
 only when the volume root does not already match, instead of walking every file
 on each Pod start.
 
-Tenant gateway and Agent bounds come from `resources.gateway` and
+Tenant gateway and Agent CPU and memory limits come from `resources.gateway` and
 `resources.agent` in the selected Compute Driver configuration. Controller API,
 worker and initialization containers use the chart's explicit `resources`
 requests and limits, defaulting to `100m` CPU/`128Mi` memory requests and
 `500m` CPU/`512Mi` memory limits.
 
-The controller worker declares a bounded writable `emptyDir` for its readiness
-marker. Installation startup YAML, Better Auth signing material, and other
+The controller worker declares a writable `emptyDir` with a `1Mi` size limit for
+its readiness marker. Installation startup YAML, Better Auth signing material, and other
 mounted controller Secret data remain read-only. The initialization Job writes
 the generated bootstrap password and service-key JSON only to its operator-provided
 protected output volume. Neither output is mounted into the API, worker, or tenant
@@ -108,10 +108,9 @@ A configured ChatGPT admin key
 is mounted read-only only in the API Pod; the worker, initialization Job, and
 tenant Pods never receive it.
 
-Real tenant gateway and Agent Pods declare an explicitly bounded `emptyDir`
-mounted at `/home/node`; its size is limited to `1Gi`.
-An independently bounded `64Mi` `emptyDir` provides the real runtime's required
-`/tmp` directory.
+Real tenant gateway and Agent Pods declare an `emptyDir` mounted at `/home/node`
+with a `1Gi` size limit. A separate `emptyDir` with a `64Mi` size limit provides
+the real runtime's required `/tmp` directory.
 The Agent's projected ServicePrincipal token remains mounted read-only. The Pod
 root filesystem remains read-only; only declared runtime state is writable.
 
@@ -193,7 +192,7 @@ stderr records under `codex_app_server`, Codex warnings and errors (never the
 completed tool calls (`codex.tool_call`), and the runtime wrappers' fixed stderr
 diagnostics (`runtime.startup_phase`, `runtime.workspace_node`,
 `runtime.gateway_settings_overridden`, and `openclaw.model_probe` /
-`codex.model_probe`) with only a bounded phase name or code. It parses JSON records up to `32KiB`,
+`codex.model_probe`) with only a phase name or code that passes its filter. It parses JSON records up to `32KiB`,
 maps severity explicitly, keeps allowlisted attributes, and replaces retained
 bodies with the event class, stripping arbitrary content. Codex turn and tool-call
 bodies are fixed text; a `codex.operational` body keeps Codex's own message only
@@ -203,7 +202,7 @@ strings, credential words or word over 24 characters. Other Codex errors, which
 can interpolate chat text, keep the event name; other Codex warnings are dropped. It drops malformed,
 oversized, unclassified, unspecified-severity, and Codex stdout protocol records.
 Resource identity comes from protected Docker labels or Kubernetes Pod metadata;
-request, work, Namespace, Agent, and revision IDs remain attributes.
+request, work, Namespace, Agent, and Agent revision IDs remain attributes.
 
 A Gateway startup failure (OpenClaw's `Gateway failed to start:` error, which has
 no subsystem) is promoted as `gateway.startup_failed`; its body keeps the message
@@ -219,8 +218,8 @@ settings. Its dedicated egress policy permits DNS, the Kubernetes API for
 metadata, and one approved exporter or proxy: a `/32` address or an in-cluster
 namespace and Pod selector, on the exporter port. No chart policy grants the
 Collector database access; the shared dependency egress policy selects only
-the API, worker and initialization Pods. Its file offsets and exporter queue use a
-bounded `emptyDir`; they are best-effort across process or container restart and
+the API, worker and initialization Pods. Its file offsets and exporter queue use an
+`emptyDir` with a `128Mi` size limit by default; they are best-effort across process or container restart and
 are lost with Pod or node replacement. In Docker development, forwarding is
 nonblocking with finite Engine and container-local buffers. Export outage or
 overflow can lose operational logs but cannot block reconciliation, weaken IAM,
@@ -229,14 +228,14 @@ or change audit persistence.
 ### Console and API runtime log reads
 
 OCC also offers a second, non-exported read path: the
-[Agent logs](../guides/topics/agent-logs.md) routes fetch one bounded page of
-Kubernetes container output, Pod status and Pod Events on demand. It does not
+[Agent logs](../guides/topics/agent-logs.md) routes fetch one page of
+Kubernetes container output, Pod status and Pod Events on demand, within the API's page and response limits. It does not
 change the Collector boundary above; nothing is stored, cached, logged or sent
 to the Collector, and responses carry `Cache-Control: no-store`.
 
 - **Access.** Pod status and Events need Agent `operate` and `read` plus
-  revision `read`. Log text needs Agent `read_logs` or `administer` and Agent
-  `read`, for any revision of that Agent. `administer` is the audience that already reaches Gateway
+  Agent revision `read`. Log text needs Agent `read_logs` or `administer` and Agent
+  `read`, for any version of that Agent. `administer` is the audience that already reaches Gateway
   logs through the native admin UI; `read_logs` delegates log text alone and is
   never granted by bootstrap. A `read_logs` Restriction also blocks
   `administer`. Every poll is authorized again; a denial is audited and reaches
@@ -255,7 +254,9 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   status, proxy or TLS diagnostic). Other structured output, including
   Codex protocol traffic, payload keys such as `prompt` and `content`, and
   pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes pattern redaction, which is
-  best-effort. The `content` class has no producer.
+  best-effort. The `content` class has no producer. A failed Codex login or model
+  check keeps only its `failureClass` (`network`, `tls`, `http_401_403`,
+  `http_5xx`, `http_other`, `timeout`, `empty` or `unknown`), never Codex's error output.
 - **Events.** Pod Event reasons and messages reach the `operate` audience after
   credential redaction. Node names, image references and Secret and ConfigMap
   names are masked in the standard scheduler and kubelet message shapes; the
@@ -276,9 +277,9 @@ to the Collector, and responses carry `Cache-Control: no-store`.
 - **Cluster access.** The tenant API, Gateway observer and execution tenant API
   roles gain read-only `pods/log get` and `events get,list` through
   `agentRuntimeLogs.enabled`. RBAC cannot separate Agents, so OCC reads only
-  Pods carrying the exact Agent and revision labels and re-checks them on every
+  Pods carrying the exact Agent and version labels and re-checks them on every
   read. Cursors are HMAC-signed with the auth secret and bound to one principal,
-  Agent, revision and source.
+  Agent, version and source.
 
 ## Related
 

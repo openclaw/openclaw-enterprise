@@ -26,6 +26,10 @@ history.replaceState(
   "",
   scenario.path ?? "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
 );
+// Simulates a browser without clipboard access (an http origin), where copy buttons fall back.
+if (scenario.clipboard === "unavailable") {
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+}
 // Focus the isolated preview before the console registers its focus-refresh handler.
 // Otherwise the first interaction can reset a preselected Preset before it becomes a form.
 window.focus();

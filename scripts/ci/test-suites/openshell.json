@@ -25,7 +25,7 @@
     "postgres": true,
     "k3d": true,
     "requiresPreparedStateForFile": true,
-    "requireEnv": ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
+    "requireEnv": ["CODEX_ACCESS_TOKEN", "OCC_TEST_OPENAI_MODEL"],
     "immutableOptionalEnvImages": [
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       "OCC_TEST_KUBERNETES_AGENT_IMAGE",

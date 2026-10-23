@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import test, { mock } from "node:test";
@@ -486,8 +490,8 @@ test("kubernetes-secret-driver refuses unknown options and implementations", () 
     { authentication, namespace: "default" },
   ]) {
     assert.throws(
-      () => KubernetesSecretDriver.validateConfiguration(options),
-      SecretValidationError,
+      () => requireConfiguration(KubernetesSecretDriver, options),
+      SharedConfigurationValidationError,
     );
   }
   assert.throws(

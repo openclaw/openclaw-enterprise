@@ -2,7 +2,7 @@
 
 Use the SSH Compute Driver to run embedded OpenClaw on operator-managed
 Linux hosts. It prepares each Namespace over SSH and runs one systemd gateway
-unit per Agent. OCC still owns Agent resources, authorization, revisions, and
+unit per Agent. OCC still owns Agent resources, authorization, Agent revisions, and
 activation. Trusted Installation YAML can select `compute-ssh` (implementation
 `occ/ssh`) in development or production.
 
@@ -89,9 +89,9 @@ paths are trusted operator settings, never caller-selected placement. The
 worker uses `BatchMode=yes`, `StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`,
 the explicit known-hosts file and identity, the configured connect timeout, and
 `LogLevel=ERROR`. Each invocation sends the controller-owned CommonJS helper on
-stdin with one base64 JSON operation argument. Operations are bounded to 180
-seconds and terminated on compute cancellation; readiness polling is bounded
-to 120 seconds. Closing the SSH session does not signal the remote helper, so
+stdin with one base64 JSON operation argument. Operations have a 180-second
+timeout and stop on Compute cancellation; readiness polling has a 120-second
+timeout. Closing the SSH session does not signal the remote helper, so
 the helper writes a heartbeat line every second and stops mutating as soon as
 a write to the closed session pipe fails; it also enforces its own deadline
 below the transport timeout. A step already handed to `systemctl` completes on
@@ -126,19 +126,19 @@ the first 19 characters of `runtime.user`, a hyphen, and the first 12 hex
 characters of SHA-256 of `<namespaceId>:<agentId>`. The Driver creates accounts
 with a non-login shell and records their exact ownership and UID/GID under
 `accounts/`. An existing account or group without its matching ownership marker
-is refused. Accounts persist across revision retirement and are removed with
+is refused. Accounts persist when Agent versions are retired and are removed with
 the Namespace.
 
 Markers record exact Driver, Namespace, Agent, and ServicePrincipal ownership.
-Revision markers also record revision ID/number, configuration hash, and
+Agent revision markers also record the Agent revision ID/number, configuration hash, and
 Harness. Foreign markers, changed snapshots, unexpected symlinks, and units
 without the exact Namespace/Agent ownership header are refused rather than
 adopted. JSON markers and `gateway-password.env` are `0600`; `home/` and `state/` are
 `0700` and owned by the Agent's private user and group. The native configuration
 snapshot stays owned by the SSH account with mode `0640` and the Agent's
-private group, so its gateway can read but never rewrite the admitted document
+private group, so its gateway can read but never rewrite the saved document
 and sibling Agents cannot read it. `served.json` records
-the revision whose restart last reached readiness; a pointer flip alone never
+the version whose restart last reached readiness; a pointer flip alone never
 counts as served. Writes and the `current` symlink are replaced atomically.
 
 Port allocation chooses the lowest unused port across all Agent markers under
@@ -160,47 +160,49 @@ production startup.
 
 `ensureNamespace` creates or verifies the Namespace marker and invokes selected
 `afterNamespacePrepared` hooks. An unmapped name fails permanently. Before
-revision operations, the worker calls `bindAgent` with server-owned Namespace,
-Agent, and ServicePrincipal identities; an unbound revision fails closed.
+Agent revision operations, the worker calls `bindAgent` with server-owned Namespace,
+Agent, and ServicePrincipal identities; an unbound Agent revision fails closed.
 
 `prepareRevision` accepts only `openclaw`/`embedded` with `runtime` authentication and without OCC Secret bindings.
 It verifies ownership, creates or verifies the Agent's Unix identity, allocates
 or reuses the Agent port, and writes the immutable snapshot. A superseded
 candidate returns not-ready. Preparation does not replace `current`, write the
 systemd unit, or restart the running gateway. An OCC publication failure leaves
-the previous gateway serving its existing revision.
+the previous gateway serving its existing version.
 
-After OCC commits the active revision, `activateRevision` runs selected
+After OCC records the selected Agent revision, `activateRevision` runs selected
 Configuration and IAM `beforeWorkloadStart` hooks, renders the systemd unit,
 switches `current`, restarts the unit, and waits for loopback `/readyz`. The
-bounded opaque environment placeholders returned by those hooks are projected
-into the gateway unit. Hook failure prevents launch; activation failure invokes
-bounded `beforeWorkloadStop` compensation for prepared bindings. Only successful
-readiness writes `served.json`; retries must establish both the exact revision
-and readiness. Activation is a bounded restart with interrupted Agent service.
+validated opaque environment placeholders returned by those hooks are projected
+into the gateway unit, with at most 64 values. Hook failure prevents launch;
+activation failure invokes `beforeWorkloadStop` cleanup for prepared bindings.
+If the operation was cancelled, cleanup receives a new signal that expires after
+five seconds. Hooks must observe that signal. Only successful readiness writes
+`served.json`; retries must verify both the Agent revision ID and readiness.
+Activation restarts the gateway and interrupts Agent service.
 
 The unit runs `<nodePath> <openclawPath> gateway --port <port>` as the Agent's private Unix account,
 with `HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, and
 `OPENCLAW_GATEWAY_PORT`. It uses `Restart=always`, `RestartSec=2`, `SIGTERM`,
-`TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The admitted
+`TimeoutStopSec=30`, `NoNewPrivileges=true`, and `PrivateTmp=true`. The saved
 document owns logging; the Driver sets no `OPENCLAW_LOG_LEVEL`. Logs go to journald.
 
 `deactivateRevision` verifies
 ownership and returns; the worker only needs deactivation for the dedicated
 topology, which SSH preparation rejects. `stopRevision` invokes selected
 `beforeWorkloadStop` hooks, stops and disables the unit, and removes `current`
-and `served.json` while retaining the immutable revision snapshot, home, state,
-and operator credentials. A later deployment can activate its newly admitted
+and `served.json` while retaining the immutable Agent revision snapshot, home, state,
+and operator credentials. A later deployment can activate its newly saved
 snapshot. `retireRevision` invokes selected
 `beforeWorkloadStop` hooks and removes only that snapshot. If it is still
 current, retirement stops/disables the unit and removes the pointer first.
-Home, state, operator credentials, and other revisions remain.
+Home, state, operator credentials, and other versions remain.
 
 `deleteNamespace` invokes `beforeNamespaceDelete`, verifies all owned Agents,
 stops/disables their units, removes the unit files, reloads systemd, and removes
 the Namespace tree including state and its owned runtime accounts. If the Namespace tree is already gone, deletion retries cleanup of any remaining
 owned account markers.
-Agent deletion retires every revision, then `deleteAgentRuntimeCredentials`
+Agent deletion retires every Agent revision, then `deleteAgentRuntimeCredentials`
 verifies ownership, removes the Agent's unit, directory (home, state, operator
 file, port allocation) and runtime account. Absence is success.
 Foreign ownership or configuration failures are permanent; transport, timeouts,
@@ -212,7 +214,7 @@ The native listener must serve HTTP for readiness and private traffic.
 `gateway.tls.enabled` must be omitted or false; native TLS enablement is refused
 before backend work. External proxy TLS is independent of this listener setting.
 `plugins.entries.codex.config.appServer.approvalPolicy: "untrusted"`, which the
-OpenClaw runtime retired, is refused the same way. Previously admitted TLS revisions retain their original configuration/hash for
+OpenClaw runtime retired, is refused the same way. Previously saved Agent revisions with TLS retain their original configuration/hash for
 verified teardown.
 
 When native Configuration omits `gateway.auth.mode`, the Driver renders
@@ -224,29 +226,33 @@ The Driver admits only supported authentication fields and modes before host
 changes.
 
 The helper creates a private per-Agent `gateway-password.env` when the managed
-password is needed. Later revisions reuse that file; the Driver does not rotate
+password is needed. Later versions reuse that file; the Driver does not rotate
 it during prepare, activation, or stop. The systemd unit loads it for managed
 password access and omits it for trusted proxy without a password.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
-or written by the Driver. Provision model/channel credential lines there and
+or written by the Driver. Provision model credential lines there and
 reference them through native environment SecretRefs. Systemd reads this file
 as root; keep it `root:root 0600`. Protect the state root and SSH identity and
 never put plaintext credentials in native Configuration or Installation YAML.
 
-The revision records only `{ "method": "runtime" }`; there is no Secret source,
+The Agent revision records only `{ "method": "runtime" }`; there is no Secret source,
 account identity, key value, or configurable environment-variable field in this
 binding. Any other method gets `400` naming `harnessAuth.method` at
 deployment, and at Agent create and update when they check the binding. OCC still authorizes deployment and checks gateway `/readyz`, but makes
 no model request and does not inspect the operator file. A gateway can be ready
 while its model credentials are invalid. Verify model access separately.
 
-Redeployment, stop, and revision retirement preserve the operator file. Changing
-it can affect an existing revision without redeployment; restart the process to
+Redeployment, stop, and version retirement preserve the operator file. Changing
+it can affect an existing version without redeployment; restart the process to
 load changed environment values. Agent and Namespace deletion remove this file.
 
-Embedded Agents may use any channel provider supported by the host's OpenClaw
-build. Separate Unix users and private groups protect sibling state and native
+Enabled Slack requires [Secret-backed credential validation](slack-channel.md#credential-validation).
+The host environment file cannot satisfy that requirement, and SSH does not
+deliver OCC Secrets. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
+
+Other native channels require both OCC admission and support in the host's
+OpenClaw build. Separate Unix users and private groups protect sibling state and native
 configuration snapshots. Agents still share host networking; SSH does not
 provide Kubernetes NetworkPolicy isolation or the channel isolation of
 dedicated execution. Operators own host/network trust and credential access.

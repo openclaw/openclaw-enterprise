@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { redactFailure } from "../../scripts/ci/failure-redaction.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import {
   WORKSPACE_DEFAULTS,
@@ -24,6 +25,9 @@ import {
   waitForNativeRedeploy,
 } from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { availablePort } from "../helpers/available-port.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url));
@@ -444,6 +448,25 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     }).records;
   const page = (records) => ({ revisionId, source: "agent", records });
 
+  function reportedFailure(message) {
+    assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
+    const [, category, json] = message.match(/: (\S+) (\{.*\})$/) ?? [];
+    assert.ok(json, message);
+    const observation = JSON.parse(json);
+    // The CI result can clip the assertion even after the runtime log was sanitized.
+    if (typeof observation.modelProbe === "object") {
+      const { message: retained } = redactFailure({ message }, [], repoRoot);
+      assert.ok(retained.includes(category), retained);
+      for (const [key, value] of Object.entries(observation.modelProbe)) {
+        assert.ok(retained.includes(`"${key}":${JSON.stringify(value)}`), retained);
+      }
+      if (observation.modelProbe.providerStatus === 401) {
+        assert.match(retained, /"credentialAttachment":"not observed"/);
+      }
+    }
+    return { category, ...observation };
+  }
+
   async function observe(response, provisioned, responses, expectedPaths) {
     const calls = [];
     const request = async (method, path, body, signal) => {
@@ -466,7 +489,6 @@ test("native terminal failures report only fixed failure codes", async (t) => {
         return true;
       },
     );
-    assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
     assert.deepEqual(
       calls.map(({ path }) => path),
       expectedPaths,
@@ -477,10 +499,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       assert.equal(call.method, "GET");
       assert.equal(call.body, undefined);
     }
-    const [, category, json] =
-      message.match(/^Guided native provisioning must succeed: (\S+) (.*)$/) ?? [];
-    assert.ok(json);
-    return { category, ...JSON.parse(json) };
+    return reportedFailure(message);
   }
 
   await t.test("name the held failure and its provider response", async () => {
@@ -520,6 +539,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
         lastAttemptCode: "none",
       },
       modelProbe: { probes: 1, code: "AUTHENTICATION_FAILED", ...provider },
+      credentialAttachment: "not observed",
     });
   });
 
@@ -698,7 +718,6 @@ test("native terminal failures report only fixed failure codes", async (t) => {
         message = error.message;
         return true;
       });
-      assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
       assert.deepEqual(
         calls.map(({ path }) => path),
         expectedPaths,
@@ -706,12 +725,7 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       for (const call of calls.slice(1)) {
         assert.ok(call.signal instanceof AbortSignal && call.signal !== signal);
       }
-      const [, category, json] =
-        message.match(
-          /^Redeployment with the retained native workspace must succeed: (\S+) (.*)$/,
-        ) ?? [];
-      assert.ok(json, message);
-      return { category, ...JSON.parse(json) };
+      return reportedFailure(message);
     }
 
     const provider = { providerStatus: 429, providerCode: "rate_limit_exceeded" };
@@ -1139,6 +1153,69 @@ test(
         namespaces.items[0].metadata.name,
         "the dedicated Gateway must share the single-cluster tenant namespace",
       );
+      if (recorded.sandboxNetworkPolicies?.some(({ name: rule }) => rule === "python-web")) {
+        // Read the actual provider-created Sandbox after normal Agent deployment:
+        // a rendered Installation alone would not prove delivery to OpenShell.
+        const port = await availablePort();
+        const safeEnvironment = { ...env };
+        delete safeEnvironment.OPENAI_API_KEY;
+        delete safeEnvironment.OPENAI_API_KEY_FILE;
+        const forward = spawn(
+          "kubectl",
+          [
+            "--kubeconfig",
+            join(stateDirectory, "kubeconfig"),
+            "--context",
+            `k3d-${recorded.cluster}`,
+            "port-forward",
+            "--namespace",
+            openShellNamespace,
+            "service/openshell-gateway",
+            `${port}:8080`,
+          ],
+          { env: safeEnvironment, stdio: "ignore" },
+        );
+        context.after(() => stopProcess(forward));
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `http://127.0.0.1:${port}`,
+          auth: { mode: "unauthenticated" },
+        });
+        try {
+          const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
+          const deadline = Date.now() + 30_000;
+          let sandbox;
+          while (Date.now() < deadline && sandbox === undefined) {
+            try {
+              sandbox = await client.getSandbox(
+                { name: sandboxName, workspace: namespaces.items[0].metadata.name },
+                AbortSignal.timeout(2_000),
+              );
+            } catch {
+              // The owned port-forward may still be opening its listener.
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          }
+          const rule = sandbox?.spec?.policy?.network_policies?.["python-web"];
+          assert.ok(rule, "the startup rule must reach the deployed Agent's actual Sandbox");
+          assert.deepEqual(
+            rule.binaries.map(({ path }) => path),
+            ["/usr/bin/python3.11"],
+          );
+          assert.deepEqual(
+            rule.endpoints.map(({ host, ports }) => ({ host, ports })),
+            [{ host: "example.com", ports: [443] }],
+          );
+          assert.ok(sandbox.spec.policy.network_policies["source-control"]);
+          assert.ok(sandbox.spec.policy.network_policies["workspace-node-enrollment"]);
+        } finally {
+          client.close();
+          await stopProcess(forward);
+        }
+      } else {
+        context.diagnostic(
+          "Existing stack has no python-web startup rule; override delivery was not exercised.",
+        );
+      }
       const services = await readKubernetesJson(
         kube,
         [

@@ -12,8 +12,8 @@ last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
 
 The worker realizes an admitted embedded OpenClaw AgentRevision on a configured
 Linux host. The SSH Compute Driver sends a controller-owned helper to the host,
-which stages the revision and activates the Agent's systemd gateway after OCC
-commits its active revision. This trace covers preparation, activation,
+which stages the Agent revision and activates the Agent's systemd gateway after OCC
+commits its selected version. This trace covers preparation, activation,
 retirement, and Agent and Namespace deletion. It stops when
 control returns to the worker; gateway request execution is outside this flow.
 The [SSH reference](../reference/drivers/ssh-compute.md) owns configuration and
@@ -30,27 +30,27 @@ supported boundaries.
 - Assumptions: Trusted Installation YAML selects packageless `compute-ssh`;
   the operator provisions Linux, systemd, flock, Node, OpenClaw, root SSH, and a
   account-management tools. Namespace names map to configured hosts. OCC supplies
-  authorized, server-owned resource identities and immutable admitted revisions.
+  authorized, server-owned resource identities and immutable saved versions.
 
 ## Flow
 
 ```mermaid
 graph TD
   subgraph OCC["OCC worker"]
-    A["Authorize claimed revision and bind Agent"] --> B["Validate embedded revision"]
+    A["Authorize claimed Agent revision and bind Agent"] --> B["Validate embedded Agent revision"]
     B --> C["Send prepare operation over SSH"]
   end
   subgraph Stage["Host preparation under shared-root flock"]
     C --> D["Verify ownership and private Agent account"]
     D --> E["Stage immutable snapshot; preserve running gateway"]
   end
-  E --> F{"OCC active revision commit"}
+  E --> F{"OCC selected version commit"}
   F -->|fails| G["Previous gateway continues serving"]
   F -->|succeeds| H["Run beforeWorkloadStart hooks"]
   subgraph Activate["Host activation under shared-root flock"]
     H --> I["Render unit and switch current pointer"]
     I --> J["Restart systemd gateway and poll readiness"]
-    J -->|ready| K["Record served revision"]
+    J -->|ready| K["Record served Agent revision"]
   end
   J -->|fails| L["Compensate lifecycle bindings; retry finalization"]
   K --> M["Retire previous snapshot and complete work"]
@@ -69,9 +69,9 @@ host settings and Sandbox composition. Preflight checks the two local SSH
 files and probes each host's required executables and account-management tools.
 
 Namespace preparation creates or verifies its ownership marker before running
-`afterNamespacePrepared` hooks. After revision authorization and provider
+`afterNamespacePrepared` hooks. After Agent revision authorization and provider
 validation, the worker calls `bindAgent`; the driver copies the authoritative
-Namespace, Agent, and ServicePrincipal binding into its in-memory maps. Revision
+Namespace, Agent, and ServicePrincipal binding into its in-memory maps. Agent revision
 operations require matching bindings and the selected Compute identity.
 Admission and dispatch require the explicit `runtime` binding. The snapshot
 contains only the method: neither source authorization nor credential resolution
@@ -98,11 +98,14 @@ already submitted can still complete. Once stdout exceeds 64 Ki UTF-16 code
 units, the executor stops retaining subsequent chunks and reports
 `SSH helper output exceeded its limit.` The crossing chunk can exceed the
 threshold. The local client still receives SIGTERM, then SIGKILL after one
-second if needed; the operation settles on its close event.
+second if needed; the operation settles on its close event. One second after
+the client exits, the executor closes its output pipes, so a descendant that
+inherited them, such as a `ProxyCommand`, cannot hold the operation open for
+more than about a second after the client exits.
 
 Host mutations take `<root>/.compute-lock` through a child holding kernel flock,
 with a 30-second acquisition timeout. The shared root defines the inventory and
-serialization boundary. Namespace, Agent, revision, and unit markers are checked
+serialization boundary. Namespace, Agent, Agent revision, and unit markers are checked
 before use; ownership failures are permanent. The lock releases when its
 holder exits. Probe does not take the lock. Deletion of an already-missing
 Namespace still holds it while retrying cleanup of remaining owned accounts.
@@ -120,31 +123,33 @@ private group, then creates the Agent directory and reserves the lowest free
 port across the shared root. Root-owned account markers bind the UID/GID to the
 exact Driver, Namespace, Agent, and ServicePrincipal. Existing unowned accounts
 or conflicting markers fail closed. Agent-owned `home/` and `state/` use mode
-`0700` and persist across revisions.
+`0700` and persist across versions.
 
 The helper creates `gateway-password.env` only when needed and missing,
-preserving its value across later revisions. It does not migrate historical
+preserving its value across later versions. It does not migrate historical
 credential files.
 
 Snapshots store the Driver-rendered configuration as root-owned,
 private-group-readable `openclaw.json`. The helper validates existing bytes
-against their hash and rejects a different revision ID with the same revision number. An older
+against their hash and rejects a different Agent revision ID with the same version number. An older
 candidate returns not-ready. Preparation leaves the running unit and `current`
 pointer untouched, so failed OCC publication does not cut over the gateway.
 
-### 4. Commit activation, start the gateway, and retire the prior revision
+<span id="4-commit-activation-start-the-gateway-and-retire-the-prior-revision" class="anchor-alias"></span>
+
+### 4. Commit activation, start the gateway, and retire the prior Agent revision
 
 `worker.ts:observeRevision`, `finalizeRevision`,
 `ssh/index.ts:activateRevision`, `retireRevision`,
 `ssh/remote-helper.cjs:activate`, `renderUnit`, `waitReady`
 
 SSH uses the default activation order. After successful preparation, OCC
-compare-and-sets the Agent's active revision in its database. The worker then
+compare-and-sets the Agent's selected version in its database. The worker then
 calls `activateRevision`, which invokes selected Configuration and IAM
 `beforeWorkloadStart` hooks before sending the activation operation. Accepted
 opaque launch placeholders enter the systemd unit's environment. Hook failure
-prevents launch; failure after hook preparation invokes bounded workload-stop
-compensation. Incomplete finalization remains retryable.
+prevents launch; failure after hook preparation invokes workload-stop
+compensation with a separate five-second cancellation signal if the original signal was cancelled. Incomplete finalization remains retryable.
 
 The helper renders the unit for the Agent's private Unix account, enables its
 absolute path, replaces `current`, restarts the gateway, and polls loopback `/readyz` for up to 120
@@ -157,7 +162,7 @@ migration path. The Driver never reads or writes the operator credential
 file and never submits a model probe.
 Readiness confirms gateway startup only; an invalid key can leave the gateway
 ready while model requests fail. Host credential changes may affect an existing
-revision after restart without a new immutable revision.
+version after restart without a new Agent revision.
 
 Retirement runs `beforeWorkloadStop` hooks and removes the specified snapshot.
 If that snapshot is current, `stopOwnedUnit` verifies the configured file's ownership,
@@ -171,14 +176,14 @@ Relinking permits cleanup after `disable` removed a custom directory's load-path
 
 `ssh/index.ts:deleteNamespace`, `ssh/remote-helper.cjs:removeNamespace`
 
-Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, revision,
+Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, Agent revision,
 and unit in the deletion set before stopping gateways. The helper stops and
 disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
 Namespace tree, including persistent state, and its owned runtime accounts. The driver clears its in-memory
 bindings only after the host operation succeeds.
 
 Agent deletion (`ssh/index.ts:deleteAgentRuntimeCredentials`,
-`remote-helper.cjs:removeAgent`) does the same for one Agent after its revisions
+`remote-helper.cjs:removeAgent`) does the same for one Agent after its Agent revisions
 retire, which frees its gateway port.
 
 ## Debugging and Verification

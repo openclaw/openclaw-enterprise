@@ -8,6 +8,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-22 01:30: Fill the folded Deployment activity row with a first record read after the page shows; keep the summary note and version record rows. (fix-2163)
 - 2026-10-18 12:30: Keep open Workspace editors when another version becomes current. (lows-1018h)
 - 2026-10-17 09:01: Keep keyboard focus on the pending Configuration save. (lows-1017k-1646 - 5d82453999)
 - 2026-10-16 22:40: Patch deployment polls in place; reserve pending rows. (ui-jank-code-12)

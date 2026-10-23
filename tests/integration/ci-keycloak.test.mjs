@@ -1,19 +1,18 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { keycloakRealmFile, prepareKeycloak } from "../../scripts/ci/keycloak.mjs";
+import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const cleanupPath = join(repositoryRoot, "scripts/ci/cleanup.mjs");
 
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-keycloak-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  return root;
+function fixture(t) {
+  return temporaryDirectory(t, "ci-keycloak-test-");
 }
 
 test("the Keycloak realm fixture holds no secret", async () => {
@@ -73,11 +72,7 @@ test("cleanup removes the owned Keycloak container and its private directory", a
   const bin = join(root, "bin");
   await mkdir(bin);
   const log = join(root, "docker.log");
-  await writeFile(
-    join(bin, "docker"),
-    ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(log)}`, "exit 0", ""].join("\n"),
-  );
-  await chmod(join(bin, "docker"), 0o700);
+  await writeCommand(bin, "docker", "exit 0\n", { log });
   const prefix = "openclaw-ci-local-keycloak1234";
   const name = `openclaw-ci-kc-${prefix}-0123456789ab`;
   const directory = join(root, name);
@@ -104,7 +99,7 @@ test("cleanup removes the owned Keycloak container and its private directory", a
     env: { ...process.env, OCC_DOCKER_BIN: join(bin, "docker") },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual((await readFile(log, "utf8")).trim().split("\n"), [
+  assert.deepEqual(await commandCalls(log), [
     `rm --force --volumes ${name}`,
     `ps --all --filter name=^${name}$ --format {{.Names}}`,
   ]);

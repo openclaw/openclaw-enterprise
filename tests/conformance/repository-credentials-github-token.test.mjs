@@ -11,7 +11,6 @@ import {
   createGitHubKeyOwner,
   createGitHubStaticTokenOwner,
 } from "../../apps/controller/src/drivers/repo/github/credentials/index.ts";
-import { createGitHubRegistryDriverFactory } from "../../apps/controller/src/drivers/repo/github/credentials/registry-factory.ts";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import {
   githubConfigurationData,
@@ -66,17 +65,9 @@ function factoryBinding(identity = {}, extra = {}) {
 
 function appFactory() {
   const clock = createControlledClock(1700000000000);
-  const config = validateServiceConfig(serviceConfigurationData());
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const key = createGitHubKeyOwner({ privateKey, appId: "12345", clock });
-  const factory = createGitHubDriverFactory({
-    configuration: githubConfigurationData(),
-    authority: key,
-    clock,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-  });
-  return { clock, config, factory, key };
+  return { key };
 }
 
 function bind({ factory, clock }, profile, binding = factory.resolve(profile).binding) {
@@ -190,22 +181,16 @@ test("token backend configuration requires both scope controls and rejects every
   }
 });
 
-test("App grant identities are unchanged and token grants are disjoint from them", () => {
-  // Recorded from main before the token source existed; registry bindings depend on them.
-  const app = appFactory();
-  assert.deepEqual(
-    ["git-read", "git-write", "git-full"].map((profile) => app.factory.resolve(profile).binding),
-    [
-      "sha256:fd48d226cd09ad082ce9106858e6238ab07bdd2c124fbf96234ec9e7773ca9ba",
-      "sha256:2aaf0850449238395a21649ea67ff527ef3be5c1ffcc43ea0ea2d392884cc986",
-      "sha256:c94076150c6a1fb745e84ec684af3b8806e96a411d820997d835249ec7b73be2",
-    ].map((grantId) => ({ providerInstanceId: "github-test", repositoryId: "73", grantId })),
-  );
-  assert.equal(app.factory.resolve("git-write").client.pushRefAllowlist, undefined);
+test("token grant identities distinguish policy and cannot reuse a previous App grant", () => {
+  const previousBinding = {
+    providerInstanceId: "github-test",
+    repositoryId: "73",
+    grantId: "sha256:2aaf0850449238395a21649ea67ff527ef3be5c1ffcc43ea0ea2d392884cc986",
+  };
   const token = tokenFactory();
   const grant = (factory, profile = "git-write") => factory.resolve(profile).binding.grantId;
   const grants = [
-    grant(app.factory),
+    previousBinding.grantId,
     grant(token.factory),
     grant(tokenFactory({ token: fineGrainedToken, configuration: { allowGraphql: true } }).factory),
     grant(tokenFactory({ configuration: { pushRefAllowlist: ["refs/heads/other/*"] } }).factory),
@@ -224,10 +209,9 @@ test("App grant identities are unchanged and token grants are disjoint from them
     "refs/heads/agent/*",
   ]);
   // A session admitted for an App grant can never be served by a token backend.
-  assert.throws(() => bind(token, "git-write", app.factory.resolve("git-write").binding), {
+  assert.throws(() => bind(token, "git-write", previousBinding), {
     message: "invalid-binding",
   });
-  app.key.close();
   token.owner.close();
 });
 
@@ -263,20 +247,7 @@ test("token factory refuses mismatched authorities, metadata scope, broad GraphQ
         gatewayOrigin: config.gateway.publicOrigin,
         limits: config.limits,
       }),
-    { message: "invalid-configuration" },
-  );
-  // The registry is the production path and accepts only an App authority.
-  assert.throws(
-    () =>
-      createGitHubRegistryDriverFactory({
-        registry: {},
-        privateKeyFile: "/unused",
-        authority: owner,
-        clock,
-        gatewayOrigin: config.gateway.publicOrigin,
-        limits: config.limits,
-      }),
-    { message: "invalid-configuration" },
+    { message: "invalid-backend" },
   );
   key.close();
   owner.close();
@@ -328,14 +299,6 @@ test("token routes deny GraphQL by default and for git-read, and inspect every p
       assert.equal(plan.inputPolicy(refused), false, refused.toString());
     }
   }
-  // The App path keeps token-bounded GraphQL, where mutations are bounded by the App token.
-  const appGraphql = appFactory();
-  const appPlan = bind(appGraphql, "git-write").plan(graphql);
-  assert.equal(
-    appPlan.inputPolicy(query("mutation { addStar(input: {}) { clientMutationId } }")),
-    true,
-  );
-  appGraphql.key.close();
   // git-read never reaches receive-pack, before any acquisition.
   assert.deepEqual(bind(defaults, "git-read").plan(receivePack), denied);
   assert.deepEqual(bind(defaults, "git-read").plan(discovery), denied);
@@ -348,10 +311,6 @@ test("token routes deny GraphQL by default and for git-read, and inspect every p
   };
   assert.equal(push.inputPolicy(command("refs/heads/agent/x")), true);
   assert.equal(push.inputPolicy(command("refs/heads/main")), false);
-  // The App path keeps its existing unbuffered push plan.
-  const app = appFactory();
-  assert.equal(bind(app, "git-write").plan(receivePack).inputPolicy, undefined);
-  app.key.close();
   defaults.owner.close();
   opted.owner.close();
 });

@@ -26,6 +26,7 @@ import {
   createGitHubTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 
 // Each case starts its own service, Git and GitHub fixtures and spends most of
 // its time waiting on stock Git children. The cases register here and run two at
@@ -107,12 +108,18 @@ async function startTokenService(t, limits = {}, configuration = {}) {
   return { clock, tls, config, github, git, service, listeners, token, tokenIndex, proxy };
 }
 
+// Git starts the credential helper and the hook dispatcher (for every hook, three times
+// per ref update) as Node children of an allowlisted environment, so the compile cache
+// is passed explicitly.
+const compileCache = await fileCompileCache("repository-credentials-github-token");
+
 async function stockGit(t, fixture, opened) {
   const material = await createNativeClientMaterial(t, [{ opened, repositoryRef: "fixture" }], {
     ca: fixture.tls.ca,
   });
   const home = await temporaryDirectory(t, "repository-token-home-");
   const env = cleanEnvironment({
+    NODE_COMPILE_CACHE: compileCache,
     HOME: home,
     GIT_CONFIG_SYSTEM: join(material.root, "gitconfig"),
     HTTPS_PROXY: fixture.proxy,

@@ -179,8 +179,13 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, ["git-full", "git-read", "slack"]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[1].unselected, [
+    "console-secrets",
+    "git-write",
+    "git-push-denied",
+    "slack",
+  ]);
+  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -198,13 +203,34 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const secrets = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "console-secrets",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+  });
+  assert.equal(secrets.browser, true);
+  assert.deepEqual(secrets.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  const sandbox = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "sandbox-policy",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.equal(sandbox.sandboxPolicy, true);
+  assert.deepEqual(sandbox.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_SANDBOX_ENV",
+  ]);
+  assert.ok(
+    sandbox.cells.every((cell) => cell.scenarios.length === 0),
+    "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
   const isolated = selectQaMatrix({
-    OCC_TEST_QA_SCENARIOS: "git-full",
+    OCC_TEST_QA_SCENARIOS: "git-write",
     QA_REPOSITORY_FIXTURE: "isolated",
     OCC_TEST_QA_GITHUB_OBSERVER_BINARY: "gh",
     OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE: "/private/token",
@@ -298,6 +324,192 @@ test("QA command diagnostics retain the error while hiding generated and environ
   );
 });
 
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
+// Finding 2025: the QA installation's command runner is what records a failed image build's step
+// as uploaded evidence, so it is run here with a real failing subprocess and no cluster. The
+// evidence file must exist and carry the failed step with every secret the subprocess printed
+// masked; a protected command records nothing.
+test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  registerQaSecret("registered-private-2025");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    // The subprocess sees the installation's environment, so it can print its private value.
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "env-private-value-2025" },
+    // The installation's own record: a confined JSON file in the uploaded artifacts directory.
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+      return file;
+    },
+  };
+  const longLine = "x".repeat(1_000);
+  const stderr = [
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [openclaw-build 14/18] RUN node scripts/test-projects.mts",
+    "#41 45.12  FAIL  src/gateway/placement.test.ts > keeps its token",
+    "#41 45.13 AssertionError: expected 'registered-private-2025' to be undefined",
+    "#41 45.14 env ${OCC_TEST_PRIVATE_INPUT}",
+    "#41 45.15 Authorization: Bearer fake-bearer-token-2025",
+    "#41 45.16 -----BEGIN PRIVATE KEY-----",
+    "#41 45.17 fakePemBodyLine2025AAAAAAAAAAAAAAAAAAAA",
+    "#41 45.18 -----END PRIVATE KEY-----",
+    `#41 45.19 ${longLine}`,
+    '#41 ERROR: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const script = `process.stderr.write(${JSON.stringify(stderr)}.replace("\${OCC_TEST_PRIVATE_INPUT}", process.env.OCC_TEST_PRIVATE_INPUT) + "\\n"); process.exit(1);`;
+
+  await assert.rejects(runQaCommand(f, process.execPath, ["-e", script]), (error) => {
+    assert.match(
+      error.message,
+      /; failed image build step output: kubernetes-image-build-failure-\d+\.json(?:;|$)/,
+    );
+    return true;
+  });
+  const files = (await readdir(artifacts)).filter((file) => file.includes("image-build-failure"));
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { lines } = JSON.parse(evidence);
+  assert.ok(lines.some((line) => line.includes("FAIL  src/gateway/placement.test.ts")));
+  assert.doesNotMatch(
+    evidence,
+    /registered-private-2025|env-private-value-2025|fake-bearer-token-2025|fakePemBodyLine2025/,
+  );
+  // Each line is cut to 800 characters.
+  assert.ok(lines.includes(`#41 45.19 ${longLine}`.slice(0, 800) + "... [truncated]"));
+
+  // A command whose output is protected records no evidence, even from a failed image build.
+  await assert.rejects(
+    runQaCommand(f, process.execPath, ["-e", script], { privateFailureOutput: true }),
+    (error) => {
+      assert.doesNotMatch(error.message, /failed image build step output/);
+      return true;
+    },
+  );
+  assert.deepEqual(
+    (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
+    files,
+  );
+});
+
+// Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
+// line, must lose every body line, not only the lines the tail still shows its BEGIN for.
+test("an image build step's unterminated private key is masked past the evidence window", async () => {
+  const { recordImageBuildFailure } = await import("../helpers/qa-installation.mjs");
+  const body = Array.from(
+    { length: 250 },
+    (_, index) =>
+      `#41 ${index}.0 fakeKeyBody${String(index).padStart(3, "0")}QUJDREVGR0hJSktMTU5PUFFSU1RVVldY`,
+  );
+  const stderr = [
+    "#41 [runtime 4/9] RUN cat /run/secrets/key",
+    "#41 0.1 -----BEGIN RSA PRIVATE KEY-----",
+    ...body,
+    '#41 ERROR: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const records = [];
+  await recordImageBuildFailure(
+    async (name, value) => {
+      records.push(value);
+      return `kubernetes-${name}.json`;
+    },
+    stderr,
+    {},
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].lines.length, 200);
+  assert.doesNotMatch(JSON.stringify(records[0]), /fakeKeyBody/);
+});
+
 test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;
@@ -344,6 +556,229 @@ test("QA waits report the last observation when they time out", async () => {
   assert.equal(
     await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
     "value",
+  );
+});
+
+// Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
+  const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  // An invented 48-character registered value. Runtime text that OCC shortened could keep
+  // part of it, which whole-value redaction cannot match.
+  const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
+  assert.equal(privateValue.length, 48);
+  registerQaSecret(privateValue);
+  const base = "/namespaces/namespace-1/agents/agent-1";
+  function fixture({ runtime, finalStatus = "running" } = {}) {
+    let clock = 0;
+    const calls = [];
+    const records = [];
+    const lastAttempt = {
+      at: "2026-10-19T19:40:00.000Z",
+      code: "RUNTIME_NOT_READY",
+      message: "The Agent runtime is not ready yet.",
+    };
+    const f = {
+      async api(method, path) {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === `${base}/deploy`) {
+          return { id: "rev-1" };
+        }
+        if (path === `${base}/deployments/rev-1`) {
+          clock += 100;
+          // Queued for the first observations, then running until the wait ends.
+          const status = clock <= 200 ? "queued" : finalStatus;
+          return {
+            status,
+            progress: status === "succeeded" ? null : { lastAttempt, nextAttemptAt: null },
+            error: null,
+            cleanup: null,
+            warnings: [],
+          };
+        }
+        if (path === `${base}/deployments/rev-1/runtime`) {
+          if (!runtime) {
+            throw new Error(`OCC GET ${path}: HTTP 404`);
+          }
+          return runtime;
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      async record(name, value) {
+        records.push({ name, value });
+      },
+    };
+    const agent = { id: "agent-1", namespaceId: "namespace-1", preset: "Codex" };
+    return { f, agent, calls, records, options: { timeout: 1_000, interval: 0, now: () => clock } };
+  }
+
+  const runtime = {
+    revisionId: "rev-1",
+    observedAt: "2026-10-19T19:46:00.000Z",
+    sources: [],
+    pods: [
+      {
+        role: "gateway",
+        cluster: "control",
+        name: "gateway-0",
+        uid: "uid-1",
+        phase: "Pending",
+        ready: false,
+        createdAt: "2026-10-19T19:36:10.000Z",
+        containers: [
+          {
+            name: "gateway",
+            state: "waiting",
+            reason: "ContainerCreating",
+            ready: false,
+            restartCount: 0,
+            startedAt: null,
+            lastTermination: null,
+          },
+          {
+            name: "setup",
+            state: "terminated",
+            // Cut at the API's 128 characters, inside the registered value.
+            reason: ("r".repeat(100) + privateValue).slice(0, 128),
+            ready: false,
+            restartCount: 1,
+            startedAt: null,
+            lastTermination: null,
+          },
+        ],
+        // Newest first, as the API lists them.
+        events: [
+          {
+            type: "Warning",
+            container: null,
+            reason: "Unhealthy",
+            // Probe output can reach an event message; the value starts at character 176.
+            message: "Readiness probe failed: " + "x".repeat(152) + privateValue,
+            count: 4,
+            lastObservedAt: "2026-10-19T19:45:00Z",
+          },
+          {
+            type: "Normal",
+            container: null,
+            reason: "Pulled",
+            message: "Container image already present",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:44:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            // A long reason from a legacy Event producer, cut inside the registered value.
+            reason: ("e".repeat(100) + privateValue).slice(0, 128),
+            message: "Back-off pulling image",
+            count: 2,
+            lastObservedAt: "2026-10-19T19:43:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedScheduling",
+            message: "0/1 nodes are available",
+            count: 3,
+            lastObservedAt: "2026-10-19T19:38:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedCreatePodSandBox",
+            message: "Failed to create pod sandbox",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:37:00Z",
+          },
+        ],
+      },
+    ],
+  };
+  // Through the real report stage, which redacts before it saves the reason.
+  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const reportPath = join(directory, "matrix.json");
+  const report = createQaReport(reportPath, {});
+  const parent = { test: async (_name, _options, run) => run() };
+  const timedOut = fixture({ runtime });
+  await assert.rejects(
+    report.stage(parent, "compose/Codex", "deploy", () =>
+      deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    ),
+    (error) => {
+      // No runtime text that could hold part of a secret reaches the error.
+      assert.doesNotMatch(error.message, /qa-deploy-fixture|Readiness probe failed|rrrr|eeee/);
+      const [observation, pods] = error.message
+        .replace(/^Timed out: Agent deployment; last observation: /, "")
+        .split("; runtime: ");
+      assert.deepEqual(JSON.parse(observation), {
+        status: "running",
+        // Running since the third observation (clock 300) until the last one (clock 1,000).
+        statusForMs: 700,
+        lastAttempt: {
+          at: "2026-10-19T19:40:00.000Z",
+          code: "RUNTIME_NOT_READY",
+          message: "The Agent runtime is not ready yet.",
+        },
+        nextAttemptAt: null,
+        error: null,
+      });
+      assert.deepEqual(JSON.parse(pods), {
+        pods: [
+          {
+            role: "gateway",
+            phase: "Pending",
+            ready: false,
+            containers: [
+              { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+              { name: "setup", state: "terminated", reason: "other", restartCount: 1 },
+            ],
+            // The three newest Warnings, by familiar reason and count only.
+            warnings: [
+              { reason: "Unhealthy", count: 4 },
+              { reason: "other", count: 2 },
+              { reason: "FailedScheduling", count: 3 },
+            ],
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
+  assert.deepEqual(timedOut.records, []);
+  const saved = await readFile(reportPath, "utf8");
+  const [outcome] = JSON.parse(saved).outcomes;
+  assert.equal(outcome.outcome, "failed");
+  assert.match(outcome.reason, /^Timed out: Agent deployment; last observation: /);
+  assert.doesNotMatch(saved, new RegExp(privateValue.slice(0, 8)));
+
+  // Runtime details are best effort: the timeout keeps its status when they are unavailable.
+  const noRuntime = fixture();
+  await assert.rejects(
+    deployQaAgentAndWait(noRuntime.f, noRuntime.agent, noRuntime.options),
+    (error) =>
+      error.message.startsWith(
+        'Timed out: Agent deployment; last observation: {"status":"running","statusForMs":700,',
+      ) &&
+      error.message.endsWith(
+        `; runtime unavailable (OCC GET ${base}/deployments/rev-1/runtime: HTTP 404)`,
+      ),
+  );
+
+  // A deployment that succeeds is recorded and returned, with no runtime request.
+  const succeeded = fixture({ finalStatus: "succeeded" });
+  const result = await deployQaAgentAndWait(succeeded.f, succeeded.agent, succeeded.options);
+  assert.equal(result.status.status, "succeeded");
+  assert.deepEqual(result.revision, { id: "rev-1" });
+  assert.deepEqual(
+    succeeded.records.map(({ name }) => name),
+    ["Codex-agent-1-rev-1-deployment"],
+  );
+  assert.equal(
+    succeeded.calls.some((call) => call.endsWith("/runtime")),
+    false,
   );
 });
 

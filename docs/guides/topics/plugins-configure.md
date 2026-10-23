@@ -1,7 +1,7 @@
 # Configure Agent plugins
 
 Use the console or OpenClaw Control Plane (OCC) CLI to change an existing Agent's
-plugin selections, then deploy a new revision. The CLI example enables the
+plugin selections, then deploy a new version. The CLI example enables the
 bundled Diffs plugin on an embedded OpenClaw Agent running on Kubernetes. Dedicated
 Codex Agents use a different catalog and approval policy; see
 [plugin support](../../reference/agent-plugins.md#current-support).
@@ -20,11 +20,11 @@ and uses it server-side; other authentication methods cannot browse the hosted
 catalog. Select **Save plugin selections**, then
 **Deploy new version**. The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
-snapshot. See the [Agent detail guide](../console/agent-details.md#plugins-tab)
+snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
 for the result. Catalog visibility alone does not prove that the plugin is
 installed or available to the running Agent. Hosted discovery uses the Agent's
-current draft credential, which may differ from its running revision's.
+current draft credential, which may differ from its running version's.
 
 For an unavailable plugin, use the information button beside its row to open the
 reason and any setup link. Press Escape or click outside to dismiss the popover.
@@ -56,11 +56,11 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   Configuration, and read the new Agent revision. Every Agent update, including
   a plugin-only change, also needs `operate` on the Agent's Harness
   authentication Secret or credential source and on each Secret its
-  Configuration binds; without them the update returns `403`. Revision `read` is
+  Configuration binds; without them the update returns `403`. Agent revision `read` is
   [bound per AgentRevision](../../reference/authorization.md#manage-namespace-policy), so a member with
-  only exact grants cannot read the status of a revision that did not exist
+  only exact grants cannot read the status of an Agent revision that did not exist
   when the grants were made; an administrator can check it or grant `read` on
-  that revision. Existing
+  that Agent revision. Existing
   [model credential requirements](../../reference/agents.md#harness-authentication)
   still apply when deploying.
 - Check the Agent Configuration's tool policy. Selecting Diffs adds it to the
@@ -128,7 +128,7 @@ a newer plugin map can be overwritten by the one you read.
 
 ## Deploy the change
 
-Deploy the Agent and keep the returned revision ID:
+Deploy the Agent and keep the returned version ID:
 
 ```bash
 occ agent deploy "$AGENT_ID" --output json > agent-plugin-revision.json

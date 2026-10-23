@@ -166,7 +166,7 @@ RFC decision; adding frontmatter does not establish acceptance or release proof.
 
 `implementation_status` is **Not implemented**, **Partially implemented**, or
 **Implemented**. Audit the scoped delivery against current source and references;
-record the audited revision and verification limits in the index. Keep explicitly
+record the audited commit and verification limits in the index. Keep explicitly
 separate future phases distinct from unfinished delivery. Update this field and
 the index together without rewriting historical decisions or Manual Notes.
 Implementation does not establish acceptance, live verification, or release readiness.
@@ -221,7 +221,7 @@ rewrite historical content to match the new template.
 
 This first phase moves non-archived specifications and supporting evidence.
 `specs/.archive/` retains its content and placement.
-The console spec's image links point to a preserved Git revision after removal
+The console spec's image links point to a preserved Git commit after removal
 of `specs/assets/`. Archived links may point to removed files; forwarding pages
 are not required. A future archive reorganization requires a separate change.
 
@@ -232,23 +232,33 @@ This lookup maps their original paths to the current IDs. New RFCs take the next
 number; unmerged proposals must reconcile their IDs before merging.
 Plan filenames and historical commit links retain their original names.
 
-| Previous RFC path                         | Current RFC                                                             |
-| ----------------------------------------- | ----------------------------------------------------------------------- |
-| `0042-oidc-sign-in.md`                    | [RFC-0001](../../specs/rfcs/0001-oidc-sign-in.md)                       |
-| `21-agent-workload-tags.md`               | [RFC-0002](../../specs/rfcs/0002-agent-workload-tags.md)                |
-| `28-gateway-harness-storage-split.md`     | [RFC-0003](../../specs/rfcs/0003-gateway-harness-storage-split.md)      |
-| `28-occ-prometheus-metrics.md`            | [RFC-0004](../../specs/rfcs/0004-occ-prometheus-metrics.md)             |
-| `30-harness-auth-binding.md`              | [RFC-0005](../../specs/rfcs/0005-harness-auth-binding.md)               |
-| `31-basic-rbac`                           | [RFC-0006](../../specs/rfcs/0006-basic-rbac/index.md)                   |
-| `31-human-federated-sign-in`              | [RFC-0007](../../specs/rfcs/0007-human-federated-sign-in/index.md)      |
-| `31-repository-credentials`               | [RFC-0008](../../specs/rfcs/0008-repository-credentials/index.md)       |
-| `35-native-plugin-tool-policy.md`         | [RFC-0009](../../specs/rfcs/0009-native-plugin-tool-policy.md)          |
-| `36-agent-access.md`                      | [RFC-0010](../../specs/rfcs/0010-agent-access.md)                       |
-| `36-coordinated-image-upgrade.md`         | [RFC-0011](../../specs/rfcs/0011-coordinated-image-upgrade.md)          |
-| `36-production-observability.md`          | [RFC-0012](../../specs/rfcs/0012-production-observability.md)           |
-| `37-platform-audit`                       | [RFC-0013](../../specs/rfcs/0013-platform-audit/index.md)               |
-| `37-plugin-policy-enforcement.md`         | [RFC-0014](../../specs/rfcs/0014-plugin-policy-enforcement.md)          |
-| `39-repository-credential-recovery.md`    | [RFC-0015](../../specs/rfcs/0015-repository-credential-recovery.md)     |
-| `39-sandbox-credential-injection.md`      | [RFC-0016](../../specs/rfcs/0016-sandbox-credential-injection/index.md) |
-| `40-agent-egress-0x`                      | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
-| `2026-09-28-installation-profiles-design` | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
+| Previous RFC path                            | Current RFC                                                             |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| `0042-oidc-sign-in.md`                       | [RFC-0001](../../specs/rfcs/0001-oidc-sign-in.md)                       |
+| `21-agent-workload-tags.md`                  | [RFC-0002](../../specs/rfcs/0002-agent-workload-tags.md)                |
+| `28-gateway-harness-storage-split.md`        | [RFC-0003](../../specs/rfcs/0003-gateway-harness-storage-split.md)      |
+| `28-occ-prometheus-metrics.md`               | [RFC-0004](../../specs/rfcs/0004-occ-prometheus-metrics.md)             |
+| `30-harness-auth-binding.md`                 | [RFC-0005](../../specs/rfcs/0005-harness-auth-binding.md)               |
+| `31-basic-rbac`                              | [RFC-0006](../../specs/rfcs/0006-basic-rbac/index.md)                   |
+| `31-human-federated-sign-in`                 | [RFC-0007](../../specs/rfcs/0007-human-federated-sign-in/index.md)      |
+| `31-repository-credentials`                  | [RFC-0008](../../specs/rfcs/0008-repository-credentials/index.md)       |
+| `35-native-plugin-tool-policy.md`            | [RFC-0009](../../specs/rfcs/0009-native-plugin-tool-policy.md)          |
+| `36-agent-access.md`                         | [RFC-0010](../../specs/rfcs/0010-agent-access.md)                       |
+| `36-coordinated-image-upgrade.md`            | [RFC-0011](../../specs/rfcs/0011-coordinated-image-upgrade.md)          |
+| `36-production-observability.md`             | [RFC-0012](../../specs/rfcs/0012-production-observability.md)           |
+| `37-platform-audit`                          | [RFC-0013](../../specs/rfcs/0013-platform-audit/index.md)               |
+| `37-plugin-policy-enforcement.md`            | [RFC-0014](../../specs/rfcs/0014-plugin-policy-enforcement.md)          |
+| `39-repository-credential-recovery.md`       | [RFC-0015](../../specs/rfcs/0015-repository-credential-recovery.md)     |
+| `39-sandbox-credential-injection.md`         | [RFC-0016](../../specs/rfcs/0016-sandbox-credential-injection/index.md) |
+| `40-agent-egress-0x`                         | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
+| `2026-09-28-installation-profiles-design`    | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
+| `0021-driver-configuration-contributions.md` | [RFC-0022](../../specs/rfcs/0022-driver-configuration-contributions.md) |
+
+Earlier versions of the Credential Proxy proposal used these provisional paths.
+RFC-0019, RFC-0021 and RFC-0022 are now assigned to other proposals.
+
+| Previous RFC path                         | Current RFC                                                                  |
+| ----------------------------------------- | ---------------------------------------------------------------------------- |
+| `0019-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| `0021-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |
+| `0022-egress-proxy-credential-lifecycle/` | [RFC-0023](../../specs/rfcs/0023-egress-proxy-credential-lifecycle/index.md) |

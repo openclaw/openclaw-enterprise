@@ -1,3 +1,4 @@
+import { postgresStandingRepositoryApprovals } from "./postgres-standing-repository-approvals.ts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 import { DependencyUnavailableError } from "../errors.ts";
 import type {
@@ -10,7 +11,7 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 const columns = `namespace_id, agent_id, revision_id, repository_ref, admission_id,
   duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at,
-  live_revision_id, cleanup_context, broker_protocol`;
+  live_revision_id, cleanup_context, broker_protocol, predecessor_admission_id, execution_fingerprint`;
 
 function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
   const row = value as Record<string, unknown>;
@@ -37,7 +38,7 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds <= 0 ||
     !Number.isSafeInteger(deadlineWallMs) ||
     deadlineWallMs <= 0 ||
-    ![0, 1].includes(brokerProtocol) ||
+    ![0, 1, 2, 3].includes(brokerProtocol) ||
     !["opening", "open", "closing", "disposed", "invalidated"].includes(phase)
   ) {
     throw new DependencyUnavailableError("Persisted repository session input or phase is invalid.");
@@ -53,7 +54,13 @@ function attemptFromRow(value: unknown): Readonly<RepositorySessionAttempt> {
     durationSeconds,
     deadlineWallMs,
     phase: phase as RepositorySessionPhase,
-    brokerProtocol: brokerProtocol as 0 | 1,
+    brokerProtocol: brokerProtocol as 0 | 1 | 2 | 3,
+    ...(row.predecessor_admission_id == null
+      ? {}
+      : { predecessorAdmissionId: text("predecessor_admission_id") }),
+    ...(row.execution_fingerprint == null
+      ? {}
+      : { executionFingerprint: text("execution_fingerprint") }),
     ...(row.session_id === null ? {} : { sessionId: text("session_id") }),
     createdAt: timestamp("created_at"),
     updatedAt: timestamp("updated_at"),
@@ -100,6 +107,23 @@ export function postgresRepositorySessions(
   client: PostgresQueryClient,
 ): RepositorySessionRepository {
   return {
+    ...postgresStandingRepositoryApprovals(client),
+    async findStandingExecution(owner) {
+      const r = await client.query(
+        'SELECT execution_id AS "executionId", fingerprint, closed FROM occ.repository_standing_executions WHERE namespace_id=$1 AND agent_id=$2 AND revision_id=$3',
+        [owner.namespaceId, owner.agentId, owner.revisionId],
+      );
+      return r.rows[0] as { executionId: string; fingerprint: string; closed: boolean } | undefined;
+    },
+    async recordStandingExecution(owner, execution) {
+      await client.query("SELECT occ.record_repository_standing_execution($1,$2,$3,$4,$5)", [
+        owner.namespaceId,
+        owner.agentId,
+        owner.revisionId,
+        execution.executionId,
+        execution.fingerprint,
+      ]);
+    },
     lockAttempt: async (admissionId) => {
       const result = await client.query(
         `SELECT ${columns} FROM occ.repository_session_attempts WHERE admission_id = $1 FOR UPDATE`,
@@ -179,8 +203,8 @@ export function postgresRepositorySessions(
       const result = await client.query(
         `INSERT INTO occ.repository_session_attempts
          (namespace_id, agent_id, revision_id, repository_ref, admission_id,
-          duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at, broker_protocol)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'opening', NULL, $8, $8, $9)
+          duration_seconds, deadline_wall_ms, phase, session_id, created_at, updated_at, broker_protocol, predecessor_admission_id, execution_fingerprint)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'opening', NULL, $8, $8, $9, $10, $11)
          RETURNING ${columns}`,
         [
           input.namespaceId,
@@ -192,6 +216,8 @@ export function postgresRepositorySessions(
           input.deadlineWallMs,
           input.createdAt,
           input.brokerProtocol ?? 0,
+          input.predecessorAdmissionId ?? null,
+          input.executionFingerprint ?? null,
         ],
       );
       return attemptFromRow(result.rows[0]);

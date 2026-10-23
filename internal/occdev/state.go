@@ -27,24 +27,30 @@ func validateClusterName(name string) error {
 }
 
 type developmentState struct {
-	Version           int    `json:"version"`
-	Repository        string `json:"repository"`
-	ComputeDriver     string `json:"computeDriver"`
-	SandboxDriver     string `json:"sandboxDriver"`
-	DeploymentMode    string `json:"deploymentMode,omitempty"`
-	PlatformNamespace string `json:"platformNamespace,omitempty"`
-	APIPort           int    `json:"apiPort,omitzero"`
-	BrowserPort       int    `json:"browserPort,omitzero"`
-	BrowserOrigin     string `json:"browserOrigin,omitempty"`
-	NativeAdminDomain string `json:"nativeAdminDomain,omitempty"`
-	ContainerEngine   string `json:"containerEngine"`
-	ComposeProject    string `json:"composeProject"`
-	Cluster           string `json:"cluster"`
-	DockerHost        string `json:"dockerHost"`
-	KeyPath           string `json:"keyPath"`
-	KeyOwned          bool   `json:"keyOwned"`
-	SignIn            string `json:"signIn,omitempty"`
-	directory         string
+	Version                     int    `json:"version"`
+	Repository                  string `json:"repository"`
+	ComputeDriver               string `json:"computeDriver"`
+	SandboxDriver               string `json:"sandboxDriver"`
+	DeploymentMode              string `json:"deploymentMode,omitempty"`
+	PlatformNamespace           string `json:"platformNamespace,omitempty"`
+	APIPort                     int    `json:"apiPort,omitzero"`
+	BrowserPort                 int    `json:"browserPort,omitzero"`
+	BrowserOrigin               string `json:"browserOrigin,omitempty"`
+	NativeAdminDomain           string `json:"nativeAdminDomain,omitempty"`
+	ContainerEngine             string `json:"containerEngine"`
+	ComposeProject              string `json:"composeProject"`
+	Cluster                     string `json:"cluster"`
+	DockerHost                  string `json:"dockerHost"`
+	KeyPath                     string `json:"keyPath"`
+	KeyOwned                    bool   `json:"keyOwned"`
+	SignIn                      string `json:"signIn,omitempty"`
+	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`
+	DatabaseName                string `json:"databaseName,omitempty"`
+	OpenShellHostGatewayIP      string `json:"openShellHostGatewayIP,omitempty"`
+	SandboxNetworkPolicies      []any  `json:"sandboxNetworkPolicies,omitempty"`
+	SandboxNetworkPolicyCeiling []any  `json:"sandboxNetworkPolicyCeiling,omitempty"`
+	egressKeyID                 string
+	directory                   string
 }
 
 func (s *developmentState) composeCommand() []string {

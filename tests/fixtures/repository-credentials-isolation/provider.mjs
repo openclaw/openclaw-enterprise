@@ -14,12 +14,6 @@ const tls = {
   ca: await readFile("/inputs/tls.crt"),
 };
 const secrets = [];
-// "github-app" issues installation tokens; "github-token" is the development
-// authority, which holds one static token that GitHub never issued to it.
-const authority = process.env.ISOLATION_AUTHORITY ?? "github-app";
-if (authority !== "github-app" && authority !== "github-token") {
-  throw new Error("unknown isolation authority");
-}
 // Hold the first credential use once, so the host can probe the Agent container
 // while a Git launcher and helper are running against the gateway.
 let held = false;
@@ -48,15 +42,9 @@ async function holdOnce() {
 const github = await startGitHubFixture(context, {
   tls,
   clock: { wallNow: () => Date.now() },
-  beforeIssueResponse: holdOnce,
-  tokenResponse(packet) {
-    secrets.push(packet.token);
-    return packet;
-  },
 });
-const pem = github.privateKey.export({ type: "pkcs8", format: "pem" });
-secrets.push(pem, pem.split("\n")[1], tls.key.toString().split("\n")[1]);
-if (authority === "github-token") {
+secrets.push(tls.key.toString().split("\n")[1]);
+{
   // The token exists only here and in the service's read-only input mount. The host
   // compares Agent surfaces against it and patterns derived from it; none of these
   // values is ever passed into the Agent container.
@@ -69,8 +57,6 @@ if (authority === "github-token") {
     Buffer.from(`x-access-token:${token}`).toString("base64"),
   );
   await writeFile("/inputs/token", `${token}\n`, { mode: 0o600 });
-} else {
-  await writeFile("/inputs/app.pem", pem, { mode: 0o600 });
 }
 const git = await startGitSmartHttpFixture(context, { tls, authorize: github.authorize });
 const relayErrors = [];
@@ -94,7 +80,7 @@ const relay = createServer(tls, (incoming, outgoing) => {
     }
   }
   // Nothing is issued for a static token: hold its first authenticated Git request.
-  if (authority === "github-token" && authorization && host === "github.com" && !held) {
+  if (authorization && host === "github.com" && !held) {
     let gone = false;
     incoming.once("close", () => (gone = !incoming.complete));
     incoming.pause();

@@ -11,13 +11,13 @@ import {
   ProvisioningSecretDriverError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
@@ -28,13 +28,18 @@ import {
 } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import {
+  authenticatedHeaders,
+  signInToControllerApp as signInAccount,
+} from "../helpers/auth-session.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
 } from "../helpers/bootstrap-installation.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -44,9 +49,31 @@ const adminPassword = "postgres-agent-provisioning-password";
 const authBaseURL = "http://127.0.0.1";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
+const administratorSessions = new Map();
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const defaultModel = "codex/gpt-6-astra";
+
+// The bootstrap administrator signs in once per file (and per set of sign-in options): every
+// fixture's app reads the same stored session (same database and auth secret). No test ends it,
+// and a revoked administrator binding is restored at teardown. Any other account or password
+// signs in on every call.
+function signInToControllerApp(app, credentials, ...options) {
+  if (credentials.email !== adminEmail || credentials.password !== adminPassword) {
+    return signInAccount(app, credentials, ...options);
+  }
+  const key = JSON.stringify(options);
+  if (!administratorSessions.has(key)) {
+    administratorSessions.set(
+      key,
+      signInAccount(app, credentials, ...options).catch((error) => {
+        administratorSessions.delete(key);
+        throw error;
+      }),
+    );
+  }
+  return administratorSessions.get(key);
+}
 
 function agentDefaults() {
   return {
@@ -359,7 +386,7 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined ? {} : { repoDriver }),
+    ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
@@ -720,6 +747,7 @@ test(
     assert.deepEqual(Object.keys(admitted.data).sort(), ["provisioning"]);
     assert.match(admitted.data.provisioning.workId, /^agent-provisioning:/);
     assert.deepEqual(admitted.data.provisioning, {
+      requestId: body.requestId,
       workId: admitted.data.provisioning.workId,
       status: "queued",
       phase: "admitted",
@@ -782,6 +810,21 @@ test(
     });
     assert.equal(replay.status, 202, JSON.stringify(replay.body));
     assert.equal(replay.data.provisioning.workId, admitted.data.provisioning.workId);
+
+    assert.equal(replay.data.provisioning.requestId, body.requestId);
+    // The same actor may submit the same plan twice. Each job reports the request that admitted it.
+    const otherId = requestId();
+    const other = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: { ...body, requestId: otherId },
+    });
+    assert.equal(other.status, 202);
+    const otherJob = other.data.provisioning;
+    fixture.cancelQueuedWorkAtTeardown(otherJob.workId, "Finished the request identity check.");
+    assert.equal(otherJob.requestId, otherId);
+    assert.notEqual(otherJob.workId, admitted.data.provisioning.workId);
+    const otherStatus = await fixture.request("GET", otherJob.url);
+    assert.equal(otherStatus.status, 200);
+    assert.deepEqual(otherStatus.data, otherJob);
 
     const changed = structuredClone(body);
     changed.configuration.values = { ...changed.configuration.values, changed: randomUUID() };
@@ -878,7 +921,7 @@ test(
       defaultProfile: "git-read",
       repositories: [{ repositoryRef: "project" }],
     };
-    const repoDriver = new GitHubRepoDriver(
+    const repoDriver = new GitHubRepositoryPolicy(
       {
         id: "provisioning-repositories",
         client: new UnixRepositoryCredentialControlClient({
@@ -1065,7 +1108,7 @@ test(
   async (context) => {
     const initial = await createFixture(context);
     const namespace = await initial.bootstrapNamespace();
-    const repoDriver = new GitHubRepoDriver(
+    const repoDriver = new GitHubRepositoryPolicy(
       {
         id: "provisioning-repositories",
         client: new UnixRepositoryCredentialControlClient({
@@ -3515,10 +3558,12 @@ test(
     // The failed delete does not change the refusal: the job still forgets the write, so a
     // retry never trusts it, and the operator log names the document left behind. The job
     // also keeps it marked for deletion, so the leftover is not only a log line (finding 1399).
+    // The line is the one the worker log keeps (finding 2245).
     assert.equal(created.length, 1);
     assert.deepEqual(
       completed
         .filter((event) => event.workId === workId)
+        .map(occLogLine)
         .map(({ outcome, code, orphanedConfigurationId }) => ({
           outcome,
           code,
@@ -5148,14 +5193,11 @@ test(
       stopping = fixture.request("POST", `${agentPath}/stop`);
       // Surface an early failure through the await below instead of an unhandled rejection.
       stopping.catch(() => {});
-      await waitFor("Stop to wait on the handoff's Namespace lock", async () => {
-        const waiting = await fixture.pool.query(
-          `SELECT pid FROM pg_stat_activity
-           WHERE wait_event_type = 'Lock' AND $1 = ANY(pg_blocking_pids(pid))`,
-          [handoffPid],
-        );
-        return waiting.rowCount > 0 ? true : undefined;
-      });
+      await waitForLockWaiter(
+        fixture.pool,
+        handoffPid,
+        "Stop to wait on the handoff's Namespace lock",
+      );
       releaseAdmission();
       const stopped = await stopping;
       assert.equal(stopped.status, 202, JSON.stringify(stopped.body));

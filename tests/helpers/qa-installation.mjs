@@ -4,19 +4,22 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, copyFile, chmod, readFile, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
 import { nativeAdminTarget } from "../../apps/controller/src/gateway/native-admin.ts";
 import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { availablePort } from "./available-port.mjs";
 import { createNativePluginAssertions } from "./plugin-driver-real.mjs";
 import { prepareHybridInstallation } from "./qa-hybrid.mjs";
-import { loadYaml, dumpYaml, unusedPort, waitFor } from "./qa-utils.mjs";
+import { grantQaRepositoryBranch } from "./qa-repository.mjs";
+import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import {
   protectedText,
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
+  redactedQaTail,
 } from "./qa-secrets.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
 
 function execute(command, args, options) {
   const { input, allowExitCodes = [0], ...rest } = options;
@@ -53,6 +56,318 @@ export function launcherEnvironment() {
   return env;
 }
 
+// The output of the image build step that failed, from a docker (BuildKit) or podman build's
+// stderr, at most `lines` lines; undefined when stderr shows no failed image build. A failed
+// build's own error keeps only its last lines, which name the step but not why it failed (an
+// upstream test run inside the runtime image build, finding 2020). BuildKit prefixes every line
+// of a step's output with "#<step> " and interleaves steps, so the failed step is the one whose
+// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr. One dev-up can
+// run several builds, each numbering its steps from #0, so only the last build is read: a build
+// stops dev-up at its first failure.
+export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
+  const text = String(stderr ?? "").trimEnd();
+  // Newer buildx says "ERROR: failed to build: failed to solve: ...".
+  if (!/^ERROR: (?:failed to build: )?failed to solve: |^Error: building at STEP /m.test(text)) {
+    return undefined;
+  }
+  const all = text.split("\n");
+  const first = Math.max(
+    0,
+    all.findLastIndex((line) =>
+      /^#0 building with |^#1 \[internal\] load build definition/.test(line),
+    ),
+  );
+  const build = all.slice(first);
+  // Private keys are masked over all of stderr before the step and its last lines are cut out: a
+  // key whose BEGIN line falls outside the cut would otherwise keep its body (finding 2026). As in
+  // redactedQaTail, an unterminated BEGIN ... PRIVATE KEY line anywhere earlier masks everything
+  // after it, the failed step included: the safe direction, so the evidence is then all markers.
+  const masked = maskPrivateKeyLines(all).slice(first);
+  const step = build.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
+  return (step ? masked.filter((_, index) => build[index].startsWith(step)) : masked).slice(-lines);
+}
+
+// Records a failed image build step's output, redacted like any QA command output, as a QA
+// evidence file (the cell uploads its *.json evidence; the private state directory is not
+// uploaded). Returns the file's name, or undefined when stderr shows no failed image build.
+export async function recordImageBuildFailure(record, stderr, env) {
+  const output = imageBuildFailureOutput(stderr);
+  if (output === undefined) {
+    return undefined;
+  }
+  return record(`image-build-failure-${Date.now()}`, {
+    lines: redactedQaTail(output.join("\n"), env, { lines: output.length, lineChars: 800 }),
+  });
+}
+
+// Runs one command of a QA installation `f` (its env, private directories, and evidence
+// `record`). A failure writes the command's output to the private directory and throws with
+// only redacted stderr; a failed image build's step output becomes redacted QA evidence.
+export async function runQaCommand(f, command, args, options = {}) {
+  const { privateFailureOutput = false, ...executeOptions } = options;
+  try {
+    const result = await execute(command, args, {
+      cwd: repository,
+      env: f.env,
+      timeout: 300_000,
+      maxBuffer: 32 * 1024 * 1024,
+      ...executeOptions,
+    });
+    return result.stdout;
+  } catch (error) {
+    await writeFile(
+      join(f.directory, `command-failure-${Date.now()}.log`),
+      privateFailureOutput
+        ? "protected subprocess output withheld\n"
+        : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
+      { mode: 0o600 },
+    );
+    if (f.credentials?.password) {
+      registerQaSecret(f.credentials.password);
+    }
+    const detail = privateFailureOutput
+      ? ""
+      : qaCommandFailureDetail(error.stderr, executeOptions.env ?? f.env);
+    const buildOutput = privateFailureOutput
+      ? undefined
+      : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? f.env).catch(
+          (recordError) => `not recorded (${recordError?.message ?? recordError})`,
+        );
+    // execFile errors embed argv and output, potentially containing tokens.
+    // Keep arguments/stdout private; include only redacted stderr for diagnosis.
+    error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    delete error.cmd;
+    delete error.stdout;
+    delete error.stderr;
+    delete error.stack;
+    throw error;
+  }
+}
+
+// Deploys a QA Agent's current configuration and waits for the deployment to succeed.
+export async function deployQaAgentAndWait(
+  f,
+  agent,
+  { timeout = 600_000, interval = 1000, now = () => Date.now() } = {},
+) {
+  const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
+  agent.stopped = false;
+  agent.revision = await f.api("POST", base + "/deploy");
+  // A timeout names the deployment's last status and attempt, and how long it had that status
+  // (finding 2106: six cells timed out at 600 s with no status).
+  let last;
+  let statusSince = now();
+  const observeStatus = (value) => {
+    if (value?.status !== last?.status) {
+      statusSince = now();
+    }
+    last = value;
+  };
+  const status = await waitFor(
+    "Agent deployment",
+    async () => {
+      const value = await f.api("GET", base + `/deployments/${agent.revision.id}`);
+      observeStatus(value);
+      if (value.error?.code === "RUNTIME_AUTHENTICATION_FAILED" && agent.preset === "OpenClaw") {
+        // A failed deployment holds its Pod for diagnosis. Check delivery and
+        // provider rejection there without exporting the Pod's credential.
+        try {
+          const data = JSON.parse(
+            await f.kubectl(
+              "get",
+              "pods",
+              "-A",
+              "-l",
+              `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${agent.revision.id},openclaw.dev/workload-role=gateway`,
+              "-o",
+              "json",
+            ),
+          );
+          const pods = data.items.filter((pod) => !pod.metadata.deletionTimestamp);
+          assert.equal(pods.length, 1);
+          const [pod] = pods;
+          const expected = createHash("sha256")
+            .update(
+              await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential"),
+            )
+            .digest("hex");
+          const script = `
+            const crypto = require('node:crypto');
+            const key = process.env[process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV] ?? '';
+            const matchesInput = crypto.createHash('sha256').update(key).digest('hex') === process.argv[1];
+            const allowed = new Set(['invalid_api_key', 'insufficient_quota', 'model_not_found', 'unsupported_country_region_territory', 'account_deactivated', 'permission_denied', 'missing_required_parameter', 'invalid_organization', 'project_not_found']);
+            fetch('https://api.openai.com/v1/responses', {
+              method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+              body: '{}', signal: AbortSignal.timeout(15000),
+            }).then(async (response) => {
+              const body = await response.json().catch(() => ({}));
+              const code = body.error?.code;
+              console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, httpStatus: response.status, code: allowed.has(code) ? code : 'other' }));
+            }, () => console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, networkFailure: true })));
+          `;
+          const diagnostic = JSON.parse(
+            await f.kubectl(
+              "-n",
+              pod.metadata.namespace,
+              "exec",
+              pod.metadata.name,
+              "-c",
+              "gateway",
+              "--",
+              "node",
+              "-e",
+              script,
+              expected,
+            ),
+          );
+          await f.record(`${agent.id}-${agent.revision.id}-authentication`, diagnostic);
+        } catch {
+          await f.record(`${agent.id}-${agent.revision.id}-authentication`, {
+            unavailable: true,
+          });
+        }
+      }
+      // A failed startup model check names the provider's HTTP status and known
+      // error code in its sanitized probe log record; CI shows them with the error.
+      let probe = "";
+      const component = value.error?.data?.runtimeFailure?.component;
+      if (value.error?.code === "RUNTIME_MODEL_PROBE_FAILED" && component) {
+        try {
+          const logs = await f.api(
+            "GET",
+            base +
+              `/deployments/${agent.revision.id}/runtime/logs?source=${component}&minLevel=error`,
+          );
+          const record = logs.records.findLast(({ message }) => message?.endsWith(".model_probe"));
+          probe = record ? ` probe log: ${JSON.stringify(record.fields ?? {})}` : "";
+        } catch {
+          probe = " probe log: unavailable";
+        }
+      }
+      assert.ok(
+        !["failed", "cancelled"].includes(value.status),
+        `Agent deployment ${value.status}: ${JSON.stringify(value.error)}${probe}`,
+      );
+      return value.status === "succeeded" && value;
+    },
+    timeout,
+    {
+      describe: () => describeDeploymentObservation(last, now() - statusSince),
+      interval,
+      now,
+    },
+  ).catch(async (error) => {
+    // The deployment's Pods, when it has any, show whether it waited on scheduling, an image
+    // or a container that does not start.
+    if (/^Timed out: /.test(error.message)) {
+      try {
+        const runtime = await f.api("GET", base + `/deployments/${agent.revision.id}/runtime`);
+        error.message += `; runtime: ${describeDeploymentRuntime(runtime)}`;
+      } catch (runtimeError) {
+        error.message += `; runtime unavailable (${runtimeError?.message ?? runtimeError})`;
+      }
+    }
+    throw error;
+  });
+  await f.record(`${agent.preset}-${agent.id}-${agent.revision.id}-deployment`, {
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    status,
+  });
+  return { revision: agent.revision, status };
+}
+
+// The last deployment observation, without native text: the API returns allowlisted codes and
+// messages only.
+export function describeDeploymentObservation(value, statusForMs) {
+  if (!value) {
+    return "none";
+  }
+  return JSON.stringify({
+    status: value.status,
+    statusForMs,
+    lastAttempt: value.progress?.lastAttempt ?? null,
+    nextAttemptAt: value.progress?.nextAttemptAt ?? null,
+    error: value.error?.code ?? null,
+  });
+}
+
+// Runtime text reaches the API as Kubernetes sent it, and OCC may shorten it there. QA
+// redaction replaces whole registered values, so a shortened string could keep part of one.
+// The timeout therefore names only familiar Kubernetes words and says "other" for the rest;
+// event messages are left out.
+const familiarPodPhases = new Set(["Pending", "Running", "Succeeded", "Failed", "Unknown"]);
+const familiarContainerReasons = new Set([
+  "ContainerCreating",
+  "PodInitializing",
+  "CrashLoopBackOff",
+  "ImagePullBackOff",
+  "ErrImagePull",
+  "ErrImageNeverPull",
+  "InvalidImageName",
+  "CreateContainerConfigError",
+  "CreateContainerError",
+  "RunContainerError",
+  "PreStartHookError",
+  "PostStartHookError",
+  "StartError",
+  "ContainerCannotRun",
+  "ContainerStatusUnknown",
+  "Completed",
+  "Error",
+  "OOMKilled",
+  "DeadlineExceeded",
+]);
+const familiarEventReasons = new Set([
+  "FailedScheduling",
+  "FailedMount",
+  "FailedAttachVolume",
+  "FailedCreatePodSandBox",
+  "FailedKillPod",
+  "FailedPreStopHook",
+  "FailedPostStartHook",
+  "FailedSync",
+  "FailedCreate",
+  "Failed",
+  "BackOff",
+  "Unhealthy",
+  "ProbeWarning",
+  "InspectFailed",
+  "ErrImageNeverPull",
+  "NetworkNotReady",
+  "Evicted",
+  "NodeNotReady",
+  "OutOfmemory",
+  "OutOfcpu",
+]);
+
+function familiar(words, value) {
+  return value === null || value === undefined || words.has(value) ? value : "other";
+}
+
+export function describeDeploymentRuntime(runtime) {
+  const pods = (runtime?.pods ?? []).slice(0, 4).map((pod) => ({
+    role: pod.role,
+    phase: familiar(familiarPodPhases, pod.phase),
+    ready: pod.ready,
+    containers: (pod.containers ?? []).map(({ name, state, reason, restartCount }) => ({
+      name,
+      state,
+      reason: familiar(familiarContainerReasons, reason),
+      restartCount,
+    })),
+    // The API lists events newest first.
+    warnings: (pod.events ?? [])
+      .filter(({ type }) => type === "Warning")
+      .slice(0, 3)
+      .map(({ reason, count }) => ({ reason: familiar(familiarEventReasons, reason), count })),
+  }));
+  return JSON.stringify({
+    pods,
+    ...(runtime?.harness ? { harness: runtime.harness } : {}),
+  });
+}
+
 export async function createQaInstallation(
   context,
   controlPlane,
@@ -66,7 +381,7 @@ export async function createQaInstallation(
   const stateDirectory = join(directory, "state");
   const ports = new Set();
   while (ports.size < 4) {
-    ports.add(await unusedPort());
+    ports.add(await availablePort());
   }
   const [apiPort, kubePort, browserPort, postgresPort] = [...ports];
   const env = {
@@ -103,19 +418,7 @@ export async function createQaInstallation(
     const registry = JSON.parse(
       await protectedText(join(sourceInput, "registry.json"), "repository registry"),
     );
-    assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
-    const refs = ["openclaw-git-full", "codex-git-full", "codex-git-read"].map(
-      (name) => `refs/heads/oce-qa-${suffix}-${name}`,
-    );
-    for (const policy of registry.repositories[0].namespaces) {
-      if (policy.pushRefAllowlist) {
-        assert.ok(
-          refs.every((ref) => allowsPushRef(policy.pushRefAllowlist, ref)),
-          "selected registry must authorize the run-owned branch names",
-        );
-      }
-      policy.pushRefAllowlist = refs;
-    }
+    grantQaRepositoryBranch(registry, suffix);
     await writeFile(join(repositoryInput, "registry.json"), JSON.stringify(registry), {
       mode: 0o600,
     });
@@ -154,39 +457,7 @@ export async function createQaInstallation(
       return file;
     },
     async run(command, args, options = {}) {
-      const { privateFailureOutput = false, ...executeOptions } = options;
-      try {
-        const result = await execute(command, args, {
-          cwd: repository,
-          env,
-          timeout: 300_000,
-          maxBuffer: 32 * 1024 * 1024,
-          ...executeOptions,
-        });
-        return result.stdout;
-      } catch (error) {
-        await writeFile(
-          join(directory, `command-failure-${Date.now()}.log`),
-          privateFailureOutput
-            ? "protected subprocess output withheld\n"
-            : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
-          { mode: 0o600 },
-        );
-        if (f.credentials?.password) {
-          registerQaSecret(f.credentials.password);
-        }
-        const detail = privateFailureOutput
-          ? ""
-          : qaCommandFailureDetail(error.stderr, executeOptions.env ?? env);
-        // execFile errors embed argv and output, potentially containing tokens.
-        // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${detail ? `; stderr: ${detail}` : ""}`;
-        delete error.cmd;
-        delete error.stdout;
-        delete error.stderr;
-        delete error.stack;
-        throw error;
-      }
+      return runQaCommand(f, command, args, options);
     },
     async write(name, value) {
       const path = join(directory, name);
@@ -238,6 +509,7 @@ export async function createQaInstallation(
         cluster,
         "-f",
         join(stateDirectory, "compose.yaml"),
+        ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
         ...args,
       ]);
     },
@@ -332,7 +604,7 @@ export async function createQaInstallation(
     },
     async gatewayUrl(agent) {
       const pod = await f.pod(agent, "gateway");
-      const port = await unusedPort();
+      const port = await availablePort();
       const child = spawn(
         "kubectl",
         [
@@ -381,108 +653,7 @@ export async function createQaInstallation(
       };
     },
     async deployAndWait(agent) {
-      const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
-      agent.stopped = false;
-      agent.revision = await f.api("POST", base + "/deploy");
-      const status = await waitFor(
-        "Agent deployment",
-        async () => {
-          const value = await f.api("GET", base + `/deployments/${agent.revision.id}`);
-          if (
-            value.error?.code === "RUNTIME_AUTHENTICATION_FAILED" &&
-            agent.preset === "OpenClaw"
-          ) {
-            // A failed deployment holds its Pod for diagnosis. Check delivery and
-            // provider rejection there without exporting the Pod's credential.
-            try {
-              const data = JSON.parse(
-                await f.kubectl(
-                  "get",
-                  "pods",
-                  "-A",
-                  "-l",
-                  `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${agent.revision.id},openclaw.dev/workload-role=gateway`,
-                  "-o",
-                  "json",
-                ),
-              );
-              const pods = data.items.filter((pod) => !pod.metadata.deletionTimestamp);
-              assert.equal(pods.length, 1);
-              const [pod] = pods;
-              const expected = createHash("sha256")
-                .update(
-                  await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential"),
-                )
-                .digest("hex");
-              const script = `
-                const crypto = require('node:crypto');
-                const key = process.env[process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV] ?? '';
-                const matchesInput = crypto.createHash('sha256').update(key).digest('hex') === process.argv[1];
-                const allowed = new Set(['invalid_api_key', 'insufficient_quota', 'model_not_found', 'unsupported_country_region_territory', 'account_deactivated', 'permission_denied', 'missing_required_parameter', 'invalid_organization', 'project_not_found']);
-                fetch('https://api.openai.com/v1/responses', {
-                  method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
-                  body: '{}', signal: AbortSignal.timeout(15000),
-                }).then(async (response) => {
-                  const body = await response.json().catch(() => ({}));
-                  const code = body.error?.code;
-                  console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, httpStatus: response.status, code: allowed.has(code) ? code : 'other' }));
-                }, () => console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, networkFailure: true })));
-              `;
-              const diagnostic = JSON.parse(
-                await f.kubectl(
-                  "-n",
-                  pod.metadata.namespace,
-                  "exec",
-                  pod.metadata.name,
-                  "-c",
-                  "gateway",
-                  "--",
-                  "node",
-                  "-e",
-                  script,
-                  expected,
-                ),
-              );
-              await f.record(`${agent.id}-${agent.revision.id}-authentication`, diagnostic);
-            } catch {
-              await f.record(`${agent.id}-${agent.revision.id}-authentication`, {
-                unavailable: true,
-              });
-            }
-          }
-          // A failed startup model check names the provider's HTTP status and known
-          // error code in its sanitized probe log record; CI shows them with the error.
-          let probe = "";
-          const component = value.error?.data?.runtimeFailure?.component;
-          if (value.error?.code === "RUNTIME_MODEL_PROBE_FAILED" && component) {
-            try {
-              const logs = await f.api(
-                "GET",
-                base +
-                  `/deployments/${agent.revision.id}/runtime/logs?source=${component}&minLevel=error`,
-              );
-              const record = logs.records.findLast(({ message }) =>
-                message?.endsWith(".model_probe"),
-              );
-              probe = record ? ` probe log: ${JSON.stringify(record.fields ?? {})}` : "";
-            } catch {
-              probe = " probe log: unavailable";
-            }
-          }
-          assert.ok(
-            !["failed", "cancelled"].includes(value.status),
-            `Agent deployment ${value.status}: ${JSON.stringify(value.error)}${probe}`,
-          );
-          return value.status === "succeeded" && value;
-        },
-        600_000,
-      );
-      await f.record(`${agent.preset}-${agent.id}-${agent.revision.id}-deployment`, {
-        agentId: agent.id,
-        revisionId: agent.revision.id,
-        status,
-      });
-      return { revision: agent.revision, status };
+      return deployQaAgentAndWait(f, agent);
     },
     async selectPlugin(agentId, policy) {
       const agent = f.agents.find((value) => value.id === agentId);
@@ -629,6 +800,78 @@ export async function createQaInstallation(
     sandboxDriver: "none",
   });
   return f;
+}
+
+export async function prepareQaConsoleTheme(f) {
+  const themeDirectory = join(f.directory, "console-theme");
+  await mkdir(themeDirectory);
+  for (const name of ["theme.json", "logo.png"]) {
+    await copyFile(
+      join(repository, "deploy/examples/console-theme", name),
+      join(themeDirectory, name),
+    );
+  }
+  if (f.controlPlane === "compose") {
+    f.consoleThemeComposeFile = await f.write("console-theme.compose.json", {
+      services: {
+        controller: {
+          environment: { OCC_CONSOLE_THEME_DIR: "/etc/openclaw/console-theme" },
+          volumes: [
+            {
+              type: "bind",
+              source: themeDirectory,
+              target: "/etc/openclaw/console-theme",
+              read_only: true,
+            },
+          ],
+        },
+      },
+    });
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+  } else {
+    const namespace = f.state.platformNamespace;
+    await f.apply({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "qa-console-theme", namespace },
+      data: { "theme.json": await readFile(join(themeDirectory, "theme.json"), "utf8") },
+      binaryData: {
+        "logo.png": (await readFile(join(themeDirectory, "logo.png"))).toString("base64"),
+      },
+    });
+    await f.run("helm", [
+      "upgrade",
+      "openclaw-enterprise",
+      join(repository, "deploy/helm/openclaw-enterprise"),
+      "--kubeconfig",
+      join(f.stateDirectory, "kubeconfig"),
+      "--kube-context",
+      `k3d-${f.cluster}`,
+      "--namespace",
+      namespace,
+      "--reuse-values",
+      "--set",
+      "api.consoleTheme.configMapName=qa-console-theme",
+      "--set-string",
+      "api.consoleTheme.checksum=qa-first",
+    ]);
+    await f.kubectl(
+      "-n",
+      namespace,
+      "rollout",
+      "status",
+      "deployment/openclaw-enterprise-api",
+      "--timeout=300s",
+    );
+  }
+  await waitFor("mounted console theme after API restart", async () => {
+    try {
+      const response = await fetch(f.apiUrl + "/console/login");
+      return response.ok && (await response.text()).includes("<title>Example Agents</title>");
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function prepareQaPreset(f, presetName) {

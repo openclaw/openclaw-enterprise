@@ -108,7 +108,7 @@ replace it with the console origin or a wildcard.
 Keep the command running until it prints `Model response verified:` followed by
 the phrase it asked the model to repeat. Under `Agent response:`, it then prints
 the model's answer to your question. It also prints the Agent ID, active
-revision, and console URL. With `--control-ui`, it also prints the Control UI
+version, and console URL. With `--control-ui`, it also prints the Control UI
 URL. These returned responses complete the model check; see
 [what each check establishes](operate/model-verification.md#what-each-check-establishes).
 
@@ -119,7 +119,7 @@ URL. These returned responses complete the model check; see
 
 Open the console link from the command and sign in with the local credentials
 from [Local setup](quickstart.md#open-the-platform-console). **Current version**
-shows the revision selected by OCC; **Deployment activity** shows persisted
+shows the version selected by OCC; **Deployment activity** shows persisted
 deployment progress. Use the terminal command for further model prompts. For
 browser access to the Agent's files, follow
 [workspace verification](deploy/workspace-routing.md#verify-routing-and-file-access).
@@ -263,7 +263,7 @@ new name for the next run.
 - **Deployment or the model request fails:** confirm the model is available to
   your OpenAI project and the cluster can reach the provider. To replace an
   invalid key, run `node scripts/first-agent.mjs my-agent --replace-key` and
-  supply the new key when prompted. An active revision without
+  supply the new key when prompted. A selected version without
   `Model response verified` is not a successful model check. See
   [Troubleshoot Agents](topics/agent-troubleshoot.md).
 - **OpenShell rejects the default Harness:** rerun with `--harness codex` and a

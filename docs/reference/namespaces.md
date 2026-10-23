@@ -40,6 +40,12 @@ They do not backfill an existing Installation, recreate a deleted Namespace,
 or overwrite configuration. Additional named Namespaces remain available
 through `POST /namespaces`.
 
+In the console, open **Namespaces → Create Namespace**, enter a unique name,
+and submit. The confirmation offers **Open Agents** for the new scope;
+provisioning continues asynchronously. See the
+[console workflow](../guides/console/create-namespace.md) for permissions and
+creation recovery.
+
 ## Ownership and supported operations
 
 The server assigns the Namespace's identifier and Installation ownership.
@@ -154,7 +160,7 @@ Namespace, and a different Namespace cannot use that Agent ID to bypass
 authorization or ownership checks.
 
 Each deployed Agent owns exactly one gateway, created with its workload and
-reused across its revisions. A Namespace can therefore contain zero gateways
+reused across its versions. A Namespace can therefore contain zero gateways
 before deployment or multiple gateways for different Agents; Namespace
 readiness does not depend on a gateway. When explicitly selected, the
 Kubernetes Compute Driver uses one isolated Kubernetes namespace and,

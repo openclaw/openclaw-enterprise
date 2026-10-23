@@ -31,3 +31,23 @@ at 390.
    The partial-save message is a warning block.
 10. Open **Pages / Agent detail / Repository access save refused**. The
     refusal under the editor is a danger block with focus.
+11. Open **Pages / Agent detail / Edit Configuration refused**. The refusal
+    under the editor is a danger block with `role="alert"`. It has focus and
+    is fully on screen at 1440 and 390.
+12. Open **Pages / Agent detail / Current observations for a reader without
+    operate**. Run diagnostics for this version is disabled, and an info
+    block says "Your access does not include running diagnostics for this
+    Agent.", as Stop Agent does.
+13. Open **Pages / Agent detail / Current observations refused**. Scroll
+    until Run diagnostics sits at the bottom of the screen and click it. The
+    refusal below it comes into view; focus stays on the button.
+14. Open **Pages / Agent detail / New version failed**. The failed-deployment
+    block above the facts is a danger block with 20/24 px padding (16 px at
+    390). Its label reads "Deployment failed · v7", its title is one 16 px
+    semibold line, and `CONVERGENCE_DEADLINE_EXCEEDED` ends its first sentence
+    in mono. Open v7 Logs is its one filled button.
+15. Open **Pages / Agent detail / New version failed, deploy again** at 390.
+    Deploy again (filled) and Open v7 Logs (edged) stack, each the block's
+    full width and at least 44 px tall. Any status block's actions stack this
+    way under 520 px. In **New version failed, viewer cannot edit**, Open v7
+    Logs is the only action and the filled one.
