@@ -238,17 +238,26 @@ export async function createDraftPull(args: string[], manifestRoot?: string) {
             if (openShell) {
               // OCE authorizes this create once; only GitHub's reply confirms its outcome.
               const { html_url: url, number } = result;
+              // The registry delivers a lowercased name; GitHub answers with the repository's
+              // own spelling, and its names ignore case (finding 2232).
+              const sameRepository = (name: unknown) =>
+                typeof name === "string" && name.toLowerCase() === repository.toLowerCase();
+              const prefix = "https://github.com/";
+              const suffix = `/pull/${number}`;
               if (
                 res.statusCode !== 201 ||
                 result.state !== "open" ||
                 result.draft !== true ||
                 !Number.isSafeInteger(number) ||
                 number < 1 ||
-                url !== `https://github.com/${repository}/pull/${number}` ||
+                typeof url !== "string" ||
+                !url.startsWith(prefix) ||
+                !url.endsWith(suffix) ||
+                !sameRepository(url.slice(prefix.length, -suffix.length)) ||
                 result.head?.ref !== head ||
-                result.head?.repo?.full_name !== repository ||
+                !sameRepository(result.head?.repo?.full_name) ||
                 result.base?.ref !== base ||
-                result.base?.repo?.full_name !== repository
+                !sameRepository(result.base?.repo?.full_name)
               ) {
                 throw (
                   openShellRefusal(
