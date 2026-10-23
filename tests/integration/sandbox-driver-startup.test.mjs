@@ -206,7 +206,11 @@ function workspaceGatewayClient(seed = [], events = []) {
       return profiles.get(id);
     },
     async listProviderProfiles() {
-      return [...profiles.values()];
+      // Every profile here was imported into the Workspace.
+      return [...profiles.values()].map((profile) => ({
+        ...profile,
+        definition: { ...profile.definition, scope: "workspace" },
+      }));
     },
     async importProviderProfile(_workspace, profile) {
       storeProfile(profile, "1");

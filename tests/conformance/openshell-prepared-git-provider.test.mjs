@@ -8,6 +8,7 @@ import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sa
 import {
   OpenShellPreparedGitProvider,
   OpenShellPreparedGitProviderError,
+  deleteOpenShellPreparedGitProviders,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-prepared-git-provider.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -643,4 +644,53 @@ test("prepared Git keeps its verified installation while only another attached p
   const moved = await binding.observe(active, "sandbox-id", signal(), installed);
   assert.equal(moved.providerEnvRevision, "102");
   assert.deepEqual({ ...moved, providerEnvRevision: "101" }, installed);
+});
+
+// Namespace cleanup (finding 2206) deletes only the Workspace's own prepared Git profiles: the
+// listing also returns platform and static profiles, and an unprepared or foreign-named one.
+test("Namespace cleanup deletes only workspace-scoped prepared Git profiles", async () => {
+  const owner = "b".repeat(48);
+  const prepared = "oce-git-" + "b".repeat(32);
+  const installation = "oce-github-installation-" + "b".repeat(32);
+  const profile = (id, scope, annotations = { "openclaw.dev/prepared-git-binding": owner }) => ({
+    id,
+    resourceVersion: "1",
+    annotations,
+    definition: { id, scope },
+  });
+  const calls = [];
+  await deleteOpenShellPreparedGitProviders(
+    {
+      async deleteProvider(_workspace, name) {
+        calls.push(["deleteProvider", name]);
+      },
+      async listProviderProfiles(workspace) {
+        calls.push(["listProviderProfiles", workspace]);
+        return [
+          profile(prepared, "workspace"),
+          profile(installation, "workspace"),
+          profile(prepared, "platform"),
+          profile("oce-git-" + "c".repeat(32), "workspace"),
+          profile("github", "workspace"),
+          profile(prepared, "workspace", {}),
+        ];
+      },
+      async deleteProviderProfile(_workspace, id) {
+        calls.push(["deleteProviderProfile", id]);
+      },
+    },
+    "git-dogfood",
+    [
+      { name: prepared, type: prepared, labels: { "openclaw.dev/prepared-git-binding": owner } },
+      { name: "github", type: "github", labels: { "openclaw.dev/prepared-git-binding": owner } },
+      { name: "oce-git-" + "c".repeat(32), type: "oce-git-" + "c".repeat(32), labels: {} },
+    ],
+    signal(),
+  );
+  assert.deepEqual(calls, [
+    ["deleteProvider", prepared],
+    ["listProviderProfiles", "git-dogfood"],
+    ["deleteProviderProfile", prepared],
+    ["deleteProviderProfile", installation],
+  ]);
 });

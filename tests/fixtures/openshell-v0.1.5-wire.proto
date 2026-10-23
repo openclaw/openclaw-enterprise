@@ -33,6 +33,8 @@ service OpenShell {
       returns (DetachSandboxProviderResponse);
   rpc ImportProviderProfiles(ImportProviderProfilesRequest)
       returns (ImportProviderProfilesResponse);
+  rpc ListProviderProfiles(ListProviderProfilesRequest)
+      returns (ListProviderProfilesResponse);
   rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest)
       returns (GetProviderRefreshStatusResponse);
   rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest)
@@ -659,6 +661,17 @@ message ProviderProfileFile {
   string path = 1;
   string content = 2;
   string env_var = 3;
+}
+
+message ListProviderProfilesRequest {
+  WorkspaceSelector workspace_scope = 3;
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListProviderProfilesResponse {
+  repeated ProviderProfile profiles = 1;
+  string next_page_token = 2;
 }
 
 message ProviderProfileImportItem {

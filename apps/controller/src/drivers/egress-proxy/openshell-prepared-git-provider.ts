@@ -913,7 +913,12 @@ export async function deleteOpenShellPreparedGitProviders(
     await client.deleteProvider(workspace, provider.name, signal);
   }
   for (const profile of await client.listProviderProfiles(workspace, signal)) {
-    if (preparedGitName(profile.id, profile.annotations[OWNER])) {
+    // The listing also returns platform and static profiles; a preparation imports into the
+    // Workspace, and only that scope's profile is the Workspace's member.
+    if (
+      profile.definition?.scope === "workspace" &&
+      preparedGitName(profile.id, profile.annotations[OWNER])
+    ) {
       await client.deleteProviderProfile(workspace, profile.id, signal);
     }
   }

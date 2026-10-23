@@ -1317,6 +1317,76 @@ test("OpenShell client serializes v0.1.5 credential providers, profiles, and att
   }
 });
 
+// Namespace cleanup finds prepared Git profiles by listing them (finding 2206): a profile on a
+// later page, or one without annotations, must still decode with its owner annotation intact.
+test("OpenShell client lists a Workspace's provider profiles across pages", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const requests = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    ListProviderProfiles(call, callback) {
+      requests.push(call.request);
+      callback(
+        null,
+        call.request.page_token === ""
+          ? { profiles: [{ id: "openai", scope: "platform" }], next_page_token: "page-2" }
+          : {
+              profiles: [
+                {
+                  id: "oce-git-" + "a".repeat(32),
+                  resource_version: "3",
+                  annotations: { "openclaw.dev/prepared-git-binding": "a".repeat(48) },
+                  scope: "workspace",
+                },
+              ],
+            },
+      );
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  try {
+    const profiles = await client.listProviderProfiles(
+      "tenant-workspace",
+      AbortSignal.timeout(5_000),
+    );
+    assert.deepEqual(
+      profiles.map(({ id, resourceVersion, annotations }) => ({
+        id,
+        resourceVersion,
+        annotations,
+      })),
+      [
+        { id: "openai", resourceVersion: "0", annotations: {} },
+        {
+          id: "oce-git-" + "a".repeat(32),
+          resourceVersion: "3",
+          annotations: { "openclaw.dev/prepared-git-binding": "a".repeat(48) },
+        },
+      ],
+    );
+    // Namespace cleanup reads the server-set scope to skip platform profiles.
+    assert.deepEqual(
+      profiles.map(({ definition }) => definition?.scope),
+      ["platform", "workspace"],
+    );
+    assert.deepEqual(
+      requests.map(({ workspace_scope, page_token }) => [workspace_scope?.workspace, page_token]),
+      [
+        ["tenant-workspace", ""],
+        ["tenant-workspace", "page-2"],
+      ],
+    );
+  } finally {
+    client.close();
+    server.forceShutdown();
+  }
+});
+
 test("OpenShell client retries setup after a failed first connection", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "openshell-client-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
