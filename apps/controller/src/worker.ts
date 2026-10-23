@@ -3994,8 +3994,11 @@ export class ControllerWorker {
    * awaits a replay (finding 2235). Once that revision's deployment activates it, the same
    * attempt can reduce its policy, so the transaction that completes the deployment queues one
    * attempt (finding 2242). That attempt takes the ordinary path: it rechecks each requester,
-   * and only a confirmed reduction marks a withdrawal revoked. Its key is fixed per revision, so
-   * a repeated pass queues nothing more, and none is queued beside an outstanding attempt.
+   * and only a confirmed reduction marks a withdrawal revoked. Only the deployment claim calls
+   * this, and that claim completes once in this transaction, so it runs once per revision; the
+   * fixed key names the attempt, and none is queued beside an outstanding attempt. A proxy or
+   * plan that cannot reduce in place refuses with the same reason, so its candidate gets one
+   * more refused attempt (and failure audit) on activation, not a chain.
    */
   private async queueActivatedRevisionWithdrawal(
     unit: PlatformUnitOfWork,

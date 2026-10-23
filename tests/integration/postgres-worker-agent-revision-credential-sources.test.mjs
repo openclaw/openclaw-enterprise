@@ -1723,8 +1723,8 @@ revisionTest(
     assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
     assert.equal(refused.withdrawalInProgress, false, "the refusal awaits a replay or activation");
 
-    // The third Agent's operator replays while its candidate still deploys. That attempt fails
-    // the same way; hold it, so it is still queued when the candidate activates.
+    // The third Agent's operator replays while its candidate still deploys. That attempt would
+    // fail the same way; hold it, so it is still queued when the candidate activates.
     await withdrawals[2].replay(fixture.actor.id);
     const replay = (await withdrawalAttempts(fixture, seconds[2]))[1];
     assert.equal(replay.state, "queued");
@@ -1744,7 +1744,9 @@ revisionTest(
 
     // Activation queues one attempt for the refused withdrawal, as its requester, and that
     // attempt reduces the now-active revision. Nobody replayed it.
-    const [, activation] = await withdrawalAttempts(fixture, seconds[0]);
+    const activated = await withdrawalAttempts(fixture, seconds[0]);
+    assert.equal(activated.length, 2, "activation queues exactly one attempt");
+    const activation = activated[1];
     assert.equal(
       activation?.idempotencyKey,
       `agent_revision:${seconds[0].id}:reconcile:credentials_withdrawn:activation`,

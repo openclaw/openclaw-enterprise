@@ -243,7 +243,7 @@ denials and failures, once when the claim ends. The OpenShell Driver calls `Deta
 on the `harnessResource` Sandbox and reads the receipt's status.
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
 sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay
-or that candidate's activation, which queues one attempt. Each
+or, for a candidate, its activation, which queues one attempt. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
