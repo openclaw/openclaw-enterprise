@@ -224,3 +224,34 @@ For model builds, first pull `NODE_BASE_IMAGE` and the base pinned in
 [`deploy/runtime/Dockerfile`](../../deploy/runtime/Dockerfile); the external
 receiver files in `RUNNER_TEMP` must be visible to the host and VM. Do not weaken
 permission checks.
+
+### Worker termination observer
+
+With Node.js 24+ and `kubectl` installed, run:
+
+```sh
+OCC_TEST_WORKER_COLLECTOR_BIN=/trusted/bin/otelcol-contrib \
+  node --test tests/integration/worker-termination-observer.test.ts
+```
+
+The registered `k3d-observability` lane uses its already prepared, digest-pinned
+host source from `logging.collector.image` in the production chart (the exported
+`OCC_TEST_OBSERVABILITY_COLLECTOR_IMAGE` is a separate k3d import reference). The test creates an owned temporary
+container with `--pull=never`, copies `/otelcol-contrib`, and removes that
+container by its returned ID in a `finally` block without starting it.
+`OCC_DOCKER_BIN` selects the container engine. No extra CI environment
+variable is required, and missing prepared input fails instead of skipping.
+For an isolated no-Docker proof, `OCC_TEST_WORKER_COLLECTOR_BIN` can select a
+verified standalone 0.159.0 binary; that variant does not prove image extraction.
+
+Both variants use real kubectl (`OCC_KUBECTL_BIN` can select it), a local synthetic
+LIST/WATCH API, the exact shipped private-file receiver and standard persistent
+exporter with a test-only local backend/JSON encoding override. Neither variant
+uses a live cluster in this test.
+
+Coverage includes distinct 139/137 exits in both worker layouts, unknown reasons,
+count gaps across missing status, private-directory refusal, separate untrusted
+files, invalid streams/bodies and nested resource/scope/extra-field canaries.
+`OCC_TEST_WORKER_OBSERVATION_EVIDENCE` saves synthetic received batches to a private
+file. The [operator guide](../guides/observability/worker-terminations.md) defines
+the remaining installed acceptance, startup and retention requirements.

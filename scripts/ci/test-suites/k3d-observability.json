@@ -26,6 +26,12 @@
       "expectedTests": [
         "Helm defaults expose private OCC metrics and operational logs through real collection"
       ]
+    },
+    {
+      "path": "tests/integration/worker-termination-observer.test.ts",
+      "expectedTests": [
+        "worker observer retains distinct exits through kubectl and OTLP without Pod payloads"
+      ]
     }
   ]
 }

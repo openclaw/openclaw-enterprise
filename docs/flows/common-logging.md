@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
 updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+last_updated_session: worker-termination-observation
 ---
 
 # Common Operational Logging Flow
@@ -51,6 +51,9 @@ graph TD
     M --> N["Classify records and strip unapproved content"]
     N --> O["Queue with a size limit and OTLP HTTP exporter"]
   end
+  R["Operator starts worker observer"] --> S["Scoped Pod LIST then WATCH"]
+  S --> T["Project and deduplicate termination fields"]
+  T --> U["Private file receiver and retained backend"]
   O --> P["Optional demo Loki stores event body and structured metadata"]
   P --> Q["Grafana filters and formats retained metadata"]
 ```
@@ -285,6 +288,18 @@ records. External and Driver-owned pipelines require separate operator review.
 See the [demo guide](../guides/observability/demo.md#read-and-narrow-operational-logs)
 for panels, correlation, and authorization limits.
 
+### 9. The optional operator command observes worker exits
+
+`scripts/observe-worker-terminations.ts:main` uses existing operator privileges
+for a namespace- and release-scoped Pod LIST/WATCH. It projects observed worker
+terminations, deduplicates recent identities and records coverage gaps in a
+private file. `deploy/logging/worker-observer.yaml` validates that file's schema
+and exports allowlisted fields through the protected exporter. This log pipeline
+has no network log receiver; export and Collector self-telemetry can use the
+network. The [operator procedure](../guides/observability/worker-terminations.md)
+owns setup, retention, supervision and observation limits. Helm enablement does
+not start this command; existing application logging is unchanged.
+
 ## Debugging and Verification
 
 - For unexpected process levels, check the startup snapshot; for runtime levels,
@@ -311,6 +326,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 22:59: Add opt-in worker termination observation through scoped Pod LIST/WATCH, a private file and a fixed Collector schema; document coverage limits and operator setup. (worker-termination-observation - 341952eef)
 
 - 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
 
