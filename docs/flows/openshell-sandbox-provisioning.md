@@ -8,13 +8,8 @@ last_updated_session: authoring-run/8777cd8a-6832-4b9e-8fdd-51579d6b02d2
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex/OpenClaw to OpenShell. Operator mode
-owns Namespace Workspaces; managed mode fails before mutation.
-[Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Agent revision files and bearer passthrough authenticate Codex Gateway requests
-without a Harness Service.
-
-Development workspace-node setup uses a scoped token in its provider file.
+Kubernetes Compute provisions dedicated Codex and OpenClaw Harnesses through
+OpenShell. [Credential sources](credential-source-lifecycle.md) supply model access.
 
 ## Entry Points
 
@@ -266,10 +261,8 @@ bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
-After an observed-hook preview releases its launcher, Codex can return HTTP `400`
-for an ordinary HTTP request. In `observeHeldRepositoryGitPreview` and
-`enrollHarness`, the Driver requires its recorded release acknowledgment and an
-authenticated WebSocket handshake to confirm the serving Harness.
+After release, `observeHeldRepositoryGitPreview` and `enrollHarness` confirm the
+recorded acknowledgment and authenticated WebSocket, even when HTTP returns `400`.
 
 The Backend reuses clients, retrying setup. Cancellation is checked after
 setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
