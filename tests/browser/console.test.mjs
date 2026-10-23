@@ -1216,9 +1216,7 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
     await page.goBack();
     await pending.waitForRelease();
     assert.equal(await page.locator(".content [inert]").count(), 0);
-    await expectNoText(page, /Private cached Agent|Admission failure/, () =>
-      pending.waitForRelease(),
-    );
+    await expectNoText(page, /Private cached Agent|Admission failure/);
     await releaseHeldRoute(page, "**/api/auth/session", pending);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   });
@@ -1700,7 +1698,7 @@ test("known Namespace revocation invalidates a cached global collection with ano
   t.after(() => pending.release());
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await pending.waitForRelease();
-  await expectNoText(page, /Removed from access/, () => pending.waitForRelease());
+  await expectNoText(page, /Removed from access/);
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await expectNoText(page, /Removed from access/, () => waitForIdleFetches(page));
@@ -1792,7 +1790,7 @@ test("known Backend denial invalidates previews across Namespace selections", as
   await page.goBack();
   await pending.waitForRelease();
   assert.equal(new URL(page.url()).searchParams.get("namespace"), alpha.id);
-  await expectNoText(page, /openai-primary/, () => pending.waitForRelease());
+  await expectNoText(page, /openai-primary/);
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
 });
@@ -1855,7 +1853,7 @@ test("pagehide clears private content before persisted pageshow revalidates", as
     globalThis.dispatchEvent(new globalThis.PageTransitionEvent("pageshow", { persisted: true })),
   );
   await pending.waitForRelease();
-  await expectNoText(page, /Before pagehide Agent|Page lifecycle/, () => pending.waitForRelease());
+  await expectNoText(page, /Before pagehide Agent|Page lifecycle/);
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
@@ -2027,6 +2025,7 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       await admission.waitForRelease();
       await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
       assert.equal(page.url(), fixture.origin + target);
+      // The pending shell is the held load's last render until admission answers.
       await expectNoText(page, /Previously readable/, () => admission.waitForRelease());
       if (placement === "inline" && back) {
         // Sign-in cleared the previous list. Inline recovery appears only once this read returns.
@@ -2189,7 +2188,7 @@ test("console clears private content after session expiry, access revocation, an
   t.after(() => revokedReturn.release());
   await page.goBack();
   await revokedReturn.waitForRelease();
-  await expectNoText(page, /Revoked agent/, () => revokedReturn.waitForRelease());
+  await expectNoText(page, /Revoked agent/);
   await releaseHeldRoute(page, "**/api/auth/session", revokedReturn);
   await page.getByRole("heading", { name: "Namespace unavailable", exact: true }).waitFor();
   fixture.policy.restrictions.length = 0;
