@@ -508,7 +508,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The API refuses creation, clears the entered value and disables the refused write.",
+      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -559,7 +559,7 @@ export const scenarios = {
       { selector: "#secret-value", value: "synthetic-story-value" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
-    description: "A denied replacement clears the entered value and disables further submission.",
+    description: "A denied replacement clears the value, disables editing, and focuses Close.",
   },
   secretsDelete: {
     group: "Pages/Secrets",

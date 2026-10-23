@@ -23,6 +23,7 @@ import {
   consoleStorage,
   expectWriteAsksBeforeUnload,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   newPage,
@@ -367,12 +368,22 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
       "a denied write must not reach the Secret Driver",
     );
     assert.equal(storage.valueFor(secret), storedValue);
-    await form.getByText(/Your access does not include/).waitFor();
+    await form
+      .getByRole("alert")
+      .filter({ hasText: /Your access does not include/ })
+      .waitFor();
     assert.equal(await submit.isDisabled(), true);
+    const close = form.getByRole("button", { name: "Close" });
     if (method !== "DELETE") {
       assert.equal(await value.inputValue(), "");
+      assert.equal(await value.isDisabled(), true, "do not invite another value after a refusal");
+      assert.equal(await form.getByRole("button", { name: "Show value" }).isDisabled(), true);
+      if (creating) {
+        assert.equal(await form.getByLabel("Secret name").isDisabled(), true);
+      }
+      assert.equal(await hasFocus(close), true, "Close is the next available action");
     }
-    await form.getByRole("button", { name: "Close" }).click();
+    await close.click();
   }
   await page.getByRole("button", { name: "Create Secret", exact: true }).click();
   await form.getByLabel("Secret name").fill("Reader cannot create this");
@@ -426,6 +437,76 @@ test("console Secret writes honor read-only access, revocation and a new Agent r
     .getByText(/Deletion is blocked/)
     .waitFor();
   assert.equal((await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)).status, 200);
+});
+
+test("a Secret name conflict allows correction, but a Namespace that stops being ready ends create and replacement", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Changing Secret availability", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Existing Secret", "synthetic-original");
+  const path = secretPath(namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const create = dialog(page, "Create Secret");
+  const createValue = create.getByLabel("Value", { exact: true });
+  const createName = create.getByLabel("Secret name");
+  await createName.fill(secret.name);
+  await createValue.fill("synthetic-conflicting");
+  const duplicate = page.waitForResponse(
+    (r) => r.url() === fixture.origin + path && r.request().method() === "POST",
+  );
+  await create.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const conflict = await duplicate;
+  assert.equal(conflict.status(), 409);
+  const { error }: ErrorResponse = await conflict.json();
+  assert.equal(error.code, "RESOURCE_CONFLICT");
+  await create
+    .getByRole("alert")
+    .filter({ hasText: /name may already be in use/ })
+    .waitFor();
+  assert.equal(await createValue.inputValue(), "");
+  assert.equal(await hasFocus(createName), true, "the duplicate name can be corrected here");
+  await createName.fill("Another Secret");
+  await createValue.fill("synthetic-correction");
+
+  // Another operator removes the last Secret and starts Namespace deletion while both forms are open.
+  const other = await page.context().newPage();
+  await other.goto(fixture.origin + secretsUrl(namespace));
+  await other.getByRole("button", { name: secret.name, exact: true }).click();
+  await dialog(other, secret.name)
+    .getByRole("button", { name: "Replace value", exact: true })
+    .click();
+  const replace = dialog(other, "Replace Secret value");
+  await replace.getByLabel("Value", { exact: true }).fill("synthetic-replacement");
+  assert.equal((await fixture.request("DELETE", path + "/" + secret.id)).status, 204);
+  assert.equal((await fixture.request("DELETE", "/namespaces/" + namespace.id)).status, 202);
+
+  for (const [form, action, url, method] of [
+    [create, "Create Secret", path, "POST"],
+    [replace, "Replace value", path + "/" + secret.id, "PATCH"],
+  ] as const) {
+    const submit = form.getByRole("button", { name: action, exact: true });
+    const refused = form
+      .page()
+      .waitForResponse((r) => r.url() === fixture.origin + url && r.request().method() === method);
+    await submit.click();
+    const response = await refused;
+    assert.equal(response.status(), 409);
+    const { error }: ErrorResponse = await response.json();
+    assert.equal(error.code, "NAMESPACE_NOT_READY");
+    // Both writes were refused because the Namespace changed, not because the name is taken.
+    await form
+      .getByRole("alert")
+      .filter({ hasText: /Namespace.*not ready.*Close and Refresh/ })
+      .waitFor();
+    const value = form.getByLabel("Value", { exact: true });
+    assert.equal(await value.inputValue(), "");
+    assert.equal(await value.isDisabled(), true, "a Namespace conflict needs a fresh read");
+    assert.equal(await submit.isDisabled(), true);
+    assert.equal(await hasFocus(form.getByRole("button", { name: "Close" })), true);
+  }
 });
 
 test("pending Secret creation blocks navigation and replay, then session loss clears material", async (t) => {
