@@ -6,7 +6,10 @@ import {
   preparedGitHubSourceFromRoute,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
-import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
+import {
+  assertExecutionAdmission,
+  egressAssociationInstallation,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
@@ -1243,6 +1246,66 @@ export async function syntheticDispatchFixture(t, receipts) {
     },
     restart() {
       forwarder = new CredentialProxy(ports);
+    },
+    /**
+     * One proxy shared by several Sandboxes of this sender, each with its own enrolled
+     * installation and a long-lived peer. `wrap` may replace any of its ports. `resolve(name, fields)` authenticates as the
+     * named Sandbox with a fresh UUIDv7 request ID and deadline unless `fields` sets them.
+     */
+    sandboxes(wrap = (sandboxPorts) => sandboxPorts) {
+      const enrolled = new Map();
+      const accepted = new Set();
+      const enroll = (name) => {
+        if (!enrolled.has(name)) {
+          const sandboxPeer = {
+            sender,
+            sandboxId: randomUUID(),
+            instanceId: randomUUID(),
+            expiresAt: new Date(now + 3_600_000).toISOString(),
+          };
+          enrolled.set(name, {
+            peer: sandboxPeer,
+            installation: {
+              ...installation,
+              sandboxId: sandboxPeer.sandboxId,
+              enforcement: { ...installation.enforcement, instanceId: sandboxPeer.instanceId },
+            },
+          });
+        }
+        return enrolled.get(name);
+      };
+      const proxy = new CredentialProxy(
+        wrap({
+          ...ports,
+          exchangeOwner: {
+          verify: async (name) => enroll(name).peer,
+          capture(use) {
+            accepted.add(use.id);
+            return {
+              ...association,
+              installation: egressAssociationInstallation(use.installation),
+              responseId: use.id,
+            };
+          },
+          owns: (value, use) => accepted.has(use.id) && value.responseId === use.id,
+        },
+          installation: async (sandboxPeer) =>
+            [...enrolled.values()].find((entry) => entry.peer.sandboxId === sandboxPeer.sandboxId)
+              ?.installation,
+        }),
+      );
+      const build = (fields = {}) => ({
+        ...request,
+        id: requestId(clock),
+        deadlineAt: new Date(clock + 20_000).toISOString(),
+        ...fields,
+      });
+      return {
+        proxy,
+        request: build,
+        resolve: (name, fields, signal = new AbortController().signal) =>
+          proxy.resolve(name, enroll(name).peer.sandboxId, build(fields), signal),
+      };
     },
     async resolve() {
       ready = await forwarder.resolve(

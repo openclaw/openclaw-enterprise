@@ -87,6 +87,16 @@ export const STREAM_LEASE_CEILING_MS = 15 * 60_000;
 /** Progress sooner than this after the last policy check keeps the lease unchanged. */
 export const STREAM_LEASE_RECHECK_MS = 15_000;
 const maximumStreamBodyBytes = 4 * 1024 * 1024;
+/**
+ * Installation-wide bound on remembered request IDs. Each ID is held until its UUIDv7
+ * creation time plus 30 s, so this also bounds the protected request rate (about 270/s).
+ */
+export const REPLAY_TABLE_CAPACITY = 8192;
+/**
+ * One Sandbox's share of the replay table (about 68 protected requests/s sustained), so a
+ * single Sandbox cannot refuse every other Agent in the installation.
+ */
+export const REPLAY_SANDBOX_SHARE = REPLAY_TABLE_CAPACITY / 4;
 
 // One global slot is shared by the live handle and every still-running phase.
 interface OperationCharge {
@@ -168,7 +178,8 @@ export function egressInjectionDigest(headers: readonly (readonly [string, strin
  */
 export class CredentialProxy implements CredentialProxyExchange {
   private readonly records = new Map<string, OperationRecord>();
-  private readonly requests = new Map<string, number>();
+  private readonly requests = new Map<string, { readonly expiresAt: number; readonly share: string }>();
+  private readonly replayShares = new Map<string, number>();
   private activeOperations = 0;
   private readonly ports: EgressAuthorityPorts;
 
@@ -208,11 +219,34 @@ export class CredentialProxy implements CredentialProxyExchange {
         this.discard(handle, record);
       }
     }
-    for (const [key, expiresAt] of this.requests) {
+    for (const [key, { expiresAt, share }] of this.requests) {
       if (expiresAt <= now) {
         this.requests.delete(key);
+        const held = this.replayShares.get(share)! - 1;
+        if (held === 0) {
+          this.replayShares.delete(share);
+        } else {
+          this.replayShares.set(share, held);
+        }
       }
     }
+  }
+
+  /** Check and reserve in one turn: a concurrent duplicate cannot pass between them. */
+  private reserveReplay(
+    key: string,
+    share: string,
+    expiresAt: number,
+  ): (EgressResolution & { kind: "refused" }) | undefined {
+    if (this.requests.has(key)) {
+      return refuse("invalid_handle");
+    }
+    const held = this.replayShares.get(share) ?? 0;
+    if (this.requests.size >= REPLAY_TABLE_CAPACITY || held >= REPLAY_SANDBOX_SHARE) {
+      return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+    }
+    this.requests.set(key, { expiresAt, share });
+    this.replayShares.set(share, held + 1);
   }
 
   async resolve(
@@ -274,14 +308,10 @@ export class CredentialProxy implements CredentialProxyExchange {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
     const replayKey = JSON.stringify([peer.sender, sandboxId, peer.instanceId, request.id]);
+    // Refuse a known replay before any I/O; the reservation below checks again.
     if (this.requests.has(replayKey)) {
       return refuse("invalid_handle");
     }
-    if (this.requests.size >= 4096) {
-      return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
-    }
-    // Reserve before installation/policy I/O. Failed attempts cannot reuse their request ID.
-    this.requests.set(replayKey, createdAt + 30_000);
     const installation = await this.ports.installation(peer);
     if (
       !installation ||
@@ -314,6 +344,16 @@ export class CredentialProxy implements CredentialProxyExchange {
     const { route, provider, operation } = matches[0]!;
     if (deadline > createdAt + route.deadlineMs) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
+    }
+    // Reserve after the side-effect-free installation and route refusals, before capture,
+    // policy or Secret I/O. From here a failed attempt cannot reuse its request ID.
+    const reserved = this.reserveReplay(
+      replayKey,
+      JSON.stringify([peer.sender, sandboxId]),
+      createdAt + 30_000,
+    );
+    if (reserved) {
+      return reserved;
     }
     const captured: CapturedEgressUse = {
       ...immutableCopy({

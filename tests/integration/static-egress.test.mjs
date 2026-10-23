@@ -13,6 +13,8 @@ import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-sta
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   CredentialProxy,
+  REPLAY_SANDBOX_SHARE,
+  REPLAY_TABLE_CAPACITY,
   STREAM_LEASE_CEILING_MS,
   STREAM_LEASE_IDLE_MS,
   STREAM_LEASE_RECHECK_MS,
@@ -1651,6 +1653,93 @@ test("in-flight Secret selection and outstanding handles consume the same bounde
     "closing the owning sender frees exactly its slot",
   );
   assert.deepEqual(await use(other), saturated);
+});
+
+test("requests refused before capture leave the replay table to every Sandbox", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes();
+  const unsupported = {
+    body: Buffer.from(JSON.stringify({ model: "other-model", input: "hello", store: false })),
+  };
+  const refused = { kind: "refused", error: { kind: "denied", code: "unsupported_operation" } };
+  for (let i = 0; i < REPLAY_TABLE_CAPACITY; i += 1) {
+    assert.deepEqual(await s.resolve("a", unsupported), refused);
+  }
+  assert.equal((await s.resolve("b")).kind, "ready", "another Sandbox's first request");
+  assert.equal((await s.resolve("a")).kind, "ready", "the refused Sandbox's next request");
+  // Nothing used an ID refused before capture, so it remains the sender's to use.
+  const id = requestId(f.ports.now());
+  assert.deepEqual(await s.resolve("a", { ...unsupported, id }), refused);
+  assert.equal((await s.resolve("a", { id })).kind, "ready");
+  assert.equal(f.reads, 3);
+});
+
+test("one Sandbox's replay share bounds it without refusing other Sandboxes", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes();
+  const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+  // Material was selected, so each ID stays reserved after its handle closes.
+  const use = async (name) => {
+    const closed = new AbortController();
+    const decision = await s.resolve(name, undefined, closed.signal);
+    closed.abort();
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (let i = 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
+    assert.equal(await use("a"), "ready");
+  }
+  assert.deepEqual(await use("a"), saturated, "a Sandbox past its share is refused");
+  assert.equal(await use("b"), "ready", "another Sandbox keeps its share");
+  for (const name of ["b", "c", "d"]) {
+    for (let i = name === "b" ? 1 : 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
+      assert.equal(await use(name), "ready");
+    }
+  }
+  assert.equal(REPLAY_SANDBOX_SHARE * 4, REPLAY_TABLE_CAPACITY);
+  assert.deepEqual(await use("e"), saturated, "the installation-wide bound still holds");
+  // Fixed 30-second horizons return both the shares and the table.
+  f.advance(30_000);
+  assert.equal(await use("a"), "ready");
+  assert.equal(await use("e"), "ready");
+});
+
+test("a request ID stays reserved once policy or Secret work can start", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  let checks = 0;
+  let lookups = 0;
+  let gate;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    async installation(peer) {
+      lookups += 1;
+      await gate?.promise;
+      return ports.installation(peer);
+    },
+    async check(use) {
+      checks += 1;
+      return checks === 1 ? { kind: "denied", code: "withdrawn" } : ports.check(use);
+    },
+  }));
+  const replay = { kind: "refused", error: { kind: "denied", code: "invalid_handle" } };
+  // A policy refusal is effectful: the ID cannot be used again in its window.
+  const denied = s.request();
+  assert.deepEqual(await s.resolve("a", denied), {
+    kind: "refused",
+    error: { kind: "denied", code: "withdrawn" },
+  });
+  assert.deepEqual(await s.resolve("a", denied), replay);
+  assert.deepEqual([checks, lookups], [1, 1], "a known replay is refused before any lookup");
+  const ready = s.request();
+  assert.equal((await s.resolve("a", ready)).kind, "ready");
+  assert.deepEqual(await s.resolve("a", ready), replay);
+  // Concurrent duplicates both pass the early check; only one may reserve after the lookup.
+  gate = Promise.withResolvers();
+  const duplicate = s.request();
+  const both = Promise.all([s.resolve("a", duplicate), s.resolve("a", duplicate)]);
+  gate.resolve();
+  const decisions = (await both).map((decision) => decision.kind);
+  assert.deepEqual(decisions.toSorted(), ["ready", "refused"]);
+  assert.equal(f.reads, 2);
 });
 
 test("cancelled and denied exchanges retain capacity until receipt work settles", async (t) => {
