@@ -232,13 +232,8 @@ function writePayload(outgoing, consumerHolding = () => true) {
     clearTimeout(quiet);
     outgoing.off("drain", write);
   };
-  // The quiet window counts only from a moment the consumer was seen holding.
-  const settleIfQuiet = (refusal, held) => {
-    if (!held) {
-      quiet = setTimeout(() => settleIfQuiet(refusal, consumerHolding()), producerQuietMs);
-      return;
-    }
-    // Timers run before I/O callbacks: let a drain that is already due run first.
+  const settle = (refusal) => {
+    // Timers run before I/O callbacks: let a drain the socket already reported run first.
     setImmediate(() => {
       if (stopped || refusal !== refusals) {
         return;
@@ -249,16 +244,20 @@ function writePayload(outgoing, consumerHolding = () => true) {
       resolve(producedBytes);
     });
   };
+  // The quiet window starts only once the consumer is seen holding the exchange.
+  const awaitQuiet = (refusal) => {
+    quiet = consumerHolding()
+      ? setTimeout(() => settle(refusal), producerQuietMs)
+      : setTimeout(() => awaitQuiet(refusal), 10);
+  };
   function write() {
     clearTimeout(quiet);
     while (producedBytes < producerCapBytes) {
       producedBytes += streamChunk.length;
       hash.update(streamChunk);
       if (!outgoing.write(streamChunk)) {
-        const refusal = ++refusals;
-        const held = consumerHolding();
         outgoing.once("drain", write);
-        quiet = setTimeout(() => settleIfQuiet(refusal, held), producerQuietMs);
+        awaitQuiet(++refusals);
         return;
       }
     }
