@@ -12,14 +12,19 @@ author: Kimiyu-186
 
 ## Decision
 
-Add an optional bundled Strands Box Sandbox Driver for dedicated Codex on
-Kubernetes ARM64. Preserve the existing [SandboxDriver contract](../../docs/reference/drivers/sandbox.md)
-and the Compute-owned Harness startup command. Introduce an explicit Installation
-selector and provider configuration for Box. Credential Proxy integration is a
-separate phase.
+Offer Strands Box as an optional bundled Sandbox Driver for dedicated Codex on
+Kubernetes ARM64. Compute still prepares the Harness command and owns its
+authenticated Gateway route. The Driver starts that command inside Box and
+exposes a revision-specific endpoint through the
+[SandboxDriver contract](../../docs/reference/drivers/sandbox.md).
+Credential Proxy integration is a separate phase.
 
-This is a proposal. No production Driver or Installation selector is implemented.
-The evidence below establishes prerequisites, not an OCE Agent deployment.
+The deployment decision is whether OCE should support a separately reviewed
+placement or admission policy for Box. The tested build requires a Pod setting
+that OCE's Restricted tenant Namespaces reject. Without an approved placement
+design or a Box build that works under Restricted, those Namespaces cannot run
+this Driver. Selecting it must preserve the tenant policy and surface the
+admission failure.
 
 ## Problem
 
@@ -196,5 +201,7 @@ An installed Driver package could avoid a new bundled selector, but would need
 a real pinned production package and image distribution. Test-only factory
 injection or a manually placed package is not Installation qualification.
 
-Maintainers must review the bundled selection, runtime packaging, secret handoff,
-and Pod security requirements before the proposal and implementation can merge.
+Maintainers must decide whether OCE should ship the bundled selector and image,
+and whether Kubernetes Compute should support revision-owned Service endpoints.
+A supported deployment also needs an accepted placement design or a compatible
+Box build, verified secret delivery, and the Agent lifecycle checks above.
