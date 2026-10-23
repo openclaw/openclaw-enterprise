@@ -70,7 +70,12 @@ export type OpenShellGitRouteWithdrawal =
 export interface OpenShellGitExpiry {
   readonly retainedLaunchHash: string;
   readonly observed: OpenShellPreparedGitInstalled;
-  readonly detach?: { readonly requestId: string; readonly epoch?: string };
+  readonly detach?: {
+    readonly requestId: string;
+    /** The Sandbox resource version the recorded detach is conditional on. */
+    readonly resourceVersion?: string;
+    readonly epoch?: string;
+  };
 }
 
 export interface OpenShellGitRouteStore {
@@ -596,6 +601,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           ...(progress.requestId && {
             detach: {
               requestId: progress.requestId,
+              ...(progress.expectedVersion && { resourceVersion: progress.expectedVersion }),
               ...(progress.observedGeneration && { epoch: progress.observedGeneration }),
             },
           }),

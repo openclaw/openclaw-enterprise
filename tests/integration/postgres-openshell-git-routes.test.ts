@@ -382,7 +382,8 @@ test(
     const request = randomUUID();
     assert.equal(await store.beginDetach(id, launch, request, "13"), true);
     assert.equal(await store.beginDetach(id, launch, randomUUID(), "13"), false);
-    assert.deepEqual((await expire())?.detach, { requestId: request });
+    // The intent keeps the precondition a repeated send must carry (finding 2219).
+    assert.deepEqual((await expire())?.detach, { requestId: request, resourceVersion: "13" });
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), true);
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-replaced"), false);
     assert.equal((await expire())?.detach?.epoch, "epoch-two");

@@ -247,8 +247,14 @@ export async function witnessOpenShellGitLaunch(
 
 /**
  * The caller has closed issuance and requested disposal of every repository session; it checks
- * their disposal separately. The store has now fenced this route permanently. An intent buys exactly one conditional send, even if we crash before it.
+ * their disposal separately. The store has now fenced this route permanently. An intent records
+ * one request ID and the Sandbox version it is conditional on, before the first send.
  * A lost reply is reconciled with a fresh OBSERVE of absence, not attributed to our DETACH.
+ * An intent that left the provider attached (a crash before the send, or a send that did not
+ * answer) is sent again as the same request (finding 2219). The gateway admits a request ID at
+ * most once: it replays a completed detach, refuses one whose outcome it cannot tell
+ * (FAILED_PRECONDITION, which retires the runtime), and runs one it never saw under the same
+ * version precondition. A Sandbox version that moved since the intent retires the runtime.
  */
 export async function subtractExpiredOpenShellGit(
   store: Pick<OpenShellGitRouteStore, "beginDetach" | "confirmDetached">,
@@ -293,9 +299,10 @@ export async function subtractExpiredOpenShellGit(
     let receiptId: string | undefined;
     let request = detach?.requestId;
     if (current.present) {
-      // If the send outcome is unknown and the provider still appears attached, do not replay.
-      if (request) {
-        return result(detach?.epoch ? "retire-runtime" : "pending", "attachment-after-send-intent");
+      // A confirmed detach whose provider is attached again, or an intent this request can no
+      // longer satisfy, cannot be settled by another send.
+      if (detach?.epoch || (request && detach?.resourceVersion !== current.version)) {
+        return result("retire-runtime", "attachment-after-send-intent");
       }
       check = "original-git-installation";
       const before = evidence(
@@ -317,11 +324,14 @@ export async function subtractExpiredOpenShellGit(
         return result("pending", "sandbox-version-moved-before-intent");
       }
       signal.throwIfAborted();
-      request = randomUUID();
-      if (!(await store.beginDetach(executionId, retainedLaunchHash, request, current.version))) {
-        return result("pending", "detach-intent");
+      if (!request) {
+        request = randomUUID();
+        if (!(await store.beginDetach(executionId, retainedLaunchHash, request, current.version))) {
+          return result("pending", "detach-intent");
+        }
       }
-      check = "conditional-detach";
+      // The same request again when an earlier send did not take effect.
+      check = detach?.requestId ? "repeated-conditional-detach" : "conditional-detach";
       signal.throwIfAborted();
       const sent = await client.detachSandboxProvider(workspace, name, provider, signal, {
         requestId: request,
