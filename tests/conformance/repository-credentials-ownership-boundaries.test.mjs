@@ -8,7 +8,7 @@ import {
   startGitHubFixture,
 } from "../fixtures/repository-credentials/github.mjs";
 import { requestHead } from "../fixtures/repository-credentials/builders.mjs";
-import { createGitHubServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
+import { createGitHubTokenServiceFactory } from "../fixtures/repository-credentials/service-resources.mjs";
 import {
   createServiceConfiguration,
   eventually,
@@ -39,9 +39,11 @@ test(
     try {
       for (const providerInstanceId of ["github-first", "github-second"]) {
         const upstream = await startGitHubFixture(t, { clock });
-        const factory = await createGitHubServiceFactory(t, {
+        const token = `gho_${"t".repeat(36)}`;
+        upstream.acceptStatic(token);
+        const factory = await createGitHubTokenServiceFactory(t, {
           config,
-          privateKey: upstream.privateKey,
+          token,
           clock,
           providerInstanceId,
           trustedEndpoints: {
@@ -171,10 +173,10 @@ test(
             assert.deepEqual(await source.service.execute(foreignExchange, source.send), completed);
             assert.equal(
               target.upstream.issuesOfTokens.length,
-              1,
-              "foreign inputs must not cause replacement",
+              0,
+              "foreign inputs must not cause issuance",
             );
-            assert.equal(source.upstream.issuesOfTokens.length, 1);
+            assert.equal(source.upstream.issuesOfTokens.length, 0);
           } finally {
             source.service.cancel(foreignExchange);
             target.service.cancel(ownExchange);
@@ -182,7 +184,7 @@ test(
         });
       }
     } finally {
-      // Keep both controlled providers alive until their real token cleanup ends.
+      // Keep both controlled providers alive until session cleanup ends.
       for (const instance of instances) {
         if (instance.opened) {
           instance.service.close(instance.opened.session.sessionId);
@@ -198,7 +200,7 @@ test(
     for (const { upstream, service, opened } of instances) {
       assert.deepEqual(upstream.errors, []);
       assert.equal(upstream.tokenState().length, 1);
-      assert.equal(upstream.tokenState()[0].revoked, true);
+      assert.equal(upstream.tokenState()[0].revoked, false);
       assert.equal(service.status(opened.session.sessionId).cleanup.pending, 0);
     }
     assert.equal(clock.pendingTimers(), 0);

@@ -4,7 +4,9 @@ import type {
   OpenShellBackendDefinition,
   OpenShellBackendConfiguration,
 } from "@openclaw-enterprise/contracts";
-import { isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { isNonEmptyString, publicCaBundle, sha256Hex } from "@openclaw-enterprise/utils";
+import { readFileSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 import {
   GrpcOpenShellGatewayClient,
@@ -127,6 +129,26 @@ export class OpenShellGateway {
       client.close();
     }
     this.credentialClients.clear();
+  }
+
+  /** Only the configured public root may cross into a Harness endpoint contract. */
+  publicRootCertificate(): string | undefined {
+    const path = this.configuration.rootCertificatePath;
+    if (path === undefined) {
+      return undefined;
+    }
+    if (!isAbsolute(path)) {
+      throw new OpenShellBackendConfigurationFailure(
+        "The OpenShell Backend root certificate requires an absolute path.",
+      );
+    }
+    try {
+      return publicCaBundle(readFileSync(path, "utf8"));
+    } catch {
+      throw new OpenShellBackendConfigurationFailure(
+        "The OpenShell Backend root must be a readable public PEM CA certificate bundle.",
+      );
+    }
   }
 
   private clientOptions(namespace: string): OpenShellGatewayClientOptions {

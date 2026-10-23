@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import {
@@ -13,6 +12,13 @@ import {
   operationalLoggingConfiguration,
   skippedUserLogFields,
 } from "../../apps/controller/src/logging.ts";
+import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import {
+  OPERATION_REFUSAL_HINT_CODES,
+  operationRefusalHintCode,
+} from "../../packages/occ/src/state/controller-work.ts";
+import { AUTH_MAINTAIN_COMMANDS } from "../../scripts/lib/auth-maintain-arguments.mjs";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -23,10 +29,11 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
 
 async function fixture(t, contents) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-common-logging-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-common-logging-");
   const path = join(directory, "installation.yaml");
   await writeFile(path, contents, "utf8");
   return path;
@@ -270,12 +277,14 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
     message: "ordinary diagnostic text must not enter operational logs",
     secret: "sk-proj-secret-value-that-must-not-log",
     error: "Bearer token-that-must-not-log",
+    grpcStatus: "3",
+    validationCategory: "arbitrary-supplier-category",
   });
   emitOccLogEvent(logger, {
     event: "installation.bootstrap-failed",
     code: "COMMIT_OUTCOME_UNKNOWN",
     attempt: {
-      installationId: "ins_safe",
+      installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
       serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
       passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
       serviceKeyId: "key_safe",
@@ -288,7 +297,7 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(output.lines[0].attempt, 2);
   assert.equal(output.lines[0].code, "WORKER_UNAVAILABLE");
   assert.deepEqual(output.lines[1].attempt, {
-    installationId: "ins_safe",
+    installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
     serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
     passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
     serviceKeyId: "key_safe",
@@ -296,6 +305,8 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(Object.hasOwn(output.lines[0], "error"), false);
   assert.equal(Object.hasOwn(output.lines[0], "message"), false);
   assert.equal(Object.hasOwn(output.lines[0], "secret"), false);
+  assert.equal(Object.hasOwn(output.lines[0], "grpcStatus"), false);
+  assert.equal(Object.hasOwn(output.lines[0], "validationCategory"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
   assert.equal(JSON.stringify(output.lines).includes("arbitrary"), false);
 });
@@ -319,6 +330,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     computeDriverId: "compute-kubernetes",
     code: "KUBERNETES_API_REJECTED",
     step: "gateway_deployment",
+    candidatePreparationReached: false,
     errorClass: "KubernetesApiError",
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
@@ -327,6 +339,7 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     event: "worker.compute-prepare-failed",
     code: "KUBERNETES_PREPARATION_FAILED",
     step: "sandbox_provision",
+    candidatePreparationReached: "token-that-must-not-log",
     message: "Bearer token-that-must-not-log",
   });
 
@@ -346,11 +359,13 @@ test("Compute preparation diagnostics keep reviewed context and reject secret-be
     computeDriverId: "compute-kubernetes",
     code: "KUBERNETES_API_REJECTED",
     step: "gateway_deployment",
+    candidatePreparationReached: false,
     errorClass: "KubernetesApiError",
     status: 422,
     message: "The Kubernetes API rejected revision preparation.",
   });
   assert.equal(Object.hasOwn(output.lines[1], "message"), false);
+  assert.equal(Object.hasOwn(output.lines[1], "candidatePreparationReached"), false);
   assert.equal(JSON.stringify(output.lines).includes("token-that-must-not-log"), false);
 });
 
@@ -580,7 +595,13 @@ test("worker emitter reports health at debug and failures at error", () => {
     activationMs: 80,
     elapsedMs: 2900,
   });
-  emit({ event: "worker.error", code: "CLAIM_LOST" });
+  emit({
+    event: "worker.error",
+    code: "DEPENDENCY_UNAVAILABLE",
+    method: "CreateSandbox",
+    grpcStatus: 3,
+    validationCategory: "UNKNOWN",
+  });
   // A graceful shutdown that aborts a pass is no failure (finding 1040).
   emit({
     event: "worker.pass-interrupted",
@@ -601,6 +622,10 @@ test("worker emitter reports health at debug and failures at error", () => {
     ],
   );
   assert.equal(output.lines.at(-1).cause, "WorkerStopping");
+  const failure = output.lines.find((line) => line.event === "worker.error");
+  assert.equal(failure.method, "CreateSandbox");
+  assert.equal(failure.grpcStatus, 3);
+  assert.equal(failure.validationCategory, "UNKNOWN");
   const completed = output.lines.find((line) => line.event === "worker.completed");
   assert.equal(completed.workId, "namespace:ns_test:reconcile:ready");
   assert.equal(completed.attempt, 1);
@@ -665,6 +690,195 @@ test("worker stop-yield counts survive local JSON logging on pending and complet
   for (const stopYields of [-1, "3", true, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
     emit({ event: "worker.completed", stopYields });
     assert.equal(Object.hasOwn(output.lines.at(-1), "stopYields"), false);
+  }
+});
+
+test("worker log keeps fixed codes and route fences, and drops anything shaped otherwise", () => {
+  const output = memoryDestination();
+  const emit = createWorkerLogEmitter(
+    createOccLogger({ component: "occ-worker", destination: output.destination }),
+  );
+
+  // The shapes the OpenShell Git runtime and the worker emit (finding 2244). The runtime's own
+  // events go through its fixture logger in openshell-git-runtime.test.mjs.
+  const kept = [
+    {
+      event: "worker.openshell-git-expiry",
+      outcome: "pending",
+      check: "reduced-generation-moved-across-provider-check",
+      failure: "admission_limit",
+    },
+    {
+      event: "worker.openshell-git-denied",
+      reason: "ref_not_allowed",
+      reasonCode: "route_blocked",
+    },
+    { event: "worker.openshell-git-route", status: "adopted", fence: 7 },
+    { event: "worker.completed", code: "REPOSITORY_EXECUTION_UNVERIFIED", harnessState: "lost" },
+  ];
+  for (const event of kept) {
+    emit(event);
+    const line = output.lines.at(-1);
+    for (const [key, value] of Object.entries(event)) {
+      assert.equal(line[key], value, `${event.event} keeps ${key}`);
+    }
+  }
+
+  // Every expiry step the runtime can report passes as a code.
+  for (const check of OPENSHELL_GIT_EXPIRY_CHECKS) {
+    emit({ event: "worker.openshell-git-expiry", outcome: "pending", check });
+    assert.equal(output.lines.at(-1).check, check);
+  }
+
+  // Free text, a credential shape, an overlong value or a non-string never passes as a code;
+  // a fence is a non-negative safe integer.
+  const rejected = [
+    ["check", "the detach is still pending"],
+    ["failure", "connect ECONNREFUSED 10.0.0.1:443"],
+    ["reasonCode", "sk-proj-abcdefghijklmnopqrstuvwx"],
+    ["reasonCode", `r${"x".repeat(64)}`],
+    ["harnessState", { state: "lost" }],
+    ["failure", 14],
+    ["fence", -1],
+    ["fence", 1.5],
+    ["fence", "3"],
+    ["fence", Number.MAX_SAFE_INTEGER + 1],
+  ];
+  for (const [key, value] of rejected) {
+    emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });
+    assert.equal(Object.hasOwn(output.lines.at(-1), key), false, `${key}: ${String(value)}`);
+  }
+});
+
+test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {
+  // The shapes the bootstrap and auth:maintain scripts and the worker emit (finding 2245).
+  const installationId = `ins_${randomUUID()}`;
+  const configurationId = `cfg_${randomUUID()}`;
+  const kept = [
+    { event: "installation.bootstrapped", installationId },
+    { event: "installation.already-bootstrapped", installationId, step: "fast-path" },
+    { event: "auth-maintain.status", installationId },
+    ...AUTH_MAINTAIN_COMMANDS.map((command) => ({
+      event: "auth-maintain.failed",
+      code: "AUTH_MAINTENANCE_FAILED",
+      command,
+    })),
+    {
+      event: "worker.completed",
+      outcome: "permanent",
+      code: "PROVISIONING_REJECTED",
+      orphanedConfigurationId: configurationId,
+    },
+    ...Object.entries(OPERATION_REFUSAL_HINT_CODES).map(([code, hintCode]) => ({
+      event: "worker.completed",
+      outcome: "permanent",
+      code,
+      hintCode,
+    })),
+  ];
+  for (const event of kept) {
+    assert.deepEqual(unloggedFields(event), [], JSON.stringify(event));
+  }
+  // The guidance code names the gateway refusal's guidance; other refusals log none.
+  assert.equal(
+    operationRefusalHintCode("SANDBOX_GATEWAY_UNAUTHORIZED"),
+    "sandbox-gateway-identity",
+  );
+  for (const code of ["SANDBOX_DELETION_UNCONFIRMED", "DEPENDENCY_UNAVAILABLE", "toString"]) {
+    assert.equal(operationRefusalHintCode(code), undefined, code);
+  }
+
+  // The delivery-pending line names the protected Git Driver, which is the selected Sandbox
+  // Driver, by the Sandbox Driver ID the log keeps.
+  let emit;
+  const emitted = new Promise((resolve) => {
+    emit = resolve;
+  });
+  const driver = {
+    ref: { id: "openshell-sandbox", implementation: "openshell", configurationId: "c".repeat(64) },
+    requireRepositoryGitTransport: () => async () => ({
+      async reconcile() {
+        throw new Error("The gateway refused the reconcile.");
+      },
+      async close() {},
+    }),
+  };
+  const transport = await bindRepositoryGitTransport(
+    { repositoryGitDriver: driver, protectedDriver: driver },
+    { protectedGit: {} },
+    undefined,
+    emit,
+  );
+  const pending = await emitted;
+  await transport.close();
+  assert.deepEqual(pending, {
+    event: "worker.repository-delivery-pending",
+    sandboxDriverId: "openshell-sandbox",
+  });
+  assert.deepEqual(unloggedFields(pending), []);
+
+  // An ID passes only in its own OCC-assigned format; a command or guidance code only as a short
+  // identifier, never an argument, a path, a token shape or the guidance sentence itself.
+  const rejected = [
+    ["installationId", "ins_production"],
+    ["installationId", configurationId],
+    ["installationId", installationId.replace(/[a-f]/g, (digit) => digit.toUpperCase())],
+    ["installationId", `${installationId}\n`],
+    ["installationId", ` ${installationId}`],
+    ["installationId", { id: installationId }],
+    ["orphanedConfigurationId", installationId],
+    ["orphanedConfigurationId", "agent-config"],
+    ["orphanedConfigurationId", `${configurationId}-extra`],
+    ["orphanedConfigurationId", 7],
+    ["command", "status --writers-stopped"],
+    ["command", "reset-recovery-password /run/secrets/password"],
+    ["command", "ghp_abcdefghijklmnopqrstuvwxyz0123"],
+    ["command", `c${"x".repeat(64)}`],
+    ["hintCode", "Check the controller gateway identity's token file, then deploy again."],
+    ["hintCode", ["sandbox-gateway-identity"]],
+  ];
+  for (const [key, value] of rejected) {
+    const line = occLogLine({ event: "auth-maintain.failed", code: "X", [key]: value });
+    assert.equal(Object.hasOwn(line, key), false, `${key}: ${JSON.stringify(value)}`);
+  }
+  // A code-shaped command passes only on auth:maintain events, whose commands are a fixed list.
+  for (const event of ["worker.completed", "http.completed", "auth-maintainer.failed"]) {
+    assert.equal(Object.hasOwn(occLogLine({ event, command: "status" }), "command"), false, event);
+  }
+});
+
+test("a bootstrap attempt keeps OCC-assigned IDs only in their own format", () => {
+  // The IDs a failed bootstrap names (finding 2246): the Installation and the administrator
+  // Principal and service Principal OCC assigns for it.
+  const ids = {
+    installationId: `ins_${randomUUID()}`,
+    principalId: `prn_${randomUUID()}`,
+    servicePrincipalId: `spn_${randomUUID()}`,
+  };
+  const failed = (attempt) =>
+    occLogLine({ event: "installation.bootstrap-failed", code: "X", attempt }).attempt;
+  const attempt = { ...ids, authAccountId: "abc123", serviceKeyId: "key123" };
+  assert.deepEqual(failed(attempt), attempt);
+
+  const rejected = [
+    ["installationId", "ins_production"],
+    ["installationId", ids.principalId],
+    ["installationId", ids.installationId.toUpperCase()],
+    ["installationId", `${ids.installationId}\n`],
+    ["installationId", 7],
+    ["principalId", "prn_admin"],
+    ["principalId", ids.servicePrincipalId],
+    ["principalId", `${ids.principalId}-extra`],
+    ["servicePrincipalId", "spn_bootstrap"],
+    ["servicePrincipalId", ids.installationId],
+  ];
+  for (const [key, value] of rejected) {
+    const { [key]: _dropped, ...kept } = attempt;
+    assert.deepEqual(
+      failed({ ...attempt, [key]: value }),
+      kept,
+      `${key}: ${JSON.stringify(value)}`,
+    );
   }
 });
 

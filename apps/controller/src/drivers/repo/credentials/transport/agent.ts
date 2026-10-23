@@ -1,6 +1,9 @@
+import { promisify } from "node:util";
+import { gunzip } from "node:zlib";
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import type { RepositoryBackendFactory, Clock } from "../backend-contracts.ts";
+import type { RepositoryServiceFactory, Clock } from "../backend-contracts.ts";
 import type { ServiceConfig } from "../service-contracts.ts";
 import type { ExchangeRef, ExchangeService } from "../internal-contracts.ts";
 import { inspectRequestHead } from "./request.ts";
@@ -19,7 +22,7 @@ function* slices(body: Buffer): Generator<Buffer> {
 export interface AgentHandlerOptions {
   readonly config: ServiceConfig;
   readonly service: ExchangeService;
-  readonly factory: RepositoryBackendFactory;
+  readonly factory: RepositoryServiceFactory;
   readonly trustedUpstreamOrigins: ReadonlySet<string>;
   readonly clock: Clock;
   readonly upstreamCa?: Uint8Array;
@@ -102,10 +105,25 @@ export function createAgentHandler(
       if (parsed.expectContinue) {
         response.writeContinue();
       }
+      // Bind method, resolved upstream, operation, headers and exact validated body.
+      // The digest never includes the Agent bearer or the provider credential.
+      const digest = plan.bindRequestDigest
+        ? createHash("sha256").update(
+            JSON.stringify([
+              plan.method,
+              plan.origin,
+              plan.target,
+              plan.requestHeaders,
+              ...(plan.digestScope ?? []),
+            ]) + "\n",
+          )
+        : undefined;
       let input: Readable | undefined;
+      let upstreamHead = parsed.head;
       if (plan.inputPolicy !== undefined) {
         // Inspect the decoded body before credential use or provider dispatch.
-        if (parsed.head.contentEncoding !== "identity") {
+        const compressed = parsed.head.contentEncoding === "gzip";
+        if (compressed && !(digest && plan.category === "git-fetch")) {
           refuse(400, "unsupported-request");
           return;
         }
@@ -123,8 +141,36 @@ export function createAgentHandler(
           }
           return;
         }
+        if (compressed) {
+          try {
+            // Large native upload-pack negotiations can be gzip encoded. Bound both
+            // representations; authorize and send the identical decoded Git request.
+            body = await promisify(gunzip)(body, {
+              maxOutputLength: plan.limits.inputDecodedBytes,
+            });
+          } catch {
+            sendError(response, 400, "unsupported-request");
+            return;
+          }
+          upstreamHead = {
+            ...parsed.head,
+            contentEncoding: "identity",
+            framing: { kind: "length", bytes: body.length },
+          };
+        }
         const verdict = plan.inputPolicy(body);
-        if (verdict !== true) {
+        if (typeof verdict === "object" && "body" in verdict) {
+          body = Buffer.from(verdict.body);
+          if (body.length > plan.limits.inputDecodedBytes) {
+            sendError(response, 413, "limit-exceeded");
+            return;
+          }
+          upstreamHead = {
+            ...parsed.head,
+            contentEncoding: "identity",
+            framing: { kind: "length", bytes: body.length },
+          };
+        } else if (verdict !== true) {
           if (verdict === false) {
             sendError(response, 400, "unsupported-request");
           } else {
@@ -134,21 +180,31 @@ export function createAgentHandler(
         }
         // One retained copy, written in slices so the TLS sender never queues a
         // second, encrypted copy of a large body at once.
+        digest?.update(body);
         input = Readable.from(slices(body), { objectMode: false });
+      } else if (digest && hasBody) {
+        refuse(400, "unsupported-request");
+        return;
       }
       const sender = createUpstreamSender({
         request,
         ...(input === undefined ? {} : { input }),
         response,
-        head: parsed.head,
+        head: upstreamHead,
         trustedUpstreamOrigins,
         headerBytes: limits.headerBytes,
         headerPairs: limits.headerPairs,
         clock,
         ...(options.upstreamCa === undefined ? {} : { upstreamCa: options.upstreamCa }),
       });
-      const outcome = await service.execute(exchange, sender);
-      if (outcome.kind !== "completed") {
+      const outcome = await service.execute(exchange, sender, digest?.digest("hex"));
+      if (outcome.kind === "recorded") {
+        response.writeHead(outcome.status, {
+          "content-type": "application/json",
+          "cache-control": "no-store",
+        });
+        response.end(JSON.stringify(outcome.body));
+      } else if (outcome.kind !== "completed") {
         sendError(
           response,
           outcome.kind === "not-dispatched" ? 503 : 502,

@@ -4,7 +4,7 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -175,7 +175,7 @@ export async function createConsoleRepositoryLaunchFixture(
     ...controlNamespace,
     status: { phase: "Active" },
   });
-  const repo = new GitHubRepoDriver(
+  const repo = new GitHubRepositoryPolicy(
     {
       id: provider.id,
       client: new UnixRepositoryCredentialControlClient({

@@ -1,16 +1,8 @@
 import type { FastifyError } from "fastify";
 
-export interface ErrorDetail {
-  readonly path: string;
-  readonly code:
-    | "REQUIRED"
-    | "UNKNOWN_FIELD"
-    | "INVALID_TYPE"
-    | "INVALID_FORMAT"
-    | "INVALID_VALUE"
-    | "TOO_LONG"
-    | "TOO_DEEP";
-}
+import type { ErrorDetail } from "@openclaw-enterprise/contracts";
+
+export type { ErrorDetail } from "@openclaw-enterprise/contracts";
 
 export function jsonPointer(segment: string): string {
   return segment.replaceAll("~", "~0").replaceAll("/", "~1");

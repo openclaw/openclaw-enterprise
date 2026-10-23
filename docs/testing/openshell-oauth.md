@@ -6,18 +6,19 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.4`, source commit
-`5a7728c304b5528e954e9ae900cf21f84e1a12b1`, for the gateway, supervisor, and
-static sandbox launcher. Use immutable image digests and gateway/Workspace Helm
-charts from that version. This release includes operator `GetProviderCredentials`
+Select official OpenShell `v0.1.5`, source commit
+`bdb956f2cd65a635f1294fccf1d138d263bf650f`, for the gateway, supervisor, and
+static sandbox launcher. Use the immutable digests of the stable `0.1.5` image
+tags and gateway/Workspace Helm charts from that version. The stable release
+rebuilds its images, so the source-commit image tags select different digests. This release includes operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
 resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 | Component               | Immutable image                                                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8`    |
-| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:aa681d8264af6ee860e38349ed3c76609a51778eb6d0f02743df03787b80a290` |
-| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:ca00c094aeaa60681b8196cda18ab3c5dd5f7d782d4c36798256427b67599070`    |
+| Gateway                 | `ghcr.io/nvidia/openshell/gateway@sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6`    |
+| Supervisor              | `ghcr.io/nvidia/openshell/supervisor@sha256:fabcd01f656e9d23df4386f82e80b4f48b90f3452d7d5c58889007643a069161` |
+| Static sandbox launcher | `ghcr.io/nvidia/openshell/sandbox@sha256:e9adf9ecde328122414ad2ee8c6fc5d5b389e4cf168daf4357c46f5a77d55851`    |
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
@@ -30,11 +31,11 @@ imports these same pins. When installing separately, select all three immutable
 references through `gateway.image`, `supervisor.image`, and `sandboxRuntime.image`.
 Selecting local charts alone does not select those binaries. Record actual launched
 versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins;
-neither qualifies `v0.1.4`. The release update does not establish a fix for the
+neither qualifies `v0.1.5`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `0.1.4-dev.47+g6a6401b9c`, source commit
-`6a6401b9c359b66a3202f584a715fc24c13429d6`.
+The previous selection was `v0.1.4`, source commit
+`5a7728c304b5528e954e9ae900cf21f84e1a12b1`.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
 with its selected `credential_refresh` member, ordinary bearer authentication,

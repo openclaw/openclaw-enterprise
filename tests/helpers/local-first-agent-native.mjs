@@ -16,6 +16,8 @@ const deploymentProgressCodes = new Set([
   "REVISION_IMAGE_PULL_FAILED",
   "WORKSPACE_NODE_PENDING",
   "WORKSPACE_NODE_BINDING_PENDING",
+  "REPOSITORY_GIT_MATERIAL_PENDING",
+  "WORKSPACE_NODE_RECONNECT_PENDING",
   "WORKSPACE_SETUP_RETRYING",
   "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
   "LEASE_EXPIRED",
@@ -193,12 +195,21 @@ async function observeDeployment(observation, deployment, revision, request, sig
   }
 }
 
+// CI keeps only the start of this message. Lead with the probe; its 401 response
+// does not tell us whether credentials were attached when the request was made.
+function failNativeWork(expectation, code, { modelProbe, ...work }) {
+  const observation = {
+    modelProbe,
+    credentialAttachment: modelProbe?.providerStatus === 401 ? "not observed" : undefined,
+    ...work,
+  };
+  assert.fail(`${expectation}: ${failureCategory(code)} ${JSON.stringify(observation)}`);
+}
+
 export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
   if (response.status === "failed") {
     const observation = await observeNativeFailure(diagnostics);
-    assert.fail(
-      `${expectation}: ${failureCategory(response.error?.code)} ${JSON.stringify(observation)}`,
-    );
+    failNativeWork(expectation, response.error?.code, observation);
   }
 }
 
@@ -231,9 +242,7 @@ async function assertNativeRedeployNotFailed(
   } catch {
     // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
   }
-  assert.fail(
-    `${expectation}: ${failureCategory(deployment.error?.code)} ${JSON.stringify(observation)}`,
-  );
+  failNativeWork(expectation, deployment.error?.code, observation);
 }
 
 // Polls the replacement revision until it is active. A failed redeploy fails the test with

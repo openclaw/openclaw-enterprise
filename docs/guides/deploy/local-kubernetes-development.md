@@ -131,7 +131,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.4`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.5`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
@@ -157,6 +157,7 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
+To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
 
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 
@@ -431,6 +432,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.4` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.5` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

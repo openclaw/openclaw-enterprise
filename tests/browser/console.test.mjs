@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
 import {
   describePendingBrowserRequests,
@@ -12,10 +15,12 @@ import {
   apiRequests,
   expectNoText,
   login,
+  loginThroughForm,
   newPage,
   settledFetches,
   settlePageRequests,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
@@ -25,6 +30,48 @@ const defaultCodexPreset = JSON.parse(
 );
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-browser-theme-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await cp(new URL("../../deploy/examples/console-theme/", import.meta.url), directory, {
+    recursive: true,
+  });
+  const fixture = await createConsoleAppFixture(t, {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Theme workflow", { ready: true });
+  await fixture.createAgent(namespace.id, "Theme assistant");
+  const { page } = await newPage(t, fixture);
+  await page.goto(`${fixture.origin}/console/login`);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.title(), "Example Agents");
+  assert.equal(await page.locator(".brand-name").textContent(), "Example Agents");
+  assert.equal(await page.locator(".brand img").getAttribute("src"), "/console/theme/logo.png");
+  assert.equal(
+    await page.evaluate(() =>
+      globalThis
+        .getComputedStyle(globalThis.document.documentElement)
+        .getPropertyValue("--color-accent")
+        .trim(),
+    ),
+    "#2457C5",
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Theme assistant", { exact: true }).click();
+  await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await page.locator(".sidebar nav").waitFor({ state: "visible" });
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator(".sidebar .account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).first().click();
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.locator(".brand-name").textContent(), "Example Agents");
+});
 
 const routeHoldTimeoutMs = 30_000;
 const mobile = {
@@ -311,7 +358,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
 
-  await login(page, fixture, `/console/?namespace=${beta.id}`);
+  // Through the sign-in form: a cold deep link keeps its Namespace across password sign-in.
+  await loginThroughForm(page, fixture, `/console/?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
   assert.equal(
@@ -382,11 +430,14 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.deepEqual(writeRequests, []);
   // List rows read revision history for Latest deployment and advisory permissions for their
   // Stop and Delete icons. Browsing these draft Agents must not read their detail or invoke any
-  // deployment operation.
+  // deployment operation. The request log also includes the shell's deployment modules.
   const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
   assert.deepEqual(
     [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
     [
+      "GET /console/agents/deployment-diagnostics.mjs",
+      "GET /console/agents/deployment-evidence.mjs",
+      "GET /console/agents/deployment-recovery.mjs",
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/permissions`,
       `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
       `GET /namespaces/${beta.id}/agents/${betaAgent.id}/permissions`,
@@ -2015,10 +2066,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
       { exact: true },
     )
     .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Create Namespace", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Create Namespace", exact: true }));
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Switch Namespace", exact: true }).count(),
@@ -2082,7 +2130,10 @@ test("console clears private content after session expiry, access revocation, an
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);
   }
-  await page.reload();
+  // The list may still be reading its Agent rows. A row read refused after expiry shows the
+  // expired sign-in itself and moves to /console/login, where a reload is an ordinary sign-in.
+  // Load the private page again, so either way the console must find the expired session.
+  await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /Revoked agent/);
@@ -2452,8 +2503,13 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Expired session", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  // The button shows before the Namespace's Preset read returns. If that read reached the API
+  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
+  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
+  await waitForIdleFetches(page);
   // Expire the actual session: the controller must reject it before returning to login.
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);

@@ -1,9 +1,14 @@
 import {
+  DriverConfigurationsResponse,
+  ConfigurationValidationResponse,
+} from "./driver-configurations.ts";
+import {
   SandboxPolicyParams,
   SandboxPolicyRevisionParams,
   SandboxPolicyResponse,
   SandboxPolicyViewResponse,
   SandboxPolicyUpdateBody,
+  SandboxPolicyValidateBody,
   SandboxPolicyApplyBody,
   SandboxPolicyEditingBody,
   SandboxPolicyRecommendationsResponse,
@@ -80,6 +85,7 @@ import {
   AgentProvisioningStatusResponse,
   AgentRuntimeCredentialResponse,
   AgentRuntimeImagesResponse,
+  AgentHarnessStatusResponse,
   AgentCallerPermissionsResponse,
   NamespaceCallerPermissionsResponse,
   AgentResponse,
@@ -114,18 +120,6 @@ import {
 
 const ErrorResponseRef = Type.Ref("ErrorResponse");
 const SecretResponseRef = Type.Ref("SecretResponse");
-const RepositoryOptionsQuery = Type.Object(
-  {
-    descriptionRefs: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-        maxLength: 2579,
-        description: "Up to 20 visible repository references to enrich with provider descriptions.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
 const CredentialSourceResponseRef = Type.Ref("CredentialSourceResponse");
 
 const readErrors = {
@@ -1267,7 +1261,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for Agent creation in one Namespace",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: NamespaceParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1291,7 +1285,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for updating one Agent",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: AgentParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1337,6 +1331,96 @@ export const occApiRoutes = [
     },
   },
   {
+    operationId: "listAgentStandingApprovals",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals",
+    action: "openclaw.agents.repository_approvals.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read attributable repository approvals and removed generations for one Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              id: Type.String(),
+              repositoryRef: Type.String(),
+              profile: Type.String(),
+              generation: Type.Integer({ minimum: 1 }),
+              scopeFingerprint: Type.String(),
+              status: Type.Union([Type.Literal("active"), Type.Literal("removed")]),
+              approvedBy: Type.String(),
+              createdAt: Type.String(),
+              revokedAt: Type.Optional(Type.String()),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "listAgentStandingApprovalScopes",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approval-scopes",
+    action: "openclaw.agents.repository_approval_scopes.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Review resolved repository scope before explicitly approving it",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              repositoryRef: Type.String(),
+              binding: Type.Record(Type.String(), Type.Unknown()),
+              scope: Type.Record(Type.String(), Type.Unknown()),
+              scopeFingerprint: Type.String(),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "removeAgentStandingApproval",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals/:approvalId/remove",
+    action: "openclaw.agents.repository_approvals.remove",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Remove repository approval independently of configuration or runtime cleanup",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        {
+          namespaceId: NamespaceId,
+          agentId: AgentId,
+          approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+        },
+        { additionalProperties: false },
+      ),
+      body: Type.Object(
+        { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
+        { additionalProperties: false },
+      ),
+      response: { 204: Type.Null(), ...createErrors },
+    },
+  },
+  {
     operationId: "updateAgent",
     method: "PATCH",
     path: "/namespaces/:namespaceId/agents/:agentId",
@@ -1367,6 +1451,54 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       response: { 200: AgentListResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "discoverInstallationConfigurations",
+    method: "GET",
+    path: "/installation/driver-configurations",
+    action: "openclaw.installation.driver_configurations.read",
+    iamAction: "administer",
+    resourceKind: "installation",
+    authorizationTarget: "installation",
+    summary: "Inspect selected Driver startup configuration schemas",
+    tags: ["Installation"],
+    schema: {
+      querystring: EmptyQuery,
+      response: { 200: DriverConfigurationsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "discoverAgentConfigurations",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/driver-configurations",
+    action: "openclaw.agents.driver_configurations.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Discover authorized Agent Driver configuration contributions",
+    tags: ["Agents"],
+    schema: {
+      params: AgentParams,
+      querystring: EmptyQuery,
+      response: { 200: DriverConfigurationsResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "validateAgentSandboxPolicy",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/sandbox-policy/:facet/validate",
+    action: "openclaw.agents.sandbox_policy.validate",
+    iamAction: "manage_policy",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Preview Agent network policy admission without saving or applying",
+    tags: ["Agents"],
+    schema: {
+      params: SandboxPolicyParams,
+      querystring: EmptyQuery,
+      body: SandboxPolicyValidateBody,
+      response: { 200: ConfigurationValidationResponse, ...createErrors },
     },
   },
   {
@@ -1555,6 +1687,22 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 200: AgentRuntimeImagesResponse, ...readErrors },
+    },
+  },
+  {
+    operationId: "getAgentHarnessStatus",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/harness-status",
+    action: "openclaw.agents.harness_status.read",
+    iamAction: "read",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentHarnessStatusResponse, ...readErrors },
     },
   },
   {

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,17 +10,11 @@ import {
   createGitHubAppRepositoryObserver,
   loadGitHubAppObserverInput,
 } from "../helpers/github-app-observer.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repository = "fixture-owner/fixture-repo";
 const repositoryId = 789;
-
-async function listen(server) {
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  return `http://127.0.0.1:${server.address().port}`;
-}
 
 async function readRequestJson(request) {
   let input = "";
@@ -41,8 +34,7 @@ async function fixture(
     stallGetBody = false,
   } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "github-app-observer-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "github-app-observer-");
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   await writeFile(
     join(directory, "private-key.pem"),
@@ -72,7 +64,6 @@ async function fixture(
   await chmod(directory, 0o700);
   const seen = [];
   const issuedTokens = [];
-  const sockets = new Set();
   const server = createServer(async (request, response) => {
     try {
       seen.push({
@@ -136,17 +127,7 @@ async function fixture(
       response.end(JSON.stringify({ message: error.message }));
     }
   });
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  t.after(() => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    return new Promise((resolve) => server.close(resolve));
-  });
-  const origin = await listen(server);
+  const origin = `http://127.0.0.1:${await listen(t, server)}`;
   return { directory, origin, seen, issuedTokens };
 }
 

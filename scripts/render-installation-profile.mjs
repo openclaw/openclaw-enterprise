@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
+import { realpathSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
@@ -18,6 +19,10 @@ import {
 } from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
+import {
+  preparedRepositoryBackend,
+  preparedRepositoryInstallation,
+} from "./lib/prepared-repository-installation.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -101,9 +106,12 @@ const googleHostedDomain =
 const chatGptWorkspaceId =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+// A refusal that writes no preflight. The CLI prints it to stderr and exits 1;
+// in-process callers of renderInstallationProfile receive it as a rejection.
+export class RenderRefusal extends Error {}
+
 function fail(message) {
-  process.stderr.write(`render-installation-profile: ${message}\n`);
-  process.exit(1);
+  throw new RenderRefusal(message);
 }
 
 function usage() {
@@ -139,15 +147,7 @@ function parseArgs(argv) {
       fail(`unsupported argument ${arg}.\n\n${usage()}`);
     }
   }
-  if (!allowedProfiles.has(parsed.profile)) {
-    fail("--profile must be one of: openclaw, codex.");
-  }
-  if (parsed.input === undefined) {
-    fail("--input is required.");
-  }
-  if (parsed.outDir === undefined) {
-    fail("--out-dir is required.");
-  }
+  // renderInstallationProfile checks the parsed arguments, for in-process callers too.
   return parsed;
 }
 
@@ -264,10 +264,6 @@ function toYaml(value, indent = 0) {
 
 function renderYaml(value) {
   return `${toYaml(value)}\n`;
-}
-
-async function writeYaml(path, value) {
-  await writeFile(path, renderYaml(value));
 }
 
 function sha256Hex(value) {
@@ -1210,6 +1206,8 @@ function buildInput(rawInput, diagnostics) {
     "repository",
     [
       "enabled",
+      "authority",
+      "preparedCustodySecretName",
       "image",
       "backendId",
       "registryConfigMapName",
@@ -1367,10 +1365,12 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
       ]),
     ...(repository.enabled
       ? [
-          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
-            `repository.${key}`,
-            repository[key],
-          ]),
+          ...[
+            "serviceConfigSecretName",
+            "appKeySecretName",
+            "preparedCustodySecretName",
+            "tlsSecretName",
+          ].map((key) => [`repository.${key}`, repository[key]]),
           ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
         ]
       : []),
@@ -2038,9 +2038,20 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   if (repositoryEnabled) {
-    const repoDriverId = "repository-credentials";
+    if (repository.authority !== "prepared-git") {
+      diagnostics.errors.push(
+        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
+      );
+    }
     values.repositoryCredentials = {
       enabled: true,
+      authority: "prepared-git",
+      preparedCustodySecretName: asString(
+        repository,
+        ["repository", "preparedCustodySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       image: asString(repository, ["repository", "image"], diagnostics, {
         pattern: digestImage,
         validate: pullableImageReference,
@@ -2091,24 +2102,10 @@ function buildRendered(profile, parsed, diagnostics) {
         description: "an IPv4 CIDR",
       }),
     };
-    installation.backend.push({
-      id: values.repositoryCredentials.backendId,
-      type: "github",
-      configuration: {
-        registryPath: "/etc/openclaw/repository-registry/registry.json",
-      },
-      drivers: {
-        repo: repoDriverId,
-      },
-    });
-    installation.drivers.repo = {
-      id: repoDriverId,
-      configuration: {
-        controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        sessionDurationSeconds: 86_400,
-        publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-      },
-    };
+    installation.backend.push(
+      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
+    );
+    installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
       podLabels: {
@@ -2291,46 +2288,84 @@ async function writePreflight(outDir, profile, diagnostics, output = {}) {
   return preflight;
 }
 
-const args = parseArgs(process.argv.slice(2));
-const outDir = resolve(args.outDir);
-await mkdir(outDir, { recursive: true });
-const output = {
-  values: resolve(outDir, "values.yaml"),
-  installation: resolve(outDir, "installation.yaml"),
-  preflight: resolve(outDir, "preflight.json"),
-};
-// A failed rerender must not expose artifacts or a success report from a prior run.
-await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
-const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
-const [profile, rawInput] = await Promise.all([
-  readProfile(args.profile),
-  readJson(resolve(args.input), "input"),
-]);
-const parsed = buildInput(rawInput, diagnostics);
-const { values, installation } = buildRendered(profile, parsed, diagnostics);
-
-if (diagnostics.errors.length === 0) {
-  await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
-}
-
-if (diagnostics.errors.length === 0) {
-  const installationYaml = renderYaml(installation);
-  values.controlPlane = {
-    ...(values.controlPlane ?? {}),
-    installationChecksum: sha256Hex(installationYaml),
+// Renders one profile in-process: writes the same files as the CLI and returns its
+// preflight summary. `args` takes the CLI's parsed shape: { profile, input, outDir }.
+// It never writes to stdout or stderr or exits; a refusal without a preflight rejects.
+export async function renderInstallationProfile(args) {
+  if (!allowedProfiles.has(args.profile)) {
+    fail("--profile must be one of: openclaw, codex.");
+  }
+  if (args.input === undefined) {
+    fail("--input is required.");
+  }
+  if (args.outDir === undefined) {
+    fail("--out-dir is required.");
+  }
+  const outDir = resolve(args.outDir);
+  await mkdir(outDir, { recursive: true });
+  const output = {
+    values: resolve(outDir, "values.yaml"),
+    installation: resolve(outDir, "installation.yaml"),
+    preflight: resolve(outDir, "preflight.json"),
   };
-  await Promise.all([
-    writeYaml(output.values, values),
-    writeFile(output.installation, installationYaml),
+  // A failed rerender must not expose artifacts or a success report from a prior run.
+  await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
+  const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
+  const [profile, rawInput] = await Promise.all([
+    readProfile(args.profile),
+    readJson(resolve(args.input), "input"),
   ]);
+  const parsed = buildInput(rawInput, diagnostics);
+  const { values, installation } = buildRendered(profile, parsed, diagnostics);
+
+  if (diagnostics.errors.length === 0) {
+    await resolveHostedDiscoveryCidrs(profile, parsed, values, diagnostics);
+  }
+
+  if (diagnostics.errors.length === 0) {
+    const installationYaml = renderYaml(installation);
+    values.controlPlane = {
+      ...(values.controlPlane ?? {}),
+      installationChecksum: sha256Hex(installationYaml),
+    };
+    // Render both before writing either, so a render error leaves neither file behind.
+    const valuesYaml = renderYaml(values);
+    await Promise.all([
+      writeFile(output.values, valuesYaml),
+      writeFile(output.installation, installationYaml),
+    ]);
+  }
+  return writePreflight(
+    outDir,
+    profile.name,
+    diagnostics,
+    diagnostics.errors.length === 0 ? output : { preflight: output.preflight },
+  );
 }
-const preflight = await writePreflight(
-  outDir,
-  profile.name,
-  diagnostics,
-  diagnostics.errors.length === 0 ? output : { preflight: output.preflight },
-);
-process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
-if (!preflight.ok) {
-  process.exit(1);
+
+// Run the CLI only when this file is the entry point, not when a test imports it.
+// Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
+function startedAsEntryPoint() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    // No argv[1], or not a file (node --eval with arguments): this module was imported.
+    return false;
+  }
+}
+const isEntryPoint = import.meta.main ?? startedAsEntryPoint();
+if (isEntryPoint) {
+  try {
+    const preflight = await renderInstallationProfile(parseArgs(process.argv.slice(2)));
+    process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
+    if (!preflight.ok) {
+      process.exit(1);
+    }
+  } catch (error) {
+    if (!(error instanceof RenderRefusal)) {
+      throw error;
+    }
+    process.stderr.write(`render-installation-profile: ${error.message}\n`);
+    process.exit(1);
+  }
 }

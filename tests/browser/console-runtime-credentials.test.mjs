@@ -16,6 +16,7 @@ import {
   nonAuthWriteRequests,
   secretOptionLabel,
   selectSecret,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -95,7 +96,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     0,
   );
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 
   // A one-click first deployment still requires this Agent's model Secret grant.
   const originalBindings = [...fixture.policy.bindings];
@@ -118,7 +119,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
       hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
     })
     .waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
@@ -141,7 +142,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     .getByRole("alert")
     .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
     .waitFor();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await page.unroute(deployUrl);
 
   const deployResponse = page.waitForResponse(
@@ -263,7 +264,7 @@ test("Deploy names a 503 refused before admission and keeps Deploy available", a
   ]) {
     answer = { status, error };
     const label = JSON.stringify(answer);
-    await deploy.and(page.locator(":enabled")).waitFor();
+    await waitForEnabled(deploy);
     await deploy.click();
     const alert = page.getByRole("alert").filter({ hasText: text });
     await alert.waitFor();
@@ -482,7 +483,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;
   await page.reload();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await deploy.click();
   await page.getByText(/Outcome unknown/).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -588,7 +589,7 @@ test("bound Slack credential fields show Secret references without reading value
   await waitForInputValue(appToken, secretOptionLabel(appSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("Slack credential replacement switches only selected Secret references", async (t) => {
@@ -647,7 +648,7 @@ test("Slack credential replacement switches only selected Secret references", as
     secretOptionLabel(replacementAppSecret),
   );
   await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("partially bound Slack credentials save only the missing token", async (t) => {
@@ -715,7 +716,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [botSecret.id]);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("missing Slack credential fields require both Secret references before saving", async (t) => {
@@ -784,7 +785,7 @@ test("missing Slack credential fields require both Secret references before savi
     SLACK_APP_TOKEN: envBinding(appSecret),
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("Credentials shows issued-account denial only while that source is selected", async (t) => {
