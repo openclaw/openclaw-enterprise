@@ -562,6 +562,7 @@ interface PluginRuntimeSnapshot {
   readonly name: string;
   readonly runtime: PluginRuntimeSpec;
   readonly entrypoint: string;
+  readonly workspaceEntrypoint: string;
 }
 
 interface PluginRuntimeStatus {
@@ -6775,6 +6776,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             revision,
             nodeSetupFile,
             workspaceSetup,
+            pluginRuntime?.workspaceEntrypoint,
           );
         } else {
           this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
@@ -7617,6 +7619,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 revision,
                 nodeSetupFile,
                 workspaceSetup,
+                pluginRuntime?.workspaceEntrypoint,
               );
             } else {
               this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup);
@@ -11611,6 +11614,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     setupFile: boolean,
     workspaceSetup: WorkspaceSetup | undefined,
+    workspaceEntrypoint = AGENT_WITH_NODE_ENTRYPOINT,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, setupFile);
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
@@ -11643,10 +11647,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
               ? "/home/node/workspace"
               : { environment: "OPENCLAW_WORKSPACE_DIR" },
-          )) +
-        (this.hasProtectedCodexAdmission(revision)
-          ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-          : AGENT_WITH_NODE_ENTRYPOINT),
+          )) + workspaceEntrypoint,
     );
   }
 
@@ -13790,12 +13791,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (runtime === undefined) {
       return undefined;
     }
+    const protectedCodex = this.hasProtectedCodexAdmission(revision);
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
-      entrypoint: this.hasProtectedCodexAdmission(revision)
-        ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT
-        : AGENT_RUNTIME_ENTRYPOINT,
+      entrypoint: protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+      workspaceEntrypoint: protectedCodex
+        ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : AGENT_WITH_NODE_ENTRYPOINT,
     };
   }
 
