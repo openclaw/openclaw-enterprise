@@ -7,15 +7,18 @@ import {
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
 import {
   access,
   appendFile,
   chmod,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   readlink,
+  rename,
   rm,
   stat,
   symlink,
@@ -72,6 +75,7 @@ function revision(driver, number = 1, agentId = "agent-ssh-1", configuration = {
     configurationId: `configuration-${agentId}`,
     configurationKind: "agent",
     configurationGeneration: number,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(
       {
         gateway: { mode: "local" },
@@ -556,7 +560,8 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
   assert.equal(f.calls.length, 0);
   assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
   const marker = join(f.nsDir, "namespace.json");
-  assert.deepEqual(await json(marker), {
+  const original = await json(marker);
+  assert.deepEqual(original, {
     driverId: "compute-ssh",
     implementation: "occ/ssh",
     namespaceId: tenant.id,
@@ -565,25 +570,23 @@ test("SSH Namespace preparation creates exact ownership, rejects adoption, and c
   assert.equal((await stat(marker)).mode & 0o777, 0o600);
   assert.deepEqual(hooks, [tenant.id]);
   assert.throws(() => f.driver.setLifecycleDrivers([]), /cannot change/);
-  for (const key of ["driverId", "implementation", "namespaceId", "namespaceName"]) {
-    const original = await json(marker);
-    await writeFile(marker, JSON.stringify({ ...original, [key]: "foreign" }));
+  // Replace the directory entry; never follow an unexpected link to change its target.
+  const replaceMarker = async (value) => {
+    const replacement = marker + ".replacement";
+    await writeFile(replacement, JSON.stringify(value), { flag: "wx", mode: 0o600 });
+    await rename(replacement, marker);
+  };
+  for (const key of Object.keys(original)) {
+    await replaceMarker({ ...original, [key]: "foreign" });
     assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
     assert.equal((await f.driver.deleteNamespace(tenant)).failure, "permanent");
     assert.equal((await json(marker))[key], "foreign");
-    await writeFile(marker, JSON.stringify(original));
+    await replaceMarker(original);
   }
   await rm(marker);
   assert.equal((await f.driver.ensureNamespace(tenant)).failure, "permanent");
-  await writeFile(
-    marker,
-    JSON.stringify({
-      driverId: "compute-ssh",
-      implementation: "occ/ssh",
-      namespaceId: tenant.id,
-      namespaceName: tenant.name,
-    }),
-  );
+  await assert.rejects(access(marker), { code: "ENOENT" });
+  await replaceMarker(original);
   const unowned = revision(f.driver, 1, "agent-ssh-unowned");
   const account = runtimeAccountName(tenant, unowned.agentId, f.configured.runtime.user);
   await Promise.all([
@@ -651,8 +654,19 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
   // Runtime auth is operator-owned. Even an invalid key must not gate process readiness.
   const operatorEnv = join(dir, "env");
   const operatorContents = "OPENAI_API_KEY=invalid-operator-key\n";
-  await writeFile(operatorEnv, operatorContents, { mode: 0o600 });
-  const operatorBefore = await stat(operatorEnv);
+  await writeFile(operatorEnv, operatorContents, { flag: "wx", mode: 0o600 });
+  // Read identity and contents from one descriptor; reopen the name at each observation.
+  const inspectOperatorEnv = async () => {
+    const file = await open(operatorEnv, constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const { dev, ino, mode, mtimeNs } = await file.stat({ bigint: true });
+      assert.equal(await file.readFile("utf8"), operatorContents);
+      return { dev, ino, mode, mtimeNs };
+    } finally {
+      await file.close();
+    }
+  };
+  const operatorBefore = await inspectOperatorEnv();
   await f.driver.activateRevision(rev, { secretEnvironment: [] });
   assert.equal((await stat(join(dir, "served.json"))).mode & 0o777, 0o600);
   assert.deepEqual(await json(join(dir, "served.json")), { revisionId: rev.id });
@@ -661,7 +675,7 @@ test("SSH embedded revisions stop without deleting snapshots or persistent Agent
     await readFile(join(dir, "gateway-password.env"), "utf8"),
     /^OPENCLAW_GATEWAY_PASSWORD=[a-f0-9]{64}\n$/,
   );
-  assert.equal(await readFile(operatorEnv, "utf8"), operatorContents);
+  assert.deepEqual(await inspectOperatorEnv(), operatorBefore);
   assert.equal(
     await readFile(join(f.units, f.unit(rev)), "utf8"),
     `[Unit]
@@ -717,11 +731,7 @@ WantedBy=multi-user.target
   await f.driver.activateRevision(replacement);
   await f.driver.retireRevision(rev);
   await f.driver.stopRevision(replacement);
-  const operatorAfter = await stat(operatorEnv);
-  assert.equal(await readFile(operatorEnv, "utf8"), operatorContents);
-  assert.equal(operatorAfter.ino, operatorBefore.ino);
-  assert.equal(operatorAfter.mode, operatorBefore.mode);
-  assert.equal(operatorAfter.mtimeMs, operatorBefore.mtimeMs);
+  assert.deepEqual(await inspectOperatorEnv(), operatorBefore);
   assert.ok(
     (await readFile(join(f.state, "readyz.log"), "utf8"))
       .trim()

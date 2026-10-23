@@ -8,7 +8,11 @@
       "path": "tests/integration/postgres-migration-compatibility.test.mjs",
       "expectedTests": [
         "First installation requires empty migration history under the migration lock",
+        "Canonical migration commands preserve main data and serialize fresh/repeat runners",
+        "Canonical migration refuses unexplained histories before mutation",
+        "Credential Proxy preview receipts require the exact history before the shared migration",
         "Canonical repository-prefix upgrade retains exact attempt cleanup context",
+        "External ChatGPT migration rejects retired OAuth state and admits only source metadata",
         "Drizzle generates repository schema migrations without redundant regeneration",
         "Migration rejects legacy active_runtime state without changing persisted rows",
         "Migration rejects legacy harness_revision state without changing persisted rows",

@@ -1,12 +1,44 @@
 # Earlier breaking-change notices
 
 These [breaking-change notices](breaking-changes.md) are older than the ones
-on that page and newer than the
+on that page and in the
+[notices before 2026-10-15](breaking-changes-before-2026-10-15.md), and newer than the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md). They still
 apply when you upgrade from a source commit older than their date. Entries are
 newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
+
+## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
+
+**What breaks.** Profile preflight refuses an uppercase letter in the repository
+path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
+which Kubernetes refused to pull; an uppercase registry host or tag still
+passes. The chart (`images.*`, `repositoryCredentials.image`,
+`logging.collector.image`),
+`prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
+startup for the Compute gateway and Agent images refuse it too, and any other
+reference Kubernetes cannot parse (`..` or an empty path component, a tag over
+128 characters, non-ASCII letters); all of them accept an IPv6 registry host
+(`[fd00::1]:5000/...`). Preflight, the chart, API
+startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
+host (`https://@host`), which Node silently dropped; preflight refuses it in
+`controlPlane.observabilityUrl`, and API and worker startup in
+`observability.url`.
+
+**Who is affected.** Profiles, values, tool flags or Installation YAML that use
+those spellings.
+
+**How to tell.** Preflight, the chart and the tools report `... repository path
+must be lowercase`, the field's image reference message, or the URL field's
+absolute-URL message. API startup logs
+`AUTH_BASE_URL_INVALID` or `OBSERVABILITY_URL_INVALID`. Current API and worker
+startup report `DRIVER_CONFIGURATION_INVALID` with `/images/gateway` or
+`/images/agent` details for a refused runtime image; see the
+[production startup flow](../../flows/production-startup.md).
+
+**Steps.** Fix the image reference (lowercase its repository path, drop what
+Kubernetes cannot parse), or delete the `@`, then render or restart again.
 
 ## 2026-10-13: channel proxy hosts must name one proxy address
 

@@ -6663,6 +6663,20 @@ async function assertOpenShellGatewayOutage(topology) {
   let outageSecretId;
   let redeployed;
   let failure;
+  const refreshSources = [
+    ...(topology.refreshSources?.bound ?? []),
+    ...(topology.refreshSources === undefined ? [] : [topology.refreshSources.unbound]),
+  ];
+  const refreshPath = (refreshSource) =>
+    `/namespaces/${namespaceId}/credential-sources/${refreshSource.id}`;
+  // When each OAuth2 source is next due, by the gateway's own clock, before it stops. Compared
+  // with the restarted container's start, it shows whether the first startup sweep had work.
+  const dueBeforeOutage = new Map();
+  for (const refreshSource of refreshSources) {
+    const read = await request("GET", refreshPath(refreshSource));
+    dueBeforeOutage.set(refreshSource.id, read.data?.status?.refresh?.nextRefreshAt);
+  }
+  let gatewayRestartedAt;
   await scale(0);
   try {
     await waitFor(
@@ -6762,6 +6776,8 @@ async function assertOpenShellGatewayOutage(topology) {
   try {
     await scale(1);
     await waitForOpenShellGateway(placement);
+    gatewayRestartedAt = (await gatewayPods())[0]?.status?.containerStatuses?.[0]?.state?.running
+      ?.startedAt;
     await topology.restartGatewayForward();
   } catch (error) {
     failure ??= error;
@@ -6826,42 +6842,63 @@ async function assertOpenShellGatewayOutage(topology) {
     assert.equal(JSON.stringify(turn).includes(modelCredential), false);
     observed.recovery.turn = new RegExp(nonce).test(turn.assistant);
   }
-  // The gateway mints OAuth2 tokens itself. Its first refresh sweep after a restart runs before
-  // it has loaded its operator namespace allowlist, so a source due then fails with
-  // refresh_configuration_invalid, which OpenShell retries only after an hour. A forced mint,
-  // the operator's documented recovery, must restore the token at once.
-  // TODO(NVIDIA/OpenShell#4526): once OpenShell retries that failure promptly, require
-  // each source to recover without the rotation.
-  const refreshSources = [
-    ...(topology.refreshSources?.bound ?? []),
-    ...(topology.refreshSources === undefined ? [] : [topology.refreshSources.unbound]),
-  ];
-  observed.recovery.refresh = [];
-  for (const refreshSource of refreshSources) {
-    const refreshPath = `/namespaces/${namespaceId}/credential-sources/${refreshSource.id}`;
-    const settled = await waitFor(
-      `${refreshSource.type} refresh state after the gateway outage`,
-      async () => {
-        const read = await request("GET", refreshPath);
-        const refresh = read.data?.status?.refresh;
-        return refresh !== undefined && refresh.state !== "pending" ? refresh : undefined;
-      },
-      120_000,
-    );
-    let rotated = null;
-    if (settled.state !== "ready") {
-      const rotation = await request("POST", `${refreshPath}/rotate`);
-      rotated = {
-        httpStatus: rotation.status,
-        state: rotation.data?.status?.refresh?.state ?? null,
+  // The gateway mints OAuth2 tokens itself, and its first refresh sweep runs at startup. Since
+  // NVIDIA/OpenShell#4527 that sweep waits for the operator namespace listing and reports a
+  // missing listing as retryable, so each source must mint again on its own, without a
+  // rotation. A `refresh_configuration_invalid` failure means the startup race of #4526 is back.
+  // OpenShell persists refresh status, so a `ready` read alone can describe a mint from before
+  // the restart. The first post-restart `lastRefreshAt` is the baseline; only a `ready` read
+  // with a strictly later one, both from the gateway's clock, proves a fresh mint. These
+  // sources re-mint about every minute (Keycloak's 360 s tokens, OCC's 300 s refresh_before),
+  // and a retryable failure is retried after 60 seconds, so all three share one deadline.
+  observed.recovery.refresh = await Promise.all(
+    refreshSources.map(async (refreshSource) => {
+      const states = [];
+      const dueBefore = dueBeforeOutage.get(refreshSource.id);
+      let baseline;
+      let fresh = false;
+      try {
+        await waitFor(
+          `${refreshSource.type} to mint a fresh token after the gateway restart`,
+          async () => {
+            const read = await request("GET", refreshPath(refreshSource));
+            const refresh = read.data?.status?.refresh;
+            if (refresh === undefined || refresh.state === "pending") {
+              return undefined;
+            }
+            const state = `${refresh.state}:${refresh.failureCode ?? "-"}`;
+            if (states.at(-1) !== state) {
+              states.push(state);
+            }
+            if (refresh.failureCode === "refresh_configuration_invalid") {
+              return true;
+            }
+            if (refresh.lastRefreshAt === undefined) {
+              return undefined;
+            }
+            baseline ??= refresh.lastRefreshAt;
+            fresh =
+              refresh.state === "ready" &&
+              refresh.failureCode === undefined &&
+              Date.parse(refresh.lastRefreshAt) > Date.parse(baseline);
+            return fresh ? true : undefined;
+          },
+          300_000,
+        );
+      } catch (error) {
+        failure ??= error;
+      }
+      return {
+        type: refreshSource.type,
+        states,
+        fresh,
+        dueAtRestart:
+          dueBefore === undefined || gatewayRestartedAt === undefined
+            ? null
+            : Date.parse(dueBefore) <= Date.parse(gatewayRestartedAt),
       };
-    }
-    observed.recovery.refresh.push({
-      type: refreshSource.type,
-      afterRestart: `${settled.state}:${settled.failureCode ?? "-"}`,
-      rotated,
-    });
-  }
+    }),
+  );
   // A registration whose gateway call failed may stay listed as `deleting`; deleting it again
   // removes it once the gateway answers and the creation fence has passed.
   const leftover = listed.data?.find(({ name }) => name === registrationName);
@@ -6904,14 +6941,9 @@ async function assertOpenShellGatewayOutage(topology) {
   );
   assert.equal(observed.recovery.sourceState, "ready");
   assert.equal(observed.recovery.turn, true, "the new revision must serve a model turn.");
-  for (const { type, afterRestart, rotated } of observed.recovery.refresh) {
-    assert.ok(
-      ["ready:-", "failed:refresh_configuration_invalid"].includes(afterRestart),
-      `${type} reported an unexpected refresh state after the gateway restart: ${afterRestart}`,
-    );
-    if (rotated !== null) {
-      assert.deepEqual(rotated, { httpStatus: 200, state: "ready" }, `${type} rotation`);
-    }
+  for (const { type, states, fresh } of observed.recovery.refresh) {
+    assert.equal(states.at(-1), "ready:-", `${type} refresh after the gateway restart`);
+    assert.equal(fresh, true, `${type} must mint a token after the gateway restart`);
   }
   // Once the outage registration is gone, its Secret is unbound and can be deleted.
   if (outageSecretId !== undefined) {

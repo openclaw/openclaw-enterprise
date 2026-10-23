@@ -14,7 +14,9 @@ and generated CSS. API, session, credential, and runtime state remain simulated.
    and keyboard focus, then navigate to an Agent.
 2. Open Desktop and Mobile. Operate navigation and the mobile drawer; verify the
    full name remains accessible. Navigation logos render at 20×20 pixels; sign-in
-   logos render at 40×40. Long Name must wrap without covering controls.
+   logos render at 40×40. In Long Name, the navigation drawer wraps the full
+   name. The phone's top bar truncates it with an ellipsis so the menu and
+   account controls stay reachable; the full name remains in the drawer.
 3. Inspect Empty, Denied, Loading, Missing Credentials, and Public Error for text
    readability, visible status labels, and consistent branding.
 4. Capture final desktop/mobile screenshots and a short sign-in/navigation video

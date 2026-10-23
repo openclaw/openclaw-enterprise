@@ -67,6 +67,10 @@ export const SandboxPolicyViewResponse = Type.Object(
         policy: SandboxPolicySchema,
         configuration: Type.Optional(DriverConfigurationDescriptorSchema),
         editingEnabled: Type.Boolean(),
+        protectedExecution: Type.Boolean({
+          description:
+            "True while the active revision or the next deploy runs under protected execution. Saving network policy additions is then refused with SANDBOX_POLICY_PROTECTED_EXECUTION; saving an empty policy stays allowed.",
+        }),
         ceiling: SandboxNetworkGrantsSchema,
         defaults: Type.Union([Type.Null(), Type.Record(Type.String(), Type.Unknown())]),
         defaultsRevisionId: Type.Optional(RevisionId),

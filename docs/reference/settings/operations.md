@@ -51,17 +51,8 @@ Classify a database without applying migrations:
 pnpm db:migrate --check
 ```
 
-An exit-0 `migration.checked` record reports one reviewed history shape:
-`empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
-`repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, `backendTerminology`, `prePluginApprovers`,
-`preBrokerReceipts`, `preAgentDeletion`, `preDeploymentProgress`,
-`preHumanAuthentication`, `preAgentDeletionTakeover`,
-`preNamespaceDeletionTakeover`, `preRepositoryAccess`, `preRestrictionReadLogs`,
-`preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
-`preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
-`preCodexPatSources`, `preAgentCredentialSources`,
-`preCredentialWithdrawalRequester`, or `completed`.
+Exit 0 and `migration.checked` identify the recognized history: `empty`, a stage
+below, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -90,10 +81,12 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`. `completed` is the current canonical
-history with all receipts, including `0051_credential_withdrawal_requester`.
-The source manifest is
-[`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
+through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
+`preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
+`0062_credential_delivery_custody`). Migration brings each to `completed` with 63 receipts.
+The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
+accepted source hashes and catalogs. Intermediate pre-merge preview histories
+are unsupported; do not delete or relabel their receipts.
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
 `USAGE` privileges, with no objects or unexpected default privileges. An empty
 stock Drizzle ledger left by a rolled-back first migration is also supported.
@@ -345,7 +338,7 @@ dedicated role:
 docker compose -f compose.postgres.yaml up -d --wait
 
 export OCC_MIGRATION_DATABASE_URL=postgresql://occ_migrator:occ-migrator-local@127.0.0.1:55432/openclaw_enterprise
-node_modules/.bin/drizzle-kit migrate
+pnpm db:migrate
 ```
 
 Add the application connection URL to the [required development controller environment](development.md#required-development-controller-environment), then initialize before starting the same server manually. Use an

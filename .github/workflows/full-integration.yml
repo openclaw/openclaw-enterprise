@@ -19,6 +19,7 @@ on:
           - openshell
           - helper-timeout
           - dev-up-k3d
+          - skipper-prepared-git-installed
           - logging-collector
           - k3d-otel
           - all
@@ -37,7 +38,7 @@ permissions:
   deployments: read
 
 concurrency:
-  group: ${{ inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || 'full-integration' }}
+  group: ${{ inputs.lane == 'dev-up-k3d' && format('full-integration-dev-up-k3d-{0}', github.ref) || inputs.lane == 'skipper-prepared-git-installed' && format('full-integration-skipper-prepared-git-installed-{0}', github.ref) || 'full-integration' }}
   cancel-in-progress: false
 
 env:
@@ -73,7 +74,7 @@ jobs:
     # demo lane, which PR CI does not run, stays on ubuntu-22.04. PostgreSQL Authentication
     # launches Chromium with its sandbox on, which hosted ubuntu-24.04 refuses ("Chromium
     # sandboxing failed!"), so it runs on ci.yml's blacksmith 16vcpu runner (finding 1383).
-    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-') || startsWith(matrix.lane, 'checks-browser')) && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || (matrix.lane == 'repository-credentials-platform' || matrix.lane == 'postgres-auth') && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
+    runs-on: ${{ (startsWith(matrix.lane, 'k3d-fixture-') || matrix.lane == 'k3d-observability' || startsWith(matrix.lane, 'images-runtime-startup') || matrix.lane == 'postgres-application' || startsWith(matrix.lane, 'checks-baseline-') || startsWith(matrix.lane, 'checks-browser')) && 'blacksmith-32vcpu-ubuntu-2404' || matrix.lane == 'k3d-observability-demo' && 'ubuntu-22.04' || matrix.lane == 'postgres-auth' && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     needs: preflight
     if: needs.preflight.outputs.run_all == 'true'
     timeout-minutes: ${{ matrix.timeout }}
@@ -161,10 +162,6 @@ jobs:
             title: Repository Credentials
             profile: images
             timeout: 40
-          - lane: repository-credentials-platform
-            title: Repository Credentials Platform
-            profile: k3d
-            timeout: 60
           - lane: keycloak-oidc
             title: Keycloak OIDC
             profile: postgres
@@ -504,6 +501,91 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/ci/docker-hub-mirror.sh report
 
+  skipper-prepared-git-installed:
+    name: Installed Skipper private Git and live withdrawal
+    needs: preflight
+    if: inputs.lane == 'all' || inputs.lane == 'skipper-prepared-git-installed'
+    # The First Agent Smoke runner supports the packaged Codex sandbox and k3d policy.
+    # Only synthetic, job-local model and private Git credentials enter this installation.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache-mode: restore
+      - run: pnpm install --frozen-lockfile
+      - name: Set up CI tools
+        run: bash scripts/ci/setup-tools.sh k3d
+      # Pull Docker Hub images through mirror.gcr.io without the runner's
+      # Docker Hub sign-in (finding 973). This restarts the Engine, so it runs
+      # before Buildx starts its builder container.
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          cleanup: false
+          # The builder container pulls base images itself, not through the engine.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+      - name: Enable Kubernetes bridge packet filtering
+        run: |
+          if [[ ! -e /proc/sys/net/bridge/bridge-nf-call-iptables ]]; then
+            sudo modprobe br_netfilter
+          fi
+          sudo sysctl -w net.bridge.bridge-nf-call-iptables=1
+      - name: Build OCC CLI
+        run: go build -trimpath -o bin/occ ./cmd/occ
+      - name: Expose image cache credentials
+        id: image-cache
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const token = process.env.ACTIONS_RUNTIME_TOKEN;
+            const url = process.env.ACTIONS_RESULTS_URL;
+            if (!token || !url) {
+              throw new Error('GitHub Actions cache credentials are unavailable');
+            }
+            core.setSecret(token);
+            core.setOutput('token', token);
+            core.setOutput('url', url);
+      - name: Build checkout images
+        env:
+          ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
+          ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}
+        run: node scripts/ci/first-agent-smoke.mjs prepared-git-images
+      - name: Prove native private Git and withdrawal on the same installed Agent
+        env:
+          OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+        run: |
+          host=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+          OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP="$host" \
+            node scripts/qualification/skipper-private-git-fixture.mjs --team-review -- node scripts/ci/skipper-prepared-git-installed.mjs
+          echo 'Private Git origin, synthetic issuer and credential inputs removed.' >> "$GITHUB_STEP_SUMMARY"
+      # The runner writes only verified test metadata here, after checking proof and cleanup.
+      - name: Upload selected test and cleanup outcome
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: full-results-skipper-prepared-git-installed
+          path: ${{ runner.temp }}/results/skipper-prepared-git-installed.json
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 7
+
   full-aggregate:
     name: Full Integration Aggregate
     runs-on: ubuntu-24.04
@@ -523,6 +605,7 @@ jobs:
       - logging-collector
       - qa-matrix
       - dev-up-k3d
+      - skipper-prepared-git-installed
     if: always()
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -550,13 +633,13 @@ jobs:
           const out = { preflight: needs.preflight };
           if (lane === "all") {
             out["runtime-image-fixture"] = needs["runtime-image-fixture"] ?? { result: "missing" };
-            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "repository-credentials-platform", "keycloak-oidc"]) {
+            for (const name of ["checks-baseline-1", "checks-baseline-2", "checks-browser", "checks-browser-2", "postgres", "postgres-application", "postgres-auth", "postgres-platform", "images-packaging", "images-model-probes", "images-runtime-startup", "images-runtime-startup-2", "images-runtime-startup-3", "k3d-fixture-configuration", "k3d-fixture-state", "k3d-fixture-plugins", "k3d-observability", "k3d-observability-demo", "logging-collector", "repository-credentials-container", "keycloak-oidc"]) {
               out[name] = { result: needs["pr-safe-same-sha"]?.result ?? "missing" };
             }
           } else if (lane === "logging-collector") {
             out["logging-collector"] = needs["logging-collector"] ?? { result: "missing" };
           }
-          for (const name of ["qa-matrix", "dev-up-k3d", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
+          for (const name of ["qa-matrix", "dev-up-k3d", "skipper-prepared-git-installed", "docker-model", "k3d-model", "gateway-routing", "production-tui", "slack", "provider-account", "openshell", "helper-timeout", "k3d-otel"]) {
             if (lane === "all" || lane === name) {
               out[name] = needs[name] ?? { result: "missing" };
             }

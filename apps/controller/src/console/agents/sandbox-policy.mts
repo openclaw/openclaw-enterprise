@@ -198,14 +198,25 @@ export function renderAgentSandboxPolicy(
   let suggestionTimer: number | undefined;
   let policyTimer: number | undefined;
   const current = () => context.isCurrent();
-  const editable = () =>
+  const protectedExecution = () => view?.protectedExecution === true;
+  const hasEditAuthority = () =>
     view?.configuration?.actions?.save?.available &&
     view?.editingEnabled &&
     view.capability &&
     view.policy.application?.state !== "pending" &&
     !editDenied &&
-    !mutation &&
     !unknownOutcome;
+  const canEdit = () => !mutation && hasEditAuthority();
+  const editable = () => canEdit() && !protectedExecution();
+  // Save-then-apply owns an active mutation, but must recheck all policy authority.
+  const canApplySavedPolicy = () =>
+    current() &&
+    hasEditAuthority() &&
+    !protectedExecution() &&
+    view?.configuration?.actions.apply?.available &&
+    view.capability?.live &&
+    agent.activeRevisionId === revisionId &&
+    agent.desiredRuntimeState === "running";
 
   function renderLogs() {
     if (!logsLoaded) {
@@ -479,8 +490,28 @@ export function renderAgentSandboxPolicy(
       element(
         "p",
         { className: "muted" },
-        "Defaults remain read-only. Only the additions below are editable. Disabling editing preserves approved grants.",
+        protectedExecution()
+          ? "Defaults remain read-only. Saved network rules can only be removed while protected execution applies. Disabling editing preserves saved rules."
+          : "Defaults remain read-only. Only the additions below are editable. Disabling editing preserves approved grants.",
       ),
+      ...(protectedExecution()
+        ? [
+            element(
+              "p",
+              { role: "status", className: "sandbox-policy-protected" },
+              "Protected execution uses Credential Proxy routes. You can remove saved network rules, but cannot add new ones. Saving does not change the running revision.",
+            ),
+            ...(policy.additions.length > 0 && !editingEnabled
+              ? [
+                  element(
+                    "p",
+                    { className: "hint" },
+                    "Saved network rules block protected deploys. Enable policy editing to remove them.",
+                  ),
+                ]
+              : []),
+          ]
+        : []),
       element(
         "details",
         {},
@@ -490,7 +521,9 @@ export function renderAgentSandboxPolicy(
           { className: "muted" },
           view.defaultsRevisionId
             ? `Admitted for running version ${view.defaultsRevisionId}. Generated transport access is managed separately.`
-            : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
+            : protectedExecution()
+              ? "Defaults from the selected Sandbox Driver. Protected versions use Credential Proxy routes instead."
+              : "Defaults from the selected Sandbox Driver. Generated transport access is managed separately.",
         ),
         view.defaults === null
           ? element("p", {}, "No editable network-policy capability is available.")
@@ -559,18 +592,15 @@ export function renderAgentSandboxPolicy(
       );
     }
     const pending = application?.state === "pending";
-    const canApply =
-      configuration?.actions.apply?.available &&
-      view.capability?.live &&
-      agent.activeRevisionId === revisionId &&
-      agent.desiredRuntimeState === "running";
+    const canApply = canApplySavedPolicy();
     const form = element("form", { className: "sandbox-policy-form" });
     const draftStatus = element("p", { role: "status", className: "hint" });
     const reviewButton = element("button", { type: "submit" }, "Review changes");
-    const applyButton = button(
-      "Apply saved policy to current revision",
-      () => void mutate(applySavedPolicy),
-    );
+    const applyButton = button("Apply saved policy to current revision", () => {
+      if (policyPanel.contains(applyButton)) {
+        void mutate(applySavedPolicy);
+      }
+    });
     function updateDraftStatus() {
       const dirty = hasProposedChanges();
       draftStatus.textContent = dirty
@@ -613,6 +643,14 @@ export function renderAgentSandboxPolicy(
     updateDraftStatus();
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (
+        !current() ||
+        !policyPanel.contains(form) ||
+        !canEdit() ||
+        (protectedExecution() && (!Array.isArray(additions) || additions.length !== 0))
+      ) {
+        return;
+      }
       if ([...form.querySelectorAll("textarea")].some((input) => !input.reportValidity())) {
         return;
       }
@@ -631,6 +669,8 @@ export function renderAgentSandboxPolicy(
         );
         if (
           !current() ||
+          !policyPanel.contains(form) ||
+          !canEdit() ||
           sequence !== previewSequence ||
           generation !== draftGeneration ||
           expectedVersion !== view?.policy.version
@@ -638,7 +678,11 @@ export function renderAgentSandboxPolicy(
           return;
         }
         const rules = responseFields(data).additions;
-        if (success !== true || !readableRules(rules)) {
+        if (
+          success !== true ||
+          !readableRules(rules) ||
+          (protectedExecution() && rules.length !== 0)
+        ) {
           validationDetails = requestErrorDetails(error);
           feedback.textContent =
             (success === false
@@ -660,6 +704,7 @@ export function renderAgentSandboxPolicy(
       } catch (error) {
         if (
           !current() ||
+          !policyPanel.contains(form) ||
           sequence !== previewSequence ||
           generation !== draftGeneration ||
           expectedVersion !== view?.policy.version
@@ -677,6 +722,16 @@ export function renderAgentSandboxPolicy(
       }
 
       function save(apply: boolean) {
+        if (
+          !current() ||
+          !policyPanel.contains(review) ||
+          !canEdit() ||
+          generation !== draftGeneration ||
+          expectedVersion !== view?.policy.version ||
+          (protectedExecution() && (apply || reviewedRules.length !== 0))
+        ) {
+          return;
+        }
         let savedVersion: number | undefined;
         const unconfirmedSave = new Error(
           "The Console could not confirm the saved rules. Live application was not requested.",
@@ -707,7 +762,9 @@ export function renderAgentSandboxPolicy(
             if (apply) {
               await applySavedPolicy();
             } else {
-              feedback.textContent = `Policy v${saved.version} saved. The current revision is unchanged. Apply the saved policy or deploy a new version when ready.`;
+              feedback.textContent = protectedExecution()
+                ? `Policy v${saved.version} saved without network rules. The current revision is unchanged. Deploy a new version when ready.`
+                : `Policy v${saved.version} saved. The current revision is unchanged. Apply the saved policy or deploy a new version when ready.`;
             }
           },
           true,
@@ -764,6 +821,30 @@ export function renderAgentSandboxPolicy(
       form.replaceWith(review);
       applyButton.hidden = true;
     });
+    form.prepend(
+      ...(protectedExecution() && policy.additions.length > 0 && editingEnabled
+        ? [
+            button(
+              "Remove saved network rules",
+              () => {
+                if (
+                  !current() ||
+                  !policyPanel.contains(form) ||
+                  !canEdit() ||
+                  !protectedExecution()
+                ) {
+                  return;
+                }
+                additions = [];
+                draftGeneration += 1;
+                validationDetails = [];
+                form.requestSubmit();
+              },
+              { disabled: !canEdit() },
+            ),
+          ]
+        : []),
+    );
     policyPanel.append(
       form,
       applyButton,
@@ -780,7 +861,7 @@ export function renderAgentSandboxPolicy(
   }
 
   async function applySavedPolicy() {
-    if (!view?.configuration) {
+    if (!view?.configuration || !canApplySavedPolicy() || hasProposedChanges()) {
       return;
     }
     const action = configurationAction(view.configuration, "apply");

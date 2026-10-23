@@ -260,48 +260,8 @@ spec:
           port: 443
 {{- end }}
 
-{{- if .Values.repositoryCredentials.enabled }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: openclaw-enterprise-repository-credentials-ingress
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: openclaw-enterprise
-      app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: worker
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchExpressions:
-              - key: openclaw.dev/namespace
-                operator: Exists
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/workload-role: gateway
-            matchExpressions:
-              - key: openclaw.dev/agent
-                operator: Exists
-        - namespaceSelector:
-            matchExpressions:
-              - key: openclaw.dev/namespace
-                operator: Exists
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/workload-role: agent
-            matchExpressions:
-              - key: openclaw.dev/agent
-                operator: Exists
-              - key: openclaw.dev/revision
-                operator: Exists
-      ports:
-        - protocol: TCP
-          port: 8443
+
+{{- if include "openclaw.repositoryCredentials.gitEnabled" . }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -322,7 +282,11 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          port: 443
+          {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "repositoryCredentials.upstreamPort" "value" .Values.repositoryCredentials.upstreamPort "port" true) | atoi }}
+          {{- if and (ne $port 443) (or (ne .Values.repositoryCredentials.authority "prepared-git") (lt $port 1024) (gt $port 65535)) }}
+          {{- fail "repositoryCredentials.upstreamPort must be 443 or a private prepared Git provider port" }}
+          {{- end }}
+          port: {{ $port }}
 {{- end }}
 
 {{- if .Values.executionCluster.enabled }}
@@ -350,4 +314,30 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.executionCluster.apiPort }}
+{{- end }}
+{{- if .Values.preparedGitHub.custodySecretName }}
+{{- if not .Values.preparedGitHub.issuerCidrs }}{{ fail "preparedGitHub.issuerCidrs requires exact GitHub API IPv4 destinations" }}{{ end }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort "port" true) | atoi }}
+{{- if gt $port 65535 }}{{ fail "preparedGitHub.issuerPort must be a TCP port from 1 to 65535" }}{{ end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: openclaw-enterprise-prepared-github-issuer-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: openclaw-enterprise
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    matchExpressions:
+      - {key: app.kubernetes.io/component, operator: In, values: [api, worker]}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        {{- range .Values.preparedGitHub.issuerCidrs }}
+        {{- if not (regexMatch (include "openclaw.ipv4Host32" .) (toString .)) }}{{ fail "preparedGitHub.issuerCidrs entries must be explicit IPv4 /32 hosts" }}{{ end }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports:
+        - {protocol: TCP, port: {{ $port }}}
 {{- end }}

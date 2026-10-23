@@ -1,3 +1,108 @@
+import type {
+  CredentialPolicyWithdrawalOptions,
+  ExecutionAdmission,
+  ProtectedEgressSource,
+  CredentialInputRead,
+  VersionedSecretValue,
+  CredentialProxyDriver,
+  ProxyPlan,
+  ProxyWiring,
+  EgressInstallation,
+} from "./credential-proxy.ts";
+
+export type {
+  CredentialPolicyReduction,
+  CredentialPolicyObservation,
+  CredentialPolicyReducer,
+  CredentialPolicyWithdrawalOptions,
+  EgressRef,
+  EgressSourceKey,
+  ExecutionAdmission,
+  StaticEgressSource,
+  CredentialReadLifetime,
+  CredentialInputRead,
+  VersionedSecretValue,
+  EgressExecution,
+  InferenceGrant,
+  EgressBinding,
+  EgressRoute,
+  ProxyPlan,
+  RepositoryGitDeliveryProfile,
+  RepositoryGitRecipient,
+  EgressInstallation,
+  EgressRequest,
+  InferenceOperation,
+  StaticMaterialEvidence,
+  ProtectedEgressSource,
+  EgressOperation,
+  EgressMaterialEvidence,
+  EgressSelectionEvidence,
+  EgressRefusal,
+  EgressResponse,
+  ProxyWiring,
+  ProxyRevisionContext,
+  CredentialProviderDefinition,
+  CredentialSourceControl,
+  CredentialProxyDriver,
+} from "./credential-proxy.ts";
+export type {
+  CredentialProxyBinding,
+  CredentialProxyExchange,
+  EgressPeer,
+  CapturedEgressUse,
+  EgressExchangeOwner,
+  AcceptedEgressAssociation,
+  AuthorizedSend,
+  EgressResolution,
+  EgressSendDecision,
+  EgressStreamProgress,
+  EgressStreamLease,
+} from "./credential-proxy-exchange.ts";
+export { egressAssociationInstallation } from "./credential-proxy-exchange.ts";
+export type {
+  PreparedTokenGrant,
+  PreparedTokenSource,
+  PreparedTokenSelection,
+  PreparedTokenEvidence,
+  PreparedTokenCurrentProof,
+  PreparedTokenIssuer,
+  PreparedTokenService,
+} from "./prepared-token.ts";
+export {
+  preparedGitHubType,
+  preparedGitHubProviderRef,
+  preparedGitHubSourceFromRoute,
+  githubMetadataGrant,
+} from "./prepared-github-egress.ts";
+export type {
+  GitHubMetadataGrant,
+  PreparedGitHubEgressSource,
+  PreparedGitHubUseRequest,
+  PreparedGitHubInstallationUseRequest,
+  PreparedGitHubUseResponse,
+  PreparedGitHubPullScope,
+  PreparedGitHubPullProjection,
+  PreparedGitHubPullResult,
+} from "./prepared-github-egress.ts";
+export {
+  credentialFreeMetadataType,
+  credentialFreeProviderRef,
+  credentialFreeMetadataGrant,
+} from "./credential-free-metadata.ts";
+export type {
+  CredentialFreeMetadataGrant,
+  CredentialFreeEgressSource,
+  NoMaterialSelection,
+} from "./credential-free-metadata.ts";
+export {
+  assertExecutionAdmission,
+  assertExecutionReleaseAllowed,
+  repositoryGitRecipientFields,
+  validRepositoryGitRecipient,
+  repositoryGitAuthorization,
+  repositoryGitProfileAvailable,
+  protectedRepositoryGitAdmission,
+} from "./credential-proxy.ts";
 import type { ConfigurationDefinition } from "./configuration-definition.ts";
 
 export type {
@@ -63,11 +168,13 @@ import {
 import { Check } from "typebox/value";
 import { PluginApproversSchema } from "./api/common.ts";
 import type {
+  RepositoryExecutionIdentity,
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryRevisionState,
+  RepositoryPolicyDriver,
 } from "./repo.ts";
 
 export type {
@@ -105,15 +212,19 @@ export {
 } from "./logging.ts";
 
 export type {
+  RepositoryExecutionIdentity,
   RepositoryAccess,
   AdmittedRepositoryBinding,
+  NativeRepositorySender,
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
   RepositoryOption,
   RepositoryOptions,
-  RepoDriver,
+  RepositoryPolicyDriver,
+  RepositoryApprovalScope,
+  RepositoryApprovalValue,
   RepositoryCredentialGrantIdentity,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialResolution,
@@ -121,6 +232,11 @@ export type {
   RepositoryCredentialSessionFiles,
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
+} from "./repo.ts";
+export {
+  githubInstallationProfile,
+  isInstallationRepositoryProfile,
+  repositoryGitDeliveryProfile,
 } from "./repo.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
@@ -135,6 +251,7 @@ export const DRIVER_CAPABILITIES = Object.freeze([
   "repo",
   "credential_gateway",
   "credential_refresh",
+  "credential_proxy",
 ] as const);
 
 export type DriverCapability = (typeof DRIVER_CAPABILITIES)[number];
@@ -173,7 +290,12 @@ export interface OpenShellBackendConfiguration {
   readonly port?: number;
   readonly auth?:
     | { readonly mode: "unauthenticated" }
-    | { readonly mode: "bearerTokenFile"; readonly path: string };
+    | { readonly mode: "bearerTokenFile"; readonly path: string }
+    | {
+        readonly mode: "mtls";
+        readonly certificatePath: string;
+        readonly privateKeyPath: string;
+      };
   /** Direct operator mTLS for credential retrieval only; ordinary RPCs keep auth above. */
   readonly operatorTls?: {
     readonly certificatePath: string;
@@ -196,6 +318,7 @@ export interface OpenShellBackendDefinition {
   readonly drivers: {
     readonly sandbox: string;
     readonly credential_gateway: string;
+    readonly credential_proxy?: string;
     /** Refreshes the gateway's refresh-type sources; absent when none are offered. */
     readonly credential_refresh?: string;
   };
@@ -422,20 +545,27 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** OCC record for a credential held by the selected Credential Gateway; never values. */
+/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
+export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+
+/** OCC source admission, including its owner and Secret references, never credential values. */
 export interface CredentialSource {
+  readonly egress?: ProtectedEgressSource;
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
 }
 
 export interface CredentialSourceMetadata {
+  readonly ownerCapability: CredentialSourceOwnerCapability;
+  readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
@@ -484,10 +614,46 @@ export interface AgentCredentialSourceBinding {
 }
 
 /** Private admission metadata for one non-model source frozen into a revision. */
-export interface CredentialSourceSnapshot {
+export type CredentialSourceSnapshot = {
   readonly sourceId: string;
-  readonly credentialGatewayId: string;
   readonly sourceType: string;
+} & (
+  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
+  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+);
+
+/** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
+export function credentialSourceMatchesSnapshot(
+  source: CredentialSource,
+  snapshot: CredentialSourceSnapshot | undefined,
+): boolean {
+  if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
+    return false;
+  }
+  switch (source.ownerCapability) {
+    case "credential_gateway":
+      return (
+        snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
+      );
+    case "credential_proxy":
+      return (
+        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+      );
+    default:
+      return false;
+  }
+}
+
+/** Withdrawal also supports revisions whose Harness source predates the separate source list. */
+export function revisionCredentialSourceSnapshot(
+  revision: AgentRevision,
+  sourceId: string,
+): CredentialSourceSnapshot | undefined {
+  const listed = revision.credentialSources?.find((snapshot) => snapshot.sourceId === sourceId);
+  const auth = revision.harnessAuth;
+  return (
+    listed ?? (auth.method === "credential_source" && auth.sourceId === sourceId ? auth : undefined)
+  );
 }
 
 export type HarnessAuthBinding =
@@ -540,6 +706,14 @@ export type ResolvedHarnessAuth =
   | Extract<HarnessAuthSnapshot, { source: ServiceAccountReference } | { method: "runtime" }>;
 
 export interface ComputeRevisionContext {
+  /** Worker persists only an authenticated receipt for this admitted plan. */
+  readonly recordEgressInstallation?: (installation: EgressInstallation) => Promise<void>;
+  /** A fresh read of the still-authorized revision and its exact committed installation. */
+  readonly currentEgressInstallation?: () => Promise<EgressInstallation | undefined>;
+  /** Verify the live Worker-owned grant and exact broker session immediately before releasing it. */
+  readonly verifyRepositorySessionRelease?: (
+    binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
+  ) => Promise<void>;
   readonly workspaceSetup?: Readonly<WorkspaceSetup>;
   readonly harnessAuth: ResolvedHarnessAuth;
   /** Non-model sources resolved again at dispatch, in admission order. */
@@ -837,6 +1011,8 @@ export interface RevisionHarnessDescriptor extends HarnessDescriptor {
 }
 
 export interface AgentRevision extends Scope {
+  readonly executionAdmission: ExecutionAdmission;
+  readonly egressPlan?: ProxyPlan;
   readonly id: string;
   readonly namespaceId: string;
   readonly agentId: string;
@@ -892,6 +1068,10 @@ export type AgentRevisionRead =
 export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevision> {
   return Object.freeze({
     ...revision,
+    executionAdmission: immutableCopy(revision.executionAdmission),
+    ...(revision.egressPlan === undefined
+      ? {}
+      : { egressPlan: immutableCopy(revision.egressPlan) }),
     configuration: immutableCopy(revision.configuration),
     ...(revision.secretBindings === undefined
       ? {}
@@ -1103,6 +1283,40 @@ export interface Driver {
   readonly computeLifecycleHooks?: ComputeLifecycleHooks;
 }
 
+export type DriverByCapability = {
+  iam: IAMDriver;
+  configuration: ConfigurationDriver;
+  service_account: ServiceAccountDriver;
+  secret: SecretDriver;
+  sandbox: SandboxDriver;
+  compute: ComputeDriver;
+  plugin: PluginDriver;
+  channel: ChannelDriver;
+  repo: RepositoryPolicyDriver;
+  credential_gateway: CredentialGatewayDriver;
+  credential_refresh: CredentialRefreshDriver;
+  credential_proxy: CredentialProxyDriver;
+};
+/** A package returns the capabilities of this instance and one lifecycle, never support flags. */
+export interface DriverRegistration {
+  readonly capabilities: Readonly<Partial<DriverByCapability>>;
+  readonly computeLifecycleHooks?: ComputeLifecycleHooks;
+  close?(): void | Promise<void>;
+}
+
+/** Installation-selected identity and a digest of the nonsecret configuration generation. */
+export interface DriverRegistrationRef {
+  readonly id: string;
+  readonly implementation: string;
+  readonly configurationId: string;
+}
+
+/** An installation-owned capability selection. Object identity proves a common owner in this process. */
+export interface SelectedDriverRegistration {
+  readonly ref: DriverRegistrationRef;
+  require<K extends DriverCapability>(key: K): DriverByCapability[K];
+}
+
 export interface WorkloadLaunchContext {
   environment: Record<string, string>;
 }
@@ -1163,10 +1377,13 @@ export interface HarnessWorkloadRequirements {
   readonly files: readonly SandboxWorkloadFile[];
   /** Credential Gateway attachments the paired Sandbox must consume in full. */
   readonly credentialAttachments: readonly CredentialSourceAttachment[];
+  readonly proxyWiring?: ProxyWiring;
   readonly labels: Readonly<Record<string, string>>;
 }
 
 export interface SandboxResourceRef {
+  /** Trusted Sandbox output, including its exact auxiliary rules, for independent observation. */
+  readonly proxyWiring?: ProxyWiring;
   readonly namespaceName: string;
   readonly resourceName: string;
   readonly agentId: string;
@@ -1176,6 +1393,11 @@ export interface SandboxResourceRef {
 /** Provider-owned endpoint through which the Agent Gateway reaches its dedicated Harness. */
 export interface SandboxHarnessEndpoint {
   readonly url: string;
+  /** Public PEM CA certificates for this WSS endpoint; absent means system trust. */
+  readonly tls?: {
+    /** Certificate bytes only, never a source path, private key or client credential. */
+    readonly caBundle: string;
+  };
   /** Provider-local workspace root served by the Harness workspace node. */
   readonly workspaceRoot?: string;
   /** Request this native Codex profile when the provider supplies the sandbox boundary. */
@@ -1413,6 +1635,8 @@ export interface SecretDriver extends Driver {
   /** Replace an exact current value atomically; used to fence device authorization exchanges. */
   compareAndSwap?(secret: Secret, expected: string, value: string): Promise<boolean>;
   delete(secret: Secret): Promise<void>;
+  /** Authoritative, versioned read confined to trusted credential resolution. */
+  readCredentialInput?(input: CredentialInputRead): Promise<VersionedSecretValue>;
   /** Verify live exact ownership and return only safe projection identity. */
   resolve(secret: Secret): Promise<SecretBackendRef>;
   /** Verify live ownership and use the current value only within a transient server-side operation. */
@@ -1580,17 +1804,39 @@ export interface CredentialRefreshDriver extends Driver {
   removeRefresh(context: CredentialSourceContext): Promise<void>;
 }
 
+/** The selected Sandbox owns the repository recipient, including proof after a worker restart. */
+export interface SandboxRepositoryAccess {
+  verifyExecution(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<RepositoryExecutionIdentity | undefined>;
+  /** Remove only repository access when the same independently authorized execution can survive. */
+  retireExpired(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
+  routeReadiness(revisionId: string): "ready" | "pending" | "blocked";
+  /** Stable observation time after which Compute may verify the node survived credential installation. */
+  materialSettledAt(revisionId: string): number | undefined;
+  isRouteBlockedError(error: unknown): boolean;
+}
+
 export interface SandboxDriver extends Driver {
+  readonly repositoryAccess?: SandboxRepositoryAccess;
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;
     readonly portRanges: boolean;
     readonly live: boolean;
   };
+  /**
+   * `scope.repositoryCredentials` marks a policy for an Agent or revision with repository
+   * bindings, which a Driver may route only through its own repository path; it refuses an
+   * overlapping policy with a `SandboxNetworkPolicyConflictError` naming the rule.
+   */
   admitNetworkPolicy?(
     additions: readonly SandboxNetworkGrant[],
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
+    scope?: { readonly repositoryCredentials?: boolean },
   ): SandboxPolicySnapshot;
   observeNetworkPolicy?(
     context: SandboxLogContext,
@@ -1633,6 +1879,22 @@ export interface SandboxDriver extends Driver {
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
+  /** The v6 launcher stays held. A denial observed here can select material, never release work. */
+  observeHeldRepositoryGitPreview?(
+    context: SandboxHarnessStatusContext,
+  ): Promise<"held" | "installed" | undefined>;
+  /**
+   * Release the exact protected Harness startup only after Compute has committed
+   * this current installation. Authenticate the transport peer and bind its fresh
+   * startup challenge to the admitted execution/plan. No material or send authority
+   * is conveyed. A starting transport may remain pending until the next reconcile.
+   */
+  enrollHarness?(
+    context: SandboxHarnessStatusContext,
+    installation: EgressInstallation,
+    /** Compute alone may release this exact fresh startup; the transport bearer cannot. */
+    release: (startupId: string) => Promise<Readonly<Record<string, unknown>>>,
+  ): Promise<void>;
   /**
    * Returns the provider-owned transport for the exact provisioned Harness. When present,
    * Compute must route the Agent Gateway through this endpoint instead of its native Harness
@@ -1841,13 +2103,17 @@ export type ComputePendingReason =
   | "NAMESPACE_POD_QUOTA_EXCEEDED"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
-  | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
+  | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"
+  /** The worker has not yet verified the Sandbox's prepared Git route (OpenShell). */
+  | "REPOSITORY_GIT_ROUTE_PENDING";
 
 export interface ComputeReadiness extends Scope {
   readonly namespaceId: string;
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Only v6: select this execution for material while its launcher and user work remain held. */
+  readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
   readonly runtimeFailure?: RuntimeFailureEvidence;
   /** Only on an unready observation; the worker ignores unknown values. */
@@ -1963,6 +2229,30 @@ export interface ConfigurationValidationOptions {
 }
 
 export interface ComputeDriver extends Driver {
+  /**
+   * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
+   * repair, release or authorize an execution. Missing support provides no assurance.
+   * Lifecycle observations do not establish repository execution identity or authority.
+   */
+  observeRevision?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<SandboxHarnessObservation>;
+  /** Admission capability check, not release authority. Missing support fails closed. */
+  validateExecutionAdmission?(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+    /** Only the release of a revision already in durable custody can use its historical contract. */
+    source?: SelectedDriverRegistration | "stored",
+  ): void;
+  /**
+   * After release is refused, select a withdrawal only for a grant this Compute previously
+   * admitted. Selection is side-effect free. The worker runs the withdrawal under the active
+   * revision's authorized claim; resolve only after observing the grant and workload gone.
+   * Neither selection nor completion permits preparing, activating or replacing that revision.
+   */
+  rejectedExecutionWithdrawal?(
+    revision: Readonly<AgentRevision>,
+  ): (() => Promise<void>) | undefined;
   readonly supportsWorkspaceSetup?: true;
   readonly capability: "compute";
   /** Deployment must observe and provision Agent-owned runtime credentials before revision admission. */
@@ -2032,6 +2322,18 @@ export interface ComputeDriver extends Driver {
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
   ): void;
+  /**
+   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Observe that withdrawal again after a restart. Never grant
+   * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
+   * verifying Git is revoked and the same independently authorized inference runtime is ready.
+   * `pending` means Git is fenced but confirmation is outstanding; it asserts no model health.
+   * Return `retire-runtime` if the fence, identity or independent authority cannot be preserved.
+   */
+  retireExpiredRepositoryAccess?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
   /** Discovery availability; deployment must still validate its exact Harness. */
   validateRepositoryCredentialSupport?(sandboxDriverId?: string): void;
   validateRepositoryCredentials?(
@@ -2092,7 +2394,7 @@ export interface ComputeDriver extends Driver {
     revision: Readonly<AgentRevision>,
     source: Readonly<CredentialSource>,
     signal: AbortSignal,
-    options?: { readonly recheck?: boolean },
+    options?: CredentialPolicyWithdrawalOptions,
   ): Promise<CredentialAttachmentStatus>;
   /**
    * Withdraws the Harness exposure a Sandbox Driver created for Compute's status read of a
@@ -2104,6 +2406,11 @@ export interface ComputeDriver extends Driver {
    * number of times and logs the failure code.
    */
   withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
+  /** Verify the existing execution without creating, replacing or repairing it. */
+  verifyRepositoryExecution?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryExecutionIdentity | undefined>;
   /**
    * Throws OCC's ComputePreparationFailedError when initialization is terminal.
    * The worker durably fails deployment and schedules stopRevision for cleanup.
@@ -2200,3 +2507,19 @@ export {
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
 } from "./workspace-defaults.mjs";
+
+export type {
+  ProtectedRepositoryGitAuthority,
+  RepositoryGitBinding,
+  ProtectedRepositoryGitMaterial,
+  ProtectedGitHubInstallationMaterial,
+  GitHubInstallationSendDecision,
+  GitHubInstallationSendPermit,
+  RepositoryGitInstallationFence,
+  RepositoryGitMaterialVersion,
+  RepositoryGitSendDecision,
+  RepositoryGitAuthority,
+  RepositoryGitOnlineAllow,
+  RepositoryGitOnlineDecision,
+  RepositoryGitSendPermit,
+} from "./protected-repository-git.ts";

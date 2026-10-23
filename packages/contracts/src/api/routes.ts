@@ -120,18 +120,6 @@ import {
 
 const ErrorResponseRef = Type.Ref("ErrorResponse");
 const SecretResponseRef = Type.Ref("SecretResponse");
-const RepositoryOptionsQuery = Type.Object(
-  {
-    descriptionRefs: Type.Optional(
-      Type.String({
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(,[A-Za-z0-9][A-Za-z0-9._-]{0,127}){0,19}$",
-        maxLength: 2579,
-        description: "Up to 20 visible repository references to enrich with provider descriptions.",
-      }),
-    ),
-  },
-  { additionalProperties: false },
-);
 const CredentialSourceResponseRef = Type.Ref("CredentialSourceResponse");
 
 const readErrors = {
@@ -1273,7 +1261,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for Agent creation in one Namespace",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: NamespaceParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1297,7 +1285,7 @@ export const occApiRoutes = [
     summary: "List approved repository choices for updating one Agent",
     tags: ["Agents"],
     schema: {
-      querystring: RepositoryOptionsQuery,
+      querystring: EmptyQuery,
       params: AgentParams,
       response: {
         200: RepositoryOptionListResponse,
@@ -1339,6 +1327,96 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: NamespaceParams,
       body: ValidateAgentCreateBody,
+      response: { 204: Type.Null(), ...createErrors },
+    },
+  },
+  {
+    operationId: "listAgentStandingApprovals",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals",
+    action: "openclaw.agents.repository_approvals.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read attributable repository approvals and removed generations for one Agent",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              id: Type.String(),
+              repositoryRef: Type.String(),
+              profile: Type.String(),
+              generation: Type.Integer({ minimum: 1 }),
+              scopeFingerprint: Type.String(),
+              status: Type.Union([Type.Literal("active"), Type.Literal("removed")]),
+              approvedBy: Type.String(),
+              createdAt: Type.String(),
+              revokedAt: Type.Optional(Type.String()),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "listAgentStandingApprovalScopes",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approval-scopes",
+    action: "openclaw.agents.repository_approval_scopes.list",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Review resolved repository scope before explicitly approving it",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: {
+        200: Type.Object({
+          data: Type.Array(
+            Type.Object({
+              repositoryRef: Type.String(),
+              binding: Type.Record(Type.String(), Type.Unknown()),
+              scope: Type.Record(Type.String(), Type.Unknown()),
+              scopeFingerprint: Type.String(),
+            }),
+          ),
+          meta: Type.Object({ requestId: Type.String() }),
+        }),
+        ...readErrors,
+      },
+    },
+  },
+  {
+    operationId: "removeAgentStandingApproval",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/:agentId/repository-approvals/:approvalId/remove",
+    action: "openclaw.agents.repository_approvals.remove",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Remove repository approval independently of configuration or runtime cleanup",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        {
+          namespaceId: NamespaceId,
+          agentId: AgentId,
+          approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+        },
+        { additionalProperties: false },
+      ),
+      body: Type.Object(
+        { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
+        { additionalProperties: false },
+      ),
       response: { 204: Type.Null(), ...createErrors },
     },
   },

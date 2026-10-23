@@ -1719,6 +1719,7 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
   });
   let reads = 0;
   const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const { promise: rereading, resolve: markRereading } = Promise.withResolvers<void>();
   t.after(() => release());
   const page = await openTab(t, fixture, namespace, agent, "configuration", {
     // The rebuilt summary's metadata read waits, as on a slow link (a hand-written count, not
@@ -1727,6 +1728,7 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
       routed.route(`**/namespaces/${namespace.id}/secrets/${model.id}`, async (route) => {
         reads += 1;
         if (reads === 2) {
+          markRereading();
           await held;
         }
         await route.continue().catch(() => {});
@@ -1751,6 +1753,9 @@ test("a saved Configuration's summary keeps the Secret name while it rereads it"
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
+  // The reread can reach this route after the status shows, so wait for it rather than count
+  // (finding 2223); the name must stay while the reread is held.
+  await rereading;
   assert.ok(reads >= 2, "the rebuilt summary rereads the Secret");
   assert.equal(await name.isVisible(), true);
   assert.deepEqual(await metadataLoading.jsonValue(), []);

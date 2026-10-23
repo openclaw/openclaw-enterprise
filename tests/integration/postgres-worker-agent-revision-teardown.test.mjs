@@ -8,6 +8,7 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import {
   advanceCleanupRetries,
   completion,
+  removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
 } from "../helpers/postgres-worker-revision-support.mjs";
@@ -95,7 +96,7 @@ for (const alreadyDisposed of [false, true]) {
           throw new Error("repository admission response lost after creation");
         }
         if (alreadyDisposed && result.kind === "recovered") {
-          return { ...result, status: { ...result.status, state: "DISPOSED" } };
+          return { ...result, status: await repository.dispose(result.status.sessionId) };
         }
         return result;
       };
@@ -661,6 +662,12 @@ for (const loss of ["missing", "closed-repair"]) {
         [maintenance.rows[0].idempotency_key],
       );
       assert.equal(refusal.rows[0].reason_code, "REPOSITORY_SESSION_RECOVERY_UNSAFE");
+      // The runtime stopped even though the session's disposal is still unconfirmed.
+      // Report no active revision; keep the requested run state and deployment history.
+      const agent = await fixture.currentAgent(owner);
+      assert.equal(agent.activeRevisionId, undefined);
+      assert.equal(agent.desiredRuntimeState, "running");
+      assert.equal((await fixture.workResult(candidate)).rows[0].reason_code, "REVISION_ACTIVATED");
       const [retained] = await repositoryAttempts(fixture, candidate);
       assert.equal(retained.phase, loss === "missing" ? "invalidated" : "closing");
       assert.equal(retained.sessionId, original.sessionId);
@@ -734,9 +741,12 @@ test(
   async (context) => {
     const repository = repositoryBoundary({ count: 2 });
     const fixture = await setup(context, { repoDriver: repository.driver });
-    const { candidate } = await fixture.admitInitialRevision("repository-maintenance-restart", {
-      revision: { repositoryCredentials: repository.snapshot },
-    });
+    const { owner, candidate } = await fixture.admitInitialRevision(
+      "repository-maintenance-restart",
+      {
+        revision: { repositoryCredentials: repository.snapshot },
+      },
+    );
     const initial = [];
     await fixture.start({
       ...fixture.compute,
@@ -848,6 +858,7 @@ test(
       return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
     });
     assert.deepEqual(stopped, []);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
   },
 );
 
@@ -1201,6 +1212,7 @@ test(
     assert.equal(retirement.rows[0].state, "queued");
     assert.equal(retirement.rows[0].actor_id, fixture.actor.id);
     assert.deepEqual(prepared, [candidate.id]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
 
     // A restart may retire only the failed revision, even after a newer revision
     // and another Agent become active. Neither needs this expired repository grant.
@@ -1644,3 +1656,198 @@ test(
     );
   },
 );
+
+for (const scenario of [
+  "withdrawn",
+  "pending then stop",
+  "pending then superseded",
+  "unconfirmed then withdrawn",
+  "lost maintenance claim",
+  "retire-runtime",
+  "unsupported",
+]) {
+  test(
+    `scheduled maintenance at the admitted Git deadline: ${scenario}`,
+    requiresPostgres,
+    async (t) => {
+      const repository = repositoryBoundary();
+      const fixture = await setup(t, { repoDriver: repository.driver });
+      repository.snapshot.deadlineWallMs = Date.now() + 4_000;
+      const { owner, candidate } = await fixture.admitInitialRevision("git-expiry", {
+        revision: { repositoryCredentials: repository.snapshot },
+      });
+      const stopped = [];
+      const events = [];
+      let preparations = 0;
+      let observations = 0;
+      let result = scenario;
+      const compute = {
+        ...fixture.compute,
+        async prepareRevision(revision, context) {
+          if (revision.id === candidate.id) {
+            preparations++;
+          }
+          return fixture.compute.prepareRevision(revision, context);
+        },
+        ...(scenario === "unsupported"
+          ? {}
+          : {
+              async retireExpiredRepositoryAccess(revision, signal) {
+                assert.equal(revision.id, candidate.id);
+                signal.throwIfAborted();
+                observations++;
+                if (result.startsWith("unconfirmed")) {
+                  throw new Error("withdrawal reply lost");
+                }
+                return result.startsWith("pending") ? "pending" : result;
+              },
+            }),
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+      };
+      const start = () => fixture.start(compute, { emit: (event) => events.push(event) });
+      const completed = (label) =>
+        completion(
+          events,
+          label,
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === candidate.id &&
+            event.workId?.includes(":repository_cleanup:"),
+        );
+      await start();
+      await fixture.work(candidate, "succeeded");
+      await fixture.stop();
+      const [original] = await repositoryAttempts(fixture, candidate);
+      assert.equal(original.phase, "open");
+      assert.equal(original.deadlineWallMs, repository.snapshot.deadlineWallMs);
+      const remaining = original.deadlineWallMs - Date.now();
+      assert.ok(remaining > 0, "activate with a live Git grant before its admitted deadline");
+      await delay(remaining + 20);
+      const {
+        rowCount,
+        rows: [maintenance],
+      } = await fixture.advanceMaintenance(candidate);
+      assert.equal(rowCount, 1, "use ordinary maintenance scheduled by activation");
+      if (scenario === "lost maintenance claim") {
+        const queue = new fixture.PostgresWorkQueue(fixture.observerPool, { maxAttempts: 1 });
+        const abandoned = await queue.claim();
+        assert.equal(abandoned.idempotencyKey, maintenance.idempotency_key);
+        await fixture.expireClaim(abandoned, abandoned.claimToken);
+        assert.equal((await queue.recoverStale()).failedPermanent, 1);
+        result = "withdrawn";
+      }
+      await start();
+      const first = await completed("durable Git expiry outcome");
+      const observed = await fixture.workResult({
+        id: candidate.id,
+        idempotencyKey: maintenance.idempotency_key,
+      });
+      assert.equal(
+        observed.rows[0].reason_code,
+        scenario === "lost maintenance claim"
+          ? "LEASE_EXPIRED"
+          : "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED",
+      );
+      assert.equal((await fixture.workResult(candidate)).rows[0].reason_code, "REVISION_ACTIVATED");
+      const checkNoNewGit = async () => {
+        assert.deepEqual(
+          (await repositoryAttempts(fixture, candidate)).map(({ phase, sessionId }) => [
+            phase,
+            sessionId,
+          ]),
+          [["disposed", original.sessionId]],
+        );
+        assert.equal(repository.calls.filter((call) => call.operation === "open").length, 1);
+        assert.equal(preparations, 1);
+      };
+      await checkNoNewGit();
+      if (scenario === "retire-runtime" || scenario === "unsupported") {
+        assert.equal(first.code, "REPOSITORY_RUNTIME_RETIREMENT_QUEUED");
+        await waitFor("confirmed retirement clears only this active revision", async () =>
+          (await fixture.currentAgent(owner)).activeRevisionId === undefined ? true : undefined,
+        );
+        assert.deepEqual(stopped, [candidate.id]);
+        assert.equal(observations, scenario === "unsupported" ? 0 : 1);
+        return;
+      }
+      assert.deepEqual(stopped, [], "the Git deadline alone must not stop the serving revision");
+      if (scenario.startsWith("pending") || scenario.startsWith("unconfirmed")) {
+        assert.equal(first.code, "REPOSITORY_CLEANUP_PENDING");
+        assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+        await fixture.stop();
+        events.length = 0;
+        await start();
+        await advanceCleanupRetries(fixture, candidate);
+        assert.equal((await completed("cold worker still owes withdrawal")).code, first.code);
+        assert.deepEqual(stopped, []);
+        if (scenario === "pending then stop") {
+          const stop = await fixture.requestStop(owner);
+          await fixture.work(stop, "succeeded");
+          const agent = await fixture.currentAgent(owner);
+          assert.equal(agent.activeRevisionId, undefined);
+          assert.equal(agent.desiredRuntimeState, "stopped");
+          assert.ok(stopped.includes(candidate.id));
+          return;
+        }
+        if (scenario === "pending then superseded") {
+          const newer = await fixture.revision(owner, 2);
+          await fixture.work(newer, "succeeded");
+          const previous = observations;
+          events.length = 0;
+          await advanceCleanupRetries(fixture, candidate);
+          assert.equal(
+            (await completed("superseded expiry transfers to retirement")).code,
+            "REPOSITORY_RUNTIME_RETIREMENT_QUEUED",
+          );
+          assert.equal(observations, previous, "cannot preserve a superseded revision");
+          assert.equal((await fixture.currentAgent(owner)).activeRevisionId, newer.id);
+          assert.ok(stopped.every((id) => id === candidate.id));
+          return;
+        }
+        result = "withdrawn";
+        events.length = 0;
+        await advanceCleanupRetries(fixture, candidate);
+        assert.equal(
+          (await completed("withdrawal confirmation")).code,
+          "REPOSITORY_ACCESS_WITHDRAWN",
+        );
+      } else {
+        assert.equal(first.code, "REPOSITORY_ACCESS_WITHDRAWN");
+      }
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+      await fixture.stop();
+      const previous = observations;
+      const {
+        rowCount: count,
+        rows: [next],
+      } = await fixture.advanceMaintenance(candidate);
+      assert.equal(count, 1, "continue normal maintenance after confirmed Git withdrawal");
+      await start();
+      const work = { id: candidate.id, idempotencyKey: next.idempotency_key };
+      await fixture.work(work, "succeeded");
+      assert.equal(
+        (await fixture.workResult(work)).rows[0].reason_code,
+        "REPOSITORY_ACCESS_WITHDRAWN",
+      );
+      assert.ok(observations > previous, "cold maintenance verifies the reduced runtime");
+      await checkNoNewGit();
+      assert.deepEqual(stopped, []);
+      const agent = await fixture.currentAgent(owner);
+      assert.equal(agent.activeRevisionId, candidate.id);
+      assert.equal(agent.desiredRuntimeState, "running");
+
+      // Offboard the requester after Git withdrawal. IAM now denies this exact revision.
+      const removed = await removeAccessBindings(fixture, fixture.actor.id);
+      assert.ok(removed.rowCount > 0, "remove the requester's actual access bindings");
+      await fixture.advanceMaintenance(candidate);
+      await waitFor("runtime authority loss retires exact revision", async () =>
+        (await fixture.currentAgent(owner)).activeRevisionId === undefined ? true : undefined,
+      );
+      assert.deepEqual(stopped, [candidate.id]);
+      await checkNoNewGit();
+    },
+  );
+}

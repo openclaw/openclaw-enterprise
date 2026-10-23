@@ -8,6 +8,8 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 ## Changelog
 
+- 2026-10-22 22:10: Gateway readiness also requires native `/startupz`. Native `/readyz` admits a Gateway while OpenClaw still inspects its agent databases in the background, for example after an unclean stop, and the first chat turn then failed with HTTP 500. `/startupz` holds until that inspection ends. (fix-2185 - 16e97918f)
+
 - 2026-10-02 06:00: Budget the workspace node binding ack wait per binding across activation retries. (fix-deploy-node-pairing)
 
 - 2026-09-30 09:30: Include the Harness network profile in Service selectors for EKS policy resolution. (authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e - 0d00e8970b69)

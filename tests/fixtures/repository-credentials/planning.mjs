@@ -1,14 +1,17 @@
-import { sharedRsaKeyPair } from "./shared-keys.mjs";
 import { appModule } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";
-import { githubConfigurationData, serviceConfigurationData, custodyLimits } from "./builders.mjs";
+import {
+  githubTokenConfigurationData,
+  serviceConfigurationData,
+  custodyLimits,
+} from "./builders.mjs";
 
-export async function createGitHubPlanningFixture(t) {
+export async function createGitHubPlanningFixture(t, overrides = {}) {
   const resources = createResourceScope();
   try {
     const [
-      { createGitHubDriverFactory, createGitHubKeyOwner },
+      { createGitHubDriverFactory, createGitHubStaticTokenOwner },
       { validateServiceConfig },
       { admitSession },
       { createCustody },
@@ -20,13 +23,14 @@ export async function createGitHubPlanningFixture(t) {
     ]);
     const clock = createControlledClock(1700000000000);
     const config = validateServiceConfig(serviceConfigurationData());
-    const configuration = githubConfigurationData();
-    const { privateKey, publicKey } = sharedRsaKeyPair("github-app");
-    const key = createGitHubKeyOwner({ privateKey, appId: configuration.appId, clock });
-    resources.after(() => key.close());
+    const configuration = githubTokenConfigurationData({ allowGraphql: true, ...overrides });
+    const owner = createGitHubStaticTokenOwner({
+      token: Buffer.from(`github_pat_${"t".repeat(36)}`),
+    });
+    resources.after(() => owner.close());
     const factory = createGitHubDriverFactory({
       configuration,
-      authority: key,
+      authority: owner,
       clock,
       gatewayOrigin: config.gateway.publicOrigin,
       limits: config.limits,
@@ -55,7 +59,7 @@ export async function createGitHubPlanningFixture(t) {
       };
     };
     t.after(() => resources.close());
-    return { factory, key, publicKey, bind };
+    return { factory, owner, bind, clock };
   } catch (error) {
     await resources.close(error);
   }

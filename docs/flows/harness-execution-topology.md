@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-20
-last_updated_session: Codex/01a12fe8-d0c6-7df1-937d-364a1301566a
+updated: 2026-10-23
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # Harness Execution Topology Flow
@@ -133,6 +133,9 @@ exact-owned, identical password; foreign or conflicting sources fail.
 [Namespaces and isolation](../reference/drivers/kubernetes-compute/networking-and-isolation.md#namespaces-and-isolation)
 owns qualified DNS and exact NetworkPolicy/Service selectors. Harness selectors
 include version and network profile; Gateway selectors omit version for stability.
+`deploy/helm/openclaw-execution/templates/routing.yaml` validates DNS and Envoy peer maps
+before rendering NetworkPolicies. Values must be strings or native null; type
+errors identify the setting.
 `runtime.gatewayNodeSelector`
 independently places the Gateway Pod and private-state initializer on trusted nodes.
 After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
@@ -189,9 +192,9 @@ refs preserve native ID namespaces, including `codex/`. OpenClaw separates the
 explicit provider for thread start, resume, and turns; the Harness probe keeps the
 native ID.
 
-Kubelet probes private `/readyz` on runtime-backed workloads. Gates remain:
-Gateway plugin/native status, Codex plugin state and authenticated app-server
-WebSocket, or dedicated OpenClaw identity. Responses are bodyless `200` or `503`.
+Kubelet probes private `/readyz` on runtime-backed workloads. Gates: Gateway
+plugin status and native `/startupz` and `/readyz`, Codex plugin state and
+authenticated app-server WebSocket, or dedicated OpenClaw identity.
 While first-deploy [workspace setup](workspace-files.md) is pending, embedded
 preparation starts the replacement Gateway itself before activation. If the Gateway
 of a version that never served (its Service still selects no Pod) is unready,
@@ -301,6 +304,10 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
+
+- 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 12:09: Preserve native plugin policy and reject required-plugin conflicts during Harness admission. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 61140f671)
 

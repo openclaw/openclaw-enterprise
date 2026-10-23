@@ -1916,10 +1916,11 @@ test("event inspection failures in actual bootstrap and selector are unavailable
   ]);
 });
 
-// A small suite index with the shape of scripts/ci/test-suites.json: three CI
+// A small suite index with the shape of scripts/ci/test-suites.json: four CI
 // lanes, the separate fixture job and one manual (non-CI) lane.
 const suiteLanes = {
-  "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs"],
+  "checks-baseline-1": ["tests/conformance/lint-rules.test.mjs", "tests/integration/typed.test.ts"],
+  "checks-baseline-2": [],
   postgres: ["tests/integration/postgres-a.test.mjs", "tests/integration/postgres-b.test.mjs"],
   "k3d-fixture-state": ["tests/integration/k3d-a.test.mjs"],
   "runtime-image-fixture": ["tests/integration/fixture-image.test.mjs"],
@@ -1941,7 +1942,13 @@ function suiteFiles(base = policy) {
           Object.keys(suiteLanes).map((lane) => [lane, `./test-suites/${lane}.json`]),
         ),
         groups: {
-          ci: ["checks-baseline-1", "postgres", "k3d-fixture-state", "runtime-image-fixture"],
+          ci: [
+            "checks-baseline-1",
+            "checks-baseline-2",
+            "postgres",
+            "k3d-fixture-state",
+            "runtime-image-fixture",
+          ],
           full: Object.keys(suiteLanes),
         },
       },
@@ -1949,6 +1956,7 @@ function suiteFiles(base = policy) {
       2,
     )}\n`,
     "tests/helpers/shared.mjs": "export const shared = 1;\n",
+    "tests/helpers/shared.ts": "export const shared = 1;\n",
     "tests/fixtures/data.json": "{}\n",
   };
   for (const [lane, paths] of Object.entries(suiteLanes)) {
@@ -1979,6 +1987,12 @@ async function suiteFixture(t, change, extra = {}, options) {
 test("a test-only change selects the lanes that list its files", async (t) => {
   await all(
     [
+      // TypeScript changes need the compiler even when another lane owns them.
+      [editTest("tests/integration/typed.test.ts"), ["checks-baseline-1", "checks-baseline-2"]],
+      [
+        async ({ git }) => git("rm", "-q", "tests/integration/typed.test.ts"),
+        ["checks-baseline-1", "checks-baseline-2"],
+      ],
       [editTest("tests/integration/postgres-a.test.mjs"), ["postgres"]],
       [
         withEdit("tests/integration/postgres-b.test.mjs", ({ put }) =>
@@ -2043,6 +2057,12 @@ test("a test-only change selects the lanes that list its files", async (t) => {
     async ([change, lanes, options]) => {
       const [f, shallow] = await suiteFixture(t, change, {}, options);
       await settled([f.expectTests(lanes), shallow.expectTests(lanes)]);
+      const matrix = await buildMatrix(t, "tests", JSON.stringify(lanes));
+      assert.equal(matrix.status, 0, matrix.stderr);
+      assert.deepEqual(
+        matrix.matrix.map((row) => row.lane).sort(),
+        lanes.filter((lane) => lane !== "runtime-image-fixture"),
+      );
     },
   );
 });
@@ -2064,6 +2084,11 @@ test("a test-only change keeps its lanes after main moves", async (t) => {
 });
 
 test("helper, fixture and other test-tree changes select full", async (t) => {
+  // A helper-only edit must still select the full matrix, including typecheck.
+  const [helper, bootstrap] = await suiteFixture(t, ({ put }) =>
+    put("tests/helpers/shared.ts", "export const shared = 2;\n"),
+  );
+  await settled([helper.expect("full"), bootstrap.expect("full")]);
   await all(
     [
       "tests/helpers/shared.mjs",
@@ -2153,11 +2178,16 @@ test("manifest changes beyond the changed test files select full", async (t) => 
 test("unmapped, non-CI, referenced or irregular test files select full", async (t) => {
   const index = JSON.parse(suiteFiles()["scripts/ci/test-suites.json"]);
   index.groups.ci = ["postgres"];
+  const withoutTypecheck = JSON.parse(suiteFiles()["scripts/ci/test-suites.json"]);
+  withoutTypecheck.groups.ci = withoutTypecheck.groups.ci.filter(
+    (lane) => lane !== "checks-baseline-2",
+  );
   const editA = editTest("tests/integration/postgres-a.test.mjs");
   const cases = {
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
-      [({ put }) => put("tests/integration/unlisted.test.ts", "// new\n")],
+      [({ put }) => put("tests/integration/unlisted.test.mjs", "// new\n")],
+      [({ put }) => put("tests/integration/postgres-c.test.ts", "// new\n")],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.
@@ -2193,6 +2223,10 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     ],
     // A malformed or missing manifest is never trusted.
     manifest_unavailable: [
+      [
+        editTest("tests/integration/typed.test.ts"),
+        { "scripts/ci/test-suites.json": JSON.stringify(withoutTypecheck) },
+      ],
       [editA, { "scripts/ci/test-suites/k3d-fixture-state.json": "{not json" }],
       [editA, { "scripts/ci/test-suites.json": "{}\n" }],
       [editA, { "scripts/ci/test-suites.json": JSON.stringify(index) }],

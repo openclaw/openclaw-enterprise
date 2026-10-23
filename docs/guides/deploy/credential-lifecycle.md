@@ -6,6 +6,12 @@ and every application or Agent that uses it. After replacing a credential,
 verify it through the affected application before revoking the old value, unless
 the old value has been compromised.
 
+For Credential Proxy setup, protected source withdrawal, and Gateway replacement,
+use [Credential Proxy setup](../credential-proxy.md) and its
+[upgrade procedure](credential-proxy-upgrade.md). Existing static Gateway owners
+can remain. Do not apply a copied-key rotation procedure to live Secret resolution
+or worker-prepared tokens: their owners and recovery requirements differ.
+
 ## Before changing a credential
 
 Record the responsible administrator, non-secret credential ID, expiry, affected

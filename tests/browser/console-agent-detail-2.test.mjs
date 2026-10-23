@@ -4296,6 +4296,7 @@ test("Credentials preserves an existing OpenClaw credential source without offer
       type: "openai",
       config: {},
       secrets: { api_key: input.ref },
+      ownerCapability: "credential_gateway",
       driverId: gateway.id,
       state: "ready",
       createdAt: new Date().toISOString(),

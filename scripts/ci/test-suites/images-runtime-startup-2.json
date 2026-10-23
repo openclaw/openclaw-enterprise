@@ -27,7 +27,8 @@
       "expectedTests": [
         "runtime image Codex Harness exits promptly on SIGTERM in every startup phase",
         "runtime image embedded Gateway exits promptly on SIGTERM in every startup phase",
-        "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness"
+        "runtime image dedicated Gateway exits promptly on SIGTERM while it waits for its Harness",
+        "runtime image embedded Gateway restarted after an unclean stop is ready only when its agent takes turns"
       ]
     },
     {
@@ -54,7 +55,9 @@
         "OpenShell reconciles renewed openclaw workspace-node setup into its revision provider",
         "OpenShell delivers codex initial workspace files privately after supervisor readiness",
         "OpenShell delivers openclaw initial workspace files privately after supervisor readiness",
-        "native initializer serializes retries and preserves later edits"
+        "native initializer serializes retries and preserves later edits",
+        "configured protected OpenShell Git admits only the selected execution and network policy",
+        "stock OpenShell v0.1.5 cannot carry OCE readiness-extension evidence"
       ]
     }
   ]

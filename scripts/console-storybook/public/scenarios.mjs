@@ -524,7 +524,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The API refuses creation, clears the entered value and disables the refused write.",
+      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -575,7 +575,7 @@ export const scenarios = {
       { selector: "#secret-value", value: "synthetic-story-value" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
-    description: "A denied replacement clears the entered value and disables further submission.",
+    description: "A denied replacement clears the value, disables editing, and focuses Close.",
   },
   secretsDelete: {
     group: "Pages/Secrets",
@@ -1368,7 +1368,7 @@ export const scenarios = {
     observabilityDenied: true,
     rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
       { click: "Cancel" },
@@ -1380,7 +1380,7 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Create Namespace",
     path: "/console/namespaces",
-    actions: [{ click: "Create Namespace" }],
+    actions: [{ click: "Create Namespace", focus: true }],
     description:
       "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
     steps: [
@@ -1393,7 +1393,7 @@ export const scenarios = {
     path: "/console/namespaces",
     mobile: true,
     emptyNamespaces: true,
-    actions: [{ click: "Create Namespace" }],
+    actions: [{ click: "Create Namespace", focus: true }],
     description:
       "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
   },
@@ -1402,7 +1402,7 @@ export const scenarios = {
     name: "Create name required",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
@@ -1413,7 +1413,7 @@ export const scenarios = {
     name: "Create invalid name",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support\tteam" },
     ],
     description:
@@ -1424,7 +1424,7 @@ export const scenarios = {
     name: "Create name conflict",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Engineering" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1438,7 +1438,7 @@ export const scenarios = {
     emptyNamespaces: true,
     rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1451,7 +1451,7 @@ export const scenarios = {
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", method: "POST", hold: true }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1464,7 +1464,7 @@ export const scenarios = {
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1476,7 +1476,7 @@ export const scenarios = {
     name: "Namespace created",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1491,7 +1491,7 @@ export const scenarios = {
     // A create-only role: the authorized list never includes the new Namespace.
     rules: [{ path: "/namespaces", data: [] }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -7688,6 +7688,7 @@ for (const [id, state, name] of [
     "noCredential",
     "Policy logs unavailable without runtime credentials",
   ],
+  ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
 ]) {
   scenarios[id] = {
     group: "Pages/Agent detail",
@@ -7734,6 +7735,14 @@ for (const [id, state, name] of [
       ? {
           steps: [
             "The tab says once that the Sandbox Driver does not support per-Agent network policy. It reads no Sandbox logs or suggestions and offers no editor.",
+          ],
+        }
+      : {}),
+    ...(state === "protected"
+      ? {
+          steps: [
+            "The tab states that protected execution applies: the Credential Proxy routes alone govern this Agent's egress, so network policy additions are refused. The proposal editor and Apply are unavailable.",
+            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules and confirm the saved policy is now empty.",
           ],
         }
       : {}),

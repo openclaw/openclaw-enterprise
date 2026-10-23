@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-20"
-last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
+updated: "2026-10-23"
+last_updated_session: "authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9"
 ---
 
 # Production image upgrade flow
@@ -30,11 +30,14 @@ Doctor lint. Model and external integration checks remain operator tasks.
 
 ```mermaid
 graph TD
-    A["Validate inputs and freeze fleet"] --> Q{"Repository broker enabled?"}
+    A["Validate inputs"] --> Q{"Repository broker enabled?"}
     Q -->|Yes| P["Check image protocol and node architectures"]
-    Q -->|No| B["Render candidate and save recovery record"]
+    Q -->|No| B["Render and check candidate startup"]
     P --> B
-    B --> C["Read live Secret and Helm state"]
+    B --> R{"Preflight only?"}
+    R -->|Yes| S["Exit without prepared deployment"]
+    R -->|No| T["Save prepared recovery record"]
+    T --> C["Read live Secret and Helm state"]
     C --> D{"Candidate Helm release deployed?"}
     D -->|No| E["Stop API and worker Pods"]
     E --> F["Update Secret and run Helm migration"]
@@ -55,9 +58,9 @@ graph TD
 
 ## Execution Trace
 
-### 1. Prepare and freeze the target
+### 1. Prepare the candidate
 
-`scripts/upgrade-production-images:245`
+`scripts/upgrade-production-images:prepare_upgrade`
 
 The script verifies the protected files, cluster, deployed Helm release, and
 matching OCC and Secret Installation IDs. It compares protected and live
@@ -119,16 +122,20 @@ A missing rule refuses the candidate and points to
 Because the chart's default-deny NetworkPolicy also selects these Pods, the
 helper first creates a temporary NetworkPolicy carrying the rendered
 `openclaw-enterprise-dependency-egress` (and execution-cluster API) egress rules.
-A failure, a stuck image pull, or the timeout stops
-preparation before any writer stops. The script first reads both Pods and saves
-each status and log, so every failing component is reported; then the exit trap
-deletes the Pods, Secret and NetworkPolicy.
-It saves
-candidate inputs, inventory, target identity, and parameter hashes in the
-private evidence directory before marking preparation complete. A per-directory
-lock prevents two helpers from using that record at once. The operator must
-freeze other writers, autoscalers, Helm changes, and runtime draft edits as
-specified in the [production guide](../guides/deploy/production-upgrade.md).
+A failure, stuck pull, or timeout stops preparation before writers stop. The
+script saves both Pods' statuses and logs, reports each failure, and attempts
+to delete the Pods, Secret, and NetworkPolicy. Cleanup is best effort.
+
+With `--preflight-only`, the helper exits without marking preparation complete.
+It leaves serving writers running and retains private evidence. This evidence
+cannot be resumed; deployment repeats the checks with reviewed inputs in a fresh
+directory.
+
+For an upgrade, the script saves candidate inputs, inventory, target identity,
+and parameter hashes before marking preparation complete. A per-directory lock
+prevents two helpers from using that record at once. The operator must freeze
+other writers, autoscalers, Helm changes, and runtime draft edits as specified in
+the [production guide](../guides/deploy/production-upgrade.md).
 
 ### 2. Reconcile a prior attempt
 
@@ -137,9 +144,10 @@ specified in the [production guide](../guides/deploy/production-upgrade.md).
 On every attempt the script rereads Helm status and values and the Installation
 Secret. Only the recorded baseline or candidate values are accepted; the
 Secret's UID, Installation annotation, and other data must match the baseline.
-Resume also binds the original kubeconfig contents, inputs, OCC URL, scripts,
-flow, chart, and pair evidence. It requalifies the pair and rejects a changed
-eligible-node set. Candidate files must still match the saved reviewed inputs; the
+Without the prepared record, resume stops: inspect the evidence and any remaining
+preflight resources. Resume also binds the original kubeconfig contents,
+inputs, OCC URL, scripts, flow, chart, and pair evidence. It requalifies the pair
+and rejects a changed eligible-node set. Candidate files must still match the saved reviewed inputs; the
 helper applies the saved candidate. Unexpected drift or an in-progress Helm
 release stops the command.
 
@@ -286,6 +294,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 09:50: Document preflight-only rehearsal and fresh checks at deployment. (authoring-run/3c1a4d88-d619-47e3-9eba-dbaf0988d2e9 - 4e9f5935d5fa4878a719e82db5e504ec6ae55d64)
 
 - 2026-10-20 01:48: Preserve field diagnostics before quiescence. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 - 2026-10-19 22:34: Document that pending repository cleanup does not block upgrade preparation. (authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3 - 57acafe81482a890b02ae530793246f2c2e7be79)

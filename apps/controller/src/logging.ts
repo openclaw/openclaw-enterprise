@@ -47,6 +47,7 @@ const ALLOWED_FIELDS = new Set([
   "activationMs",
   "agentId",
   "attempt",
+  "candidatePreparationReached",
   "cause",
   "code",
   "computeDriverId",
@@ -57,6 +58,7 @@ const ALLOWED_FIELDS = new Set([
   "elapsedMs",
   "errorClass",
   "event",
+  "grpcStatus",
   "host",
   "keyHash",
   "lane",
@@ -75,12 +77,14 @@ const ALLOWED_FIELDS = new Set([
   "providerId",
   "readinessWaitMs",
   "reason",
+  "repositoryRef",
   "requestId",
   "restrictionIds",
   "result",
   "revisionId",
   "route",
   "sandboxDriverId",
+  "sandboxId",
   "signal",
   "skippedUserCount",
   "skippedUserIds",
@@ -88,6 +92,7 @@ const ALLOWED_FIELDS = new Set([
   "status",
   "step",
   "stopYields",
+  "validationCategory",
   "workId",
 ]);
 
@@ -198,6 +203,33 @@ function safePath(value: unknown): string | undefined {
     : undefined;
 }
 
+// Fields that name a fixed code, from any emitter: for example an OpenShell Git expiry check, a
+// failure class, the reason code an Agent is shown, a Harness lifecycle state or the operator
+// guidance a refusal names. Only a short identifier passes, never free text. `command` passes
+// only on auth:maintain events, whose commands are a fixed list (AUTH_MAINTAIN_COMMANDS).
+const CODE_FIELDS = new Set([
+  "check",
+  "command",
+  "failure",
+  "harnessState",
+  "hintCode",
+  "reasonCode",
+]);
+const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
+// maintenance run names, and a Configuration a refused provisioning job left behind.
+const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ["installationId", new RegExp(`^ins_${UUID_V4}$`)],
+  ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
+]);
+
+function safeCode(value: unknown): string | undefined {
+  return typeof value === "string" && SAFE_CODE.test(value) && !resemblesToken(value)
+    ? value
+    : undefined;
+}
+
 function safeNumber(key: string, value: number): number | undefined {
   if (!Number.isFinite(value)) {
     return undefined;
@@ -217,6 +249,18 @@ function safeNumber(key: string, value: number): number | undefined {
 function safeScalar(key: string, value: unknown): string | number | boolean | undefined {
   if (key === "stopYields") {
     return typeof value === "number" && value >= 0 ? safeNumber(key, value) : undefined;
+  }
+  if (key === "grpcStatus") {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 16
+      ? value
+      : undefined;
+  }
+  if (key === "validationCategory") {
+    return value === "POLICY_SAFETY" ||
+      value === "POLICY_MIDDLEWARE_VALIDATION" ||
+      value === "UNKNOWN"
+      ? value
+      : undefined;
   }
   if (typeof value === "string") {
     return safeString(value);
@@ -309,13 +353,35 @@ function sanitizedEvent(
     typeof rawEvent === "string" ? (safeString(rawEvent) ?? "occ.event") : "occ.event";
   const result: Record<string, unknown> = { event: eventName };
   for (const [key, value] of Object.entries(event)) {
+    if (CODE_FIELDS.has(key)) {
+      const code = safeCode(value);
+      if (code !== undefined && (key !== "command" || eventName.startsWith("auth-maintain."))) {
+        result[key] = code;
+      }
+      continue;
+    }
+    const identifier = IDENTIFIER_FIELDS.get(key);
+    if (identifier !== undefined) {
+      if (typeof value === "string" && identifier.test(value)) {
+        result[key] = value;
+      }
+      continue;
+    }
+    if (key === "fence") {
+      // A route generation, such as the OpenShell Git fence a worker holds: a non-negative integer.
+      if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+        result.fence = value;
+      }
+      continue;
+    }
     if (key === "event" || !ALLOWED_FIELDS.has(key)) {
       continue;
     }
     if (key === "details") {
       if (
         (eventName === "startup-error" || eventName === "worker.startup-error") &&
-        event.code === "DRIVER_CONFIGURATION_INVALID" &&
+        (event.code === "DRIVER_CONFIGURATION_INVALID" ||
+          event.code === "CHART_LISTENER_MISMATCH") &&
         Array.isArray(value)
       ) {
         result.details = configurationLogDetails(value);
@@ -326,6 +392,12 @@ function sanitizedEvent(
       key === "message" &&
       eventName !== "compute.preflight-warning" &&
       eventName !== "worker.compute-prepare-failed"
+    ) {
+      continue;
+    }
+    if (
+      key === "candidatePreparationReached" &&
+      (eventName !== "worker.compute-prepare-failed" || typeof value !== "boolean")
     ) {
       continue;
     }
