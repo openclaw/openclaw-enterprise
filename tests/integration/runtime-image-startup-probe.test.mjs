@@ -161,8 +161,9 @@ async function assertRejectedCredentialFailsFast(t, kind) {
 
 // Each case starts its own wrapper and stand-in provider: random container
 // names, its own certificate directory and network namespace, no shared volume
-// or port, so they run side by side.
-describe("runtime image startup model probes", { concurrency: true }, () => {
+// or port. Two run at a time, so the CPU-limited probes keep most of the
+// headroom their recorded measurements report.
+describe("runtime image startup model probes", { concurrency: 2 }, () => {
   test(
     "runtime image Codex Harness stays unready until its model probe passes",
     { ...imageTestOptions, timeout: 600_000 },

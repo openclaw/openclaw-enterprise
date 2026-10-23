@@ -32,8 +32,10 @@ const SKIP_GATEWAY_CRON = "OPENCLAW_SKIP_CRON=1";
 
 // Each case starts its own Gateway container (random name, no network, or its
 // own network, volumes and peer) from its own configuration directory, so the
-// cases share no container, port, volume or fixture state and run side by side.
-describe("runtime image Gateway Harness peer", { concurrency: true }, () => {
+// cases share no container, port, volume or fixture state. Two run at a time:
+// the Gateways have no CPU limit, and the fixtures' deadlines (the peer exit
+// and stale-replacement windows, the held stop) are not scaled for contention.
+describe("runtime image Gateway Harness peer", { concurrency: 2 }, () => {
   for (const writableConfig of [false, true]) {
     test(
       writableConfig
