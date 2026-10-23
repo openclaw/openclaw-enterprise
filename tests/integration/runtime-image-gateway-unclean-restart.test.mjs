@@ -85,13 +85,14 @@ async function sendFirstTurn(containerName) {
 // is gone and refuses the shared state until the owner's heartbeat is 90 s old.
 const ownerHeartbeatStaleMs = 90_000;
 
-// Runs in a one-shot container on the stopped Gateway's state: moves every
-// owner heartbeat back by `ageMs`, leaving the volume as it is that long after
-// the kill. The heartbeats are the mtimes of the lock files and the
-// heartbeat_at of the state database's leases (expires_at moves with it). The
-// agent database is not opened. The process then kills itself, so SQLite does
-// not checkpoint on close and the state database keeps its write-ahead log,
-// as the killed Gateway left it. Prints what it aged as JSON.
+// Runs in a one-shot container on the stopped Gateway's state: moves the owner
+// heartbeats back by `ageMs`, leaving the volume as it is that long after the
+// kill. The heartbeats are the mtimes of the Gateway's lock files (every lock
+// file is aged, as real time would) and heartbeat_at of the state database's
+// leases (their other times move with it). The agent database is not opened.
+// With automatic checkpoints off, the process then kills itself, so SQLite
+// does not checkpoint on close and the state database is left with its
+// write-ahead log, as the killed Gateway left it. Prints what it aged as JSON.
 async function ageOwnerHeartbeats({ stateDir, ageMs }) {
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -111,11 +112,12 @@ async function ageOwnerHeartbeats({ stateDir, ageMs }) {
   };
   walk(stateDir);
   const database = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"));
+  database.exec("PRAGMA wal_autocheckpoint = 0");
   const aged = database
     .prepare(
-      "UPDATE state_leases SET heartbeat_at = heartbeat_at - ?, expires_at = expires_at - ? WHERE heartbeat_at IS NOT NULL RETURNING scope",
+      "UPDATE state_leases SET heartbeat_at = heartbeat_at - :age, expires_at = expires_at - :age, created_at = created_at - :age, updated_at = updated_at - :age RETURNING scope",
     )
-    .all(ageMs, ageMs);
+    .all({ age: ageMs });
   process.stdout.write(JSON.stringify({ locks, leases: aged.map(({ scope }) => scope) }), () =>
     process.kill(process.pid, "SIGKILL"),
   );
@@ -123,7 +125,7 @@ async function ageOwnerHeartbeats({ stateDir, ageMs }) {
 
 async function ageStoppedGatewayHeartbeats(homeVolume, ageMs) {
   const program = `await (${ageOwnerHeartbeats.toString()})(${JSON.stringify({ stateDir: "/home/node/.openclaw", ageMs })});`;
-  const { stdout } = await runDocker([
+  const { stdout, stderr } = await runDocker([
     "run",
     "--rm",
     "--user",
@@ -136,11 +138,15 @@ async function ageStoppedGatewayHeartbeats(homeVolume, ageMs) {
     "sh",
     image,
     "-c",
-    // The program's SIGKILL is expected; its output says what it aged.
-    'node --no-warnings --input-type=module -e "$0"; true',
+    // The program ends with SIGKILL (exit 137); any other exit is a failure.
+    'node --no-warnings --input-type=module -e "$0"; status=$?; [ "$status" -eq 137 ] || exit "$status"',
     program,
   ]);
-  return JSON.parse(stdout);
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`ageing the Gateway heartbeats printed no result: ${stdout} ${stderr}`);
+  }
 }
 
 // Finding 2185: a Gateway Pod went Ready while OpenClaw was still inspecting
@@ -164,6 +170,8 @@ test(
       act: async ({ containerName }) => {
         firstTurn = await sendFirstTurn(containerName);
         await runDocker(["kill", "--signal", "KILL", containerName]);
+        // No heartbeat renewal can follow the aging below.
+        await runDocker(["wait", containerName]);
       },
     });
     await withStartupProbeEvidence(first, async () => {
@@ -175,7 +183,10 @@ test(
     // PID namespace, as a restarted Pod container does, so it reaches the same
     // stale agent database lease as after a real wait.
     const aged = await ageStoppedGatewayHeartbeats(homeVolume, ownerHeartbeatStaleMs + 2_000);
-    assert.ok(aged.locks.length > 0, `no Gateway lock file to age: ${JSON.stringify(aged)}`);
+    assert.ok(
+      aged.locks.includes("tmp/openclaw-1000/gateway.state.lock"),
+      `no Gateway lock file to age: ${JSON.stringify(aged)}`,
+    );
     assert.ok(
       aged.leases.includes("gateway-owner"),
       `no owner lease to age: ${JSON.stringify(aged)}`,
@@ -200,9 +211,13 @@ test(
       // after its listener bound: the window this readiness must cover.
       assert.match(restarted.snapshot.output, /previous release not observed/);
       // The full integrity gate, which runs when the restart cannot prove from
-      // its own PID namespace that the killed owner is dead, not the deferred
+      // its own PID namespace that the killed owner is dead (in practice the
+      // restart has the owner's PID with another start time), not the deferred
       // check OpenClaw gives a dead owner in the same namespace.
-      assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full/);
+      assert.match(
+        restarted.snapshot.output,
+        /integrityGateReason=stale-lease-full because=(owner-start-time-changed|host-boot-namespace-version-file-mismatch)/,
+      );
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
     });
   },
