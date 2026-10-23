@@ -658,7 +658,8 @@ test(
 
 test("a prepared draft keeps GitHub's spelling of the repository and still reads stored rows", async (t) => {
   // The registry lowercases the repository; GitHub answers with its own spelling, and its
-  // names ignore case (finding 2236). The same check re-reads stored receipts.
+  // names ignore case (finding 2236). The same check re-reads stored receipts, which hold
+  // the lowercase URL (the broker test replays both spellings from PostgreSQL).
   const target = {
     apiOrigin: "https://api.github.com",
     repository: "acme/kit",
@@ -690,6 +691,9 @@ test("a prepared draft keeps GitHub's spelling of the repository and still reads
     ["another owner", "https://github.com/Other/Kit/pull/8"],
     ["a longer path", "https://github.com/Acme/Kit/x/pull/8"],
     ["another number", "https://github.com/Acme/Kit/pull/9"],
+    ["a trailing slash", "https://github.com/Acme/Kit/pull/8/"],
+    ["a query", "https://github.com/Acme/Kit/pull/8?x=1"],
+    ["number zero", "https://github.com/Acme/Kit/pull/0", 0],
     ["a number that disagrees", "https://github.com/Acme/Kit/pull/8", 9],
     ["another host", "https://github.org/Acme/Kit/pull/8"],
     ["plain HTTP", "http://github.com/Acme/Kit/pull/8"],

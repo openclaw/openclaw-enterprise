@@ -151,14 +151,17 @@ export function isSameGitHubRepository(name: unknown, repository: string): boole
   );
 }
 
-/** True when `url` is GitHub's page for pull request `number` in `repository`. Only the
- * repository's letter case may differ; the host, path shape and number are exact. */
+/**
+ * True when `url` is GitHub's page for pull request `number` in `repository`. Only the
+ * repository's letter case may differ; the host, path shape and number are exact.
+ */
 export function isGitHubPullUrl(url: unknown, repository: string, number: unknown): boolean {
   const prefix = "https://github.com/";
   const suffix = "/pull/" + String(number);
   return (
     typeof url === "string" &&
     Number.isSafeInteger(number) &&
+    (number as number) > 0 &&
     url.startsWith(prefix) &&
     url.endsWith(suffix) &&
     isSameGitHubRepository(url.slice(prefix.length, -suffix.length), repository)
