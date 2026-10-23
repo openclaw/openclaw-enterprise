@@ -507,8 +507,24 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
               ...snapshot.configuration.gateway?.auth,
               mode: "trusted-proxy",
               // Compute keeps explicit identities and grants; omission is machine-only.
+              // Admitting a human makes the Gateway require x-openclaw-scopes (finding 2183).
               trustedProxy: {
                 ...snapshot.configuration.gateway?.auth?.trustedProxy,
+                ...((snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? []).some(
+                  (user) => user !== "occ-workspace-files",
+                )
+                  ? {
+                      requiredHeaders: [
+                        ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
+                          []),
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
+                      ],
+                    }
+                  : {}),
                 userHeader: "x-occ-identity",
                 allowUsers: snapshot.configuration.gateway?.auth?.trustedProxy?.allowUsers ?? [
                   "occ-workspace-files",

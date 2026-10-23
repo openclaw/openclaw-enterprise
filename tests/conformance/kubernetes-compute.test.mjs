@@ -4896,8 +4896,102 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
       configuration: revision.configuration,
     });
     const rendered = driver.kubernetesGatewayConfigurationDocument(revision.configuration);
-    assert.deepEqual(rendered.gateway.auth, auth);
+    // Native HTTP APIs ignore identityScopes and give a header-less trusted-proxy request
+    // OpenClaw's default operator scopes, operator.admin included (finding 2183). Admitting
+    // a human therefore makes the Gateway require x-openclaw-scopes on every request.
+    assert.deepEqual(rendered.gateway.auth, {
+      ...auth,
+      trustedProxy: { ...auth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+    });
     assert.deepEqual(revision.configuration, original);
+    const renderedRequiredHeaders = (trustedProxy, identityScopes = auth.identityScopes) =>
+      driver.kubernetesGatewayConfigurationDocument({
+        gateway: {
+          auth: {
+            ...auth,
+            trustedProxy: { ...auth.trustedProxy, ...trustedProxy },
+            identityScopes,
+          },
+        },
+      }).gateway.auth.trustedProxy.requiredHeaders;
+    // Operator-supplied required headers are kept, the Gateway matches names case-insensitively,
+    // and a machine-only allowlist keeps the existing route contract (no header required).
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: ["x-real-ip"] }), [
+      "x-real-ip",
+      "x-openclaw-scopes",
+    ]);
+    assert.deepEqual(
+      renderedRequiredHeaders({ requiredHeaders: ["X-OpenClaw-Scopes", "x-real-ip"] }),
+      ["X-OpenClaw-Scopes", "x-real-ip"],
+    );
+    assert.deepEqual(renderedRequiredHeaders({ requiredHeaders: [] }), ["x-openclaw-scopes"]);
+    assert.equal(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      undefined,
+    );
+    assert.deepEqual(
+      renderedRequiredHeaders(
+        { allowUsers: ["occ-workspace-files"], requiredHeaders: ["x-real-ip"] },
+        { "occ-workspace-files": ["operator.admin"] },
+      ),
+      ["x-real-ip"],
+    );
+    // Header names the Gateway could never match would refuse every request; non-arrays
+    // fail its schema at startup. Both are refused before rollout.
+    for (const requiredHeaders of [
+      "x-openclaw-scopes",
+      null,
+      {},
+      [""],
+      [" x-openclaw-scopes"],
+      ["x-openclaw-scopes "],
+      ["x-real-ip", 42],
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: { ...auth, trustedProxy: { ...auth.trustedProxy, requiredHeaders } },
+              },
+            },
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.requiredHeaders",
+      );
+    }
+    // The operator HTTPRoute strips these headers, so requiring one on a routed Agent
+    // would refuse OCC's own access for good; without routing the operator's proxy decides.
+    for (const header of ["authorization", "Cookie", "forwarded", "x-forwarded-for"]) {
+      const validate = () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, requiredHeaders: [header, "x-real-ip"] },
+              },
+            },
+          },
+        });
+      if (configure === routedOptions) {
+        assert.throws(
+          validate,
+          (error) =>
+            error instanceof ComputeGatewaySettingError &&
+            error.setting === "gateway.auth.trustedProxy.requiredHeaders" &&
+            error.message.includes("route removes"),
+        );
+      } else {
+        assert.doesNotThrow(validate);
+      }
+    }
 
     // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
     // A human allowlist must not silently inherit the pilot's admin device grant.
@@ -5281,9 +5375,12 @@ test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", asyn
       requestHeaderModifier: {
         set: [
           { name: "x-occ-identity", value: "occ-workspace-files" },
+          // The machine identity's exact grant: required by the Gateway once humans are
+          // admitted, and never left to a client header (finding 2183).
+          { name: "x-openclaw-scopes", value: "operator.admin" },
           { name: "x-real-ip", value: "%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%" },
         ],
-        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for", "x-openclaw-scopes"],
+        remove: ["authorization", "cookie", "forwarded", "x-forwarded-for"],
       },
     },
   ]);

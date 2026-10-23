@@ -111,8 +111,9 @@ Compute prepares runtime credentials without loopback HTTP. Kubernetes
 and preserves explicit human identities/scopes alongside
 machine administration, defaulting to machine-only. Provisioning and deploy
 admission reject unknown or padded operator scopes, blank or padded identity keys,
-grants for identities outside `allowUsers`, and human admission with admin device
-scopes, including whitespace. These refusals precede workload replacement.
+grants for identities outside `allowUsers`, malformed `requiredHeaders`, and human
+admission with admin device scopes, including whitespace; human allowlists render
+`x-openclaw-scopes` as required. These refusals precede workload replacement.
 Human ingress and its network policy remain operator-managed; no OCE human
 account is required. See [Gateway authentication](../reference/drivers/kubernetes-compute/gateway-authentication.md).
 Provisioning supplies no Gateway token or trust override. Losing its claim cancels
