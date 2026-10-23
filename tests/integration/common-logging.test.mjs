@@ -284,7 +284,7 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
     event: "installation.bootstrap-failed",
     code: "COMMIT_OUTCOME_UNKNOWN",
     attempt: {
-      installationId: "ins_safe",
+      installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
       serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
       passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
       serviceKeyId: "key_safe",
@@ -297,7 +297,7 @@ test("OCC event sanitizer drops arbitrary fields and unsafe diagnostic text", ()
   assert.equal(output.lines[0].attempt, 2);
   assert.equal(output.lines[0].code, "WORKER_UNAVAILABLE");
   assert.deepEqual(output.lines[1].attempt, {
-    installationId: "ins_safe",
+    installationId: "ins_2c7a3b6e-41f0-4d1b-9a8e-5f3c2d1e0b9a",
     serviceKeyFile: "/tmp/common-otel-swarm/occ/service-key.json",
     passwordFile: "/tmp/common-otel-swarm/occ/password.txt",
     serviceKeyId: "key_safe",
@@ -844,6 +844,41 @@ test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never
   // A code-shaped command passes only on auth:maintain events, whose commands are a fixed list.
   for (const event of ["worker.completed", "http.completed", "auth-maintainer.failed"]) {
     assert.equal(Object.hasOwn(occLogLine({ event, command: "status" }), "command"), false, event);
+  }
+});
+
+test("a bootstrap attempt keeps OCC-assigned IDs only in their own format", () => {
+  // The IDs a failed bootstrap names (finding 2246): the Installation and the administrator
+  // Principal and service Principal OCC assigns for it.
+  const ids = {
+    installationId: `ins_${randomUUID()}`,
+    principalId: `prn_${randomUUID()}`,
+    servicePrincipalId: `spn_${randomUUID()}`,
+  };
+  const failed = (attempt) =>
+    occLogLine({ event: "installation.bootstrap-failed", code: "X", attempt }).attempt;
+  const attempt = { ...ids, authAccountId: "abc123", serviceKeyId: "key123" };
+  assert.deepEqual(failed(attempt), attempt);
+
+  const rejected = [
+    ["installationId", "ins_production"],
+    ["installationId", ids.principalId],
+    ["installationId", ids.installationId.toUpperCase()],
+    ["installationId", `${ids.installationId}\n`],
+    ["installationId", 7],
+    ["principalId", "prn_admin"],
+    ["principalId", ids.servicePrincipalId],
+    ["principalId", `${ids.principalId}-extra`],
+    ["servicePrincipalId", "spn_bootstrap"],
+    ["servicePrincipalId", ids.installationId],
+  ];
+  for (const [key, value] of rejected) {
+    const { [key]: _dropped, ...kept } = attempt;
+    assert.deepEqual(
+      failed({ ...attempt, [key]: value }),
+      kept,
+      `${key}: ${JSON.stringify(value)}`,
+    );
   }
 });
 

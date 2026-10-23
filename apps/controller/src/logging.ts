@@ -223,6 +223,18 @@ const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
   ["installationId", new RegExp(`^ins_${UUID_V4}$`)],
   ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
 ]);
+// A bootstrap attempt names the same Installation, and the administrator Principal and service
+// Principal OCC assigns for it, each kept only in its own format (finding 2246). The auth account
+// and service key IDs come from the auth library, not OCC, so they keep the generic string check.
+const ATTEMPT_IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ...IDENTIFIER_FIELDS,
+  ["principalId", new RegExp(`^prn_${UUID_V4}$`)],
+  ["servicePrincipalId", new RegExp(`^spn_${UUID_V4}$`)],
+]);
+
+function safeIdentifier(format: RegExp, value: unknown): string | undefined {
+  return typeof value === "string" && format.test(value) ? value : undefined;
+}
 
 function safeCode(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_CODE.test(value) && !resemblesToken(value)
@@ -324,7 +336,9 @@ function safeAttempt(
       }
       continue;
     }
-    const safe = safeScalar(key, field);
+    const identifier = ATTEMPT_IDENTIFIER_FIELDS.get(key);
+    const safe =
+      identifier === undefined ? safeScalar(key, field) : safeIdentifier(identifier, field);
     if (safe !== undefined) {
       result[key] = safe;
     }
@@ -362,8 +376,9 @@ function sanitizedEvent(
     }
     const identifier = IDENTIFIER_FIELDS.get(key);
     if (identifier !== undefined) {
-      if (typeof value === "string" && identifier.test(value)) {
-        result[key] = value;
+      const id = safeIdentifier(identifier, value);
+      if (id !== undefined) {
+        result[key] = id;
       }
       continue;
     }
