@@ -232,9 +232,12 @@ interface Entry extends OpenShellGitObservationEntry {
   persisted?: OpenShellGitRouteSnapshot | undefined;
   /** Why the owner last had no material: the session is gone, or none is usable (finding 2149). */
   absent?: "withdrawn" | "unprepared" | undefined;
-  /** A closed route's next Sandbox read, the reads that found it, and whether the last found
-   * none: release() drops the entry once the Sandbox is gone (finding 2218). */
-  release?: { at: number; present: number; absent?: true | undefined } | undefined;
+  /** A closed route's next Sandbox read, the reads that found it, whether the last found none,
+   * and whether a read was refused by the worker's identity (reported once): release() drops
+   * the entry once the Sandbox is gone (finding 2218). */
+  release?:
+    | { at: number; present: number; absent?: true | undefined; refused?: true | undefined }
+    | undefined;
 }
 interface EntryState {
   entry?: Entry;
@@ -1946,13 +1949,18 @@ export class OpenShellGitRuntime {
       this.stopped.signal,
       AbortSignal.timeout(this.observeTimeoutMs),
     ]);
-    // A read that fails for any reason keeps the entry.
-    const present = await (async () => {
+    // A read that fails for any reason keeps the entry. One the gateway refuses by this worker's
+    // identity keeps it until that changes, so it is reported, once per entry.
+    let refused = false;
+    const present = await read(async () => {
       const { workspace, sandbox } = entry.binding;
       return entry.client.getSandbox({ workspace, name: sandbox }, signal);
-    })().then(
+    }, signal).then(
       (box) => box !== undefined,
-      () => true,
+      (error: unknown) => {
+        refused = error instanceof OpenShellGitRouteError;
+        return true;
+      },
     );
     if (entry.blocked === undefined || this.states.get(id)?.entry !== entry) {
       return;
@@ -1962,11 +1970,20 @@ export class OpenShellGitRuntime {
       this.states.set(id, { blocked: entry.blocked });
       return;
     }
+    if (refused && !last?.refused) {
+      this.emit?.({
+        event: "worker.openshell-git-route-warning",
+        status: "retained",
+        reason: "gateway_unauthorized",
+        ...this.identity(entry),
+      });
+    }
     const reads = (last?.present ?? 0) + (present ? 1 : 0);
     entry.release = {
       at: performance.now() + Math.min(REFRESH_INTERVAL_MS * 2 ** reads, RELEASE_INTERVAL_CAP_MS),
       present: reads,
       ...(!present && { absent: true }),
+      ...((refused || last?.refused) && { refused: true }),
     };
   }
 

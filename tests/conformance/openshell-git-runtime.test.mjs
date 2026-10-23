@@ -24,6 +24,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "../../packages/occ/src/errors.ts";
+import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 
 // The worker-local runtime's reconcile and lookup, driven at the class boundary with a fake
@@ -48,6 +49,7 @@ const restorations = (f) =>
   );
 const warnings = (f) =>
   f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
+const retained = (f) => warnings(f).filter((event) => event.status === "retained");
 
 async function expectDenied(f, reason, message) {
   assert.equal(await f.lookup(), undefined, message);
@@ -1204,6 +1206,25 @@ test("a withdrawn route is dropped once its Sandbox is gone and never prepared a
   await f.reconcile();
   f.faults.gateway = undefined;
   assert.ok(f.runtime.entries.has(f.revision.id));
+  assert.deepEqual(retained(f), []);
+  // So does a read the gateway refuses by this worker's identity, which keeps it until that
+  // changes: reported once, with the revision's identity only.
+  f.faults.gateway = Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
+  await f.reconcile();
+  await f.reconcile();
+  f.faults.gateway = undefined;
+  assert.ok(f.runtime.entries.has(f.revision.id));
+  assert.deepEqual(retained(f), [
+    {
+      event: "worker.openshell-git-route-warning",
+      status: "retained",
+      reason: "gateway_unauthorized",
+      namespaceId: "namespace-a",
+      agentId: "agent-one",
+      revisionId: "rev-one",
+      repositoryRef: "application",
+    },
+  ]);
 
   // The Sandbox is gone: the entry is dropped, its reason kept.
   f.faults.sandboxMissing = true;
@@ -1301,6 +1322,43 @@ test("a withdrawn route is dropped once its Sandbox is gone and never prepared a
   await h.reconcile();
   assert.deepEqual(h.runtime.route(h.revision.id), { state: "blocked", reason: "withdrawn" });
   assert.equal(h.runtime.entries.has(h.revision.id), false);
+});
+
+test("a closed preview route is kept until the store confirms its closure, even with its Sandbox gone", async () => {
+  // Only the preview's terminal record can be retried, so the entry that retries it stays until
+  // the store has it, whatever the Sandbox reads (finding 2229).
+  const f = await reconciledFixture({ store: routeStore() });
+  f.store.rows.get(f.revision.id).workerInstance = f.runtime.instance;
+  f.entry.preview = new ObservedHookPreview(f.sandbox.workspace, f.entry.bindingId);
+  f.entry.preview.verifyInstallBy = 0;
+  const confirm = f.store.confirmPreviewBlocked;
+  f.store.confirmPreviewBlocked = async () => {
+    throw new Error("connection terminated");
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "preview_install_unverified",
+  });
+  f.faults.sandboxMissing = true;
+  await f.reconcile();
+  await f.reconcile();
+  assert.ok(f.runtime.entries.has(f.revision.id), "the unconfirmed closure keeps the entry");
+  assert.equal(f.entry.previewClosure.reason, "preview_install_unverified");
+  assert.equal(f.store.rows.get(f.revision.id).blocked, undefined);
+
+  // The store confirms it: the next pass drops the entry, its reason kept.
+  f.store.confirmPreviewBlocked = confirm;
+  await f.reconcile();
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "preview_install_unverified");
+  assert.equal(f.runtime.entries.has(f.revision.id), false);
+  assert.deepEqual(f.runtime.states.get(f.revision.id), { blocked: "preview_install_unverified" });
+  assert.deepEqual(
+    f.events
+      .filter((event) => event.event === "worker.openshell-preview-closure")
+      .map(({ status }) => status),
+    ["pending", "confirmed"],
+  );
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {
@@ -1734,6 +1792,7 @@ test("the periodic Git reader crossing the admitted deadline does not report gra
 
 test("Git expiry observes the original model in the reduced stock installation, including response loss", async (t) => {
   async function exercise(fault, expectedFirst, expectedCold = "withdrawn") {
+    const [firstCold, nextCold = firstCold] = [expectedCold].flat();
     const store = routeStore();
     const f = fixture({ store });
     const { revision: r, sandbox: box, entry, client, supervisor: sv } = f;
@@ -1894,8 +1953,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
       assert.equal(workspace, box.workspace);
       assert.equal(sandbox, box.name);
       assert.equal(
-        await store.owns(r.id, 1),
-        false,
+        await store.owns(r.id, entry.fence),
+        "repository_expired",
         "even the previous holder is durably fenced before the conditional detach",
       );
       // Every send is the recorded request: same ID, same precondition. (A failed assertion
@@ -1925,6 +1984,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
           apply();
         }
         throw Object.assign(Error("REQUEST_OUTCOME_UNCERTAIN"), { code: 9 });
+      }
+      if (fault === "admission limit" && sends <= 2) {
+        // The caller's durable admissions are all taken: refused before admission, nothing ran.
+        throw new OpenShellAdmissionLimitError(
+          "DetachSandboxProvider",
+          Object.assign(Error("RESOURCE_EXHAUSTED"), { code: 8 }),
+        );
       }
       if (
         sends === 1 &&
@@ -1994,11 +2060,27 @@ test("Git expiry observes the original model in the reduced stock installation, 
     );
     cold.routes = store;
     cold.owner = f.owner;
-    assert.equal(await cleanup(cold), expectedCold);
+    cold.emit = f.runtime.emit;
+    assert.equal(await cleanup(cold), firstCold);
     if (fault === "lost reply") {
       assert.deepEqual(trace, ["OBSERVE"], "prove current absence without replay");
     }
-    assert.equal(await cleanup(cold), expectedCold);
+    assert.equal(await cleanup(cold), nextCold);
+    if (fault === "admission limit") {
+      // Refused by the gateway's admission limit, the first send and its resend leave the
+      // detach pending and logged, Git still fenced; the next pass after slots free converges
+      // (finding 2228).
+      assert.deepEqual(
+        f.events
+          .filter((event) => event.event === "worker.openshell-git-expiry")
+          .map(({ outcome, check }) => [outcome, check]),
+        [
+          ["pending", "conditional-detach"],
+          ["pending", "repeated-conditional-detach"],
+          ["withdrawn", "record-reduced-generation"],
+        ],
+      );
+    }
     // A detach that took effect is observed, never sent again. An intent that left the provider
     // attached is sent again as the same request until it converges (finding 2219): withdrawn,
     // or the runtime retired when the gateway cannot tell the outcome or the Sandbox moved.
@@ -2006,6 +2088,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
       "intent without effect": 2,
       "outcome uncertain at gateway": 3,
       "first send still applying": 2,
+      "admission limit": 3,
     };
     assert.equal(sends, repeated[fault] ?? 1, "a detach that took effect is never sent again");
     assert.ok(admitted.size <= 1, "the gateway admits at most one request");
@@ -2020,6 +2103,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["intent without effect", "pending", "withdrawn"],
     ["outcome uncertain at gateway", "pending", "retire-runtime"],
     ["first send still applying", "pending", "withdrawn"],
+    ["admission limit", "pending", ["pending", "withdrawn"]],
     ["Sandbox moved after intent", "pending", "retire-runtime"],
     ["Sandbox moved before send", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
