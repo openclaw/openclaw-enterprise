@@ -306,7 +306,8 @@ deployment without retrying. A preparation failure's
 grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
 namespaces (with an execution cluster, also the control cluster's Gateway
 namespace), and that no admission policy or ResourceQuota refuses Secrets
-there. Then deploy again.
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 
