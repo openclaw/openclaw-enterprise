@@ -677,7 +677,17 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
 
 function summarizeWorkerEvent(event) {
   return Object.fromEntries(
-    ["event", "operation", "revisionId", "outcome", "code", "attempt"]
+    [
+      "event",
+      "operation",
+      "revisionId",
+      "outcome",
+      "code",
+      "attempt",
+      "cause",
+      "method",
+      "grpcStatus",
+    ]
       .map((key) => [key, event[key]])
       .filter(([, value]) => typeof value === "string" || typeof value === "number"),
   );
@@ -2070,6 +2080,14 @@ function createIntegrationSandboxDriverFactory(
     const forward = await startOpenShellGatewayPortForward(namespaceName);
     gatewayState.set(namespaceName, { ...prior, endpoint: forward.url, forward });
   };
+  // Ends the Namespace gateway's port-forward but keeps its endpoint, so every client then finds
+  // nothing listening there, as through the Service of a gateway with no Pods, until
+  // restartGatewayForward replaces it.
+  createDriver.closeGatewayForward = async (namespaceName) => {
+    const state = gatewayState.get(namespaceName);
+    assert.ok(state, `OpenShell gateway for namespace ${namespaceName} was not initialized.`);
+    await state.forward.stop();
+  };
   createDriver.disposeGatewayForwards = disposeGatewayForwards;
   createDriver.provisioningFailures = provisioningFailures;
   createDriver.harnessServiceUrls = harnessServiceUrls;
@@ -2937,6 +2955,7 @@ async function prepareProductionInstallation(
     setPolicyWriteBarrier: createSandboxDriver.setPolicyWriteBarrier,
     gatewayClient: (auth) => createSandboxDriver.gatewayClientForNamespace(placement, auth),
     restartGatewayForward: () => createSandboxDriver.restartGatewayForward(placement),
+    closeGatewayForward: () => createSandboxDriver.closeGatewayForward(placement),
     observerPool,
     policyFixturePool,
     pauseWorker,
@@ -6677,6 +6696,12 @@ async function assertOpenShellGatewayOutage(topology) {
     dueBeforeOutage.set(refreshSource.id, read.data?.status?.refresh?.nextRefreshAt);
   }
   let gatewayRestartedAt;
+  // The controller reaches this gateway through a kubectl port-forward. Once the Pod is gone,
+  // kubectl still accepts one connection, closes it before the HTTP/2 handshake and only then
+  // exits, so for about a second gRPC reports "Failed to connect": not an unanswered request
+  // (finding 2042), so a pass then spends an attempt (finding 2104). The Service of a gateway with
+  // no Pods refuses connections; closing the forward first makes its endpoint do the same.
+  await topology.closeGatewayForward();
   await scale(0);
   try {
     await waitFor(
@@ -6769,6 +6794,10 @@ async function assertOpenShellGatewayOutage(topology) {
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,
     };
+    if (work.attempt_count !== 0) {
+      // Names the failure class of the pass that spent the attempt (finding 2104).
+      await topology.diagnoseRevision(redeployed.data.id);
+    }
   } catch (error) {
     failure = error;
   }
