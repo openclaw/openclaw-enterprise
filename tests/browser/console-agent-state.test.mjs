@@ -6,6 +6,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   detailUrl,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -425,8 +426,6 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     );
   });
   const seen = () => page.evaluate(() => globalThis.diagnosticsSeen.splice(0));
-  const focused = (locator) =>
-    locator.evaluate((node) => node === globalThis.document.activeElement);
   const description = () =>
     run.evaluate(
       (node) =>
@@ -449,13 +448,13 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
       await page.clock.runFor(249);
       assert.equal(await waiting.count(), 0);
       assert.equal(await run.isEnabled(), true);
-      assert.equal(await focused(run), true);
+      assert.equal(await hasFocus(run), true);
       if (slow) {
         // Past the delay the run behaves as before: the line shows and takes focus from the
         // disabled button.
         await page.clock.runFor(1);
         await waiting.waitFor();
-        assert.equal(await focused(waiting), true);
+        assert.equal(await hasFocus(waiting), true);
         assert.equal(await run.isDisabled(), true);
         // Focus events land at once, mutation records a microtask later.
         assert.deepEqual((await seen()).sort(), ["focus p", "waiting line"]);
@@ -466,7 +465,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     const shown = await page.evaluate((value) => new Date(value).toLocaleString(), observedAt);
     const observed = observations.getByText(`Observed ${shown}`);
     await observed.waitFor();
-    assert.equal(await focused(run), true);
+    assert.equal(await hasFocus(run), true);
     assert.equal(await description(), await observed.textContent());
     assert.deepEqual((await seen()).sort(), slow ? ["focus button", "result"] : ["result"]);
   }

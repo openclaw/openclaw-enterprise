@@ -748,7 +748,13 @@ export function createSecretReferenceField({
   const withinListbox = (node: EventTarget | null) =>
     node instanceof Node && listbox.contains(node);
   // Pressing the list's scrollbar can still focus it; hand focus back without closing the list.
-  listbox.addEventListener("focus", () => input.focus());
+  listbox.addEventListener("focus", () => {
+    if (input.disabled) {
+      closeListbox({ restoreSelection: true });
+    } else {
+      input.focus();
+    }
+  });
   input.addEventListener("focus", (event) => {
     // Focus coming back from the picker's own list keeps the search and the open list.
     if (withinListbox(event.relatedTarget)) {
