@@ -439,7 +439,8 @@ test("the upgrade hook check refuses a repository broker peer until the operator
   assert.equal(refused.stdout, "");
   assert.equal(
     refused.stderr,
-    "installation-check: API and worker startup would refuse the Installation: drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.\n",
+    // The same code and field detail as the API and worker startup logs (finding 2226).
+    'installation-check: API and worker startup would refuse the Installation: DRIVER_CONFIGURATION_INVALID: [{"path":"/drivers/compute/configuration/network/repositoryCredentials","code":"INVALID_VALUE","message":"drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured."}]\n',
   );
   // The documented recovery deletes only the peer; the rest of the Installation is unchanged.
   delete leftover.drivers.compute.configuration.network.repositoryCredentials;

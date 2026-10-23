@@ -2213,9 +2213,10 @@ test("a repository OpenShell authority refusal names its own block", () => {
   );
 });
 
-test("a leftover repository broker peer names its field in API, worker and upgrade-check output", async (t) => {
+test("a leftover repository broker peer names its field in API and worker startup logs", async (t) => {
   // Finding 2226: the refusal was a plain Error, so API and worker logged only STARTUP_FAILED
   // and WORKER_STARTUP_FAILED, and only the upgrade check printed which field to remove.
+  // installation-change-preflight.test.mjs checks the upgrade check's line.
   const { configuration } = await repositoryInstallation(t);
   delete configuration.repository;
   delete configuration.backend;
@@ -2233,10 +2234,9 @@ test("a leftover repository broker peer names its field in API, worker and upgra
         "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
     },
   ];
-  const [server, worker, check] = await settled([
+  const [server, worker] = await settled([
     boot("apps/controller/src/server.mjs", { ...shared, ...productionServer }),
     boot("apps/controller/src/worker.mjs", shared),
-    boot("deploy/helm/openclaw-enterprise/files/check-installation.mjs", shared),
   ]);
   for (const [result, event] of [
     [server, "startup-error"],
@@ -2247,14 +2247,6 @@ test("a leftover repository broker peer names its field in API, worker and upgra
     assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
     assert.deepEqual(diagnostic.details, details);
   }
-  // The upgrade check prints the same diagnostic as one line.
-  assert.equal(check.status, 1, check.stderr);
-  const [line, ...rest] = check.stderr.trim().split("\n");
-  assert.deepEqual(rest, [], check.stderr);
-  const prefix =
-    "installation-check: API and worker startup would refuse the Installation: DRIVER_CONFIGURATION_INVALID: ";
-  assert.ok(line.startsWith(prefix), line);
-  assert.deepEqual(JSON.parse(line.slice(prefix.length)), details);
 });
 
 test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
