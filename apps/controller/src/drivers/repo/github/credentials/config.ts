@@ -1,9 +1,5 @@
 import { isAbsolute } from "node:path";
-import type {
-  GitHubAppConfiguration,
-  GitHubConfiguration,
-  GitHubTokenConfiguration,
-} from "./types.ts";
+import type { GitHubTokenConfiguration } from "./types.ts";
 import {
   hasControlCharacter,
   normalizePushRefAllowlist,
@@ -16,7 +12,6 @@ const commonFields = [
   "repositoryId",
   "repository",
 ] as const;
-const appFields = [...commonFields, "appId", "installationId", "privateKeyFile"] as const;
 const tokenStringFields = [...commonFields, "tokenFile"] as const;
 const tokenOptionalFields = ["allowGraphql", "leaseSeconds"];
 const tokenFields = [
@@ -74,30 +69,6 @@ function validateCommon(input: Record<string, unknown>) {
   };
 }
 
-function validateAppConfiguration(value: unknown): GitHubAppConfiguration {
-  const input = parseFields(value, appFields, appFields) as Record<
-    (typeof appFields)[number],
-    string
-  >;
-  const common = validateCommon(input);
-  if (
-    ![input.appId, input.installationId].every(validNumericId) ||
-    !isAbsolute(input.privateKeyFile)
-  ) {
-    throw new Error("invalid-backend");
-  }
-  return Object.freeze({
-    kind: "github-app",
-    providerInstanceId: common.providerInstanceId,
-    configVersion: common.configVersion,
-    appId: input.appId,
-    installationId: input.installationId,
-    repositoryId: common.repositoryId,
-    repository: common.repository,
-    privateKeyFile: input.privateKeyFile,
-  });
-}
-
 function validateTokenConfiguration(value: unknown): GitHubTokenConfiguration {
   const input = parseFields(value, tokenFields, tokenStringFields);
   const common = validateCommon(input);
@@ -131,11 +102,8 @@ function validateTokenConfiguration(value: unknown): GitHubTokenConfiguration {
   });
 }
 
-export function validateGitHubConfiguration(value: unknown): GitHubConfiguration {
+export function validateGitHubConfiguration(value: unknown): GitHubTokenConfiguration {
   const kind = value && typeof value === "object" ? (value as { kind?: unknown }).kind : undefined;
-  if (kind === "github-app") {
-    return validateAppConfiguration(value);
-  }
   if (kind === "github-token") {
     return validateTokenConfiguration(value);
   }

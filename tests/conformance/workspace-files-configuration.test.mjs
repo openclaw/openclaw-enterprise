@@ -12,6 +12,7 @@ import {
 } from "../../apps/controller/src/composition/workspace-files.ts";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const agentId = "agt_00000000-0000-4000-8000-000000000001";
@@ -189,6 +190,7 @@ test("workspace-files server startup validates API-only key configuration before
   const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
     cwd: process.cwd(),
     env: {
+      ...compileCacheEnvironment,
       PATH: process.env.PATH,
       NODE_ENV: "production",
       OCC_CONFIG_PATH: installationPath,
@@ -214,6 +216,7 @@ test("workspace-files server startup rejects the removed endpoint-map environmen
   const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
     cwd: process.cwd(),
     env: {
+      ...compileCacheEnvironment,
       PATH: process.env.PATH,
       NODE_ENV: "production",
       OCC_CONFIG_PATH: installationPath,

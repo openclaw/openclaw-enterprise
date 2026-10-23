@@ -1,4 +1,4 @@
-/* Claw palette and type scale: openclaw/openclaw 6e8d06876fd166064abbec4928fb3bb109ebe999. */
+/* Instrument Sans and the type scale follow the OpenClaw console. */
 @font-face {
   font-family: "Instrument Sans";
   font-style: normal;
@@ -14,33 +14,39 @@
   font-synthesis: none;
   color: var(--text);
   background: var(--bg);
-  /* Design tokens. New rules use these; values reproduce the current look. */
-  /* Colour roles. Dark mode would redefine only this group. */
-  --color-bg: #faf9f7;
+  /* Colour roles shared by the Console, its controls and its navigation. */
+  --color-bg: #f7f5f0;
   --color-surface: #ffffff;
-  --color-surface-2: #f4f1ec;
-  --color-surface-hover: #efebe4;
-  --color-border: #e8e4dc;
-  --color-border-strong: #938b7f;
-  --color-text: #403c35;
-  --color-text-strong: #211e1a;
-  --color-text-muted: #6e6960;
-  --color-accent: #bd4531;
-  --color-accent-hover: #a83c29;
-  --color-accent-subtle: rgba(189, 69, 49, 0.08);
+  --color-surface-2: #f1f4f6;
+  --color-surface-hover: #eaf1f6;
+  --color-border: #d4d9dc;
+  --color-border-strong: #7e8c99;
+  --color-text: #293847;
+  --color-text-strong: #202e40;
+  --color-text-muted: #566573;
+  --color-accent: #b53d2a;
+  --color-accent-hover: #963322;
+  --color-accent-subtle: rgba(181, 61, 42, 0.09);
   --color-on-accent: #ffffff;
-  --color-link: var(--color-text-strong);
+  --color-link: #245784;
   --color-success: #166534;
   --color-success-subtle: rgba(22, 101, 52, 0.08);
   --color-warning: #92400e;
-  --color-warning-subtle: rgba(146, 64, 14, 0.08);
+  --color-warning-subtle: #fff4df;
   --color-danger: #b91c1c;
   --color-danger-subtle: rgba(185, 28, 28, 0.08);
-  --color-info: #1e3a5f;
-  --color-info-subtle: rgba(30, 58, 95, 0.07);
+  --color-info: #193e61;
+  --color-info-subtle: #e8f1f9;
   --color-overlay: rgba(15, 23, 42, 0.4);
-  /* Focus is navy, not accent: an accent ring on an empty required field read as an error. */
-  --color-focus: var(--color-info);
+  --color-focus: var(--color-link);
+  /* Inverse surfaces use the same palette with light text, selection and focus. */
+  --color-surface-inverse: var(--color-text-strong);
+  --color-on-inverse: var(--color-surface);
+  --color-on-inverse-muted: color-mix(in srgb, var(--color-surface) 82%, var(--color-info));
+  --color-inverse-hover: color-mix(in srgb, var(--color-surface-inverse) 86%, var(--color-surface));
+  --color-inverse-selected: color-mix(in srgb, var(--color-link) 65%, var(--color-surface-inverse));
+  --color-inverse-marker: color-mix(in srgb, var(--color-accent) 48%, var(--color-surface));
+  --color-focus-inverse: color-mix(in srgb, var(--color-focus) 25%, var(--color-surface));
   /* Type: size and its line height. */
   --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -169,14 +175,12 @@ button,
 a {
   touch-action: manipulation;
 }
-/* Links are ink with a quiet underline that goes full ink on hover; the accent is for actions,
-   the current nav item, selection and focus (UX plan C8, spec 3.3). :where() keeps this at zero
-   specificity, so any class (a.button, .nav a, table names) sets its own colour and decoration. */
+/* Links keep their underline in prose. A component can set its own link treatment. */
 :where(a) {
   color: var(--color-link);
   text-decoration: underline;
   text-underline-offset: 2px;
-  text-decoration-color: var(--color-border-strong);
+  text-decoration-color: color-mix(in srgb, currentColor 60%, transparent);
 }
 :where(a:hover) {
   text-decoration-color: currentColor;
@@ -245,6 +249,11 @@ button.danger:not(:disabled):hover {
   color: var(--color-danger);
   background: var(--color-danger-subtle);
 }
+.button--danger:disabled {
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+}
 .button--link {
   padding: var(--space-1) var(--space-2);
   border-color: transparent;
@@ -304,7 +313,7 @@ button[aria-busy="true"] {
   outline-offset: var(--focus-offset-inset);
 }
 .slack-directory-input:has(input:focus-visible),
-.resource-linked:has(.resource-name a:focus-visible),
+.resource-linked:has(.resource-name :focus-visible),
 .repository-option:has(:focus-visible),
 .repository-profile:has(:focus-visible) {
   outline: var(--focus-ring);
@@ -424,7 +433,7 @@ p {
     padding: var(--space-6);
   }
 }
-/* The wordmark: mascot and "OpenClaw Enterprise" in ink, normal case. */
+/* The wordmark, shared by navigation and sign-in. */
 .brand {
   display: flex;
   align-items: center;
@@ -437,6 +446,15 @@ p {
 .brand img {
   flex: none;
   object-fit: contain;
+}
+.brand-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brand--bar .brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .auth label {
   display: block;
@@ -575,11 +593,9 @@ p {
 .status-label {
   margin: 0 0 var(--space-1);
   color: var(--status-tone);
-  font-size: var(--text-xs);
-  line-height: var(--text-xs--line-height);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
   font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-caps);
-  text-transform: uppercase;
 }
 .status-body,
 .status > ul {
@@ -610,12 +626,15 @@ p {
   display: grid;
   grid-template-columns: 258px minmax(0, 1fr);
 }
-/* Warm-quiet shell (spec 3.1): the sidebar is a surface-2 panel with a hairline edge, so the white
-   cards in the content read as raised without a shadow. */
+.sidebar,
+.topbar,
+.dialog-header {
+  --focus-ring: 2px solid var(--color-focus-inverse);
+  background: var(--color-surface-inverse);
+  color: var(--color-on-inverse);
+}
 .sidebar {
   padding: var(--space-6) var(--space-4) var(--space-4);
-  background: var(--color-surface-2);
-  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -623,12 +642,17 @@ p {
   height: 100dvh;
   z-index: 3;
 }
+.sidebar .brand,
+.topbar .brand,
+.runtime-debug h2 {
+  color: inherit;
+}
 .sidebar .brand {
   padding: var(--space-2) var(--space-3) 0;
   margin-bottom: var(--space-6);
 }
 .occ-version {
-  color: var(--muted);
+  color: var(--color-on-inverse-muted);
   font-size: var(--text-sm);
   text-transform: none;
   letter-spacing: normal;
@@ -655,7 +679,7 @@ p {
 }
 .runtime-debug dt {
   margin-top: var(--space-3);
-  color: var(--muted);
+  color: var(--color-on-inverse-muted);
 }
 .runtime-debug dd {
   margin: var(--space-1) 0 0;
@@ -671,26 +695,32 @@ p {
   min-height: 36px;
   padding: 0 var(--space-3);
   text-decoration: none;
-  color: var(--color-text-muted);
+  color: var(--color-on-inverse-muted);
   border-radius: var(--radius-md);
 }
-.nav a:hover {
-  background: var(--color-surface-hover);
+.nav a:hover,
+:is(.account-toggle, .mobile-toggle, .topbar-avatar, .drawer-close):not(:disabled):hover {
+  color: var(--color-on-inverse);
+  background: var(--color-inverse-hover);
 }
-/* The current page: a white pill with a 3 px accent bar. An inset shadow, not a border, so the
-   text does not shift; the bar's side is square. */
+/* The marker sits inside the link, so labels stay aligned even in forced colours. */
 .nav a[aria-current="page"] {
-  background: var(--color-surface);
-  color: var(--color-text-strong);
+  position: relative;
+  background: var(--color-inverse-selected);
+  color: var(--color-on-inverse);
   font-weight: var(--weight-semibold);
-  box-shadow: inset 3px 0 0 var(--color-accent);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
-/* Forced colours drop the shadow: draw the bar as a border, inside the same padding. */
+.nav a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-inline-start: 3px solid var(--color-inverse-marker);
+}
 @media (forced-colors: active) {
-  .nav a[aria-current="page"] {
-    border-left: 3px solid Highlight;
-    padding-left: calc(var(--space-3) - 3px);
+  .nav a[aria-current="page"]::before {
+    border-color: Highlight;
   }
 }
 .nav-icon {
@@ -714,7 +744,8 @@ p {
   width: 100%;
   text-align: left;
   padding: var(--space-3);
-  border-color: var(--color-border);
+  border-color: var(--color-inverse-hover);
+  background: transparent;
   font-weight: var(--weight-regular);
   display: flex;
   align-items: center;
@@ -727,14 +758,11 @@ p {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-pill);
-  background: var(--color-surface-hover);
-  color: var(--color-text-strong);
+  background: var(--color-info-subtle);
+  color: var(--color-info);
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
   line-height: 1;
-}
-.account-toggle:not(:disabled):hover .account-avatar {
-  background: var(--color-surface);
 }
 .account-text {
   flex: 1;
@@ -749,23 +777,27 @@ p {
   white-space: nowrap;
 }
 .account-name {
-  color: var(--color-text-strong);
   font-size: var(--text-base);
   line-height: var(--text-base--line-height);
   font-weight: var(--weight-medium);
 }
 .account-email {
-  color: var(--color-text-muted);
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
 .account-chevron {
   flex-shrink: 0;
-  color: var(--color-text-muted);
+}
+.account-email,
+.account-chevron {
+  color: var(--color-on-inverse-muted);
 }
 .menu {
+  /* Account menus use the page surface, including when opened from the navigation. */
+  --focus-ring: 2px solid var(--color-focus);
   padding: var(--space-2);
   background: var(--surface);
+  color: var(--color-text);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
@@ -1009,6 +1041,18 @@ p {
   display: grid;
   gap: var(--space-3);
 }
+/* Search first in reading and tab order; the action wraps when both no longer fit. */
+.collection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-block: var(--space-5);
+}
+.collection-toolbar > input[type="search"] {
+  max-width: 360px;
+}
 /* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
    and its content; it is not a card. Cards live inside sections. */
 .section {
@@ -1092,7 +1136,7 @@ p {
   background: var(--color-info-subtle);
   color: var(--color-info);
 }
-/* The whole Namespace row opens its Agents; the ID stays selectable above the link's area. */
+/* The name opens the resource. Its target fills the row, but the ID stays selectable. */
 .resource-linked {
   position: relative;
 }
@@ -1101,17 +1145,22 @@ p {
     background: var(--hover);
   }
 }
-.resource-linked .resource-name a {
-  color: var(--text-strong);
+.resource-linked .resource-name :is(a, button) {
+  color: var(--color-link);
   font-weight: var(--weight-medium);
   text-decoration-color: transparent;
 }
+.resource-linked .resource-name button {
+  padding: 0;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
 /* The whole row is the target; its name underlines while the pointer is anywhere on it. */
-.resource-linked:hover .resource-name a,
-.resource-linked .resource-name a:focus-visible {
+.resource-linked:hover .resource-name :is(a, button),
+.resource-linked .resource-name :focus-visible {
   text-decoration-color: currentColor;
 }
-.resource-linked .resource-name a::after {
+.resource-linked .resource-name :is(a, button)::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -1123,18 +1172,36 @@ p {
 }
 /* The card draws the focus ring (see the wrapper rule), matching the link's hit area in every
    browser. */
-.resource-linked .resource-name a:focus-visible {
+.resource-linked .resource-name :focus-visible {
   outline: none;
 }
-/* Namespaces as a table (UX spec 3.12): one card, a surface-2 head row, and hairline-divided
-   rows of Namespace (ID beneath), Status and Created. The rows are list items; the head is visual
-   only, and each cell names itself for a screen reader. */
-.namespace-table {
-  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
+/* A resource collection is one surface, with a header and divided, keyboard-focusable rows. */
+.resource-list {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   overflow: hidden;
+}
+.resource-list-header {
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.resource-list .collection {
+  gap: 0;
+}
+.resource-list .resource-linked + .resource-linked {
+  border-top: 1px solid var(--color-border);
+}
+.resource-list .resource-name {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-base);
+}
+.resource-list .resource-linked:has(.resource-name :focus-visible) {
+  outline-offset: var(--focus-offset-inset);
+}
+/* Namespace rows are list items; each cell names itself for a screen reader. */
+.namespace-table {
+  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
 }
 .namespace-table-head,
 .namespace-row {
@@ -1146,27 +1213,13 @@ p {
 }
 .namespace-table-head {
   min-height: var(--space-12);
-  background: var(--color-surface-2);
-  border-bottom: 1px solid var(--color-border);
   color: var(--color-text-muted);
   font-size: var(--text-md);
   font-weight: var(--weight-medium);
 }
-.namespace-rows {
-  gap: 0;
-}
 .namespace-row {
   min-height: 56px;
   padding-block: var(--space-3);
-  border-bottom: 1px solid var(--color-border);
-}
-.namespace-row:last-child {
-  border-bottom: 0;
-}
-/* Names match the Agents table: body size, medium weight. */
-.namespace-row .resource-name {
-  margin-bottom: var(--space-1);
-  font-size: var(--text-base);
 }
 .namespace-cell-name {
   min-width: 0;
@@ -1181,10 +1234,6 @@ p {
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
-}
-/* The table clips its corners, so the focused row draws its ring inside. */
-.namespace-rows .namespace-row:has(.resource-name a:focus-visible) {
-  outline-offset: var(--focus-offset-inset);
 }
 @media (max-width: 1100px) {
   .namespace-table {
@@ -1314,8 +1363,6 @@ p {
     gap: var(--space-1);
     height: 56px;
     padding: 0 var(--space-2) 0 var(--space-1);
-    background: var(--color-surface);
-    border-bottom: 1px solid var(--color-border);
     position: relative;
     z-index: 1;
   }
@@ -1427,20 +1474,6 @@ select:not([multiple])[size="1"] {
     background-image: none;
   }
 }
-.agent-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-4);
-  margin: var(--space-5) 0;
-  flex-wrap: wrap;
-}
-.agent-toolbar input {
-  width: min(360px, 100%);
-  padding: var(--space-3);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-}
 .agent-toolbar-actions {
   display: flex;
   align-items: center;
@@ -1514,11 +1547,14 @@ select:not([multiple])[size="1"] {
   font-size: var(--text-sm);
   line-height: var(--text-sm--line-height);
 }
+/* A value is as tall as its badge, so a recorded outcome's badge replacing loading text moves
+   nothing (finding 2163). */
 .stat-value {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height) + 2 * var(--space-1));
   color: var(--color-text-strong);
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
@@ -1533,6 +1569,10 @@ select:not([multiple])[size="1"] {
 }
 .stat-help:empty {
   display: none;
+}
+.stat-help.stat-help-line:empty {
+  display: block;
+  min-height: calc(var(--text-sm) * var(--text-sm--line-height));
 }
 /* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
 @media (max-width: 1100px) {
@@ -1696,6 +1736,16 @@ select:not([multiple])[size="1"] {
 }
 .deployment-evidence-content {
   padding-bottom: var(--space-3);
+}
+/* Deployment activity's stand-in before the latest record is read: one row as tall as the
+   folded summary, so the panel that replaces it moves nothing (finding 2163). */
+.deployment-evidence-loading {
+  margin: 0;
+  padding: var(--space-3) 0;
+  line-height: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .native-admin-heading {
   display: flex;
@@ -2131,6 +2181,7 @@ select:not([multiple])[size="1"] {
 .form-field input,
 .form-field select,
 .form-field textarea,
+.collection-toolbar > input[type="search"],
 .repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
@@ -2330,7 +2381,7 @@ select:not([multiple])[size="1"] {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-/* A revision ID reads as an ID, in mono and the text colour, not as an accent link. */
+/* Linked revision IDs keep their monospace face and underline. */
 .agent-table .agent-revision-link {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
@@ -2352,10 +2403,9 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-/* A row's name is its primary link: ink, and underlined only on hover, since a column of
-   underlined names reads as noise (spec 3.3). The revision and deployment links keep theirs. */
+/* Name links underline on hover and focus. Revision and deployment links keep their underline. */
 .agent-table td:first-child > a {
-  color: var(--color-text-strong);
+  color: var(--color-link);
   font-weight: var(--weight-medium);
   text-decoration-color: transparent;
 }
@@ -2437,7 +2487,7 @@ select:not([multiple])[size="1"] {
   color: var(--accent);
   font-weight: var(--weight-semibold);
 }
-/* An edge with more tabs past it fades (detail.mjs sets the attributes as the strip scrolls).
+/* An edge with more tabs past it fades (detail.mts sets the attributes as the strip scrolls).
    A mask reads only alpha, so the opaque stop may be any opaque colour. */
 .agent-tabs[data-more-before] {
   --agent-tabs-fade-before: var(--space-8);
@@ -2610,6 +2660,9 @@ select:not([multiple])[size="1"] {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+.dialog--framed {
+  width: min(38rem, calc(100% - 2 * var(--space-4)));
+}
 .dialog--drawer {
   --dialog-open-from: translateX(var(--space-6));
   width: min(42rem, calc(100% - 2 * var(--space-4)));
@@ -2636,6 +2689,60 @@ select:not([multiple])[size="1"] {
 /* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
 .credential-secret-dialog .form-field {
   margin: 0;
+}
+.secret-list-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+}
+.secret-row {
+  padding: var(--space-3) var(--space-10) var(--space-3) var(--space-4);
+}
+.secret-row::after {
+  content: "";
+  position: absolute;
+  inset: 50% var(--space-4) auto auto;
+  width: 6px;
+  height: 6px;
+  border: solid currentColor;
+  border-width: 1px 1px 0 0;
+  transform: translateY(-50%) rotate(45deg);
+  color: var(--color-link);
+  pointer-events: none;
+}
+.secret-consumers {
+  margin-block: 0 var(--space-4);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-6);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+}
+.secret-value-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.secret-value-field > label {
+  margin: 0;
+}
+.secret-value-field > :not(label, button) {
+  grid-column: 1 / -1;
+}
+.secret-value-field > button {
+  color: var(--color-link);
+}
+.secret-value--masked {
+  -webkit-text-security: disc;
+}
+.secret-dialog h3,
+.secret-dialog h4 {
+  margin-top: var(--space-4);
+}
+.secret-dialog h4 {
+  margin-bottom: var(--space-1);
 }
 @keyframes dialog-open {
   from {
@@ -2683,6 +2790,45 @@ select:not([multiple])[size="1"] {
 }
 .dialog::backdrop {
   background: var(--color-overlay);
+}
+/* A framed dialog keeps its destination in the header and its actions together in the footer. */
+.dialog--framed {
+  padding: 0;
+}
+.dialog-header,
+.dialog-body,
+.dialog--framed > .dialog-actions {
+  padding: clamp(var(--space-4), 4vw, var(--space-6));
+  overflow-wrap: anywhere;
+}
+.dialog-header p {
+  margin-bottom: var(--space-2);
+  font-size: var(--text-md);
+  color: var(--color-on-inverse-muted);
+}
+.dialog-header h2 {
+  margin: 0;
+  color: inherit;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--text-2xl--line-height);
+  letter-spacing: var(--tracking-tight);
+}
+.dialog-body .field:first-child {
+  margin-top: 0;
+}
+.dialog-body > :not(:first-child, :empty) {
+  margin-top: var(--space-4);
+}
+.dialog-body p:last-child,
+.dialog-body .status:last-child {
+  margin-bottom: 0;
+}
+.dialog--framed > .dialog-actions {
+  margin: 0;
+  padding-block: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface-2);
 }
 @media (max-width: 760px) {
   .agent-card {
@@ -3828,13 +3974,17 @@ select:not([multiple])[size="1"] {
 .agent-logs-opening > .danger-zone {
   visibility: hidden;
 }
+/* Pod cards share the panel's width: auto-fit collapses the empty columns that left one or two
+   cards near the 260 px minimum with the rest of the row blank (finding 2100). */
 .runtime-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-5);
 }
 .runtime-pod {
+  min-width: 0;
+  overflow-wrap: break-word;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);

@@ -1,10 +1,21 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 const helm = process.env.OCC_HELM_BIN ?? "helm";
+
+/**
+ * The environment for the short-lived Helm and yq (Go) processes the chart tests start, often
+ * hundreds per file. With GOGC=off they skip garbage collection: Helm collects five times
+ * during startup alone, and one render peaks at about 55 MB either way.
+ */
+export function goToolEnvironment() {
+  return { ...process.env, GOGC: "off" };
+}
 /** `test` options: skip unless Helm and yq can render the production chart. */
 export async function chartTooling() {
   try {
@@ -38,6 +49,11 @@ export const productionCollectorValues = {
   "logging.collector.exporter.cidr": "203.0.113.10/32",
 };
 
+// `helm template` without a cluster is deterministic (the chart uses no random or time
+// functions, and `lookup` finds nothing), so equal arguments and values-file contents give
+// the same result. Many cases render the same values more than once; they share one render.
+const renders = new Map();
+
 export async function renderProductionChart(overrides = {}, options = {}) {
   const args = [
     "template",
@@ -58,7 +74,56 @@ export async function renderProductionChart(overrides = {}, options = {}) {
   for (const [key, value] of Object.entries(options.strings ?? {})) {
     args.push("--set-string", `${key}=${value}`);
   }
-  return execute(helm, args, { cwd: repository, maxBuffer: 2_000_000 });
+  let key;
+  try {
+    key = JSON.stringify([
+      args,
+      (options.valuesFiles ?? []).map((file) => readFileSync(resolve(repository, file), "utf8")),
+    ]);
+  } catch {
+    // An unreadable values file: let Helm report it, uncached.
+  }
+  let render = key === undefined ? undefined : renders.get(key);
+  if (render === undefined) {
+    render = execute(helm, args, {
+      cwd: repository,
+      env: goToolEnvironment(),
+      maxBuffer: 2_000_000,
+    }).then((result) => Object.freeze(result));
+    if (key !== undefined) {
+      renders.set(key, render);
+    }
+  }
+  return render;
+}
+
+/**
+ * Synchronous `helm template` of the chart with a rendered Installation profile's
+ * `values.yaml` (`output.directory`), then `extraValueFiles`, then `extraArgs`. Returns the
+ * manifests; a refused render throws execFileSync's error, with Helm's stderr.
+ */
+export function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
+  return execFileSync(
+    helm,
+    [
+      "template",
+      releaseName,
+      "deploy/helm/openclaw-enterprise",
+      "--namespace",
+      "openclaw-system",
+      "--values",
+      join(output.directory, "values.yaml"),
+      ...extraValueFiles.flatMap((path) => ["--values", path]),
+      ...extraArgs,
+    ],
+    {
+      cwd: repository,
+      env: goToolEnvironment(),
+      encoding: "utf8",
+      maxBuffer: 2_000_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 }
 
 export async function parseProductionChart(manifests) {
@@ -66,7 +131,7 @@ export async function parseProductionChart(manifests) {
     const child = execFile(
       "yq",
       ["eval-all", "-o=json", "-I=0", ".", "-"],
-      { cwd: repository, maxBuffer: 2_000_000 },
+      { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
       (error, stdout) => (error ? reject(error) : resolve(stdout)),
     );
     child.stdin.end(manifests);

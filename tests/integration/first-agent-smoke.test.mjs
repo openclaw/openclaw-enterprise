@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import test from "node:test";
@@ -8,12 +9,32 @@ import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compu
 import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
+  clusterEventLines,
+  createApi,
   observeAgentStop,
+  smokeSlotNames,
+  stoppedGatewaySummary,
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
+
+test("smoke API sends its key only to the selected controller origin", async (t) => {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push([request.url, request.headers["x-api-key"]]);
+    response.end('{"data":"ok"}');
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const host = "127.0.0.1:" + server.address().port;
+  const key = "synthetic-smoke-key";
+  assert.equal(await createApi("http://" + host, key)("GET", "/namespaces"), "ok");
+  const other = createApi("http://127.0.0.1:1", key);
+  await assert.rejects(other("GET", "//" + host + "/unexpected"), /outside the controller origin/);
+  assert.deepEqual(requests, [["/namespaces", key]]);
+});
 
 function virtualClock() {
   let elapsed = 0;
@@ -239,6 +260,40 @@ test("diagnostics project only fixed lifecycle fields", async () => {
   });
 });
 
+test("a stopped gateway summary names its shutdown outcome and every clean-close receipt", () => {
+  // Raw container lines, as kubectl logs returns them.
+  const line = (subsystem, message) => JSON.stringify({ level: "info", subsystem, message });
+  assert.equal(
+    stoppedGatewaySummary(
+      [
+        line("gateway", "received SIGTERM; shutting down"),
+        line("state/agent-db", "agent database clean-close receipt: active-leases"),
+        line("state/agent-db", "agent database clean-close receipt: written"),
+        line("gateway/shutdown", "shutdown completed cleanly in 513ms"),
+      ].join("\n"),
+    ),
+    "shutdown completed cleanly; clean-close receipts: active-leases, written",
+  );
+  assert.equal(
+    stoppedGatewaySummary(
+      [
+        line("plugins", "Local model service shutdown failed: synthetic"),
+        line("gateway/shutdown", "shutdown completed in 900ms with warnings: memory-managers"),
+      ].join("\n"),
+    ),
+    "shutdown completed with warnings; clean-close receipts: none",
+  );
+  assert.equal(
+    stoppedGatewaySummary(line("gateway/shutdown", "shutdown failed in 12ms: plugin-registry")),
+    "shutdown failed; clean-close receipts: none",
+  );
+  // Finding 2198's shape: the Gateway stopped, but no receipt was logged.
+  assert.equal(
+    stoppedGatewaySummary(line("gateway", "received SIGTERM; shutting down")),
+    "shutdown not logged; clean-close receipts: none",
+  );
+});
+
 // Run the real watcher with real timers and no cluster. A `k3d` stand-in on PATH
 // records each lookup and fails, as it does once `occ dev up` deletes its cluster.
 async function withRecordedK3d(operation) {
@@ -273,5 +328,83 @@ test("a failed setup stops the watcher at once with one final capture", async ()
   const { seconds, calls } = await withRecordedK3d(() => watchCluster()({ finalCapture: true }));
   // The final snapshot keeps diagnostics for the failure without the idle wait.
   assert.ok(seconds < 5, `stop took ${seconds}s`);
-  assert.equal(calls, "kubeconfig get occ-dev-first-agent-smoke\n");
+  const { cluster } = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+  assert.equal(calls, `kubeconfig get ${cluster}\n`);
+});
+
+test("smoke slots keep CI's names at slot 0 and give other slots distinct host resources", () => {
+  const ci = {
+    cluster: "occ-dev-first-agent-smoke",
+    registryContainer: "oce-first-agent-smoke-registry",
+    registry: "127.0.0.1:5000",
+    model: "oce-first-agent-smoke-model",
+    subnet: "11.111.0.0/29",
+    modelAddress: "11.111.0.2",
+    nodeModelAddress: "11.111.0.3",
+  };
+  for (const unset of [undefined, "", "0"]) {
+    assert.deepEqual(smokeSlotNames(unset), ci);
+  }
+  assert.deepEqual(smokeSlotNames("2"), {
+    cluster: "occ-dev-smoke-s2",
+    registryContainer: "oce-smoke-s2-registry",
+    registry: "127.0.0.1:15002",
+    model: "oce-smoke-s2-model",
+    subnet: "11.111.0.16/29",
+    modelAddress: "11.111.0.18",
+    nodeModelAddress: "11.111.0.19",
+  });
+  assert.equal(smokeSlotNames("31").subnet, "11.111.0.248/29");
+  const slots = Array.from({ length: 32 }, (_, slot) => smokeSlotNames(String(slot)));
+  for (const field of Object.keys(ci)) {
+    assert.equal(new Set(slots.map((names) => names[field])).size, 32, field);
+  }
+});
+
+test("a malformed or out-of-range smoke slot fails with the setting's name", () => {
+  for (const value of ["-1", "32", "100", "01", "1.5", " 1", "1 ", "0x1", "one"]) {
+    assert.throws(
+      () => smokeSlotNames(value),
+      /^Error: OCC_FIRST_AGENT_SMOKE_SLOT must be an integer from 0 to 31, got /,
+      value,
+    );
+  }
+});
+
+test("cluster events print oldest to newest by observed instant, whatever field carries it", () => {
+  const event = (name, times, count) => ({
+    metadata: { namespace: "occ-agent", name: `${name}.1` },
+    involvedObject: { kind: "Pod", name: "harness-0" },
+    type: "Normal",
+    reason: name,
+    message: `${name} message`,
+    ...(count && { count }),
+    ...times,
+  });
+  const second = "2026-10-23T00:00:10";
+  const lines = clusterEventLines({
+    items: [
+      // eventTime-only writers have no lastTimestamp; --sort-by=.lastTimestamp printed them first.
+      event("Newest", { eventTime: "2026-10-23T00:00:12.000001Z" }),
+      event("SeriesLatest", {
+        eventTime: "2026-10-23T00:00:01.000000Z",
+        series: { lastObservedTime: "2026-10-23T00:00:11.500000Z", count: 4 },
+      }),
+      // Text order puts "10.100000Z" before "10Z"; the whole-second event is the older one.
+      event("FractionalSameSecond", { eventTime: `${second}.100000Z` }),
+      event(
+        "WholeSecond",
+        { firstTimestamp: "2026-10-23T00:00:00Z", lastTimestamp: `${second}Z` },
+        3,
+      ),
+      event("Undated", {}),
+    ],
+  }).split("\n");
+  assert.deepEqual(lines, [
+    "unknown-time occ-agent Normal Undated Pod/harness-0: Undated message",
+    `${second}Z occ-agent Normal WholeSecond Pod/harness-0 x3: WholeSecond message`,
+    `${second}.100000Z occ-agent Normal FractionalSameSecond Pod/harness-0: FractionalSameSecond message`,
+    "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
+    "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
+  ]);
 });

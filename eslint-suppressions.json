@@ -1,9 +1,4 @@
 {
-  "apps/controller/src/console/agents/detail.mjs": {
-    "preserve-caught-error": {
-      "count": 1
-    }
-  },
   "apps/controller/src/drivers/compute/docker/index.ts": {
     "preserve-caught-error": {
       "count": 1
@@ -100,11 +95,6 @@
   "tests/conformance/test-files.test.mjs": {
     "no-empty": {
       "count": 1
-    }
-  },
-  "tests/helpers/ci-logging.mjs": {
-    "no-unused-vars": {
-      "count": 5
     }
   },
   "tests/helpers/envoy-workspace-gateway.mjs": {

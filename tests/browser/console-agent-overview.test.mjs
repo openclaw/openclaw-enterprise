@@ -3,15 +3,18 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
+import { FIRST_ACTIVITY_WAIT_MS } from "../../apps/controller/src/console/agents/detail.mts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/deployment-evidence.mts";
+import { deploymentFailureStep } from "../../apps/controller/src/console/agents/deployment-recovery.mts";
+import { fileConsoleApp } from "../helpers/console-app.mjs";
 import {
-  DEPLOYMENT_POLL_MS,
-  deploymentFailureStep,
-  FIRST_ACTIVITY_WAIT_MS,
-} from "../../apps/controller/src/console/agents/detail.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
+  createProviderSandboxDriver,
+  createRuntimeLogComputeDriver,
+} from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  asksBeforeUnload,
+  consoleViewports,
   deploymentStatusResponse,
   detailUrl,
   fileBrowser,
@@ -19,41 +22,39 @@ import {
   login,
   nativeValues,
   newPage,
+  nextFrames,
   persistedDeploymentError,
   recordLayoutShifts,
   routeFailedDeployment,
   settledFetches,
+  settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
   waitForIdleFetches,
   waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
-import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+import {
+  deploymentActivity,
+  deploymentDetailsOpen,
+  deploymentRecordUrl,
+  expectDeploymentOutcome,
+  expectVersionRecord,
+  openDeploymentActivity,
+} from "./console-deployment-activity-helpers.mjs";
+import { fileReadyNamespace } from "./console-ready-namespace.mjs";
 
 // The Agent page's first screen while its reads settle and its polls run: loading cues, quiet
 // polls, a steady layout, and failed-version recovery scoped to the caller.
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
-
-// Resolves after the page has painted twice more and run a task after that, so a layout shift
-// from work that has already settled has been reported.
-const nextFrames = (page) =>
-  page.evaluate(
-    () =>
-      new Promise((resolve) => {
-        globalThis.requestAnimationFrame(() =>
-          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
-        );
-      }),
-  );
+// One app for the tests that pass no fixture options; each makes its own Namespace.
+const overviewApp = fileConsoleApp();
+const readyNamespace = fileReadyNamespace(overviewApp);
 
 async function agentPage(t, namespaceName, agentName, fixtureOptions) {
-  const { fixture, namespace } = await createReadyConsoleNamespace(
-    t,
-    namespaceName,
-    fixtureOptions,
-  );
+  const { fixture, namespace } = await readyNamespace(t, namespaceName, fixtureOptions);
   const agent = await fixture.createAgent(namespace.id, agentName, nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
   return { fixture, namespace, agent, page };
@@ -66,9 +67,6 @@ function runtimeLogs() {
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
   };
 }
-
-const deploymentUrl = (fixture, namespace, agent, revision) =>
-  `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
 
 // The API's message for the model probe failure the recovery tests below record.
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
@@ -95,9 +93,14 @@ function routeFailedRecord(
 test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Quiet summary", "Quiet Summary");
   const revision = await fixture.deployAgent(namespace.id, agent.id);
-  const record = await holdRequests(t, page, deploymentUrl(fixture, namespace, agent, revision), {
-    fulfill: deploymentStatusResponse(revision, { status: "succeeded" }),
-  });
+  const record = await holdRequests(
+    t,
+    page,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    {
+      fulfill: deploymentStatusResponse(revision, { status: "succeeded" }),
+    },
+  );
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
@@ -235,7 +238,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
 
   roles.release();
   await sharing.getByText("Current policy loaded.", { exact: false }).waitFor();
-  assert.equal(await principal.isEnabled(), true);
+  await waitForEnabled(principal);
   // The read's placeholder held the line its result takes, so nothing below moved.
   const after = await grants.boundingBox();
   assert.ok(Math.abs(after.y - before.y) < 1, `the grants moved ${after.y - before.y}px`);
@@ -281,6 +284,134 @@ test("A failed older version raises no recovery while the current version is hid
   assert.equal(await page.locator(".deployment-recovery").isHidden(), true);
   assert.equal(await page.getByText("v1 deployment failed").count(), 0);
   assert.equal(await summary.getByText("May be offline").count(), 0);
+});
+
+// Nothing restarts a lost Sandbox (finding 2152): after a node restart the current version's
+// Sandbox can stay stopped while the Agent still reads active and its gateway refuses requests.
+// Live serving says so with the next step. Its note line is reserved from the first paint, so a
+// Sandbox read that lands after the page shows moves nothing. A healthy Sandbox carries no
+// warning, and a Sandbox the Driver cannot read is unknown, never lost.
+test("Live serving shows a lost Sandbox and its next step without moving the page", async (t) => {
+  const { driver: sandboxDriver, state } = createProviderSandboxDriver();
+  const { fixture, namespace } = await readyNamespace(t, "Lost Sandbox", {
+    computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: "tenant-console" }),
+    sandboxDriver,
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Lost Sandbox",
+    nativeValues("v1", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const liveServing = (page) =>
+    page
+      .getByRole("region", { name: "Agent state at a glance" })
+      .locator(".stat")
+      .filter({ hasText: "Live serving" });
+  async function openOverview(viewport, { statusFailure = false } = {}) {
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const harnessReads = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/harness-status")) {
+        harnessReads.push(request.url());
+      }
+    });
+    // The fixture has no worker; the deployment that made v1 current succeeded.
+    await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
+      route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
+    );
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
+    await page.waitForLoadState("networkidle");
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent.
+    assert.deepEqual(harnessReads, []);
+    // The Sandbox read lands after the page shows, as on a gateway that takes a moment.
+    await page.route(`${fixture.origin}/namespaces/**/harness-status`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      if (statusFailure) {
+        await route.fulfill({
+          status: 503,
+          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
+        });
+        return;
+      }
+      await route.fallback().catch(() => {});
+    });
+    await page.addInitScript(recordLayoutShifts);
+    await trackSettledFetches(page);
+    // A full load, so no recent input excuses a shift.
+    await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await expectDeploymentOutcome(page, "Completed");
+    return { page, harnessReads };
+  }
+
+  // The node-restart case: OpenShell keeps the Sandbox record, stopped. Beside the sidebar
+  // (900 wide) the Live serving column is narrowest; its note still fits the reserved line.
+  state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+  for (const viewport of [...consoleViewports, { width: 900, height: 900 }]) {
+    const { page, harnessReads } = await openOverview(viewport);
+    const badge = liveServing(page).locator(".badge");
+    await liveServing(page).getByText("Deploy a new version.", { exact: true }).waitFor();
+    assert.equal(await badge.textContent(), "Sandbox lost");
+    assert.equal(await badge.getAttribute("data-tone"), "danger");
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await waitForIdleFetches(page);
+    await nextFrames(page);
+    const { shift, shifts } = await takeLayoutShifts(page);
+    t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
+    assert.ok(shift < 0.01, `${viewport.width}x${viewport.height} shift ${shift}`);
+    // Only the Live serving fact itself may change; nothing below it moves.
+    const moved = shifts
+      .flatMap((entry) => entry.sources)
+      .filter((source) => !/stat-value|stat-help/.test(source.node));
+    assert.deepEqual(moved, [], `${viewport.width}x${viewport.height}`);
+    // One read for the page's serving state, not a poll.
+    assert.equal(harnessReads.length, 1);
+  }
+
+  // A healthy Sandbox, one the Driver cannot read and a status read that fails leave Live
+  // serving unverified, with no warning.
+  for (const [harness, harnessError, statusFailure, note] of [
+    [{ state: "running" }, undefined, false, "Sandbox running."],
+    [
+      undefined,
+      new Error("gateway refused sandbox:read token-secret"),
+      false,
+      "Sandbox status unknown.",
+    ],
+    [{ state: "lost", code: "SANDBOX_STOPPED" }, undefined, true, "Sandbox status unknown."],
+  ]) {
+    state.harness = harness;
+    state.harnessError = harnessError;
+    const { page } = await openOverview(consoleViewports[0], { statusFailure });
+    await liveServing(page).getByText(note, { exact: true }).waitFor();
+    const badge = liveServing(page).locator(".badge");
+    assert.equal(await badge.textContent(), "Not verified");
+    assert.equal(await badge.getAttribute("data-tone"), null);
+    assert.equal(await page.getByText("Sandbox lost").count(), 0);
+    assert.equal(await page.getByText("token-secret", { exact: false }).count(), 0);
+  }
+
+  // Stopping the Agent drops the answer for the old serving state: a stopped Agent's Sandbox
+  // is removed by design, so Live serving no longer reports it lost, and nothing is read.
+  {
+    state.harness = { state: "lost", code: "SANDBOX_STOPPED" };
+    state.harnessError = undefined;
+    const { page, harnessReads } = await openOverview(consoleViewports[0]);
+    await liveServing(page).getByText("Sandbox lost", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Stop Agent" }).click();
+    await page
+      .getByRole("dialog", { name: "Stop this Agent?" })
+      .getByRole("button", { name: "Stop Agent" })
+      .click();
+    const summary = page.getByRole("region", { name: "Agent state at a glance" });
+    await summary.getByText("Stop requested", { exact: true }).waitFor();
+    await waitForIdleFetches(page);
+    assert.equal(await liveServing(page).locator(".badge").textContent(), "Not verified");
+    assert.equal(await liveServing(page).locator(".stat-help").textContent(), "");
+    assert.equal(harnessReads.length, 1);
+  }
 });
 
 // One readable version per history page: the first page lists the newest readable version.
@@ -458,8 +589,9 @@ test("A succeeded version says when the current version is on no loaded page", a
   // earlier, and v1 is on the next history page.
   const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
   denyRevisionRead(fixture, namespace, third.revision);
-  await page.route(deploymentUrl(fixture, namespace, agent, second.revision), (route) =>
-    route.fulfill(deploymentStatusResponse(second.revision, { status: "succeeded" })),
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, second.revision.id),
+    (route) => route.fulfill(deploymentStatusResponse(second.revision, { status: "succeeded" })),
   );
   await routeOneVersionPerPage(page, fixture, namespace, agent);
 
@@ -584,7 +716,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
 // (finding 1484).
 test("A replaced current version still says who can check the logs once Logs is denied", async (t) => {
   const logs = runtimeLogs();
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Replaced denied", logs);
+  const { fixture, namespace } = await readyNamespace(t, "Replaced denied", logs);
   const model = await fixture.createSecret(namespace.id, "Replaced model key", "hidden-model");
   // Dedicated deploys stop the previous version's workload before the new one starts.
   const agent = await fixture.createAgent(
@@ -739,11 +871,7 @@ for (const c of [
   ]) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's banner shows the ${c.code} next step in view at ${size}`, async (t) => {
-      const { fixture, namespace } = await createReadyConsoleNamespace(
-        t,
-        `Next step ${c.code}`,
-        runtimeLogs(),
-      );
+      const { fixture, namespace } = await readyNamespace(t, `Next step ${c.code}`, runtimeLogs());
       const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
       // Never deployed: v1 failed.
       const failed = await fixture.deployAgent(namespace.id, agent.id);
@@ -1000,7 +1128,7 @@ test("A failed deployment's banner offers no Deploy again once the Configuration
 
 // From the current version's page, Deploy again opens the draft at its deploy step too.
 test("A failed deployment's Deploy again opens the draft's deploy step from another version", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploy again elsewhere");
+  const { fixture, namespace } = await readyNamespace(t, "Deploy again elsewhere");
   const agent = await fixture.createAgent(namespace.id, "Elsewhere Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // v1 keeps serving; the v2 redeploy failed.
@@ -1079,7 +1207,7 @@ function line(second, raw) {
 // button's margin also collapsed through body and moved the whole page on every load.
 test("opening the Logs tab by URL does not move the page", async (t) => {
   const logs = runtimeLogs();
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Steady logs", logs);
+  const { fixture, namespace } = await readyNamespace(t, "Steady logs", logs);
   const agent = await fixture.createAgent(namespace.id, "Steady Logs Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   logs.computeDriver.state.lines = Array.from({ length: 30 }, (_, index) =>
@@ -1093,7 +1221,7 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
     // The runtime status read settles after the page has scrolled to the Logs tab, as on a
     // live cluster where it takes about a second.
     await page.route(
-      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      `${deploymentRecordUrl(fixture, namespace.id, agent.id, active.revision.id)}/runtime`,
       async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 700));
         await route.continue().catch(() => {});
@@ -1128,7 +1256,7 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
 // now keeps its height and hides those cards until the view shows.
 test("opening the Logs tab by click does not move the cards below it", async (t) => {
   const logs = runtimeLogs();
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Steady logs tab", logs);
+  const { fixture, namespace } = await readyNamespace(t, "Steady logs tab", logs);
   const agent = await fixture.createAgent(namespace.id, "Steady Logs Tab", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   logs.computeDriver.state.lines = Array.from({ length: 30 }, (_, index) =>
@@ -1141,7 +1269,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     // The status read settles well after the click's 500 ms input window, as on a live cluster.
     await page.route(
-      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      `${deploymentRecordUrl(fixture, namespace.id, agent.id, active.revision.id)}/runtime`,
       async (route) => {
         await new Promise((resolve) => setTimeout(resolve, 1000));
         await route.continue().catch(() => {});
@@ -1188,7 +1316,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
 // CLS 0.149 at 400 ms per request (finding 1489). The overview now waits for the latest
 // deployment's outcome, and for a failure the caller's permission answer, within a longer bound.
 test("a failed version's banner does not move the overview on a slow link", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Slow banner");
+  const { fixture, namespace } = await readyNamespace(t, "Slow banner");
   const agent = await fixture.createAgent(namespace.id, "Slow Banner", nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // v1 keeps serving; the v2 redeploy failed.
@@ -1245,6 +1373,163 @@ test("a failed version's banner does not move the overview on a slow link", asyn
   }
 });
 
+// When Deployment activity's first read outlasts FIRST_ACTIVITY_WAIT_MS the page shows without
+// it, and the record landing later moved the version tabs: down 227 px for a running deploy, up
+// 65 px for a completed one (finding 2163). The stand-in is now the folded panel's one row, and a
+// late first record fills it without opening it, since the summary above shows the outcome. The
+// summary's note and the viewed version's record keep their rows, so nothing above the tabs moves
+// at desktop or phone width. Only a failure's card, which leads the page (finding 2094), and the
+// viewed version's own failure or read error, which its record states in full, may move them.
+test("a late first deployment read moves nothing above the version tabs", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Late activity");
+  const agent = await fixture.createAgent(namespace.id, "Late Activity", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: consoleViewports[0] },
+  });
+  // Each load's first read of the record waits for the case's answer.
+  let answer = null;
+  let requested = null;
+  await page.route(
+    deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id),
+    async (route) => {
+      requested?.();
+      // A poll from the page a later goto replaced is answered into nothing.
+      await route.fulfill(await answer).catch(() => {});
+    },
+  );
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.clock.install();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  const activity = deploymentActivity(page);
+  const record = page.locator(".version-deployment-record");
+  // Positions in the page at each width: the version tabs, the overview (the facts and
+  // Deployment activity) and the viewed version's record.
+  const measure = async () => {
+    const sizes = [];
+    for (const viewport of consoleViewports) {
+      await page.setViewportSize(viewport);
+      await nextFrames(page);
+      sizes.push(
+        await page.evaluate(() => {
+          const box = (selector) => {
+            const node = globalThis.document.querySelector(selector);
+            const rect = node?.getBoundingClientRect();
+            return node ? { top: rect.top + globalThis.scrollY, height: rect.height } : null;
+          };
+          return {
+            tabs: box(".agent-tabs").top,
+            overview: box(".agent-overview-status"),
+            record: box(".version-deployment-record")?.height ?? 0,
+          };
+        }),
+      );
+    }
+    await page.setViewportSize(consoleViewports[0]);
+    return sizes;
+  };
+  // Control: a pending record read before the page shows opens its details as before, and the
+  // summary's note, empty by then, gives its line back.
+  answer = Promise.resolve(deploymentStatusResponse(revision, { status: "running" }));
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
+  await expectDeploymentOutcome(page, "In progress", { folded: false });
+  assert.equal(
+    await summary
+      .locator(":scope > div:nth-child(2) > p")
+      .evaluate((node) => node.checkVisibility()),
+    false,
+  );
+
+  const unavailable = {
+    status: 503,
+    json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." } },
+  };
+  for (const c of [
+    { status: "succeeded", label: "Completed", stillOn: ["draft", "version"] },
+    { status: "running", label: "In progress", stillOn: ["draft", "version"] },
+    { status: "failed", label: "Failed", stillOn: [] },
+    { status: "read error", label: "Unavailable", stillOn: ["draft"] },
+  ]) {
+    for (const view of ["draft", "version"]) {
+      const name = `${c.status} on the ${view}`;
+      let respond;
+      answer = new Promise((resolve) => {
+        respond = resolve;
+      });
+      const read = new Promise((resolve) => {
+        requested = resolve;
+      });
+      const selected = view === "draft" ? "draft" : revision.id;
+      await page.goto(detailUrl(fixture, namespace.id, agent.id, selected, "configuration").href);
+      await read;
+      // The held read keeps the page hidden until the overview's bounded wait runs out; run it
+      // out rather than wait for it.
+      await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
+      await page.locator(".agent-detail-pending").waitFor({ state: "detached" });
+      await page.locator(settledView).waitFor();
+      await page.evaluate(() => globalThis.document.fonts.ready);
+      // The stand-in is one panel without controls: no empty panel, Refreshing… or "has not
+      // loaded" comes first.
+      assert.equal(await activity.count(), 1);
+      await activity.getByText("Loading the most recent visible deployment…").waitFor();
+      assert.equal(await activity.getByRole("button").count(), 0);
+      const before = await measure();
+
+      respond(
+        c.status === "read error"
+          ? unavailable
+          : deploymentStatusResponse(revision, {
+              status: c.status,
+              error:
+                c.status === "failed"
+                  ? persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED")
+                  : null,
+            }),
+      );
+      await summary.getByText(`v1 · ${c.label}`, { exact: true }).waitFor();
+      await activity.getByRole("button", { name: "Refresh deployment" }).waitFor();
+      if (c.status === "read error") {
+        // Folded, so hidden.
+        await activity.getByRole("alert", { includeHidden: true }).waitFor({ state: "attached" });
+      } else {
+        await expectDeploymentOutcome(page, c.label, { folded: true });
+      }
+      if (c.status === "failed") {
+        await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+      }
+      if (view !== "draft") {
+        await (c.status === "read error"
+          ? record.getByRole("alert").waitFor()
+          : expectVersionRecord(page, c.label));
+      }
+      await waitForIdleFetches(page);
+      assert.equal(await deploymentDetailsOpen(page), false, `${name}: the details stay folded`);
+      assert.equal(await activity.count(), 1);
+      const after = await measure();
+      t.diagnostic(`${name}: ${JSON.stringify({ before, after })}`);
+      for (const [index, { width }] of consoleViewports.entries()) {
+        const [was, is] = [before[index], after[index]];
+        // The overview keeps its height; the tabs move only as far as a card above it pushes it
+        // and the viewed version's record grows.
+        const near = (actual, expected, what) =>
+          assert.ok(Math.abs(actual - expected) < 1, `${name} at ${width}: ${what}`);
+        near(is.overview.height, was.overview.height, "the overview keeps its height");
+        near(
+          is.tabs - was.tabs,
+          is.overview.top - was.overview.top + (is.record - was.record),
+          "only the card and the record move the tabs",
+        );
+        if (c.stillOn.includes(view)) {
+          near(is.tabs, was.tabs, "the tabs stay");
+        }
+      }
+    }
+  }
+});
+
 // The version's detail is in view: its top edge at (or, where the page cannot scroll that far,
 // below) the window's top, inside the upper half of the window.
 function versionDetailInView() {
@@ -1284,7 +1569,7 @@ for (const c of [
   ]) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's ${c.label} link brings ${c.name} into view at ${size}`, async (t) => {
-      const { fixture, namespace } = await createReadyConsoleNamespace(t, `Recovery ${c.name}`);
+      const { fixture, namespace } = await readyNamespace(t, `Recovery ${c.name} ${size}`);
       const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("v1"));
       // Never deployed: v1 failed its startup model check. "another version" first deploys v1.
       const active =
@@ -1346,7 +1631,7 @@ for (const c of [
 
 // The link's own page scrolls at once for a reader who asked for reduced motion.
 test("A failed deployment's recovery link scrolls without motion under reduced motion", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Recovery reduced motion");
+  const { fixture, namespace } = await readyNamespace(t, "Recovery reduced motion");
   const agent = await fixture.createAgent(namespace.id, "Still Agent", nativeValues("v1"));
   const failed = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, {
@@ -1395,17 +1680,17 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
 // for it to settle.
 async function pendingDeploy(t, viewport, name) {
   const size = `${viewport.width}x${viewport.height}`;
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, `${name} deploy ${size}`);
+  const { fixture, namespace } = await readyNamespace(t, `${name} deploy ${size}`);
   const agent = await fixture.createAgent(namespace.id, `${name} Deploy`, nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const pending = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser, context: { viewport } });
   await trackSettledFetches(page);
-  const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, pending.id);
   const open = async () => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "access"));
-    await page.getByText("Recorded status: In progress").waitFor();
+    await expectDeploymentOutcome(page, "In progress");
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     await waitForIdleFetches(page);
@@ -1515,7 +1800,7 @@ for (const viewport of [
     // The deploy settles.
     record = { status: "succeeded" };
     await poll();
-    await page.getByText("Recorded status: Completed").waitFor();
+    await expectDeploymentOutcome(page, "Completed", { folded: false });
     await waitForIdleFetches(page);
     const settledTop = await shareTop();
     t.diagnostic(`${size} Share Agent at ${firstTop}, ${attemptTop}, ${settledTop}`);
@@ -1555,8 +1840,8 @@ for (const viewport of [
     await page.clock.pauseAt(new Date(now + 1000));
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     assert.equal(await recovery.isVisible(), false);
-    const details = page.locator(".deployment-status > details");
-    assert.equal(await details.evaluate((node) => node.open), true, "a running deploy shows");
+    // open() left the running deploy's details open, as the reader sees them before it fails.
+    assert.equal(await deploymentDetailsOpen(page), true);
     const background = (locator) =>
       locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
     const admin = page.getByRole("link", { name: "Open admin console" });
@@ -1620,8 +1905,8 @@ for (const viewport of [
       "the card's action is above the fold",
     );
     // Folded once, the details stay open when the reader opens them.
-    await details.locator("summary").click();
-    assert.equal(await details.evaluate((node) => node.open), true);
+    await openDeploymentActivity(page);
+    assert.equal(await deploymentDetailsOpen(page), true);
   });
 }
 
@@ -1629,7 +1914,7 @@ for (const viewport of [
 // children a shorter render no longer has, and replaces a node whose role (or role node kind)
 // changes, since a live region or alert announces reliably only when it is inserted.
 test("deployment poll patches rewrite only changed text and replace a node whose role changes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await overviewApp(t);
   const { page } = await newPage(t, fixture, { browser });
   await page.goto(new URL("/console/", fixture.origin).href);
   const outcome = await page.evaluate(async () => {
@@ -1685,7 +1970,7 @@ test("deployment poll patches rewrite only changed text and replace a node whose
 // A recovery link that opened another version, abandoned (Back) before that page was built, left
 // its request for a later visit to the same tab, which would scroll and steal focus unasked.
 test("A recovery link left before its page opens does not scroll a later visit", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Recovery left");
+  const { fixture, namespace } = await readyNamespace(t, "Recovery left");
   const agent = await fixture.createAgent(namespace.id, "Left Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const failed = await fixture.deployAgent(namespace.id, agent.id);
@@ -1735,7 +2020,7 @@ test("A recovery link left before its page opens does not scroll a later visit",
 // A recovery link whose draft page is restored for Back mounts it at its old scroll position,
 // at the top: the restored page brings the tab into view too.
 test("A recovery link to a draft retained from an earlier visit brings it into view", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Recovery retained");
+  const { fixture, namespace } = await readyNamespace(t, "Recovery retained");
   const agent = await fixture.createAgent(namespace.id, "Retained Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const failed = await fixture.deployAgent(namespace.id, agent.id);
@@ -1798,7 +2083,7 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`The Agent's facts are a stat row with one disclosure at ${size}`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Stat row ${size}`);
+    const { fixture, namespace } = await readyNamespace(t, `Stat row ${size}`);
     const agent = await fixture.createAgent(
       namespace.id,
       "Stat Row Agent",
@@ -1935,7 +2220,7 @@ for (const viewport of [
 // The bindings sentence speaks for the sharing panel's list: without that panel (sharing reads
 // refused on the Access tab), the disclosure leaves it out.
 test("The page's disclosure names listed bindings only beside the sharing panel", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Disclosure sharing");
+  const { fixture, namespace } = await readyNamespace(t, "Disclosure sharing");
   const agent = await fixture.createAgent(namespace.id, "Disclosure Agent", nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
@@ -1973,7 +2258,7 @@ test("The page's disclosure names listed bindings only beside the sharing panel"
 // D1). The overview no longer reads sharing policy; the tab reads it when it opens, and a link to
 // the tab survives sign-in.
 test("Share Agent is on the Access tab, not the overview", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Access tab");
+  const { fixture, namespace } = await readyNamespace(t, "Access tab");
   const agent = await fixture.createAgent(namespace.id, "Access Tab Agent", nativeValues("v1"));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
@@ -2031,7 +2316,7 @@ test("Share Agent is on the Access tab, not the overview", async (t) => {
 // overview: a share still running when the reader opens another tab finishes, and its outcome
 // shows when they come back. Each grant is written once.
 test("A share in flight finishes across a tab switch", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share in flight", {
+  const { fixture, namespace } = await readyNamespace(t, "Share in flight", {
     provisionedPeople: ["flight-recipient"],
   });
   const agent = await fixture.createAgent(namespace.id, "Flight Agent", nativeValues("v1"));
@@ -2075,9 +2360,10 @@ test("A share in flight finishes across a tab switch", async (t) => {
 
 // A share writes the Namespace discovery grant, then the Agent grant. Leaving the page between
 // the two cut the share in half and said nothing (finding 2108), so another version, ← Agents and
-// Refresh wait for it, as they do for a draft's writes; the tabs still switch.
+// Refresh wait for it, as they do for a draft's writes; the tabs still switch. A reload or tab
+// close asks first (finding 2125).
 test("A share in flight holds version and page changes until it finishes", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share hold", {
+  const { fixture, namespace } = await readyNamespace(t, "Share hold", {
     provisionedPeople: ["hold-recipient"],
   });
   const agent = await fixture.createAgent(namespace.id, "Hold Agent", nativeValues("v1"));
@@ -2095,13 +2381,15 @@ test("A share in flight holds version and page changes until it finishes", async
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
   const version = page.getByRole("button", { name: "View version v1, current version" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
+  assert.equal(await asksBeforeUnload(page), false);
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await write.requested;
 
   assert.equal(await version.isDisabled(), true);
+  assert.equal(await asksBeforeUnload(page), true);
   const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
   await page.getByRole("link", { name: "← Agents" }).click();
   await held.waitFor();
@@ -2120,17 +2408,192 @@ test("A share in flight holds version and page changes until it finishes", async
   write.release();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await held.waitFor({ state: "detached" });
-  assert.equal(await version.isEnabled(), true);
+  await waitForEnabled(version);
+  assert.equal(await asksBeforeUnload(page), false);
   const bindings = (
     await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
   ).data.filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
 });
 
+// The page's own reloads of its current address (here a failed read's Retry) rebuild it, so a
+// share waits for them too (finding 2108; untested until finding 2125).
+test("A share in flight holds a Retry that would rebuild the page", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Share retry hold", {
+    provisionedPeople: ["retry-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Retry Hold Agent", nativeValues("v1"));
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  // The draft's Configuration read fails, so its tab offers Retry.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+            }),
+          })
+        : route.fallback(),
+  );
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  const configurationUrl = page.url();
+  const entries = await page.evaluate(() => globalThis.history.length);
+  const shown = await retry.elementHandle();
+  await retry.click();
+  const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
+  await held.waitFor();
+  // The page was not rebuilt: the same Retry is still shown and live.
+  assert.equal(page.url(), configurationUrl);
+  assert.equal(await page.evaluate(() => globalThis.history.length), entries);
+  assert.equal(await shown.evaluate((node) => node.isConnected && !node.closest("[inert]")), true);
+
+  write.release();
+  await held.waitFor({ state: "detached" });
+  const bindings = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
+  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+});
+
+// Delete replaces the page with its deletion row. During a share that took the hold's note with
+// it, so ← Agents was refused in silence until the share finished (finding 2125).
+test("Delete during a share in flight keeps saying why the page stays open", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Share delete hold", {
+    provisionedPeople: ["delete-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Delete Hold Agent", nativeValues("v1"));
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
+  await login(page, fixture, url);
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Delete Hold Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  assert.equal(await panel.count(), 0);
+  const held = page.getByText("This page stays open until sharing finishes.", { exact: true });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await held.waitFor();
+  assert.equal(await held.isVisible(), true);
+  assert.equal(page.url(), url.href);
+
+  write.release();
+  await held.waitFor({ state: "detached" });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+});
+
+// The Configuration editor says why it holds the page beside itself. Delete took the editor away
+// as well, so its hold now says why above the deletion row (finding 2125).
+test("Delete during a Configuration save keeps saying why the page stays open", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Save delete hold");
+  const agent = await fixture.createAgent(namespace.id, "Save Delete Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await page
+    .getByLabel("Configuration JSON", { exact: true })
+    .fill(JSON.stringify(nativeValues("v2"), null, 2));
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    { method: "PATCH", once: true },
+  );
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await write.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Save Delete Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  const held = page.getByText("Wait for Configuration save to finish before leaving the editor.", {
+    exact: true,
+  });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await held.waitFor();
+  assert.equal(await held.isVisible(), true);
+  assert.equal(page.url(), url.href);
+
+  write.release();
+  // The settled save holds nothing more: there is no editor left to reread it into.
+  await held.waitFor({ state: "detached" });
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+});
+
+// A page that opens on a deleting Agent shows only its deletion row and returns before the rest
+// of the page is set up. ← Agents and the reload check read that part, threw, and did nothing
+// (finding 2125).
+test("A page that opens on a deleting Agent can still be left", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Opened deleting");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Opened Deleting Agent",
+    nativeValues("v1"),
+  );
+  const deletion = await fixture.request(
+    "DELETE",
+    `/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
+  assert.equal(deletion.status, 202, JSON.stringify(deletion.body));
+  const { page } = await newPage(t, fixture, { browser });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("button", { name: "Request deletion again" }).waitFor();
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
 // The same hold from a version's Access tab: Create new version and Back to another version
 // keep the page (and its history) while the share runs (finding 2108).
 test("A share in flight on a version preserves Back to the draft and Forward to Access", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share hold version", {
+  const { fixture, namespace } = await readyNamespace(t, "Share hold version", {
     provisionedPeople: ["hold-version-recipient"],
   });
   const agent = await fixture.createAgent(namespace.id, "Hold Version Agent", nativeValues("v1"));
@@ -2218,7 +2681,7 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`A draft's next-step card brings Deploy up at ${size}`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Next step ${size}`);
+    const { fixture, namespace } = await readyNamespace(t, `Next step ${size}`);
     const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(
@@ -2249,7 +2712,7 @@ for (const viewport of [
 
     // Deploy is the page's one primary.
     const deploy = card.getByRole("button", { name: "Deploy new version" });
-    assert.equal(await deploy.isEnabled(), true);
+    await waitForEnabled(deploy);
     const layout = await page.evaluate(() => {
       const doc = globalThis.document;
       const box = (node) => node.getBoundingClientRect();
@@ -2329,7 +2792,7 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await fixture.deployAgent(namespace.id, agent.id);
   const latest = await fixture.deployAgent(namespace.id, agent.id);
-  const recordUrl = deploymentUrl(fixture, namespace, agent, latest);
+  const recordUrl = deploymentRecordUrl(fixture, namespace.id, agent.id, latest.id);
   let record = deploymentStatusResponse(latest, { status: "queued" });
   await page.route(recordUrl, (route) => route.fulfill(record));
   await page.setViewportSize({ width: 1200, height: 800 });

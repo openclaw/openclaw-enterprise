@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
 test("production worker readiness rejects a stale health marker that still satisfies liveness", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-worker-health-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-worker-health-");
   const marker = join(directory, "ready");
   await writeFile(marker, "ready\n", { encoding: "utf8", mode: 0o600 });
   const stale = new Date(Date.now() - 60_000);
@@ -34,8 +33,7 @@ test("production worker readiness rejects a stale health marker that still satis
 });
 
 test("production worker liveness fails once the run loop stops reporting progress", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-worker-health-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-worker-health-");
   const ready = join(directory, "ready");
   const alive = join(directory, "alive");
   await writeFile(ready, "ready\n", { encoding: "utf8", mode: 0o600 });

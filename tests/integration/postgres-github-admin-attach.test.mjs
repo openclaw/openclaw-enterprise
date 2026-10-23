@@ -12,6 +12,7 @@ import {
   signedInHeaders,
 } from "../helpers/production-sign-in.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
 import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
 const password = "attach-member-password";
@@ -416,19 +417,12 @@ test(
             attach(adminHeaders, member.id, racedSubject, before[0].version),
             attach(secondHeaders, third.id, racedSubject, before[1].version),
           ]);
-          const deadline = performance.now() + 10_000;
-          for (;;) {
-            const { rows } = await pool.query(
-              `SELECT count(*)::int AS count FROM pg_stat_activity
-               WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO occ.account %'`,
-              [blockerPid],
-            );
-            if (rows[0].count === 2) {
-              break;
-            }
-            assert.ok(performance.now() < deadline, "both attaches reach the identity insert");
-            await new Promise((resolve) => setTimeout(resolve, 20));
-          }
+          // Only the two attaches run this INSERT, so at least two waiters means both.
+          await waitForLockWaiter(pool, blockerPid, "both attaches to reach the identity insert", {
+            count: 2,
+            queryLike: "INSERT INTO occ.account %",
+            timeoutMs: 10_000,
+          });
         } finally {
           await blocker.query("ROLLBACK");
           blocker.release();
