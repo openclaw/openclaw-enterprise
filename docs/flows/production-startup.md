@@ -121,8 +121,8 @@ are unchanged.
 Empty hosts retain Service DNS for listeners and Certificate SANs.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
-refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence;
-Helm also refuses rendering. IPv4 admission does not establish TLS.
+refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence.
+IPv4 admission does not establish TLS.
 `validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
 Correct Helm values and Installation YAML with the
 [hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4)
@@ -135,7 +135,10 @@ On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` vali
 Installation without database/Kubernetes access; refusal stops migration and API
 replacement. The check uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
-diagnostics, without submitted values.
+diagnostics, without submitted values, except
+`apps/controller/src/composition/installation-fields.ts:requireChartListener`:
+`CHART_LISTENER_MISMATCH` names ports or the host refused against
+`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT`.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
@@ -290,7 +293,6 @@ until tenant deployment/TUI procedures run.
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
   `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
-  A stopping API emits `shutdown.started` and then `shutdown.completed`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
