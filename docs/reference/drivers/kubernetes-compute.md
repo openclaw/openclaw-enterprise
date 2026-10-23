@@ -326,6 +326,11 @@ model turn.
   NetworkPolicies in each selected tenant target. Existing
   namespaces also require external lifecycle ownership, exclusive tenant use,
   and no foreign NetworkPolicies.
+- **Deployment fails with `KUBERNETES_SECRET_WRITE_FORBIDDEN`:** The API
+  answered `403` to a revision's private Secret write. Check the worker's tenant
+  RoleBinding (`get`, `create`, `update` on `secrets`), admission policies and
+  ResourceQuotas in that namespace. The worker log's
+  `worker.compute-prepare-failed` line names the `step`.
 - **Gateway or Harness remains pending:** Check image digests, image pull
   permissions, CPU and memory limits, namespace quotas, required Secrets, and
   workload readiness, including the

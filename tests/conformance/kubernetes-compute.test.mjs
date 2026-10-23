@@ -17595,8 +17595,10 @@ test("Kubernetes workspace setup rejects foreign identities and unsupported stor
 test("Kubernetes workspace setup redacts backend failures and refuses foreign private delivery", async () => {
   const fixture = workspaceSetupFixture(true);
   fixture.state.secretFailure = true;
+  // The fixture's refusal is a 403, which no retry clears (finding 1770).
   await assert.rejects(fixture.driver.prepareRevision(fixture.revision, fixture.context), {
-    message: "Workspace setup private delivery is unavailable.",
+    name: "KubernetesSecretWriteForbiddenError",
+    message: "The Kubernetes API refused a private Secret write with HTTP 403.",
   });
   fixture.state.secretFailure = false;
   await fixture.driver.prepareRevision(fixture.revision, fixture.context);
@@ -17613,10 +17615,12 @@ test("Kubernetes workspace setup redacts backend failures and refuses foreign pr
 
 // A private Secret write that the API server answers with 429 or 5xx clears by itself, so it
 // must surface as a transient Kubernetes API failure: the worker then waits within the
-// convergence deadline instead of spending its attempt budget. Other answers keep the redacted
-// delivery error. Either way the status and Status reason stay visible to diagnostics, while
-// the client error, whose message and body echo the submitted Secret, stays behind. A Secret
-// that already exists is replaced instead of created; that write is classified the same way.
+// convergence deadline instead of spending its attempt budget. A 403 never clears by itself
+// (an RBAC grant, admission policy or quota refuses it), so it surfaces as the refusal the
+// worker fails at once (finding 1770). Other answers keep the redacted delivery error. Each
+// way the status and Status reason stay visible to diagnostics, while the client error, whose
+// message and body echo the submitted Secret, stays behind. A Secret that already exists is
+// replaced instead of created; that write is classified the same way.
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} private Secret writes classify API answers without echoing Secret data`, async () => {
     const { ApiException } = createRequire(
@@ -17689,6 +17693,13 @@ for (const embedded of [true, false]) {
         assert.equal(error.code, "KUBERNETES_API_UNAVAILABLE");
         assert.equal(error.reason, "unavailable");
         assert.equal(error.message, `The Kubernetes API answered HTTP ${status}.`);
+      } else if (status === 403) {
+        assert.equal(error.name, "KubernetesSecretWriteForbiddenError");
+        assert.equal(error.code, "KUBERNETES_SECRET_WRITE_FORBIDDEN");
+        assert.equal(
+          error.message,
+          "The Kubernetes API refused a private Secret write with HTTP 403.",
+        );
       } else {
         assert.equal(error.name, "DependencyUnavailableError");
         assert.equal(error.message, target.message);

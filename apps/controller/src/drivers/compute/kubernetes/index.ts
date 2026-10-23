@@ -150,6 +150,7 @@ import {
   SandboxRepositoryRecipientUnverifiedError,
   imageReferenceProblem,
   keyedSettingPath,
+  KubernetesSecretWriteForbiddenError,
   provisionsDedicatedOpenClaw,
   requireOpenClawRoster,
   resolveConfiguredHarnessId,
@@ -898,8 +899,9 @@ function kubernetesApiFailureEvidence(
 /**
  * The error a failed private Secret write raises in place of the client error: a transient
  * Kubernetes API failure stays transient, so the worker waits within the deadline instead of
- * spending its attempt budget; anything else becomes `message`. Either keeps only sanitized
- * API evidence as its cause.
+ * spending its attempt budget; a 403 is a refusal that no retry clears (an RBAC grant, an
+ * admission policy or a ResourceQuota), so the worker fails the deployment at once (finding
+ * 1770); anything else becomes `message`. Each keeps only sanitized API evidence as its cause.
  */
 function privateWriteFailure(message: string, error: unknown): Error {
   const evidence = kubernetesApiFailureEvidence(error);
@@ -907,7 +909,10 @@ function privateWriteFailure(message: string, error: unknown): Error {
   if (transient instanceof TransientDependencyError) {
     return transient;
   }
-  const failure = new DependencyUnavailableError(message);
+  const failure =
+    evidence instanceof KubernetesApiFailureEvidence && evidence.code === 403
+      ? new KubernetesSecretWriteForbiddenError()
+      : new DependencyUnavailableError(message);
   if (evidence !== undefined) {
     failure.cause = evidence;
   }

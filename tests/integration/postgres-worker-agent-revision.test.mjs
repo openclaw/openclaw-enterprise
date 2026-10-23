@@ -19,6 +19,7 @@ import {
   CredentialSourceRevisionError,
   ComputePreparationFailedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
   PostgresMetricsSnapshot,
   SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
@@ -2506,6 +2507,66 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
+  async (fixture) => {
+    // Finding 1770 (D503): an RBAC grant, admission policy or quota that refuses the write
+    // refuses every retry too, so the deployment fails at once with a status that names the
+    // refusal and the grant to check, instead of five DEPENDENCY_UNAVAILABLE retries and
+    // "Deployment reconciliation failed.". The Driver keeps only the HTTP status and Status
+    // reason as the cause (tests/conformance/kubernetes-compute.test.mjs pins that shape), and
+    // the worker log keeps both. A 429, 5xx or timeout stays a TransientDependencyError, which
+    // waits for the convergence deadline (the KUBERNETES_API_UNAVAILABLE case below).
+    const admitted = await fixture.admitInitialRevision("private-secret-write-forbidden");
+    const events = [];
+    let preparations = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision() {
+          preparations += 1;
+          const refused = new KubernetesSecretWriteForbiddenError();
+          refused.cause = Object.assign(
+            new Error("The Kubernetes API answered HTTP 403 (Forbidden)."),
+            { code: 403, reason: "Forbidden" },
+          );
+          throw refused;
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await assertFailedDeployment(fixture, admitted, {
+      error: {
+        code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+        message:
+          "Kubernetes refused a Secret write this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBinding grants get, create and update on secrets in the Agent's Kubernetes namespace, and that no admission policy or ResourceQuota refuses the write there, then deploy again.",
+      },
+    });
+    assert.equal(preparations, 1);
+    const completed = events.filter(
+      (event) => event.event === "worker.completed" && event.revisionId === admitted.candidate.id,
+    );
+    assert.deepEqual(
+      completed.map(({ outcome, code, cause, status, reason }) => ({
+        outcome,
+        code,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          outcome: "permanent",
+          code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+          cause: "KubernetesSecretWriteForbiddenError",
+          status: 403,
+          reason: "Forbidden",
+        },
+      ],
+    );
   },
 );
 

@@ -215,7 +215,8 @@ CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
 version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
 and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
-unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
+unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`, and a `403` on a
+private Secret write fails preparation at once with `KUBERNETES_SECRET_WRITE_FORBIDDEN`. A Sandbox Driver that cannot run
 the version fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
 `SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED`, and two credential sources that share

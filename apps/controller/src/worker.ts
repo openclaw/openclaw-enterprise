@@ -68,6 +68,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
   PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
@@ -4600,7 +4601,10 @@ export class ControllerWorker {
           error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
-          error instanceof ActivationFailedError
+          error instanceof ActivationFailedError ||
+          // Finding 1770: Kubernetes refused a private Secret write with 403. An operator must
+          // change a grant, admission policy or quota first, so no retry can succeed.
+          error instanceof KubernetesSecretWriteForbiddenError
         ) {
           result = { outcome: "permanent", code: error.code };
         } else if (error instanceof ComputeStopYieldedError) {

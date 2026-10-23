@@ -432,6 +432,7 @@ export {
   IAMPolicyValidationError,
   IAMRoleInUseError,
   keyedSettingPath,
+  KubernetesSecretWriteForbiddenError,
   ModelCredentialValueError,
   ModelProviderSettingError,
   NamespaceNotEmptyError,
