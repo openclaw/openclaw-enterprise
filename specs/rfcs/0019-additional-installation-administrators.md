@@ -9,7 +9,7 @@ status_note: "Needs human review before landing. This PR changes documentation o
 
 - **ID:** RFC-0019 (provisional on this branch; renumber before merge)
 - **Created:** 2026-10-02
-- **Last updated:** 2026-10-15
+- **Last updated:** 2026-10-23
 - **RFC PR:** [#889](https://github.com/openclaw/openclaw-enterprise/pull/889) (draft)
 
 <a id="problem-and-decision"></a>
@@ -33,7 +33,7 @@ corrects the operator guidance and implements none of the options.
 
 A Role says *what* someone may do. Its binding also says *where*. An exact
 binding to the Installation object does not mean “the Installation and
-everything in it.” [The IAM source at `00bbc7cd`](https://github.com/openclaw/openclaw-enterprise/blob/00bbc7cd976ab7be317ce1e0a9d36ad72ce10567/packages/iam/src/index.ts)
+everything in it.” [The IAM source at `5dd0cd0f`](https://github.com/openclaw/openclaw-enterprise/blob/5dd0cd0f083d68d268f38f271b69f5f4382ef971/packages/iam/src/index.ts)
 still makes this distinction; the HTTP results above are from the October
 report, not a claim about a currently running Installation.
 
@@ -54,14 +54,20 @@ account creation without a Role.
 ## A. Change what account creation can grant (recommended)
 
 Keep the [account endpoint’s](../../docs/reference/authentication.md#account-provisioning)
-existing gate: a human session with `installation:administer`. When the request
-includes `roleId`, also check whether the caller holds each proposed permission
-at the same or a broader scope. *Permission to create an account is not
-permission to give it arbitrary access.*
+existing gate: a human session with `installation:administer`. Add an explicit choice to appoint a full
+administrator. A request that supplies only the existing `roleId` continues
+to grant access to the exact Installation object. Omitting the Role still
+creates an account without grants. Existing provisioning clients can keep
+using either form.
+
+When the caller explicitly requests full access, IAM must verify that the
+caller holds each permission of the built-in administrator Role at the same
+or a broader scope. A caller who lacks any required grant receives `403`.
+The refusal creates no account, Principal, enrollment, or binding.
 
 ```mermaid
 flowchart TD
-    request["Create account with administrator roleId"] --> allowed{"May the caller create accounts?"}
+    request["Appoint a full administrator"] --> allowed{"May the caller create accounts?"}
     allowed -->|No| deny["Refuse the request"]
     allowed -.->|Yes| coverage{"Does the caller cover every grant the new binding would confer?"}
     coverage -.->|No| deny
@@ -75,12 +81,14 @@ compare against the *proposed binding*, before committing it. The existing
 `coversIdentityAccess` compares two identities already in policy; comparing the
 caller to a new identity with no grants would check the wrong thing. A caller’s
 own untargeted binding to the same Role is sufficient coverage, not the only
-possible proof. If coverage cannot be established, refuse the request.
+possible proof. If the selected IAM Driver cannot establish coverage, refuse the request.
+The check must still hold when the grant commits. A concurrent revocation
+that removes coverage before then must prevent the grant.
 
 On success, `createAuthPrincipalSeed` would bind the existing Role with no
 resource target, as bootstrap does; `validateAuthAccountPrincipalSeed` would
 require that shape for this path. Preserve the single account-creation
-transaction, the audit record of `roleId`, and the no-grant default. No change to
+transaction, an audit record that distinguishes the exact and full grants, and the no-grant default. No change to
 [authorization’s meaning of an exact binding](../../docs/reference/authorization.md)
 is needed.
 
