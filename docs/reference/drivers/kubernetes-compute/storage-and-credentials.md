@@ -39,11 +39,9 @@ Kubernetes DNS-subdomain `runtime.gatewayStorageClassName` selects an
 operator-provisioned StorageClass for a local or cloud block disk mounted as a
 filesystem.
 
-The filesystem must support SQLite: reliable file locking, durable `fsync`
-writes, and SQLite database and companion WAL/SHM files in one directory.
-The Driver checks claim configuration without certifying the provider's locking
-or durability guarantees.
-See [SQLite's filesystem requirements](https://sqlite.org/useovernet.html).
+The filesystem must support SQLite locking, durable `fsync`, and colocated
+database and WAL/SHM files. The Driver checks claim configuration, not filesystem
+guarantees. See [SQLite’s requirements](https://sqlite.org/useovernet.html).
 
 Do not use NFS or SMB/CIFS for gateway databases:
 [SQLite WAL does not support network filesystems](https://sqlite.org/wal.html).
@@ -69,6 +67,7 @@ databases and their WAL/SHM siblings:
 | Private subpath             | Gateway mount                               |
 | --------------------------- | ------------------------------------------- |
 | `state`                     | `/home/node/.openclaw/state`                |
+| `client`                    | `/home/node/.openclaw/client`               |
 | `agent`                     | `/home/node/.openclaw/agents/main/agent`    |
 | `media`                     | `/home/node/.openclaw/media`                |
 | `worktrees`                 | `/home/node/.openclaw/worktrees`            |
@@ -76,6 +75,7 @@ databases and their WAL/SHM siblings:
 | `sessions` (dedicated mode) | `/home/node/.openclaw/agents/main/sessions` |
 
 Linked worktrees and Git metadata in `worktree-sources` persist across Gateway replacement.
+The retained database requires the client store’s migration receipt; both persist.
 
 Embedded Gateways mount the claim's `workspace` subpath at
 `/home/node/.openclaw/workspace`, the default workspace under the configured

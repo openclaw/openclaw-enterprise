@@ -224,7 +224,9 @@ a placeholder variable fail it the same way with
 the Harness credential source was withdrawn from the version
 (`CREDENTIAL_WITHDRAWN`), when the Harness authentication Secret or source, or a
 listed credential source, is missing or changed since admission
-(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), or when the
+(`HARNESS_AUTH_SOURCE_UNAVAILABLE`, `CREDENTIAL_SOURCE_UNAVAILABLE`), when the
+protected egress provider the Harness source was admitted with is no longer
+available (`EGRESS_PROVIDER_UNAVAILABLE`), or when the
 Installation no longer selects the version's Credential Gateway
 (`CREDENTIAL_GATEWAY_MISMATCH`) or Secret Driver (`SECRET_DRIVER_MISMATCH`). A
 version pinned to a Compute Driver the controller no longer selects, or to a

@@ -126,6 +126,11 @@ function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = fals
   return fromEnd ? taken.reverse() : taken;
 }
 
+// Canonical UTC keys contain ASCII digits and punctuation, independent of locale.
+function compareTimestamps(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 // Docker returns a container's stdout and stderr separately; --timestamps lets
 // the excerpt restore their order. Unstamped fragments (an output cap can cut a
 // stream mid-line) are dropped unread, and a redacted line keeps only its
@@ -147,7 +152,12 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
         continue;
       }
       entries.push({
-        at: Date.parse(stamp),
+        // Docker timestamps are UTC. Canonical decimal fractions preserve precision
+        // and compare equal when their only difference is trailing zeroes.
+        at: stamp.replace(
+          /(?:\.(\d+))?Z$/u,
+          (_match, fraction = "") => `.${fraction.replace(/0+$/u, "")}`,
+        ),
         stream,
         index: entries.length,
         // Test the whole line for credentials before truncating it.
@@ -157,7 +167,7 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
       });
     }
   }
-  entries.sort((a, b) => a.at - b.at || a.stream - b.stream || a.index - b.index);
+  entries.sort((a, b) => compareTimestamps(a.at, b.at) || a.stream - b.stream || a.index - b.index);
   const kept = [];
   const problems = new Set();
   const retries = new Map();
@@ -183,7 +193,7 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
     // the order they first appeared.
     ...[...retries]
       .map((entry, order) => ({ entry, order }))
-      .sort((a, b) => b.entry[1].lastAt - a.entry[1].lastAt)
+      .sort((a, b) => compareTimestamps(b.entry[1].lastAt, a.entry[1].lastAt))
       .slice(0, KUBECTL_RETRY_KINDS)
       .sort((a, b) => a.order - b.order)
       .map(
@@ -390,6 +400,8 @@ const WATCH_SECONDS = 3 * 60 * 60;
 const MAX_WATCH_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVITY_RECORDS = 200;
 const MAX_ACTIVITY_FILES = 40;
+const RFC3339_TIMESTAMP =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:)(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
 
 function* watchLines(text) {
   for (const line of text.split("\n")) {
@@ -437,6 +449,36 @@ function podStatus(type, pod) {
   };
 }
 
+function rfc3339Instant(value) {
+  const text = String(value ?? "");
+  const match = RFC3339_TIMESTAMP.exec(text);
+  if (match === null) {
+    return undefined;
+  }
+  const seconds = Date.parse(`${match[1]}${match[2]}${match[4]}`) / 1_000;
+  if (!Number.isSafeInteger(seconds)) {
+    return undefined;
+  }
+  return { seconds, fraction: match[3] ?? "" };
+}
+
+function compareEventTimestamps(left, right) {
+  const leftText = String(left.lastTimestamp ?? "");
+  const rightText = String(right.lastTimestamp ?? "");
+  const leftInstant = rfc3339Instant(leftText);
+  const rightInstant = rfc3339Instant(rightText);
+  if (leftInstant === undefined || rightInstant === undefined) {
+    return leftText.localeCompare(rightText);
+  }
+  if (leftInstant.seconds !== rightInstant.seconds) {
+    return leftInstant.seconds - rightInstant.seconds;
+  }
+  const width = Math.max(leftInstant.fraction.length, rightInstant.fraction.length);
+  const leftFraction = leftInstant.fraction.padEnd(width, "0");
+  const rightFraction = rightInstant.fraction.padEnd(width, "0");
+  return leftFraction < rightFraction ? -1 : leftFraction > rightFraction ? 1 : 0;
+}
+
 // Projects raw watch streams into bounded Agent namespace activity: Pod status
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
@@ -471,9 +513,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
       namespace,
     });
   }
-  const orderedEvents = [...events.values()].sort((left, right) =>
-    String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-  );
+  const orderedEvents = [...events.values()].sort(compareEventTimestamps);
   return {
     namespaces: [...namespaces].sort(),
     pods: pods.slice(-MAX_ACTIVITY_RECORDS),
@@ -586,9 +626,7 @@ export function projectContainerLog(value, secrets = []) {
             const status = eventStatus(event);
             return { ...status, message: text(status.message, 512) };
           })
-          .sort((left, right) =>
-            String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-          )
+          .sort(compareEventTimestamps)
           .slice(-MAX_ACTIVITY_RECORDS),
       })),
     omittedLines: count(value.omittedLines) + lines.length - kept.length,

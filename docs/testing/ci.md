@@ -26,8 +26,9 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
   a maintainer can [request full QA on a trusted pull request](#qa-matrix).
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
-Docs-only PRs run static checks in CI; recognized test-only PRs select affected
-lanes. Other changes run all ordinary lanes. `CI Required` currently blocks
+Docs-only PRs run static checks in CI. Recognized test-only PRs select affected
+lanes, including Checks and Conformance 2 to type-check TypeScript tests.
+Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
 <a id="ci-configuration"></a>
@@ -109,12 +110,13 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
-These process environment variables are optional. Keep the same directory for
-First Agent `images` and `run`; changing it does not isolate fixed-name containers.
+These process environment variables are optional. Keep the same directory and
+slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
 | Setting                                     | Default                                                       | Purpose                                                                            |
 | ------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `OCC_FIRST_AGENT_SMOKE_DIRECTORY`           | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`                | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
 | `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                                     | Per-file test deadline; hosted lane/job deadlines still apply.                     |
 | `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                                      | Per-file cleanup allowance.                                                        |
 | `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs                           | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
@@ -158,7 +160,7 @@ verified, CI runs every ordinary lane.
 | Runtime Image Fixture                                                                                             | [Runtime fixture images](fixtures-and-scenarios.md)                                                                          | [Fixture](../../scripts/ci/test-suites/runtime-image-fixture.json)                                                                                                                                                                                                                                                                        |
 | k3d Fixture and Configuration; k3d State and Lifecycle; k3d Plugin Status                                         | [Kubernetes configuration, isolation, state and plugins](kubernetes.md#kubernetes-http-fixture)                              | [Configuration](../../scripts/ci/test-suites/k3d-fixture-configuration.json), [State](../../scripts/ci/test-suites/k3d-fixture-state.json), [Plugins](../../scripts/ci/test-suites/k3d-fixture-plugins.json)                                                                                                                              |
 | Production Observability; Logging Collector                                                                       | [Fixture metrics, OTLP and collector recovery](local.md#metrics-and-observability-tests)                                     | [Observability](../../scripts/ci/test-suites/k3d-observability.json), [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                                                                                                                                                                    |
-| Repository Credentials; Repository Credentials Platform                                                           | [Controlled Git/gh, credential isolation, expiry and recovery](repository-credentials.md)                                    | [Container](../../scripts/ci/test-suites/repository-credentials-container.json), [Platform](../../scripts/ci/test-suites/repository-credentials-platform.json)                                                                                                                                                                            |
+| Repository Credentials                                                                                            | [Controlled Git/gh, credential isolation, expiry and recovery](repository-credentials.md)                                    | [Container](../../scripts/ci/test-suites/repository-credentials-container.json)                                                                                                                                                                                                                                                           |
 | Keycloak OIDC                                                                                                     | [Sign-in, rotation, denied users and sign-out](kubernetes.md#keycloak-oidc-tests)                                            | [Keycloak](../../scripts/ci/test-suites/keycloak-oidc.json)                                                                                                                                                                                                                                                                               |
 | First Agent Smoke                                                                                                 | Local installation, chat, stop/restart and public-reader retirement/isolation with a simulated model; no real-provider proof | No manifest: [smoke script](../../scripts/ci/first-agent-smoke.mjs)                                                                                                                                                                                                                                                                       |
 
@@ -172,10 +174,19 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 
 ### QA matrix
 
+The explicit `sandbox-policy` selector exercises shared configuration discovery,
+preview, and the real OpenShell network-policy lifecycle. It requires a prepared
+OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
+The OpenShell advisory job covers the same workflow automatically.
+
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
+
+The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
+and checks its branding through sign-in and the Agent workflow. Other scenarios
+do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
@@ -203,13 +214,14 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario   | In advisory | Presets         | Checks                                                            |
-| ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
-| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
-| `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
-| `git-read` | No          | Codex           | Reject read-only push and dispose credentials.                    |
-| `calendar` | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.        |
-| `slack`    | No          | Codex           | Threaded reply and new root message.                              |
+| Scenario          | In advisory | Presets         | Checks                                                                                                      |
+| ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
+| `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
+| `git-write`       | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                 |
+| `git-push-denied` | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                  |
+| `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
+| `slack`           | No          | Codex           | Threaded reply and new root message.                                                                        |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -243,8 +255,10 @@ post/history/reply access. Reserve the Socket Mode app for this run.
 
 Git's private input directory contains `registry.json`, `private-key.pem`, and
 `upstream-cidrs.json`. Follow [fixture setup](../guides/deploy/local-repository-credentials.md):
-exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, `git-read`/`git-full`
-profiles, approved IPv4 `/32` endpoints, and run-branch push permissions.
+exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, approved IPv4 `/32`
+endpoints, and run-branch push permissions. The run grants `git-write` with `git-only`
+transport on one branch, `oce-qa-<run>`, and opens no PR. The run generates the
+worker's custody key.
 `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` instead supplies an isolated
 observer App's `registry.json` and `private-key.pem`. Observer credentials stay outside Agents and clean
 only verified run-owned refs.
@@ -307,6 +321,8 @@ and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
 
 These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 
+- [`egress-connected`](static-egress.md#select-the-prepared-connected-lane): select explicitly after preparing the protected controller, database, authenticated OpenShell stack, and synthetic HTTPS origin. CI runs the request preflight in `checks-baseline-2`; the generic `openshell` lane does not run this qualification.
+- [`egress-custody-installed`](protected-repository-custody.md): qualify repository dispatch and response custody on a separately prepared controller and OpenShell pair, with an independent dispatch observer.
 - `repository-credentials-live`: requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
 - `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).

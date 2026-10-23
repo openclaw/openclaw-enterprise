@@ -156,7 +156,11 @@ The worker emits fixed operational event classes through the same logger:
   identity and `cause`, then leaves its claim to lease recovery. A claim lost around
   an external effect adds the work identity and `cause`: `CLAIM_RENEWAL_REFUSED`,
   `CLAIM_RENEWAL_LATE`, `CLAIM_RENEWAL_FAILED`, or `CLAIM_LEASE_LAPSED` (no renewal
-  was confirmed within the lease).
+  was confirmed within the lease). The repository
+  credential codes `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and
+  `PREPARED_GITHUB_RECOVERY_REQUIRED` add a `reason` class and the affected
+  Namespace, revision and `repositoryRef` (see
+  [Git through OpenShell](repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery)).
 - `worker.claim-renewal-warning`: a lease renewal that succeeded but answered after
   the lease could have run out, at warn level with the work identity, code
   `CLAIM_RENEWAL_LATE` and the renewal's `durationMs`. The worker stops that work,
@@ -174,12 +178,14 @@ Bootstrap and migration scripts use the same level and write machine-protocol
 success records to stdout. Their structured failure diagnostics go to stderr.
 Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
-or processing work. Log sanitization keeps only reviewed scalar fields and drops
-credentials, provider payloads, request objects, and error values that fail its filters. The
-worker does not expose an HTTP health endpoint. A startup Installation with an
-invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`; a
-Compute gateway or Agent image without a required digest, or with an uppercase
-repository path, emits `RUNTIME_IMAGE_INVALID`.
+or processing work. Log sanitization keeps only reviewed fields and up to 32 configuration diagnostics, and drops
+credentials, provider payloads, request objects, and unbounded error values. The
+worker does not expose an HTTP health endpoint. Driver startup schema or semantic
+refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
+JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
+names and runtime image settings. Submitted values and exception text are omitted.
+A prepared repository App key that cannot sign stops the worker with
+`PREPARED_GITHUB_APP_KEY_INVALID` and a fixed `reason`.
 
 ## Failures and diagnostics
 

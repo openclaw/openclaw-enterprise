@@ -17,6 +17,18 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 {{- range $name, $image := .Values.images }}
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail (printf "images.%s must use an immutable SHA-256 reference" $name) }}{{ end -}}
+{{- /* Docker permits uppercase in the registry host and tag, never in the repository path. Keep the existing reference-shape rule, including IPv6 registry hosts. */ -}}
+{{- $remainder := $image -}}
+{{- if contains "/" $image -}}
+{{- $first := index (splitn "/" 2 $image) "_0" -}}
+{{- if or (eq $first "localhost") (regexMatch "[.:]" $first) (ne (lower $first) $first) -}}
+{{- $remainder = index (splitn "/" 2 $image) "_1" -}}
+{{- end -}}
+{{- end -}}
+{{- $repository := index (splitn ":" 2 $remainder) "_0" -}}
+{{- if ne (lower $repository) $repository -}}
+{{- fail (printf "images.%s repository path must be lowercase; Kubernetes refuses to pull an uppercase one" $name) -}}
+{{- end -}}
 {{- end -}}
 {{- range $index, $client := .Values.grafana.clients }}
 {{- if or (empty $client.namespace) (empty $client.podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}

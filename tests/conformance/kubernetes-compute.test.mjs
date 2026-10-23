@@ -1,3 +1,8 @@
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -56,6 +61,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { conformanceKubeconfig } from "../helpers/kubernetes-compute.mjs";
 import {
   tenant,
@@ -139,7 +145,7 @@ test("Kubernetes peer Pod selectors reject labels the API refuses before provisi
       configure(configured, podLabels);
       assert.throws(
         () => createKubernetesComputeDriver(configured),
-        /label (?:keys|values) must be Kubernetes/,
+        SharedConfigurationValidationError,
         description,
       );
     }
@@ -219,16 +225,13 @@ test("repository capability admits only configured Compute-owned native topologi
     );
     // Each Driver misses one prerequisite: a runtime, the credential endpoint, or the
     // absence of a SandboxDriver.
+    const { runtime: _runtime, ...withoutRuntime } = configured;
     const unsupported = {
       message:
         "Repository credentials require a configured Kubernetes runtime and credential endpoint without a SandboxDriver.",
     };
     assert.throws(
-      () =>
-        new KubernetesComputeDriver({
-          ...configured,
-          runtime: undefined,
-        }).validateRepositoryCredentials(harness),
+      () => new KubernetesComputeDriver(withoutRuntime).validateRepositoryCredentials(harness),
       unsupported,
     );
     assert.throws(
@@ -245,7 +248,7 @@ test("repository capability admits only configured Compute-owned native topologi
         new KubernetesComputeDriver(configured, { sandboxDriver }).validateRepositoryCredentials(
           harness,
         ),
-      unsupported,
+      { code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED" },
     );
   }
   for (const [id, mode] of [
@@ -886,6 +889,7 @@ function dedicatedFirstDeployFixture({
   clock,
   modelEndpoint,
   sandboxDriver,
+  openShellGit,
   revision: revisionOverrides = {},
 } = {}) {
   const state = {
@@ -923,6 +927,7 @@ function dedicatedFirstDeployFixture({
     }),
     {
       sandboxDriver,
+      ...(openShellGit === undefined ? {} : { openShellGit }),
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -2785,6 +2790,179 @@ test("an unacknowledged workspace node binding costs at most one bounded wait ac
   assert.equal(clock.now, 20_000);
 });
 
+// The worker issues a version's first prepared Git token once the version is active, and
+// OpenShell resets every Sandbox connection when it installs it, the workspace node's
+// included (finding 2141). Activation names that wait, then the node's reconnection, so the
+// deployment does not report success a moment before the node drops.
+test("activation waits for the first repository Git credential install and the node's reconnection", async () => {
+  const clock = { now: 1_000_000 };
+  const provisions = [];
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    repositoryAccess: openShellRepositoryAccess(
+      {
+        route: (id) => openShellGit.route(id),
+        materialInstalledAt: (id) => openShellGit.materialInstalledAt(id),
+      },
+      () => undefined,
+    ),
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+  };
+  const git = { route: { state: "pending", reason: "awaiting_material" }, installedAt: undefined };
+  const reads = { route: 0, installedAt: 0 };
+  const openShellGit = {
+    route(revisionId) {
+      assert.equal(revisionId, revision.id);
+      reads.route++;
+      return git.route;
+    },
+    materialInstalledAt(revisionId) {
+      assert.equal(revisionId, revision.id);
+      reads.installedAt++;
+      const value = git.installedAt;
+      if (git.moveOnRead) {
+        // A renewal lands while this pass reads the node.
+        git.moveOnRead = false;
+        git.installedAt = clock.now;
+      } else if (git.closeOnRead) {
+        // The route closes while this pass reads the node (a failed read, lost material).
+        git.closeOnRead = false;
+        git.installedAt = undefined;
+      }
+      return value;
+    },
+  };
+  const { state, driver, revision, namespace, gatewayName, prepare, markReady } =
+    dedicatedFirstDeployFixture({
+      clock,
+      sandboxDriver,
+      openShellGit,
+      revision: {
+        sandboxDriverId: sandboxDriver.id,
+        repositoryCredentials: {
+          driver: { id: "repository", implementation: "github" },
+          bindings: [
+            {
+              repositoryRef: "project",
+              profile: "git-write",
+              backendId: "github-primary",
+              grant: { providerInstanceId: "github", repositoryId: "42", grantId: "write-project" },
+            },
+          ],
+          deadlineWallMs: Date.now() + 600_000,
+        },
+      },
+    });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 1);
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  state.connected = true;
+  // A verified route still waiting for its first material is ready to activate (finding 2139).
+  const observation = await prepare();
+  assert.equal(observation.ready, true, inspect(observation));
+  assert.ok(reads.route > 0, "readiness consulted the route");
+  driver.now = () => clock.now;
+  const pending = (code, message) =>
+    assert.rejects(driver.activateRevision(revision, authContext(revision)), (error) => {
+      assert.ok(error instanceof ActivationPendingError);
+      assert.equal(error.code, code);
+      assert.match(error.message, message);
+      return true;
+    });
+  // Active, but the worker has not installed the token yet. The install is checked before
+  // the node is read: a node that is down meanwhile does not change the named wait.
+  state.connected = false;
+  await pending(
+    "REPOSITORY_GIT_MATERIAL_PENDING",
+    /has not installed its repository Git credential/,
+  );
+  assert.equal(reads.installedAt, 1);
+  state.connected = true;
+  // The route verified the install this instant: the Gateway may still show the connection
+  // the Sandbox is closing, so the node is not read inside the settle margin.
+  git.route = { state: "installed" };
+  git.installedAt = clock.now;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  clock.now += 1_999;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  assert.equal(reads.installedAt, 3);
+  // The margin passed and the node is still reconnecting: the node read holds the pass.
+  clock.now += 1;
+  state.connected = false;
+  await pending("WORKSPACE_NODE_PENDING", /is not ready/);
+  assert.equal(reads.installedAt, 4, "the install is read once before the node");
+  // The node is back, but a new install lands while it is read: that read may predate the
+  // new reset, so the pass waits again.
+  state.connected = true;
+  git.moveOnRead = true;
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /installed .* while its node was read/);
+  assert.equal(reads.installedAt, 6, "the install is read again after the node");
+  await pending("WORKSPACE_NODE_RECONNECT_PENDING", /is not read until .* has settled/);
+  // The route closes while the node is read (a failed read, lost material): the install is
+  // no longer verified, which is that wait, not a reconnection.
+  clock.now += 2_000;
+  git.closeOnRead = true;
+  await pending("REPOSITORY_GIT_MATERIAL_PENDING", /was not verified after its node was read/);
+  assert.equal(reads.installedAt, 9);
+  await pending(
+    "REPOSITORY_GIT_MATERIAL_PENDING",
+    /has not installed its repository Git credential/,
+  );
+  // Verified again, settled and reconnected after the newest install: the version activates.
+  git.installedAt = clock.now - 2_000;
+  await driver.activateRevision(revision, authContext(revision));
+  assert.equal(reads.installedAt, 12);
+  // A later pass (maintenance) with the same install does not wait again.
+  clock.now += 3_600_000;
+  await driver.activateRevision(revision, authContext(revision));
+});
+
+// The wait is for repository-bound versions only: the route is never consulted otherwise.
+test("activation of a version without repository credentials never consults the Git route", async () => {
+  const openShellGit = {
+    route() {
+      assert.fail("the route is consulted only for repository-bound versions");
+    },
+    materialInstalledAt() {
+      assert.fail("the install time is read only for repository-bound versions");
+    },
+  };
+  const { state, driver, revision, gatewayName, agentName, prepare, markReady } =
+    dedicatedFirstDeployFixture({ openShellGit });
+  assert.equal(revision.repositoryCredentials, undefined);
+  assert.equal((await prepare()).ready, false);
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  state.gatewayWorkspaceNodeId = "node-1";
+  assert.equal((await prepare()).ready, true);
+  await driver.activateRevision(revision, authContext(revision));
+});
+
 // A node that has not paired within the pass's wait leaves the pass pending; the
 // wait starts only once the setup exists and the Gateway is ready.
 test("a first dedicated deploy pass waits a bounded time for its node to pair", async () => {
@@ -4574,7 +4752,7 @@ test("native Gateway listeners cannot overlap the private runtime status port", 
     configured.network.gatewayPort = gatewayPort;
     assert.throws(
       () => createKubernetesComputeDriver(configured),
-      /reserved runtime status port 18791/,
+      SharedConfigurationValidationError,
     );
   }
   // 18790 remains valid without the auxiliary listener; neighboring ordinary
@@ -4729,10 +4907,7 @@ test("two-cluster Compute refuses a harness routing hostname that parses as anot
   // The refusal names the harness setting, not the Gateway routing the execution plane reuses
   // it as.
   for (const hostname of ["127.1", "0x7f.1", "api.123", "harness.0x10"]) {
-    assert.throws(harness(hostname), {
-      message:
-        "Harness routing hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers.",
-    });
+    assert.throws(harness(hostname), SharedConfigurationValidationError);
   }
   for (const hostname of [
     "Harness.example.test",
@@ -4740,21 +4915,17 @@ test("two-cluster Compute refuses a harness routing hostname that parses as anot
     "harness_1.test",
     7,
   ]) {
-    assert.throws(harness(hostname), {
-      message: "Harness routing hostname must be a DNS hostname without a port or path.",
-    });
+    assert.throws(harness(hostname), SharedConfigurationValidationError);
   }
   for (const hostname of ["", undefined]) {
-    assert.throws(harness(hostname), {
-      message: "Harness routing hostname must be explicitly configured.",
-    });
+    assert.throws(harness(hostname), SharedConfigurationValidationError);
   }
   for (const hostname of ["harness.example.test", "1password.example.test", "0x.example.test"]) {
     assert.doesNotThrow(harness(hostname), hostname);
   }
 });
 
-test("two-cluster Compute names the harness routing field it refuses", () => {
+test("two-cluster Compute rejects invalid harness routing settings", () => {
   const twoCluster = twoClusterOptions();
   const harness = (field, value) => () =>
     createKubernetesComputeDriver({
@@ -4792,7 +4963,11 @@ test("two-cluster Compute names the harness routing field it refuses", () => {
       "Harness routing Envoy HTTPS target port must be a valid port.",
     ]),
   ]) {
-    assert.throws(harness(field, value), { message }, `${field}: ${String(value)}`);
+    assert.throws(
+      harness(field, value),
+      SharedConfigurationValidationError,
+      `${field}: ${String(value)}: ${message}`,
+    );
   }
   assert.doesNotThrow(harness("envoyHttpsTargetPort", 8443));
 });
@@ -4818,17 +4993,12 @@ test("sandbox routing caps the domain length and requires two labels", () => {
     [label, label, "a".repeat(23), label].join("."),
     [label, label, label, "a".repeat(61)].join("."),
   ]) {
-    assert.throws(() => sandboxDriver(domain), {
-      message:
-        "Sandbox domain must not exceed 214 characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.",
-    });
+    assert.throws(() => sandboxDriver(domain), SharedConfigurationValidationError);
   }
-  assert.throws(() => sandboxDriver("a..b.test"), /Sandbox domain must be a DNS hostname/);
+  assert.throws(() => sandboxDriver("a..b.test"), SharedConfigurationValidationError);
   // The chart requires a dot too; a single label could never get a usable wildcard certificate.
   for (const domain of ["localhost", "previews", "a".repeat(63)]) {
-    assert.throws(() => sandboxDriver(domain), {
-      message: "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
-    });
+    assert.throws(() => sandboxDriver(domain), SharedConfigurationValidationError);
   }
   assert.doesNotThrow(() => sandboxDriver("previews.localhost"));
 });
@@ -4854,15 +5024,10 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
     longest,
   );
   for (const gatewayName of ["a".repeat(64), "a".repeat(253)]) {
-    assert.throws(() => routedDriver(gatewayName), {
-      message:
-        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
-    });
+    assert.throws(() => routedDriver(gatewayName), SharedConfigurationValidationError);
   }
   for (const gatewayName of ["Bad_Name", "a".repeat(254)]) {
-    assert.throws(() => routedDriver(gatewayName), {
-      message: "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
-    });
+    assert.throws(() => routedDriver(gatewayName), SharedConfigurationValidationError);
   }
   // The two-cluster harness Gateway is labelled the same way.
   const twoCluster = twoClusterOptions();
@@ -4878,10 +5043,7 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
           },
         },
       }),
-    {
-      message:
-        "Harness routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
-    },
+    SharedConfigurationValidationError,
   );
 });
 
@@ -5761,6 +5923,43 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     ...twoClusterOptions().executionCluster,
     caBundle: await readFile(certificate, "utf8"),
   };
+  await t.test(
+    "execution trust accepts certificate chains and rejects malformed or oversized bundles",
+    () => {
+      const admit = (caBundle) =>
+        createKubernetesComputeDriver({
+          ...twoClusterOptions(),
+          executionCluster: { ...executionCluster, caBundle },
+        });
+      assert.doesNotThrow(() =>
+        admit(`\n${executionCluster.caBundle}\n${executionCluster.caBundle}\n`),
+      );
+      // Delimiters alone cannot establish trust: DER parsing must still succeed. Repeated
+      // unterminated markers also exercise the input that caused repeated regex rescanning.
+      for (const [bundle, code, message] of [
+        [" \n ", "INVALID_FORMAT", /only PEM certificates/],
+        [
+          "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+          "INVALID_FORMAT",
+          /invalid certificate/,
+        ],
+        [`${executionCluster.caBundle}unexpected`, "INVALID_FORMAT", /only PEM certificates/],
+        ["-----BEGIN CERTIFICATE-----\n".repeat(1024), "INVALID_FORMAT", /only PEM certificates/],
+        ["-----BEGIN CERTIFICATE-----\n".repeat(3000), "TOO_LONG", /maxLength/],
+      ]) {
+        assert.throws(
+          () => admit(bundle),
+          (error) => {
+            assert.ok(error instanceof SharedConfigurationValidationError);
+            assert.equal(error.error.details[0].path, "/executionCluster/caBundle");
+            assert.equal(error.error.details[0].code, code);
+            assert.match(error.error.details[0].message, message);
+            return true;
+          },
+        );
+      }
+    },
+  );
   const endpoint = "https://models.example.test/api/v1";
   for (const [bind, modelEndpoint, cluster] of [
     [undefined, undefined],
@@ -6021,7 +6220,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
             gatewayRouting: { ...gatewayRouting, endpointPort },
           }),
         ),
-      /Gateway routing endpoint port/,
+      SharedConfigurationValidationError,
     );
   }
   for (const envoyHttpsTargetPort of [0, -1, 65536, 443.5, "10443"]) {
@@ -6032,7 +6231,7 @@ test("gateway routing startup validation and namespace membership fail closed", 
             gatewayRouting: { ...gatewayRouting, envoyHttpsTargetPort },
           }),
         ),
-      /Envoy HTTPS target port/,
+      SharedConfigurationValidationError,
     );
   }
   for (const gatewayRouting of [
@@ -6081,13 +6280,13 @@ test("gateway routing startup validation and namespace membership fail closed", 
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(routedOptions({ gatewayRouting })),
-      /Gateway routing/i,
+      SharedConfigurationValidationError,
     );
   }
 
   assert.throws(
     () => createKubernetesComputeDriver(options({ gatewayRouting })),
-    /do not configure network\.gatewayClients/i,
+    SharedConfigurationValidationError,
   );
 
   const driver = createKubernetesComputeDriver(routedOptions());
@@ -6197,7 +6396,11 @@ test("Kubernetes drivers require explicit authentication, images, and production
     ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
-    assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
+    assert.throws(
+      () => createKubernetesComputeDriver(options(invalid)),
+      SharedConfigurationValidationError,
+      String(expected),
+    );
   }
 
   // Narrower sources, the Pod CIDR included, start: preflight warns about them instead.
@@ -6292,7 +6495,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     const channels = { proxyUrl };
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
-      /HTTP\(S\) IP endpoint/i,
+      SharedConfigurationValidationError,
     );
   }
   for (const proxyUrl of [
@@ -6305,10 +6508,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     assert.throws(
       () =>
         createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
-      {
-        message:
-          "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
-      },
+      SharedConfigurationValidationError,
     );
   }
   // An unspecified host reaches the gateway Pod itself, and an IPv4-mapped host leaves as
@@ -6325,10 +6525,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     assert.throws(
       () =>
         createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
-      {
-        message:
-          "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
-      },
+      SharedConfigurationValidationError,
       proxyUrl,
     );
   }
@@ -6355,7 +6552,7 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
-      /Managed channel proxy/i,
+      SharedConfigurationValidationError,
     );
   }
 });
@@ -6407,7 +6604,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
-      /Codex model endpoint/,
+      SharedConfigurationValidationError,
     );
   }
   // IPv4 hosts the URL parser rewrites to another address name the IPv4 rule.
@@ -6419,10 +6616,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
-      {
-        message:
-          "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
-      },
+      SharedConfigurationValidationError,
       codexModelBaseUrl,
     );
   }
@@ -6441,7 +6635,8 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
-      (error) => /^Codex model endpoint /.test(error.message) && message.test(error.message),
+      SharedConfigurationValidationError,
+      String(message),
       JSON.stringify(codexModelBaseUrl),
     );
   }
@@ -6512,13 +6707,15 @@ test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", (
       "kube/system",
       "foo_bar",
     ]) {
-      assert.throws(() => createKubernetesComputeDriver({ ...base, ...peer(namespace) }), {
-        message: `${description} namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.`,
-      });
+      assert.throws(
+        () => createKubernetesComputeDriver({ ...base, ...peer(namespace) }),
+        SharedConfigurationValidationError,
+      );
     }
-    assert.throws(() => createKubernetesComputeDriver({ ...base, ...peer("") }), {
-      message: `${description} namespace must be explicitly configured.`,
-    });
+    assert.throws(
+      () => createKubernetesComputeDriver({ ...base, ...peer("") }),
+      SharedConfigurationValidationError,
+    );
   }
   // The execution cluster's DNS peer goes through the same check.
   const twoCluster = twoClusterOptions();
@@ -6535,10 +6732,7 @@ test("every NetworkPolicy peer namespace must be a Kubernetes namespace name", (
           },
         },
       }),
-    {
-      message:
-        "DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
-    },
+    SharedConfigurationValidationError,
   );
 });
 
@@ -6560,7 +6754,7 @@ test("the canonical Kubernetes runtime validates native OpenClaw session capacit
         createKubernetesComputeDriver(
           options({ runtime: { ...runtime, nativeOpenClawSessionCapacity } }),
         ),
-      /session capacity must be an integer between 1 and 1024/i,
+      SharedConfigurationValidationError,
     );
   }
 });
@@ -6631,7 +6825,7 @@ test("dedicated Codex localhost seccomp profile is validated and rendered only o
     assert.throws(
       () =>
         createKubernetesComputeDriver(options({ runtime: { ...runtime, codexSeccompProfile } })),
-      /Codex seccomp localhost profile/i,
+      SharedConfigurationValidationError,
     );
   }
 
@@ -6645,7 +6839,7 @@ test("dedicated Codex localhost seccomp profile is validated and rendered only o
           },
         }),
       ),
-    /unsupported option securityContext/i,
+    SharedConfigurationValidationError,
   );
 });
 
@@ -7577,20 +7771,24 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
       },
     },
   });
+  const source = {
+    id: "cs_00000000-0000-4000-8000-000000000002",
+    namespaceId: tenant.id,
+    type: "openai",
+    ownerCapability: "credential_gateway",
+    driverId: credentialGatewayDriver.id,
+  };
   const revision = {
     id: "rev-withdraw",
     namespaceId: tenant.id,
     agentId: "agent-withdraw",
     compute: { id: driver.id, implementation: driver.implementation },
     sandboxDriverId: sandboxDriver.id,
+    credentialSources: [
+      { sourceId: source.id, sourceType: source.type, credentialGatewayId: source.driverId },
+    ],
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     createdAt: "2026-09-28T00:00:00.000Z",
-  };
-  const source = {
-    id: "cs_00000000-0000-4000-8000-000000000002",
-    namespaceId: tenant.id,
-    type: "openai",
-    driverId: credentialGatewayDriver.id,
   };
   const signal = AbortSignal.timeout(5_000);
 
@@ -8088,6 +8286,7 @@ test("credential-source authentication renders no model Secret and requires the 
     type: "openai",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -8276,6 +8475,7 @@ test("non-model credential sources resolved at dispatch must match the revision'
     type: "bearer-token",
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: credentialGatewayDriver.id,
     state: "ready",
     createdAt: "2026-09-26T00:00:00.000Z",
@@ -8320,6 +8520,7 @@ test("dedicated OpenClaw gateway receives Agent plugin approvers without plugin 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg-native-approvers",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -8833,9 +9034,9 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
   let started = false;
   // Execute the generated Gateway startup program: every session must use the
   // enrolled worker without requiring a user-selected Cloud Worker destination.
-  runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, {
+  // Keep JSON in the VM realm, as the wrapper's native deep comparison requires.
+  const sandbox = {
     Buffer,
-    JSON,
     URL,
     console,
     process: {
@@ -8896,8 +9097,8 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       }
       return nodeRequire(specifier);
     },
-  });
-  await Promise.resolve();
+  };
+  await runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
   assert.equal(started, true);
   const effectiveConfiguration = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.equal(effectiveConfiguration.cloudWorkers.requiredProfile, "dedicated-native");
@@ -8905,6 +9106,27 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     provider: "device",
     settings: { device: deviceId, inference: "worker" },
   });
+  // Restart the wrapper against its generated writable configuration. The
+  // admitted revision still owns the profile; only the exact generated value is reusable.
+  started = false;
+  const restart = {
+    ...sandbox,
+    process: { ...sandbox.process, env: { ...sandbox.process.env } },
+  };
+  await runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, restart);
+  assert.equal(started, true);
+
+  effectiveConfiguration.cloudWorkers.profiles["dedicated-native"].settings.device = "b".repeat(64);
+  files.set("/home/node/.openclaw/openclaw.json", JSON.stringify(effectiveConfiguration));
+  started = false;
+  await assert.rejects(
+    runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, {
+      ...sandbox,
+      process: { ...sandbox.process, env: { ...sandbox.process.env } },
+    }),
+    /worker profile conflicts with admitted configuration/u,
+  );
+  assert.equal(started, false);
 });
 
 test("account-token authentication grants only the exact Codex revision outbound HTTPS", () => {
@@ -8979,6 +9201,7 @@ test("native channel providers require Secret bindings and project them only to 
     namespaceId: tenant.id,
     agentId,
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -9268,7 +9491,9 @@ test("native channel providers require Secret bindings and project them only to 
     },
     undefined,
   ]) {
-    const removed = createKubernetesComputeDriver(options({ runtime }));
+    const removed = createKubernetesComputeDriver(
+      options(runtime === undefined ? {} : { runtime }),
+    );
     const disabledRevision = {
       ...revision,
       compute: { id: removed.id, implementation: removed.implementation },
@@ -10102,6 +10327,7 @@ async function exerciseEmbeddedReplacement({ providerId, model, environmentName,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     harnessAuth: apiKeyAuth,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: "service-principal-embedded-recovery",
     createdAt: tenant.createdAt,
   };
@@ -11889,7 +12115,11 @@ test("SDK resource requirements still require explicit CPU and memory requests a
       /Namespace default memory request/i,
     ],
   ]) {
-    assert.throws(() => createKubernetesComputeDriver(options({ resources })), expected);
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ resources })),
+      SharedConfigurationValidationError,
+      String(expected),
+    );
   }
 });
 
@@ -11897,12 +12127,15 @@ test("production drivers reject injected clients and fail closed without their k
   for (const clients of [{}, undefined]) {
     assert.throws(
       () => createKubernetesComputeDriver({ ...options(), clients }),
-      /client|inject|configuration/i,
+      SharedConfigurationValidationError,
     );
   }
 
   const inheritedClients = Object.assign(Object.create({ clients: {} }), options());
-  assert.throws(() => createKubernetesComputeDriver(inheritedClients), /client|inject/i);
+  assert.throws(
+    () => createKubernetesComputeDriver(inheritedClients),
+    SharedConfigurationValidationError,
+  );
 
   const driver = createKubernetesComputeDriver(
     options({
@@ -11989,6 +12222,7 @@ test("Kubernetes lifecycle hooks never run before cluster ownership and workload
     namespaceId: tenant.id,
     agentId: "agent-foreign",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -12253,7 +12487,7 @@ test("immutable image policy accepts digests and rejects mutable tags", () => {
           },
         }),
       ),
-    /digest|immutable/i,
+    SharedConfigurationValidationError,
   );
   // The OCI image specification allows only `sha256` and lowercase hex for SHA-256
   // digests; containerd refuses any other spelling at pull time, so the Driver refuses
@@ -12271,7 +12505,7 @@ test("immutable image policy accepts digests and rejects mutable tags", () => {
       };
       assert.throws(
         () => createKubernetesComputeDriver(options({ images })),
-        /immutable SHA-256 digest/,
+        SharedConfigurationValidationError,
         `${role} ${description}`,
       );
     }
@@ -12314,9 +12548,7 @@ test("Compute refuses an uppercase image repository path", () => {
         };
         assert.throws(
           () => createKubernetesComputeDriver(options({ images })),
-          new RegExp(
-            `${role === "gateway" ? "Gateway" : "Agent"} image repository path must be lowercase`,
-          ),
+          SharedConfigurationValidationError,
           `${role} ${name}${suffix}`,
         );
       }
@@ -12345,7 +12577,7 @@ test("projected ServicePrincipal tokens require an audience and bounded expirati
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ servicePrincipalCredentials: credentials })),
-      /audience|expiration|token/i,
+      SharedConfigurationValidationError,
     );
   }
 
@@ -12736,6 +12968,110 @@ test("provider Harness requires its assigned network profile before readiness an
   }
 });
 
+test("provider Harness public trust rejects invalid material and composes with execution trust", async (t) => {
+  const provider = await harnessTlsFixture(t);
+  const execution = await harnessTlsFixture(t);
+  for (const crossCluster of [false, true]) {
+    const configured = crossCluster
+      ? twoClusterOptions()
+      : routedOptions({
+          runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+        });
+    configured.network.providerHarness = {
+      namespace: "provider",
+      podLabels: { app: "provider" },
+      address: "10.43.0.50",
+      port: 8443,
+    };
+    if (crossCluster) {
+      configured.executionCluster.caBundle = execution.caBundle;
+    }
+    const driver = new KubernetesComputeDriver(configured);
+    const revision = routedRevision(driver);
+    const target = { name: kubernetesNamespaceName(tenant.id), plane: "control" };
+    const ownership = { namespaceId: tenant.id, agentId: revision.agentId };
+    const configuration = driver.gatewayConfiguration(revision, "node", target);
+    const endpoint = {
+      url: "wss://harness.example.test:8443/",
+      tls: { caBundle: provider.caBundle },
+    };
+    const render = (value) =>
+      driver.deployment(
+        `gateway-${digest(revision.agentId)}`,
+        ownership,
+        target,
+        configured.images.gateway,
+        "gateway-account",
+        "gateway",
+        {},
+        "info",
+        configuration,
+        false,
+        undefined,
+        undefined,
+        [],
+        [],
+        undefined,
+        [],
+        undefined,
+        undefined,
+        undefined,
+        value,
+      );
+    const writes = [];
+    driver.apiClients = Promise.resolve({
+      core: {
+        async readNamespacedConfigMap() {
+          throw Object.assign(new Error("not found"), { statusCode: 404 });
+        },
+        async patchNamespacedConfigMap({ body }) {
+          writes.push(body);
+        },
+      },
+    });
+    await driver.reconcileHarnessTrust(revision, endpoint, target);
+    assert.deepEqual(writes[0].data, {
+      "ca-bundle.pem": provider.caBundle + (crossCluster ? "\n" + execution.caBundle : ""),
+    });
+    const pod = render(endpoint).spec.template.spec;
+    const roots = pod.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS");
+    assert.deepEqual(roots, [
+      { name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw-harness-trust/ca-bundle.pem" },
+    ]);
+    const system = render({ url: endpoint.url }).spec.template.spec;
+    assert.equal(
+      system.volumes.some(({ name }) => name === "harness-trust"),
+      false,
+    );
+    assert.deepEqual(
+      system.containers[0].env.filter(({ name }) => name === "NODE_EXTRA_CA_CERTS"),
+      crossCluster
+        ? [{ name: "NODE_EXTRA_CA_CERTS", value: "/etc/openclaw/execution-ca.pem" }]
+        : [],
+    );
+    for (const tls of [
+      { caBundle: "" },
+      { caBundle: "not a certificate" },
+      { caBundle: provider.cert },
+      { caBundle: provider.caBundle + provider.key },
+      { caBundle: provider.caBundle, privateKey: provider.key },
+      { caBundlePath: provider.rootCertificatePath },
+    ]) {
+      assert.throws(() => render({ url: endpoint.url, tls }), /TLS trust/);
+      const before = writes.length;
+      await assert.rejects(
+        driver.reconcileHarnessTrust(revision, { url: endpoint.url, tls }, target),
+        /TLS trust/,
+      );
+      assert.equal(writes.length, before, "invalid trust must fail before any ConfigMap write");
+    }
+    assert.throws(
+      () => render({ ...endpoint, url: "ws://harness.example.test:8443/" }),
+      /TLS trust requires a WSS endpoint/,
+    );
+  }
+});
+
 test("provider Harness readiness preserves API errors and owner cancellation", async () => {
   const fixture = providerReadinessFixture();
   fixture.driver.waitBeforeRetry = async () => {};
@@ -12892,6 +13228,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
     namespaceId: tenant.id,
     agentId: "agent-a",
     revision: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
@@ -13336,43 +13673,47 @@ function separateResources() {
   return configured;
 }
 
-test("resource quantities written as bare numbers name the field and the quoting fix", () => {
-  const cases = [
-    ["gateway", "limits", "cpu", 4, /Gateway CPU limit \(resources\.gateway\.limits\.cpu\)/],
-    ["agent", "limits", "cpu", 1, /Agent CPU limit \(resources\.agent\.limits\.cpu\)/],
-    ["agent", "requests", "cpu", 0.5, /Agent CPU request \(resources\.agent\.requests\.cpu\)/],
-  ];
-  for (const [role, kind, field, value, name] of cases) {
+test("resource quantities reject bare numbers with structured field diagnostics", () => {
+  for (const [role, kind, field, value] of [
+    ["gateway", "limits", "cpu", 4],
+    ["agent", "limits", "cpu", 1],
+    ["agent", "requests", "cpu", 0.5],
+  ]) {
     const configured = separateResources();
     configured.resources[role][kind][field] = value;
-    assert.throws(() => KubernetesComputeDriver.validateConfiguration(configured), name);
     assert.throws(
-      () => KubernetesComputeDriver.validateConfiguration(configured),
-      new RegExp(`must be a quoted Kubernetes quantity string: write "${value}", not ${value}\\.`),
+      () => requireConfiguration(KubernetesComputeDriver, configured),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.ok(
+          error.error.details.some(({ path }) => path === `/resources/${role}/${kind}/${field}`),
+        );
+        return true;
+      },
     );
   }
   const defaults = separateResources();
   defaults.resources.namespace.containerDefaults.limits.cpu = 4;
   assert.throws(
-    () => KubernetesComputeDriver.validateConfiguration(defaults),
-    /Namespace default CPU limit \(resources\.namespace\.containerDefaults\.limits\.cpu\) must be a quoted/,
+    () => requireConfiguration(KubernetesComputeDriver, defaults),
+    SharedConfigurationValidationError,
   );
   const quota = separateResources();
   quota.resources.namespace.quota.pods = 10;
   assert.throws(
-    () => KubernetesComputeDriver.validateConfiguration(quota),
-    /Quota pods \(resources\.namespace\.quota\.pods\) must be a quoted/,
+    () => requireConfiguration(KubernetesComputeDriver, quota),
+    SharedConfigurationValidationError,
   );
   // A missing value is still reported as missing, and quoted cores pass.
   const missing = separateResources();
   delete missing.resources.gateway.limits.cpu;
   assert.throws(
-    () => KubernetesComputeDriver.validateConfiguration(missing),
-    /Gateway CPU limit must be explicitly configured/,
+    () => requireConfiguration(KubernetesComputeDriver, missing),
+    SharedConfigurationValidationError,
   );
   const quoted = separateResources();
   quoted.resources.gateway.limits.cpu = "4";
-  KubernetesComputeDriver.validateConfiguration(quoted);
+  requireConfiguration(KubernetesComputeDriver, quoted);
 });
 
 // Expected ordering comes from the API server's Quantity.Cmp semantics. These
@@ -13408,9 +13749,7 @@ test("resource requests must fit their limits before Namespace or workload prepa
       } else {
         assert.throws(
           () => createKubernetesComputeDriver(configured),
-          (error) =>
-            error.message.includes(`resources.${role}.requests.${resource}`) &&
-            error.message.includes("cannot exceed its limit"),
+          SharedConfigurationValidationError,
         );
       }
     }
@@ -13421,15 +13760,17 @@ test("transport secret prefix must produce a DNS-safe credential Secret name", (
   for (const transportSecretPrefix of ["Bad_Prefix", "bad prefix", `${"a".repeat(242)}`]) {
     assert.throws(
       () =>
-        KubernetesComputeDriver.validateConfiguration(
+        requireConfiguration(
+          KubernetesComputeDriver,
           options({
             runtime: { transportSecretPrefix, gatewayStorageClassName: "local-path" },
           }),
         ),
-      /runtime\.transportSecretPrefix must produce a DNS-safe Agent transport Secret name/,
+      SharedConfigurationValidationError,
     );
   }
-  KubernetesComputeDriver.validateConfiguration(
+  requireConfiguration(
+    KubernetesComputeDriver,
     options({
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
     }),
@@ -13448,7 +13789,7 @@ test("real gateways require an explicit SQLite-compatible storage class", () => 
             },
           }),
         ),
-      /SQLite-compatible gateway storage class must be explicitly configured/,
+      SharedConfigurationValidationError,
     );
   }
 });
@@ -13470,7 +13811,7 @@ test("gateway storage class names must be Kubernetes resource names", () => {
             },
           }),
         ),
-      /SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name/,
+      SharedConfigurationValidationError,
     );
   }
   for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
@@ -13553,6 +13894,12 @@ test("Gateway and Harness storage are separate and preserve ephemeral Codex cred
           name: privateVolume.name,
           mountPath: "/home/node/.openclaw/state",
           subPath: "state",
+          readOnly: false,
+        },
+        {
+          name: privateVolume.name,
+          mountPath: "/home/node/.openclaw/client",
+          subPath: "client",
           readOnly: false,
         },
         {
@@ -15152,7 +15499,7 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
       runtime: {
         transportSecretPrefix: "transport",
         gatewayStorageClassName: "local-path",
-        channels: { secretPrefix: "channel", proxyUrl: "http://192.0.2.10:3128" },
+        channels: { proxyUrl: "http://192.0.2.10:3128" },
       },
     }),
   );
@@ -15394,7 +15741,8 @@ test("retiring a running embedded revision waits for gateway Pods and removes ow
 // Finding 860: retiring the last OpenShell revision left the workspace-node pair
 // (supervisor egress to the Gateway, Gateway ingress from supervisors) in the namespace.
 for (const stopped of [false, true]) {
-  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async () => {
+  test(`retiring the last ${stopped ? "stopped " : ""}OpenShell revision removes every Agent NetworkPolicy it wrote`, async (t) => {
+    const tls = await harnessTlsFixture(t);
     const cleanupCalls = [];
     const driver = new KubernetesComputeDriver(
       options({
@@ -15483,6 +15831,32 @@ for (const stopped of [false, true]) {
     );
     save(sibling);
 
+    const trustName = `harness-trust-${digest(revision.agentId)}-rev-${digest(revision.id)}`;
+    const trust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        trustName,
+        { ...ownership, servicePrincipalId: revision.servicePrincipalId, revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(trust);
+    const siblingTrust = {
+      ...driver.manifest(
+        "v1",
+        "ConfigMap",
+        `harness-trust-${digest("agent-sibling")}-rev-${digest(revision.id)}`,
+        { ...ownership, agentId: "agent-sibling", revisionId: revision.id },
+        target,
+      ),
+      immutable: true,
+      data: { "ca-bundle.pem": tls.caBundle },
+    };
+    save(siblingTrust);
+
     const deleted = [];
     const missing = (kind, name) =>
       Object.assign(new Error(`${kind} ${name} not found`), { code: 404 });
@@ -15538,6 +15912,12 @@ for (const stopped of [false, true]) {
 
     await driver.retireRevision(revision);
     assert.deepEqual(cleanupCalls, [revision.id]);
+    assert.equal(
+      objects.has(key("ConfigMap", trustName)),
+      false,
+      "retirement removes exact public trust",
+    );
+    assert.deepEqual(objects.get(key("ConfigMap", siblingTrust.metadata.name)), siblingTrust);
     assert.equal(objects.has(key("Deployment", gatewayName)), false);
     for (const name of policyNames) {
       assert.equal(objects.has(key("NetworkPolicy", name)), false, `${name} must be deleted`);
@@ -16405,9 +16785,9 @@ function workspaceSetupFixture(
         },
         namespace: options().resources.namespace,
       },
-      runtime: runtime
-        ? { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" }
-        : undefined,
+      ...(runtime
+        ? { runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" } }
+        : {}),
       ...computeOptions,
     }),
     {
@@ -16750,6 +17130,7 @@ test("external ChatGPT source preparation delivers the exact placeholder and acc
     type: snapshot.sourceType,
     config: {},
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: snapshot.credentialGatewayId,
     state: "ready",
     createdAt: tenant.createdAt,

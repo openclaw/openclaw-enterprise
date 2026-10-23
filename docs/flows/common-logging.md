@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-16
-last_updated_session: authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2
+updated: 2026-10-23
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # Common Operational Logging Flow
@@ -71,7 +71,7 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 
 ### 2. Processes log fixed sanitized events
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
 (`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)
@@ -82,12 +82,21 @@ keeps reviewed scalar fields and drops unapproved fields, credentials, provider
 payloads, request/reply objects, and unsafe strings. This source boundary precedes
 the separate Collector filter in step 7. For worker records, the Collector retains
 allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
-and credential withdrawal keys include the operation UUID; deletion keys have no
-operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
-lowercase hexadecimal characters, matching the work ID the API and worker share.
+include the operation UUID. Credential withdrawal keys end in the operation UUID or
+`activation` (the attempt a candidate's activation queues), optionally followed by
+`:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
+Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
+characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
 The local worker emitter also retains `stopYields` from throttled drain-yield and
 completion records as a nonnegative safe integer; the Collector does not export this count.
+For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harnessState`
+only as short identifier codes, never free text, and `fence` only as a nonnegative safe
+integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
+classes, the reason code an Agent is shown, Harness state and route generations.
+`hintCode` (named refusal guidance) is a code too, and so is `command` on
+`auth:maintain` events. `installationId` and `orphanedConfigurationId` are kept only as
+OCC-assigned `ins_` and `cfg_` UUIDs.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and a message of at most 256 characters. The worker never serializes the raw exception, and
@@ -250,6 +259,8 @@ then appends the original release hash. Ending with the hash separates these
 names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
 `templates/grafana.yaml` uses the same names in both datasource URLs.
 Deployment names, Pod selectors and discovery identity keep the full release.
+Before rendering, `demo.validate` refuses an uppercase image repository path
+that kubelet cannot pull. Registry hosts and tags may retain uppercase spelling.
 The separately configured Collector endpoint remains in its exporter Secret.
 If an upgrade renames Loki, the operator updates that endpoint and refreshes
 the Collector Pods before new records can reach Loki; the
@@ -288,6 +299,16 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 20:00: Preserve current logging documentation and both histories while retaining demo repository-casing validation. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - e1788c775)
+
+- 2026-10-23 12:30: Keep `work.id` for credential withdrawal keys that end in `activation` or `:recovery:<n>`; the Collector dropped them. (fix-2249 - #3302)
+
+- 2026-10-23 10:45: Keep the auth:maintain command, refusal guidance codes, OCC-assigned Installation and orphaned Configuration IDs, and the delivery-pending Sandbox Driver ID through the local logging sanitizer. (fix-2245)
+
+- 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244 - #3289)
+
+- 2026-10-20 02:25: Refuse uppercase demo image repository paths before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - d331d24fd)
 
 - 2026-10-16 00:17: Reject negative and nonnumeric stop-yield counts at the local logging boundary. (authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2 - f916021bf235e9f8e91630484948eb6fc88ccfa7)
 

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 const startupEnvironment = {
+  ...compileCacheEnvironment,
   PATH: process.env.PATH,
   NODE_ENV: "development",
   OCC_HOST: "127.0.0.1",

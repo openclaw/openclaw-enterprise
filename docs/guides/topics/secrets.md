@@ -14,6 +14,9 @@ environment variable. Use the path that matches the consumer:
 
 ## Create and bind a Secret
 
+For browser management, follow [Manage Secrets in the console](../console/secrets.md).
+The API procedure below supports protected-file input.
+
 1. Wait for the Namespace to become `ready`. Use the [Kubernetes Secret Driver
    procedure](../../reference/drivers/kubernetes-secret.md#create-a-namespace-owned-secret)
    to send a value from a protected file. Retain the `sec_…` ID returned in the

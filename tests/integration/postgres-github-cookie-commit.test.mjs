@@ -6,7 +6,7 @@ import {
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
 import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
+import { composePostgresDevelopment } from "../helpers/password-hasher.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";

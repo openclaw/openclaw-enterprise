@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import { chromium } from "playwright";
+import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
@@ -26,6 +26,7 @@ export function persistedDeploymentError(code, data) {
 }
 
 export function apiRequests(page, origin) {
+  /** @type {{ method: string, path: string, body: unknown }[]} */
   const requests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -69,48 +70,74 @@ async function launchBrowser(options = {}) {
   return browser;
 }
 
-// One Chromium for every test in a file, launched on first use and closed after the file's
-// last test. Call it once at module top level (`after` attaches to the test that is running)
-// and pass the result as newPage's `browser` option. Each test still gets its own context
-// (cookies, storage, viewport, routes); this only saves the launch, about 0.35 s a test. A
-// failed launch or a crashed browser is launched again for the next test.
-export function fileBrowser() {
-  let launched;
-  after(async () => {
-    await (await launched?.catch(() => null))?.close();
-  });
-  return () => {
-    if (launched === undefined) {
-      const launching = launchBrowser().then(
-        (browser) => {
-          browser.on("disconnected", () => {
-            if (launched === launching) {
-              launched = undefined;
-            }
-          });
-          return browser;
-        },
-        (error) => {
-          if (launched === launching) {
-            launched = undefined;
-          }
-          throw error;
-        },
-      );
-      launched = launching;
+// One Chromium for every test in a file (CI runs each file in its own process), launched on
+// first use and closed after the file's last test: `after` here runs when the module loads, so it
+// attaches to the root test. newPage uses it unless a test passes launch arguments, which need a
+// browser of their own. Each test still gets its own context (cookies, storage, viewport,
+// routes); this only saves the launch and close, about 0.2 CPU-s a test. A failed launch, or a
+// browser that has crashed or disconnected, is launched again for the next caller.
+let sharedLaunch;
+after(async () => {
+  await (await sharedLaunch?.catch(() => null))?.close();
+});
+
+async function sharedBrowser() {
+  const pending = sharedLaunch;
+  if (pending !== undefined) {
+    const browser = await pending.catch(() => null);
+    if (browser?.isConnected()) {
+      return browser;
     }
-    return launched;
-  };
+    if (sharedLaunch === pending) {
+      sharedLaunch = undefined;
+    }
+  }
+  if (sharedLaunch === undefined) {
+    const launching = launchBrowser().then(
+      (browser) => {
+        browser.on("disconnected", () => {
+          if (sharedLaunch === launching) {
+            sharedLaunch = undefined;
+          }
+        });
+        return browser;
+      },
+      (error) => {
+        if (sharedLaunch === launching) {
+          sharedLaunch = undefined;
+        }
+        throw error;
+      },
+    );
+    sharedLaunch = launching;
+  }
+  return sharedLaunch;
 }
 
+// The file's shared browser, for callers that pass it as newPage's `browser` option. newPage
+// uses the same one by default.
+export function fileBrowser() {
+  return sharedBrowser;
+}
+
+/** @returns {Promise<{ page: import("playwright").Page, artifacts: string }>} */
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
-  const shared = options.browser !== undefined;
-  assert.ok(!shared || options.args === undefined, "a shared browser takes no launch arguments");
-  const browser = shared ? await options.browser() : await launchBrowser(options);
+  assert.ok(
+    options.browser === undefined || options.args === undefined,
+    "pass a shared browser or launch arguments, not both",
+  );
+  const shared = options.args === undefined;
+  const browser = shared
+    ? await (options.browser ?? sharedBrowser)()
+    : await launchBrowser(options);
   let context;
   let diagnostics;
-  fixture.registerCleanupBeforeAppClose(async () => {
+  // A file app (fileConsoleApp) outlives the test, so its pages close when the test ends.
+  const registerCleanup = fixture.sharedByFile
+    ? (cleanup) => t.after(cleanup)
+    : fixture.registerCleanupBeforeAppClose;
+  registerCleanup(async () => {
     let cleanupError;
     try {
       await diagnostics?.capture();
@@ -138,7 +165,92 @@ export async function newPage(t, fixture, options = {}) {
   return { page, artifacts };
 }
 
+const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
+
+// Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
+// Better Auth password request the form sends, made in the page's own browser context so the
+// browser stores the session cookie the API set, and then loads `path` already signed in: one
+// page load instead of a sign-in page plus the destination, and no form to fill. A fresh tab on
+// a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
+// instead, so the file makes one password sign-in rather than one a test. A tab that has
+// already loaded a page signs in through the form, so a test that signs in again on the same tab
+// keeps that tab's session storage and history across the sign-in. So does a fixture served
+// over TLS or under another host name, whose cookies are what such a test checks. Tests about
+// the sign-in page itself use the form directly or loginThroughForm.
+/** @param {string | URL} [path] */
 export async function login(
+  page,
+  fixture,
+  path = "/console/agents",
+  credentials = fixture.credentials,
+) {
+  const origin = new URL(fixture.origin);
+  if (
+    page.url() !== "about:blank" ||
+    origin.protocol !== "http:" ||
+    origin.hostname !== "127.0.0.1"
+  ) {
+    await loginThroughForm(page, fixture, path, credentials);
+    return;
+  }
+  if (fixture.sharedByFile && credentials === fixture.credentials) {
+    await page.context().addCookies(await fileSessionCookies(fixture));
+    // An earlier test that ended this session would otherwise leave this test on the sign-in
+    // page, which waitForURL below cannot tell apart from the console. This test fails and says
+    // so; the next one signs in again, so one such test fails at most one other.
+    const session = await page.request.get(new URL("/api/auth/session", origin).href);
+    if ((await session.json().catch(() => null))?.data?.authenticated !== true) {
+      fileSessions.delete(fixture);
+      assert.fail(
+        "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
+      );
+    }
+  } else {
+    const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
+      data: { email: credentials.email, password: credentials.password },
+      headers: { origin: origin.origin },
+    });
+    assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+  }
+  await page.goto(new URL(path, fixture.origin).href);
+  await page.waitForURL(signedInPath);
+}
+
+// The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
+// the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
+// that share it must not end the session (see fileConsoleApp); login() checks it is still live.
+const fileSessions = new WeakMap();
+
+function fileSessionCookies(fixture) {
+  let cookies = fileSessions.get(fixture);
+  if (cookies === undefined) {
+    cookies = (async () => {
+      const origin = new URL(fixture.origin).origin;
+      const context = await playwrightRequest.newContext();
+      try {
+        const response = await context.post(new URL("/api/auth/sign-in/email", origin).href, {
+          data: { email: fixture.credentials.email, password: fixture.credentials.password },
+          headers: { origin },
+        });
+        assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+        return (await context.storageState()).cookies;
+      } finally {
+        await context.dispose();
+      }
+    })();
+    cookies.catch(() => {
+      if (fileSessions.get(fixture) === cookies) {
+        fileSessions.delete(fixture);
+      }
+    });
+    fileSessions.set(fixture, cookies);
+  }
+  return cookies;
+}
+
+// Signs in through the console's sign-in form, the way a person does: open `path`, which shows
+// the sign-in page, and submit the email and password.
+export async function loginThroughForm(
   page,
   fixture,
   path = "/console/agents",
@@ -148,7 +260,7 @@ export async function login(
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
+  await page.waitForURL(signedInPath);
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
@@ -162,6 +274,7 @@ export async function consoleStorage(page) {
   });
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
   return requests.filter(
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
@@ -201,6 +314,7 @@ export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   return url;
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function pathRequests(requests, method, path) {
   return requests.filter((request) => request.method === method && request.path === path);
 }
@@ -226,6 +340,20 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
     value,
     expected,
     `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
+  );
+}
+
+// A control becomes enabled when the page state behind it settles, which can be a task or more
+// after the text a test waits for (finding 2116). A test that expects a control to be usable
+// waits through this; one isEnabled() read can see the earlier state. A check that a control is
+// disabled at a given moment still reads isDisabled() once.
+export async function waitForEnabled(locator, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  await locator.waitFor({ state: "attached", timeout: timeoutMs });
+  await waitForCondition(
+    () => locator.isEnabled(),
+    `${locator} stayed disabled for ${timeoutMs} ms`,
+    Math.max(1, deadline - Date.now()),
   );
 }
 
@@ -322,7 +450,7 @@ export async function waitForIdleFetches(page) {
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) {
+    if (await predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -376,6 +504,7 @@ export async function slackSelectionValue(input) {
     .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }
 
+/** @param {import("playwright").Page} page @param {string} name */
 export function repositoryCheckbox(page, name) {
   return page
     .locator("#repository-results .repository-result-row")
@@ -392,6 +521,13 @@ export function repositoryCheckbox(page, name) {
 // With `afterServer`, the server answers first and the page gets that answer on release (a
 // write that landed while the page waits); if that answer is lost, the page's request fails
 // rather than being sent again. With `fulfill`, the held request gets that response.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("playwright").Page} page
+ * @param {Parameters<import("playwright").Page["route"]>[0]} url
+ * @param {{ once?: boolean, method?: string, afterServer?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null }} [options]
+ * @returns {Promise<{ requested: Promise<void>, release: () => void, wasRequested: () => boolean }>}
+ */
 export async function holdRequests(
   t,
   page,
@@ -481,9 +617,22 @@ export function recordLayoutShifts() {
 
 // Returns the layout shifts recorded since the last call, and their total.
 export async function takeLayoutShifts(page) {
+  /** @type {{ value: number, sources: { node: string, text?: string, from: number[], to: number[] }[] }[]} */
   const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
+
+// Resolves after the page has painted twice more and run a task after that, so work that has
+// already settled has rendered and any layout shift from it has been reported.
+export const nextFrames = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() =>
+          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
+        );
+      }),
+  );
 
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
@@ -619,6 +768,34 @@ export function statusTone(locator, { text = false } = {}) {
     }),
     text,
   );
+}
+
+// Whether a reload or tab close would ask first: the console cancels beforeunload.
+export function asksBeforeUnload(page) {
+  return page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    globalThis.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
+// Checks that a write which holds the page also makes a reload or tab close ask first, only while
+// it is in flight (finding 2181). It holds the next `method` request to `url`, which `start`
+// sends, until the page is shown to ask; then it lets the answer through, waits for `settled`
+// and checks the page no longer asks. The real server answers the write; only its answer waits.
+export async function expectWriteAsksBeforeUnload(t, page, url, { method, start, settled }) {
+  assert.equal(await asksBeforeUnload(page), false, "the page asked before the write started");
+  const held = await holdRequests(t, page, url, {
+    method,
+    once: true,
+    afterServer: true,
+  });
+  await start();
+  await held.requested;
+  assert.equal(await asksBeforeUnload(page), true, "a reload during the write would not ask");
+  held.release();
+  await settled();
+  assert.equal(await asksBeforeUnload(page), false, "the page still asks after the write");
 }
 
 // Whether the locator's element holds focus.

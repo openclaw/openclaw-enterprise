@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPairSync } from "node:crypto";
 import {
   chmod,
   lstat,
   mkdir,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   symlink,
@@ -66,12 +66,9 @@ async function fixture(t) {
     controlSocket: join(controlVolume, "private", "control.sock"),
     expectedOrigin: "https://credentials.example.test",
     backendId: "github-primary",
+    authority: "prepared-git",
   };
   const tls = await createTlsMaterial(t);
-  const key = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
-    type: "pkcs8",
-    format: "pem",
-  });
   const config = {
     gateway: {
       publicOrigin: options.expectedOrigin,
@@ -81,10 +78,9 @@ async function fixture(t) {
       tlsKeyFile: join(inputsDirectory, "tls.key"),
     },
     backend: {
-      kind: "github-app-registry",
+      kind: "github-prepared-git-registry",
       backendId: options.backendId,
       registryFile: options.registryFile,
-      privateKeyFile: join(inputsDirectory, "private-key.pem"),
     },
     sessionPolicy: {
       maximumDurationSeconds: 3600,
@@ -105,14 +101,18 @@ async function fixture(t) {
         repositoryId: "789",
         repository: "example/repo",
         namespaces: [
-          { namespaceId: "10000000-0000-4000-8000-000000000001", profiles: ["git-write"] },
+          {
+            namespaceId: "10000000-0000-4000-8000-000000000001",
+            profiles: ["git-write"],
+            transport: "git-only",
+            pushRefAllowlist: ["refs/heads/agent-work"],
+          },
         ],
       },
     ],
   };
   const values = {
     "config.json": JSON.stringify(config),
-    "private-key.pem": key,
     "tls.crt": tls.cert,
     "tls.key": tls.key,
   };
@@ -155,7 +155,7 @@ test("projected service inputs become owned private files accepted by the real l
   const copied = JSON.parse(
     await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
   );
-  assert.equal(copied.backend.privateKeyFile, join(f.options.privateDirectory, "private-key.pem"));
+  assert.equal(copied.backend.privateKeyFile, undefined);
   assert.equal(copied.backend.registryFile, join(f.options.privateDirectory, "registry.json"));
   // A projected generation switch takes effect together on the next process
   // start, and owned files left in the memory volume are safely replaced.
@@ -170,6 +170,61 @@ test("projected service inputs become owned private files accepted by the real l
   const restarted = await f.prepare();
   assert.equal(restarted.config.sessionPolicy.maximumDurationSeconds, 1800);
   restarted.close();
+});
+
+test("prepared projection loads without an App key and refuses an authority mismatch", async (t) => {
+  const f = await fixture(t);
+  f.options.authority = "prepared-git";
+  await project(join(f.options.registryFile, ".."), "..prepared-registry", {
+    "registry.json": JSON.stringify({
+      ...f.registry,
+      repositories: f.registry.repositories.map((repository) => ({
+        ...repository,
+        namespaces: repository.namespaces.map((policy) => ({
+          ...policy,
+          transport: "git-only",
+          pushRefAllowlist: ["refs/heads/agent-work"],
+        })),
+      })),
+    }),
+  });
+  const backend = {
+    kind: "github-prepared-git-registry",
+    backendId: f.options.backendId,
+    registryFile: f.options.registryFile,
+  };
+  // The mounted generation contains only the service configuration and TLS.
+  await project(f.options.inputsDirectory, "..prepared", {
+    "config.json": JSON.stringify({ ...f.config, backend }),
+    "tls.crt": f.values["tls.crt"],
+    "tls.key": f.values["tls.key"],
+  });
+  const loaded = await f.prepare();
+  assert.equal(loaded.authority, "github-prepared-git-registry");
+  assert.equal(loaded.repositoryDescriptions, undefined);
+  assert.equal(loaded.config.gateway.controlSocket, f.options.controlSocket);
+  loaded.close();
+  assert.deepEqual((await readdir(f.options.privateDirectory)).sort(), [
+    "config.json",
+    "registry.json",
+    "tls.crt",
+    "tls.key",
+  ]);
+  const copied = JSON.parse(
+    await readFile(join(f.options.privateDirectory, "config.json"), "utf8"),
+  );
+  assert.equal(Object.hasOwn(copied.backend, "privateKeyFile"), false);
+  f.options.authority = "github-app";
+  await assert.rejects(f.prepare(), /signing gateway retired/);
+  f.options.authority = "prepared-git";
+  await project(f.options.inputsDirectory, "..wrong-authority", {
+    ...f.values,
+    "config.json": JSON.stringify({
+      ...f.config,
+      backend: { ...f.config.backend, kind: "github-app-registry" },
+    }),
+  });
+  await assert.rejects(f.prepare(), /signing gateway retired/);
 });
 
 test("projection startup derives the broker origin from the trusted deployment argument", async (t) => {
@@ -265,7 +320,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
         configVersion: "1",
         repositoryId: "789",
         repository: "example/repo",
-        tokenFile: join(f.options.privateDirectory, "private-key.pem"),
+        tokenFile: join(f.options.privateDirectory, "tls.key"),
         developmentOnly: true,
         pushRefAllowlist: ["refs/heads/agent/*"],
       },
@@ -279,7 +334,7 @@ test("projection startup rejects mismatched deployment bindings and invalid actu
   }
   await project(f.options.inputsDirectory, "..invalid-key", {
     ...f.values,
-    "private-key.pem": "not an RSA key",
+    "tls.key": "not a TLS key",
   });
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
   await project(f.options.inputsDirectory, "..restored", f.values);
@@ -302,20 +357,20 @@ test("projection startup preserves unexpected stale entries and rejects unsafe p
   assert.deepEqual(await readFile(join(f.options.privateDirectory, "config.json")), saved);
   assert.equal(await readFile(unexpected, "utf8"), "preserve");
   await unlink(unexpected);
-  const key = join(f.generation, "private-key.pem");
-  const privateKey = join(f.options.privateDirectory, "private-key.pem");
+  const key = join(f.generation, "tls.key");
+  const privateKey = join(f.options.privateDirectory, "tls.key");
   await unlink(privateKey);
   await symlink(key, privateKey);
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
-  assert.equal((await lstat(privateKey)).isSymbolicLink(), true);
-  assert.equal(await readFile(key, "utf8"), f.values["private-key.pem"]);
+  assert.equal(await readlink(privateKey), key);
+  assert.ok((await readFile(key)).equals(f.values["tls.key"]));
   await unlink(privateKey);
-  await writeFile(privateKey, f.values["private-key.pem"], { mode: 0o600 });
+  await writeFile(privateKey, f.values["tls.key"], { flag: "wx", mode: 0o600 });
   await unlink(key);
-  await symlink(join(f.options.privateDirectory, "private-key.pem"), key);
+  await symlink(join(f.options.privateDirectory, "tls.key"), key);
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
   await unlink(key);
-  await writeFile(key, Buffer.alloc(65537), { mode: 0o440 });
+  await writeFile(key, Buffer.alloc(65537), { flag: "wx", mode: 0o440 });
   await assert.rejects(f.prepare(), { message: "invalid-projected-inputs" });
-  assert.equal((await readdir(f.options.privateDirectory)).length, 5);
+  assert.equal((await readdir(f.options.privateDirectory)).length, 4);
 });
