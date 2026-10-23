@@ -1044,7 +1044,7 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element("p", { className: "brand" }, ...brandContents(40)),
+      element("p", { className: "brand" }, ...brandContents("sign-in")),
       element("h1", {}, "Sign in"),
       usernameHint,
       form,

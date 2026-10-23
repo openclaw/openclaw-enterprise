@@ -123,15 +123,24 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   const topbar = page.locator(".topbar");
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
-  const mascot = await topbar.locator(".brand img").evaluate((image) => {
-    const { width, color, filter } = globalThis.getComputedStyle(image);
-    return { width, color, filter };
+  const mark = topbar.locator(".brand img");
+  const selectedMark = () =>
+    mark.evaluate(async (img: HTMLImageElement) => {
+      await img.decode();
+      return { path: new URL(img.currentSrc).pathname, width: img.width, height: img.height };
+    });
+  assert.deepEqual(await selectedMark(), {
+    path: "/console/oce-mascot-inverse.png",
+    width: 48,
+    height: 38,
   });
-  assert.equal(mascot.width, "20px");
-  assert.ok(
-    mascot.filter.includes(mascot.color),
-    "the mascot outline uses the wordmark colour on the dark bar",
-  );
+  await page.emulateMedia({ forcedColors: "active" });
+  assert.deepEqual(await selectedMark(), {
+    path: "/console/oce-mascot.png",
+    width: 20,
+    height: 20,
+  });
+  await page.emulateMedia({ forcedColors: "none" });
   const header = await page
     .locator(".page-header")
     .evaluate((node) => node.getBoundingClientRect().bottom + globalThis.scrollY);
@@ -161,12 +170,16 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(await avatar.evaluate((node) => node === globalThis.document.activeElement), true);
 
   // Opening the drawer closes the avatar's menu and brings the desktop navigation into reach.
+  await page.setViewportSize({ width: 320, height: phone.viewport.height });
   await avatar.click();
   await navigation.click();
   assert.equal(await menu.isVisible(), false);
   assert.equal(await avatar.getAttribute("aria-expanded"), "false");
   const sidebar = page.locator("#navigation-drawer");
   await sidebar.waitFor({ state: "visible" });
+  const name = await visibleBox(sidebar.locator(".brand-name"));
+  const close = await visibleBox(sidebar.locator(".drawer-close"));
+  assert.ok(name.x + name.width <= close.x, "the wordmark leaves the close target clear at 320px");
   assert.equal(
     (await style(sidebar, "backgroundColor")).backgroundColor,
     await tokenColor(page, "--color-surface-inverse"),

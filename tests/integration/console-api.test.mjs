@@ -299,6 +299,7 @@ test("console static routes expose only public assets and preserve API JSON fail
 
   for (const [path, mime] of [
     ["/console/oce-mascot.png", /image\/png/i],
+    ["/console/oce-mascot-inverse.png", /image\/png/i],
     ["/console/favicon.ico", /image\/vnd\.microsoft\.icon/i],
     ["/console/workspace-defaults.mjs", /javascript/i],
     ["/console/preset-variables.mjs", /javascript/i],

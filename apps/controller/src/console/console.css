@@ -646,11 +646,26 @@ p {
 .runtime-debug h2 {
   color: inherit;
 }
-/* Outline the mascot's silhouette in the wordmark colour. Leave forced-colour palettes alone. */
+/* The inverse mascot has its contour in the artwork. In forced colours, picture uses the
+   original mark at the same size as an operator-supplied logo. */
+.brand-mascot {
+  display: flex;
+  flex: none;
+}
 @media (forced-colors: none) {
-  :is(.sidebar, .topbar) .brand-mascot {
-    filter: drop-shadow(-0.75px 0 currentColor) drop-shadow(0.75px 0 currentColor)
-      drop-shadow(0 -0.75px currentColor) drop-shadow(0 0.75px currentColor);
+  .brand-mascot img {
+    width: 48px;
+    height: 38px;
+  }
+  .brand:has(.brand-mascot) {
+    gap: var(--space-1);
+  }
+  .topbar:has(.brand-mascot) {
+    column-gap: 0;
+  }
+  .brand--bar:has(.brand-mascot) {
+    font-size: clamp(var(--text-base), 4.4vw, var(--text-xl));
+    line-height: var(--text-lg--line-height);
   }
 }
 .sidebar .brand {
@@ -1436,6 +1451,10 @@ p {
     position: absolute;
     top: var(--space-5);
     right: var(--space-2);
+  }
+  .sidebar .brand:has(.brand-mascot) {
+    /* Let the full installation name wrap beside the close button's touch target. */
+    padding-inline-end: var(--touch-min);
   }
   .resource {
     align-items: start;
