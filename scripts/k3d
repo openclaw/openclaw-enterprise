@@ -201,6 +201,7 @@ case "$harness" in
   *) fail "--harness must be codex or openclaw" ;;
 esac
 if [ "$harness" = "openclaw" ]; then
+  export OCC_TEST_OPENSHELL_HARNESS=openclaw
   prepared_lane="openshell"
   integration_file="tests/integration/sandbox-driver-openshell-k3d-real.test.mjs"
 else
@@ -775,7 +776,6 @@ if [ "$action" = "demo" ]; then
   export OCC_K3D_HARNESS="$harness"
   if [ "$harness" = "openclaw" ]; then
     info "Starting the dedicated native OpenClaw Control UI demo through OpenShell."
-    export OCC_TEST_OPENSHELL_HARNESS=openclaw
     if ! node \
       --test \
       tests/integration/sandbox-driver-openshell-k3d-real.test.mjs; then
@@ -793,7 +793,6 @@ fi
 
 if [ "$harness" = "openclaw" ]; then
   info "Running the dedicated native OpenClaw integration through OpenShell."
-  export OCC_TEST_OPENSHELL_HARNESS=openclaw
   node \
     --test \
     tests/integration/sandbox-driver-openshell-k3d-real.test.mjs

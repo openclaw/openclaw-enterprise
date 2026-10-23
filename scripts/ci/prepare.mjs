@@ -796,7 +796,11 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  requireEnv(prepare.requireEnv ?? [], effectiveEnv);
+  const requiredInputs =
+    name === "openshell" && effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw"
+      ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
+      : (prepare.requireEnv ?? []);
+  requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
   }

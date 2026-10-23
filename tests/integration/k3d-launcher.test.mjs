@@ -601,3 +601,39 @@ test("k3d rejects an unsupported Harness option", async (context) => {
 
 test("Linux Podman uses its native API socket", (context) =>
   runLauncher(context, "podman", ["test"], { platform: "Linux" }));
+
+test("native OpenClaw preparation requires its API key instead of a Codex token", async (context) => {
+  const root = await temporaryDirectory(context, "oce-k3d-native-inputs-");
+  for (const [harness, apiKey, expected] of [
+    ["openclaw", "test-only-value", /requires a prior prepareLane/],
+    ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
+    ["", "test-only-value", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+  ]) {
+    // File preparation must reach its owned-state check with native credentials alone.
+    // The full lane still needs Codex, and a missing native key must fail first.
+    await assert.rejects(
+      execute(
+        process.execPath,
+        [
+          "scripts/ci/prepare.mjs",
+          "--lane",
+          "openshell",
+          "--file",
+          "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+          "--state",
+          join(root, "missing-state.json"),
+        ],
+        {
+          env: {
+            ...process.env,
+            CODEX_ACCESS_TOKEN: "",
+            OPENAI_API_KEY: apiKey,
+            OCC_TEST_OPENAI_MODEL: "vendor/model",
+            OCC_TEST_OPENSHELL_HARNESS: harness,
+          },
+        },
+      ),
+      expected,
+    );
+  }
+});
