@@ -178,7 +178,10 @@ export function egressInjectionDigest(headers: readonly (readonly [string, strin
  */
 export class CredentialProxy implements CredentialProxyExchange {
   private readonly records = new Map<string, OperationRecord>();
-  private readonly requests = new Map<string, { readonly expiresAt: number; readonly share: string }>();
+  private readonly requests = new Map<
+    string,
+    { readonly expiresAt: number; readonly share: string }
+  >();
   private readonly replayShares = new Map<string, number>();
   private activeOperations = 0;
   private readonly ports: EgressAuthorityPorts;

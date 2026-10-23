@@ -1278,17 +1278,17 @@ export async function syntheticDispatchFixture(t, receipts) {
         wrap({
           ...ports,
           exchangeOwner: {
-          verify: async (name) => enroll(name).peer,
-          capture(use) {
-            accepted.add(use.id);
-            return {
-              ...association,
-              installation: egressAssociationInstallation(use.installation),
-              responseId: use.id,
-            };
+            verify: async (name) => enroll(name).peer,
+            capture(use) {
+              accepted.add(use.id);
+              return {
+                ...association,
+                installation: egressAssociationInstallation(use.installation),
+                responseId: use.id,
+              };
+            },
+            owns: (value, use) => accepted.has(use.id) && value.responseId === use.id,
           },
-          owns: (value, use) => accepted.has(use.id) && value.responseId === use.id,
-        },
           installation: async (sandboxPeer) =>
             [...enrolled.values()].find((entry) => entry.peer.sandboxId === sandboxPeer.sandboxId)
               ?.installation,
