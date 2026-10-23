@@ -2087,9 +2087,16 @@ revisionTest(
     // readiness evidence decides: a bootstrap last seen running is retired with the failure
     // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
     // revision published since (only its activation fails) is never retired.
-    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
-    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
-    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // The scripted passes must all run before the deadline, so it is real time from admission
+    // (finding 1171). Each work is admitted 20 s old by the database clock, which the worker judges
+    // the deadline by: 10 s of real time leaves a stalled runner room for those few passes (they
+    // take about 1 s), and the outage then fills the rest without waiting out all 30 s.
+    const timeoutMs = 30_000;
+    const remainingMs = 10_000;
+    const aged = { revision: { workAge: `${(timeoutMs - remainingMs) / 1000} seconds` } };
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage", aged);
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage", aged);
+    const published = await fixture.admitInitialRevision("expired-activation-outage", aged);
     // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
     // except that the published revision's later passes are ready and its activation fails.
     const script = new Map([
@@ -2106,9 +2113,6 @@ revisionTest(
         "unavailable",
         "The Kubernetes API answered HTTP 503.",
       );
-    // The scripted passes must all run before the deadline, so it is real time from admission.
-    // 30 s leaves a stalled runner room for them; the outage then fills the rest (finding 1171).
-    const timeoutMs = 30_000;
     await fixture.start(
       {
         ...fixture.compute,
@@ -2155,7 +2159,7 @@ revisionTest(
       ).rows;
 
     for (const { candidate } of [running, progressed, published]) {
-      await fixture.work(candidate, "failed_permanent", timeoutMs + 60_000);
+      await fixture.work(candidate, "failed_permanent", remainingMs + 15_000);
       // The pass that ended it ran at the deadline, by the database clock, not before it.
       const { rows } = await fixture.observerPool.query(
         `SELECT EXTRACT(EPOCH FROM completed_at - created_at) * 1000 AS age_ms
