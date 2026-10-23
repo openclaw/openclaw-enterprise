@@ -906,7 +906,16 @@ test(
         )
       ).rows;
     assert.equal(await lifecycle.maintain(signal), "committed");
-    const { ready } = await f.resolve(captureMetadata(f));
+    // Before deletion a signed metadata request reaches GitHub. A second one is resolved now
+    // and its selection retained, to be authorized only after the Agent is deleted.
+    const metadataReads = () => gh.trace.filter((entry) => entry.method === "GET").length;
+    const control = captureMetadata(f);
+    const allowed = await f.resolve(control);
+    assert.ok(allowed.ready, "signed resolve must select the prepared family");
+    assert.equal((await dispatchMetadata(f, gh, control, allowed.ready)).status, 200);
+    const reads = metadataReads();
+    const retained = captureMetadata(f);
+    const { ready } = await f.resolve(retained);
     assert.ok(ready, "signed resolve must select the prepared family");
     const evidence = JSON.parse(ready.evidence.authority_evidence);
     const proveCurrent = () =>
@@ -932,6 +941,12 @@ test(
     assert.equal(await lifecycle.ready(source, signal), false);
     assert.equal(await lifecycle.readWarm(source, readWindow()), undefined);
     assert.equal(await proveCurrent(), false);
+    // The selection retained from before deletion is refused at send authorization, so its
+    // bytes never reach GitHub, while the token is still awaiting revocation.
+    const refused = await f.authorize(f.permitRequest(retained, ready));
+    assert.equal(refused.allowed, undefined, "a deleted Agent's retained selection was authorized");
+    assert.equal(refused.refused?.code, f.refusalCode("DENIED"));
+    assert.equal(metadataReads(), reads);
 
     // The next passes withdraw the family and revoke both tokens; nothing is issued again.
     await due();
