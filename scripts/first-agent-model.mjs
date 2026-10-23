@@ -27,7 +27,7 @@ export function selectFirstAgentModel(configuredModel, existing) {
 export function reuseFirstAgentRecord(existing, selection) {
   if (existing.version !== 3 || existing.authMethod === undefined) {
     throw new Error(
-      "This Agent name was recorded by an older first-agent helper, whose record this helper cannot verify. Choose a new Agent name; the recorded resources were not changed.",
+      "This Agent name has a record from an older first-agent helper, which this helper does not support. Choose a new Agent name; the recorded resources were not changed.",
     );
   }
   if (

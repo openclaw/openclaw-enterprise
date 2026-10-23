@@ -859,32 +859,34 @@ async function main(options) {
 
   await withRecord(local.directory, options.name, async (existing, save) => {
     const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
+    // Refuse an older helper's record before the model check reads it.
+    const reused =
+      existing &&
+      reuseFirstAgentRecord(existing, {
+        name: options.name,
+        namespaceId: namespace.id,
+        harness: options.harness,
+        sandboxDriver: local.sandboxDriver,
+        controlUi: options.controlUi,
+      });
     const model = selectFirstAgentModel(configuredModel, existing);
-    const record = existing
-      ? reuseFirstAgentRecord(existing, {
-          name: options.name,
-          namespaceId: namespace.id,
-          harness: options.harness,
-          sandboxDriver: local.sandboxDriver,
-          controlUi: options.controlUi,
-        })
-      : {
-          version: 3,
-          authMethod:
-            process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
-              ? "codex_pat"
-              : "api_key",
-          name: options.name,
-          namespaceId: namespace.id,
-          model,
-          harness: options.harness,
-          sandboxDriver: local.sandboxDriver,
-          controlUi: options.controlUi,
-          secretName: `first-agent-${randomUUID()}`,
-          ...(local.sandboxDriver === "openshell"
-            ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
-            : {}),
-        };
+    const record = reused ?? {
+      version: 3,
+      authMethod:
+        process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
+          ? "codex_pat"
+          : "api_key",
+      name: options.name,
+      namespaceId: namespace.id,
+      model,
+      harness: options.harness,
+      sandboxDriver: local.sandboxDriver,
+      controlUi: options.controlUi,
+      secretName: `first-agent-${randomUUID()}`,
+      ...(local.sandboxDriver === "openshell"
+        ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
+        : {}),
+    };
     if (
       !["api_key", "codex_pat"].includes(record.authMethod) ||
       (record.authMethod === "codex_pat" &&
