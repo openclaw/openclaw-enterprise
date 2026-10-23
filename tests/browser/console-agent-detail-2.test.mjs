@@ -2558,11 +2558,15 @@ test("Credentials retries denied and interrupted grants without repeating the au
   const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const probe = page.waitForResponse(`${fixture.origin}/observability`);
   await login(
     page,
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
+  // The session knows this actor administers the Installation before the denial below, so its
+  // refused grant offers Retry, not a member's referral to an administrator (finding 2259).
+  assert.equal((await probe).status(), 200);
   // Native IAM denies the actor's grant authority while the Agent update remains authorized.
   fixture.policy.restrictions.push({
     id: "deny-update-credential-grant",
