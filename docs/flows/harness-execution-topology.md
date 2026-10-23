@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-23
-last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
+last_updated_session: authoring-run/3dd62294-043d-4a57-8958-d8a0e81bc5a4
 ---
 
 # Harness Execution Topology Flow
@@ -177,6 +177,11 @@ writes the HTTPS Responses endpoint/provider pair to the manifest and `config.to
 passes it through CLI overrides because the probe ignores user configuration.
 Account login modes and other Harnesses keep their endpoints; only the Harness holds model credentials.
 
+For new protected dedicated Codex revisions with admitted inference, Kubernetes
+Compute records the launch behavior in the revision. The authentication probe and
+app-server disable unbounded native connection retries, so a connection failure does
+not leave either process waiting indefinitely to reconnect. Stored revisions retain their original commands.
+
 For custom endpoints, `gatewayConfigurationDocument` calls
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`
 to clone the admitted document. It qualifies every chat selection the Harness model rule
@@ -299,6 +304,8 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 13:05: Trace protected Codex connection failure behavior. (authoring-run/3dd62294-043d-4a57-8958-d8a0e81bc5a4 - d786a403948e92b5f3be2e1289c8f1a2a1542600)
 
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
 
