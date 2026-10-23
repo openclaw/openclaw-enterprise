@@ -100,6 +100,7 @@ export async function staticEgressFixture(
     secretValue,
     admitSource,
     providerServer = createHttpsServer,
+    credentialProxyCapacity,
   } = {},
 ) {
   const directory = await temporaryDirectory(t, "oce-egress-wire-");
@@ -459,6 +460,7 @@ export async function staticEgressFixture(
     now,
     provisionedPeople: [],
     preparedTokens,
+    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
     driverConfigurations: [
       {
         capability: "sandbox",

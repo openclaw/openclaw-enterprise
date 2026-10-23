@@ -11,6 +11,14 @@ import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
 import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  installationControllerOptions,
+  loadInstallationConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
   CREDENTIAL_PROXY_CAPACITY_MAXIMUM,
@@ -2023,6 +2031,41 @@ test("configured replay bounds limit each Sandbox and the process", async (t) =>
   f.advance(30_000);
   assert.equal(await use("c"), "ready", "expired IDs return both bounds");
   assert.equal(await use("a"), "ready");
+});
+
+test("an Installation's request capacity bounds the actual exchange and recovers on release", async (t) => {
+  // Startup loads the operator's block, and the API compositions spread these options
+  // into the controller unchanged; the fixture's controller takes the same value.
+  const configuration = createCredentialProxyInstallationConfiguration();
+  configuration.drivers.credential_proxy.requestCapacity = { sandboxOperations: 1 };
+  const directory = await temporaryDirectory(t, "oce-request-capacity-");
+  const path = join(directory, "installation.yaml");
+  await writeFile(path, JSON.stringify(configuration));
+  const loaded = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const { credentialProxyCapacity } = installationControllerOptions(loaded.installation);
+  assert.equal(credentialProxyCapacity?.sandboxOperations, 1);
+  const f = await staticEgressFixture(t, { credentialProxyCapacity });
+  // The Sandbox's only operation slot is held by a ready handle on an open exchange.
+  const held = await f.beginExchange();
+  held.stream.write(held.opening(f.capture()));
+  assert.ok((await held.next()).resolved.ready, "the first request is ready");
+  const reads = f.secretReads;
+  const refused = await f.resolve(f.capture());
+  assert.equal(refused.refused?.code, f.refusalCode("UNAVAILABLE"), JSON.stringify(refused));
+  assert.equal(f.secretReads, reads, "a request past the configured share reads no Secret");
+  // Closing the exchange releases its handle and with it the slot. The authority sees the
+  // cancellation asynchronously, so the next request may briefly still be refused.
+  held.stream.cancel();
+  const deadline = Date.now() + 10_000;
+  let next = await f.resolve(f.capture());
+  while (!next.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    next = await f.resolve(f.capture());
+  }
+  assert.ok(next.ready, `the released slot serves the next request: ${JSON.stringify(next)}`);
 });
 
 test("a request ID stays reserved once policy or Secret work can start", async (t) => {

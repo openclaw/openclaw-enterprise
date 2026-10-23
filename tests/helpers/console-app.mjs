@@ -442,6 +442,9 @@ export async function createConsoleAppFixture(t, options = {}) {
         ...(options.nativeWorkerSupport === undefined
           ? {}
           : { nativeWorkerSupport: options.nativeWorkerSupport }),
+        ...(options.credentialProxyCapacity === undefined
+          ? {}
+          : { credentialProxyCapacity: options.credentialProxyCapacity }),
       });
       const modelBackends = backends.filter((backend) => backend.type === "chatgpt");
       if (modelBackends.length > 0) {

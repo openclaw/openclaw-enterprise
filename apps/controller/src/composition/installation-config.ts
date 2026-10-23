@@ -58,6 +58,7 @@ import {
   DependencyUnavailableError,
   validateBackendDefinitions,
   type BundledPresetVersion,
+  type ControllerOptions,
   type CredentialProxyCapacity,
   type NativeWorkerSupport,
   resolveCredentialProxyCapacity,
@@ -176,6 +177,31 @@ export function installationDriverConfigurations(
         ]
       : [],
   );
+}
+
+/**
+ * The controller options that come from the Installation alone. API compositions spread them
+ * unchanged, so a startup setting cannot be loaded and then dropped before the controller.
+ */
+export function installationControllerOptions(
+  installation: InstallationStartupConfiguration | undefined,
+): Pick<
+  ControllerOptions,
+  | "driverConfigurations"
+  | "sandboxNetworkPolicyCeiling"
+  | "nativeWorkerSupport"
+  | "credentialProxyCapacity"
+> {
+  return {
+    driverConfigurations: installationDriverConfigurations(installation),
+    sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    ...(installation?.runtime === undefined
+      ? {}
+      : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
+    ...(installation?.credentialProxyCapacity === undefined
+      ? {}
+      : { credentialProxyCapacity: installation.credentialProxyCapacity }),
+  };
 }
 
 export type ServiceAccountDriverFactory = (
