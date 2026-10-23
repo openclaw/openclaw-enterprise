@@ -220,12 +220,34 @@ const producerQuietMs = 200;
 // quiet window before that proves nothing about the consumer, so it is not a stall.
 function writePayload(outgoing, consumerHolding = () => true) {
   let producedBytes = 0;
+  let refusals = 0;
   let quiet;
+  let stopped = false;
   const hash = createHash("sha256");
   const { promise: stalled, resolve, reject } = Promise.withResolvers();
+  // Callers may await this only after other setup; keep an early failure attributable.
+  stalled.catch(() => {});
   const stop = () => {
+    stopped = true;
     clearTimeout(quiet);
     outgoing.off("drain", write);
+  };
+  // The quiet window counts only from a moment the consumer was seen holding.
+  const settleIfQuiet = (refusal, held) => {
+    if (!held) {
+      quiet = setTimeout(() => settleIfQuiet(refusal, consumerHolding()), producerQuietMs);
+      return;
+    }
+    // Timers run before I/O callbacks: let a drain that is already due run first.
+    setImmediate(() => {
+      if (stopped || refusal !== refusals) {
+        return;
+      }
+      stop();
+      // Everything produced so far is queued; the consumer must still get all of it.
+      outgoing.end();
+      resolve(producedBytes);
+    });
   };
   function write() {
     clearTimeout(quiet);
@@ -233,18 +255,10 @@ function writePayload(outgoing, consumerHolding = () => true) {
       producedBytes += streamChunk.length;
       hash.update(streamChunk);
       if (!outgoing.write(streamChunk)) {
+        const refusal = ++refusals;
+        const held = consumerHolding();
         outgoing.once("drain", write);
-        const settleIfQuiet = () => {
-          if (!consumerHolding()) {
-            quiet = setTimeout(settleIfQuiet, producerQuietMs);
-            return;
-          }
-          stop();
-          // Everything produced so far is queued; the consumer must still get all of it.
-          outgoing.end();
-          resolve(producedBytes);
-        };
-        quiet = setTimeout(settleIfQuiet, producerQuietMs);
+        quiet = setTimeout(() => settleIfQuiet(refusal, held), producerQuietMs);
         return;
       }
     }
