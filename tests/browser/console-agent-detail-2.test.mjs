@@ -1152,7 +1152,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
-test("Agent detail rereads native admin access once when a pending deployment activates", async (t) => {
+test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
   const cookieDomain = "oce.example.test";
   const consoleHost = `console.${cookieDomain}`;
   const nativeDomain = `agents.${cookieDomain}`;
@@ -1246,6 +1246,37 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // The button returns from "Refreshing…" only after the reread Agent was applied.
   await activity.getByRole("button", { name: "Refresh deployment", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
+
+  // A keyboard reader who refreshes access keeps focus on the button through the read: a second
+  // Enter while it reads sends nothing, and the next Tab continues from the card (issue 3311).
+  const reload = card.getByRole("button", { name: "Refresh access" });
+  const isFocused = (locator) =>
+    locator.evaluate((node) => node === node.ownerDocument.activeElement);
+  const readSettled = async () => {
+    await waitForEnabled(reload);
+    // Chromium moves focus off a disabled control when it next renders.
+    await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+  };
+  let held = await holdRequests(t, page, `${fixture.origin}${nativeAdminPath}`, { once: true });
+  await reload.focus();
+  await page.keyboard.press("Enter");
+  await held.requested;
+  await page.keyboard.press("Enter");
+  held.release();
+  await readSettled();
+  assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 3);
+  assert.equal(await isFocused(reload), true);
+
+  // Focus the reader moves during a read stays where they put it.
+  held = await holdRequests(t, page, `${fixture.origin}${nativeAdminPath}`, { once: true });
+  await page.keyboard.press("Enter");
+  await held.requested;
+  await page.keyboard.press("Tab");
+  const next = page.locator("summary", { hasText: "What this page can tell you" });
+  assert.equal(await isFocused(next), true);
+  held.release();
+  await readSettled();
+  assert.equal(await isFocused(next), true);
 });
 
 for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [

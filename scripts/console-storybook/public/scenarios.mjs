@@ -6769,6 +6769,18 @@ export const scenarios = {
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
   },
+  nativeRefreshing: {
+    group: "Components/Native admin",
+    name: "Refreshing access",
+    path: draft,
+    nativeAdmin: "stopped",
+    // The first access check answers at once; each Refresh access reads for 1.5 s.
+    rules: [{ suffix: "/native-admin", skip: 1, delayMs: 1500 }],
+    description: "Refresh access keeps keyboard focus while it rereads native admin access.",
+    steps: [
+      "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
+    ],
+  },
   workspaceNavigation: {
     group: "Components/Workspace",
     name: "Keep unsaved files",
