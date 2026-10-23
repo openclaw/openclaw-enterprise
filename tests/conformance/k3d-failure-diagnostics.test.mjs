@@ -90,7 +90,12 @@ const events = [
   },
 ];
 
-function fakeKubectl({ pods = [hookPod, postgresPod], logs = {}, fail = {} } = {}) {
+function fakeKubectl({
+  pods = [hookPod, postgresPod],
+  events: items = events,
+  logs = {},
+  fail = {},
+} = {}) {
   const calls = [];
   const kubectl = async (...args) => {
     calls.push(args);
@@ -102,7 +107,7 @@ function fakeKubectl({ pods = [hookPod, postgresPod], logs = {}, fail = {} } = {
       return JSON.stringify({ items: pods });
     }
     if (verb === "get" && kindOrPod === "events") {
-      return JSON.stringify({ items: events });
+      return JSON.stringify({ items });
     }
     if (verb === "logs") {
       const container = args[args.indexOf("--container") + 1];
@@ -378,6 +383,47 @@ test("the event and log budgets keep the newest entries", async () => {
   assert.doesNotMatch(detail, /Pulled/);
   assert.match(detail, /log line 49$/);
   assert.doesNotMatch(detail, /log line 0\d/);
+});
+
+test("events are ordered by when they were last observed, across timestamp precision", async () => {
+  const event = (reason, times) => ({
+    ...times,
+    type: "Normal",
+    reason,
+    involvedObject: { kind: "Pod", name: "postgres" },
+    message: reason,
+  });
+  const { kubectl } = fakeKubectl({
+    events: [
+      // Text order put "05.400000Z" before "05Z", so the whole-second event read as the newer
+      // one and the budget dropped the newest (finding 2225).
+      event("FractionalSameSecond", { eventTime: "2026-10-16T18:15:05.400000Z" }),
+      event("WholeSecond", { lastTimestamp: "2026-10-16T18:15:05Z" }),
+      // A repeating event's last sighting is its series', not its first eventTime.
+      event("SeriesLatest", {
+        eventTime: "2026-10-16T18:15:01.000000Z",
+        series: { lastObservedTime: "2026-10-16T18:15:04.900000Z", count: 2 },
+      }),
+      event("Undated", {}),
+    ],
+  });
+  const lines = (await podFailureDiagnostic({ kubectl, namespace: "oce-observe-1234" }))
+    .split("\n")
+    .filter((line) => / Normal /.test(line));
+  assert.deepEqual(lines, [
+    " Normal Undated Pod/postgres: Undated",
+    "2026-10-16T18:15:04.900000Z Normal SeriesLatest Pod/postgres: SeriesLatest",
+    "2026-10-16T18:15:05Z Normal WholeSecond Pod/postgres: WholeSecond",
+    "2026-10-16T18:15:05.400000Z Normal FractionalSameSecond Pod/postgres: FractionalSameSecond",
+  ]);
+  // A budget for one line keeps the newest event.
+  const newest = await podFailureDiagnostic({
+    kubectl,
+    namespace: "oce-observe-1234",
+    budgets: { events: 100 },
+  });
+  assert.match(newest, /FractionalSameSecond/);
+  assert.doesNotMatch(newest, /WholeSecond|SeriesLatest|Undated/);
 });
 
 test("a stalled pod diagnostic gives way to its deadline and starts no read after it", async () => {

@@ -11,6 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
+import { compareEventTimes } from "./kubernetes-event-time.mjs";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -400,8 +401,6 @@ const WATCH_SECONDS = 3 * 60 * 60;
 const MAX_WATCH_BYTES = 32 * 1024 * 1024;
 const MAX_ACTIVITY_RECORDS = 200;
 const MAX_ACTIVITY_FILES = 40;
-const RFC3339_TIMESTAMP =
-  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:)(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
 
 function* watchLines(text) {
   for (const line of text.split("\n")) {
@@ -449,34 +448,9 @@ function podStatus(type, pod) {
   };
 }
 
-function rfc3339Instant(value) {
-  const text = String(value ?? "");
-  const match = RFC3339_TIMESTAMP.exec(text);
-  if (match === null) {
-    return undefined;
-  }
-  const seconds = Date.parse(`${match[1]}${match[2]}${match[4]}`) / 1_000;
-  if (!Number.isSafeInteger(seconds)) {
-    return undefined;
-  }
-  return { seconds, fraction: match[3] ?? "" };
-}
-
+// Projected events keep their newest time as lastTimestamp (eventStatus).
 function compareEventTimestamps(left, right) {
-  const leftText = String(left.lastTimestamp ?? "");
-  const rightText = String(right.lastTimestamp ?? "");
-  const leftInstant = rfc3339Instant(leftText);
-  const rightInstant = rfc3339Instant(rightText);
-  if (leftInstant === undefined || rightInstant === undefined) {
-    return leftText.localeCompare(rightText);
-  }
-  if (leftInstant.seconds !== rightInstant.seconds) {
-    return leftInstant.seconds - rightInstant.seconds;
-  }
-  const width = Math.max(leftInstant.fraction.length, rightInstant.fraction.length);
-  const leftFraction = leftInstant.fraction.padEnd(width, "0");
-  const rightFraction = rightInstant.fraction.padEnd(width, "0");
-  return leftFraction < rightFraction ? -1 : leftFraction > rightFraction ? 1 : 0;
+  return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
 }
 
 // Projects raw watch streams into bounded Agent namespace activity: Pod status
