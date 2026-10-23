@@ -405,6 +405,7 @@ export {
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
   DeviceAuthorizationStartError,
   DriverSelectionError,
   ModelDiscoveryError,

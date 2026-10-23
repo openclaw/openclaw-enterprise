@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import { TransientDependencyError } from "../../packages/occ/src/index.ts";
+import {
+  PersistedStateInvalidError,
+  PostgresPlatformState,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -177,6 +181,88 @@ for (const mode of ["transient", "generic"]) {
       );
     },
   );
+}
+
+// Finding 1801: a row the pass cannot decode fails its first reads with an error that lease
+// recovery treated as an outage. An unreadable Agent (here its saved plugins) also failed the
+// stored refusal's reread, which left the claim to lease recovery; an unreadable AgentRevision
+// let the reread restore the wait, whose stop failed reading it. Either way recovery kept the
+// wait and refunded its attempt, so the pass failed again every lease, forever. Like an invalid
+// scope, an unreadable row cannot recover by itself: it stays an ordinary retry that the attempt
+// limit ends. The last attempt's own result cannot lock an unreadable Agent either, so its lease
+// expires. Transient failures keep the wait (above, and finding 1041 in -replacement).
+for (const [row, code] of [
+  ["Agent", "LEASE_EXPIRED"],
+  ["AgentRevision", "DEPENDENCY_UNAVAILABLE"],
+]) {
+  test(
+    `a refused candidate's wait over an unreadable ${row} ends at the attempt limit`,
+    { ...requiresPostgres, timeout: 90_000 },
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
+      const events = [];
+      const stop = failingStop();
+      const { owner, replacement } = await startRefusedCandidate(
+        fixture,
+        `refused-unreadable-${row.toLowerCase()}`,
+        {
+          refuse: "unsupported",
+          emit: (event) => events.push(event),
+          stopRevision: stop.stopRevision,
+        },
+      );
+      await waitForRefusedStopWaits(events, replacement, 1);
+      const restore = await makeUnreadable(fixture, row, owner, replacement);
+      try {
+        await assertWorkEnds(fixture, replacement, "failed_permanent", code);
+        assert.ok(
+          !events.some(
+            ({ event, code, workId }) =>
+              event === "worker.error" &&
+              code === "WORKER_UNAVAILABLE" &&
+              workId === replacement.idempotencyKey,
+          ),
+          "no failed reread left the claim to lease recovery",
+        );
+      } finally {
+        restore();
+      }
+    },
+  );
+}
+
+// Makes the Agent's row or the candidate AgentRevision unreadable; returns an undo for the latter.
+async function makeUnreadable(fixture, row, owner, candidate) {
+  if (row === "Agent") {
+    // The column only checks for an object; the reader also checks each plugin entry.
+    await fixture.observerPool.query(
+      `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
+      [owner.id],
+    );
+    return () => {};
+  }
+  // Admitted revisions are immutable, so the reader's refusal (an older admission a newer
+  // controller no longer decodes) is injected at every read of the candidate.
+  const read = PostgresPlatformState.prototype.read;
+  PostgresPlatformState.prototype.read = function (work) {
+    return read.call(this, (view) =>
+      work({
+        ...view,
+        revisions: {
+          ...view.revisions,
+          async findRevision(namespaceId, agentId, revisionId) {
+            if (revisionId === candidate.id) {
+              throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
+            }
+            return view.revisions.findRevision(namespaceId, agentId, revisionId);
+          },
+        },
+      }),
+    );
+  };
+  return () => {
+    PostgresPlatformState.prototype.read = read;
+  };
 }
 
 // Finding 1033 keeps one exception: authorization and backend refusals are decided again before

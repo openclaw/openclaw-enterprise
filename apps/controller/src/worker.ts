@@ -68,6 +68,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
@@ -326,6 +327,11 @@ function revisionFailureLogFields(error: unknown): {
   return record === undefined
     ? { cause: errorClass }
     : { cause: errorClass, ...causeStatusLogFields(record) };
+}
+
+/** An invalid row: reading it again fails the same way until someone repairs it. */
+function unrecoverableRead(error: unknown): boolean {
+  return error instanceof ScopeViolationError || error instanceof PersistedStateInvalidError;
 }
 
 /**
@@ -6210,9 +6216,11 @@ export class ControllerWorker {
    * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
    * next pass prepared the candidate again, and at the attempt limit the work failed with the
    * candidate running and the refusal lost (finding 1041). If this read fails too, the error
-   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
-   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
-   * attempt limit ends instead of a wait repeated forever.
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. An
+   * invalid row (a ScopeViolationError, or persisted state its reader cannot decode) cannot
+   * recover by itself, so it stays a retry that the attempt limit ends instead of a wait repeated
+   * forever (finding 1801). It is not read again: a wait read past it would stop the candidate,
+   * whose reads fail the same way.
    */
   private async rereadRefusalWait(
     claim: ClaimedWork,
@@ -6227,6 +6235,9 @@ export class ControllerWorker {
     ) {
       return;
     }
+    if (unrecoverableRead(error)) {
+      return;
+    }
     try {
       const current =
         agent ??
@@ -6238,7 +6249,7 @@ export class ControllerWorker {
       if (reread instanceof WorkClaimLostError) {
         throw reread;
       }
-      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+      if (unrecoverableRead(reread)) {
         return;
       }
       // The run loop's own log names no work.

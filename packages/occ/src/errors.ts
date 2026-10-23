@@ -112,6 +112,13 @@ export class DependencyUnavailableError extends AuthorizationDeniedError {
 }
 
 /**
+ * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
+ * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller
+ * that waits out outages must not wait on it forever.
+ */
+export class PersistedStateInvalidError extends DependencyUnavailableError {}
+
+/**
  * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
  * Installation no longer selects. Each subclass is raised only after the caller's grant and the
  * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
