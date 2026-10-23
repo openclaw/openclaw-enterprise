@@ -414,6 +414,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
           : undefined));
   // Whether this read skipped the frontier's delivered lines by position.
   let positional = false;
+  // Whether de-duplication withheld a frontier line it could not prove delivered.
+  let frontierAmbiguous = false;
   if (dedupResume !== undefined && !replacedDuringRead) {
     const lastTime = dedupResume.lastTime!;
     // The hashes cover every line delivered at `lastTime` only while the count fits.
@@ -488,14 +490,31 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
         // An incomplete tail or full cursor may have omitted earlier copies, and a
         // full history forgot earlier delivered text. Neither can establish a new
         // occurrence until time advances.
-        return complete || (fullHistory && !remaining.has(hash));
+        const fresh = complete || (fullHistory && !remaining.has(hash));
+        frontierAmbiguous ||= !fresh;
+        return fresh;
       }
       remaining.set(hash, count - 1);
       return false;
     });
   }
+  // Recovery from delivered progress loses nothing when the changed window still
+  // starts before the delivered frontier: its ordered timed lines hold every later
+  // line, and de-duplication proved each withheld frontier line delivered.
+  const recoveredFrontier =
+    recoverDelivered &&
+    dedupResume !== undefined &&
+    !frontierAmbiguous &&
+    completeLines.length > 0 &&
+    completeLines.every(
+      (line, index) =>
+        validRuntimeLogFrontierTime(line.time) &&
+        (index === 0 || compareRuntimeLogTime(line.time, completeLines[index - 1]!.time!) >= 0),
+    ) &&
+    compareRuntimeLogTime(completeLines[0]!.time!, dedupResume.lastTime!) < 0;
   if (
     checkpointLost &&
+    !recoveredFrontier &&
     !leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
   ) {
     leading.push(runtimeLogGap("window_exceeded", observedStream, earliest));
