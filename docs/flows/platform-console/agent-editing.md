@@ -239,7 +239,7 @@ authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
 **Reload authentication source** before saving or granting. Pending access
 survives navigation and blocks deployment until confirmed or reloaded. An administrator's
-tab blocks deployment while Namespace IAM shows no grant. Admission
+Credentials tab blocks deployment once Namespace IAM shows no grant. Admission
 remains authoritative; preflight/authorization errors stay separate from credential
 metadata. Confirmed access does not prove provider readiness.
 

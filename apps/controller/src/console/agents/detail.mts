@@ -3469,9 +3469,12 @@ export async function renderAgentDetail(
               const kept = (outstandingChannelGrants?.secrets ?? []).filter(
                 (secret) => !ungranted.some((next) => next.id === secret.id),
               );
+              // A grant an earlier request left refused or unconfirmed keeps its problem and Retry.
               setOutstandingChannelGrants({
                 secrets: [...kept, ...ungranted],
-                problem: "unverified",
+                problem: kept.length
+                  ? (outstandingChannelGrants?.problem ?? "unverified")
+                  : "unverified",
               });
               channelGrantOutstanding = true;
               if (context.isCurrent()) {
@@ -3761,8 +3764,19 @@ export async function renderAgentDetail(
       }
       // This administrator's console read the saved source's grant as missing: saving the source
       // again grants it, which the shared wording names (finding 2260).
+      // A submit since the read began owns the status line, even when it failed before saving.
+      let submitted = false;
+      form.addEventListener("submit", () => {
+        submitted = true;
+      });
       void data.harnessGrantMissing().then((missing) => {
-        if (missing && !savedAuthentication && !outcomeUnknown && !pending && context.isCurrent()) {
+        if (
+          missing &&
+          !submitted &&
+          !savedAuthentication &&
+          !outcomeUnknown &&
+          context.isCurrent()
+        ) {
           setStatusTone(feedback, "warning");
           feedback.textContent = grantWarning(
             "missing",

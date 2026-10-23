@@ -757,6 +757,8 @@ export function createChannelSecretsPanel({
         configurationSaved = true;
         state.draftSeed = null;
         state.carriedNote = "";
+        // Grants an earlier request left refused or unconfirmed keep their problem and Retry.
+        const earlierProblem = pendingSecretGrants().length > 0;
         const grantTargets = secretGrantTargets(draft);
         if (grantTargets.length && !canGrant) {
           // Granting writes IAM policy, which needs Installation administration. This session
@@ -764,7 +766,9 @@ export function createChannelSecretsPanel({
           // Nothing verified the Agent's access, which an administrator may already have
           // granted; the warning names who grants it, as the harness path does (findings 2109,
           // 2259, 2263).
-          state.grantProblem = "unverified";
+          if (!earlierProblem) {
+            state.grantProblem = "unverified";
+          }
           state.outcomeUnknown = false;
           state.saveError = { ...requestFailure(undefined), step: "grant" };
           state.saveMessage = "";

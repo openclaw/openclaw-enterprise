@@ -77,8 +77,8 @@ that exact Secret. Granting needs Installation `administer`. When a member saves
 the source, the binding saves, but the member's session sends no grant, so it
 does not verify the Agent's access. The console asks an Installation administrator
 to open the Agent's Credentials and select **Save authentication source**, which
-grants it. An administrator's Credentials tab reads Namespace IAM, says when that
-grant is missing and holds **Deploy new version** until it is granted.
+grants it. When an administrator opens Credentials, the tab reads Namespace IAM, says
+when that grant is missing and holds **Deploy new version** until it is granted.
 If the grant was already in place, **Reload authentication source** clears the
 warning. If a grant request is refused or its outcome is lost, the console says
 so and offers **Retry credential access**.

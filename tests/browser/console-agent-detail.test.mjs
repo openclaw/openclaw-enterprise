@@ -2692,6 +2692,41 @@ test("Agent credentials name the administrator step for a member's harness Secre
   );
 });
 
+// The harness grant check reads Namespace IAM; a refused read proves nothing missing, so an
+// administrator's Deploy stays as it was and no warning appears (finding 2260).
+test("A refused harness grant read leaves an administrator's Deploy alone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unread harness grant", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unread Grant Agent", nativeValues("u"));
+  // The Agent's binding moved to a Secret it holds no grant for.
+  const ungranted = await fixture.createSecret(namespace.id, "Ungranted model key", "hidden");
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: ungranted.ref },
+  });
+  const { page } = await newPage(t, fixture);
+  await page.route(`**/namespaces/${namespace.id}/iam/roles`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Access denied." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000002260" },
+      }),
+    }),
+  );
+  const read = page.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/iam/roles`),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Unread Grant Agent" }).waitFor();
+  assert.equal((await read).status(), 403);
+  await settlePageRequests(page);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+});
+
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
