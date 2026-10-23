@@ -3160,6 +3160,59 @@ for (const refusal of [
   }
 }
 
+// Finding 2265: a maintenance pass of a running revision is no deployment anyone waits on. A
+// 403 on a private Secret write there fails only that bounded pass, as an outage does, and
+// keeps the maintenance chain, so the Agent keeps its runtime and recovers by itself once an
+// operator fixes the grant instead of needing a new deployment.
+revisionTest(
+  "a Kubernetes 403 on a private Secret write during maintenance keeps the maintenance chain",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("maintenance-secret-forbidden");
+    const events = [];
+    let refuse = false;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        maintenanceIntervalMs: 200,
+        async prepareRevision(...args) {
+          if (refuse) {
+            throw new KubernetesSecretWriteForbiddenError();
+          }
+          return fixture.compute.prepareRevision(...args);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await fixture.work(candidate, "succeeded");
+    refuse = true;
+    const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+    const refused = await completion(
+      events,
+      "a maintenance pass refused with 403",
+      (event) =>
+        event.event === "worker.completed" &&
+        event.workId?.startsWith(maintenance) &&
+        event.cause === "KubernetesSecretWriteForbiddenError",
+    );
+    assert.deepEqual(
+      { outcome: refused.outcome, code: refused.code },
+      { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
+    );
+    refuse = false;
+    await completion(
+      events,
+      "a later maintenance pass to succeed",
+      (event, index) =>
+        index > events.indexOf(refused) &&
+        event.event === "worker.completed" &&
+        event.workId?.startsWith(maintenance) &&
+        event.outcome === "success",
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
+  },
+);
+
 // The admission-limit case uses the real OpenShellAdmissionLimitError class, thrown from a
 // stubbed Compute prepareRevision; the gateway wire test proves the client raises it. The
 // limit frees up as completed admissions age out, so it must wait like any other dependency

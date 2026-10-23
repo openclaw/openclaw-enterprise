@@ -435,20 +435,6 @@ function activationPendingResult(error: unknown): {
   return { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" };
 }
 
-/**
- * An activation failure that no retry can clear: the Driver's own refusal, or a private Secret
- * write Kubernetes refused with 403 (finding 1770), which only an operator's grant, admission
- * policy or quota change clears. Both activation paths fail the deployment at once on it
- * instead of waiting for the convergence deadline (finding 2265).
- */
-function permanentActivationFailure(
-  error: unknown,
-): error is ActivationFailedError | KubernetesSecretWriteForbiddenError {
-  return (
-    error instanceof ActivationFailedError || error instanceof KubernetesSecretWriteForbiddenError
-  );
-}
-
 function revisionPendingCode(observation: unknown): string {
   const reason = (observation as { readonly pendingReason?: unknown }).pendingReason;
   return typeof reason === "string" && Object.hasOwn(REVISION_PENDING_CODES, reason)
@@ -4501,7 +4487,15 @@ export class ControllerWorker {
           }
           // As for a lost repository credential authority, this ends a maintenance
           // claim's chain too: the revision cannot activate without a new one.
-          if (permanentActivationFailure(error) || error instanceof CredentialSourceRevisionError) {
+          if (
+            error instanceof ActivationFailedError ||
+            error instanceof CredentialSourceRevisionError ||
+            // Finding 2265: a 403 on a private Secret write fails the deployment at once here as
+            // in preparation (finding 1770). A maintenance pass keeps the running revision's
+            // chain instead, as for an outage: it recovers once an operator fixes the grant.
+            (error instanceof KubernetesSecretWriteForbiddenError &&
+              !claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`))
+          ) {
             await this.finalizeRevision(
               claim,
               { outcome: "permanent", code: error.code },
@@ -5985,7 +5979,8 @@ export class ControllerWorker {
         }
         await this.finalizeRevision(
           claim,
-          permanentActivationFailure(error)
+          error instanceof ActivationFailedError ||
+            error instanceof KubernetesSecretWriteForbiddenError
             ? { outcome: "permanent", code: error.code }
             : activationPendingResult(error),
           revisionFailureLogFields(error),
