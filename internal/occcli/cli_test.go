@@ -168,7 +168,8 @@ type runtimeLogStub struct {
 	harness map[string]any
 	// forbidden lists revisions whose runtime description is refused with 403.
 	forbidden []string
-	// permissions is the caller's Agent permission summary; empty grants all four.
+	// permissions is the caller's Agent permission summary; empty grants all
+	// four, and "forbidden" refuses the read.
 	permissions string
 }
 
@@ -177,6 +178,8 @@ func (stub *runtimeLogStub) serve(response http.ResponseWriter, request *http.Re
 	switch {
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1":
 		fmt.Fprintf(response, `{"data":{"id":"agt_1","activeRevisionId":%q},"meta":{}}`, stub.activeID)
+	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/permissions" && stub.permissions == "forbidden":
+		logError(http.StatusForbidden, "FORBIDDEN", nil)(response, nil)
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/permissions":
 		fmt.Fprintf(response, `{"data":%s,"meta":{}}`, cmp.Or(stub.permissions, `{"update":true,"deploy":true,"operate":true,"delete":true}`))
 	case request.URL.Path == "/namespaces/ns_1/agents/agt_1/revisions":
@@ -407,7 +410,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
 		// The hint keeps the selected Namespace so the copied command targets the same Agent.
-		if err == nil || !strings.Contains(err.Error(), `agent agt_1 has no active revision and no revision you can read; if it was never deployed, run "occ --namespace ns_1 agent deploy agt_1" first`) {
+		if err == nil || err.Error() != `agent agt_1 has no active revision and no revision you can read; if it was never deployed, run "occ --namespace ns_1 agent deploy agt_1" first; otherwise listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID` {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
@@ -435,22 +438,30 @@ func TestAgentLogsNameTheRevisionGrantWhenNoRevisionIsReadable(t *testing.T) {
 		t.Fatalf("logs notice = %q, want %q", errOut, want)
 	}
 
+	// Runtime status needs revision read itself, so its refusal hint names the
+	// grant; the notice does not repeat it.
+	_, runtimeOut, err := runLogsCommand(t, context.Background(), &runtimeLogStub{t: t, activeID: "rev_1"}, "agent", "runtime", "agt_1")
+	if err != nil || runtimeOut != "notice: reading the active revision rev_1\n" {
+		t.Fatalf("runtime notice = %q, err = %v", runtimeOut, err)
+	}
+
 	reader := `{"update":false,"deploy":false,"operate":false,"delete":false}`
+	logsError := "agent agt_1 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID"
 	for _, test := range []struct {
-		args []string
-		want string
+		args        []string
+		permissions string
+		want        string
 	}{
-		{
-			[]string{"agent", "logs", "agt_1", "--source", "gateway"},
-			"agent agt_1 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it), or pass --revision with a revision ID",
-		},
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway"}, reader, logsError},
 		// Runtime status itself needs revision read, so --revision is no way around it.
 		{
-			[]string{"agent", "runtime", "agt_1"},
+			[]string{"agent", "runtime", "agt_1"}, reader,
 			"agent agt_1 has no active revision and no revision you can read; listing revisions needs revision read (ask an administrator to grant it)",
 		},
+		// An unreadable permission summary cannot show deploy access: no deploy advice.
+		{[]string{"agent", "logs", "agt_1", "--source", "gateway"}, "forbidden", logsError},
 	} {
-		stub := &runtimeLogStub{t: t, permissions: reader}
+		stub := &runtimeLogStub{t: t, permissions: test.permissions}
 		_, _, err := runLogsCommand(t, context.Background(), stub, test.args...)
 		if err == nil || err.Error() != test.want {
 			t.Fatalf("%v: error = %v, want %q", test.args, err, test.want)

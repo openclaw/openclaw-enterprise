@@ -114,9 +114,10 @@ func (app *application) agentRevision(
 			"notice: reading the active revision %s; %s %s exists but its runtime could not be read (%v); pass --revision %s to read it",
 			active, other, probe.latest, probe.err, probe.latest,
 		)
-	case probe.unlisted:
+	case probe.unlisted && revisionAdvice != "":
 		// The list is filtered by revision read and the active revision is not in
-		// it, so the caller may read no revision: say what was not checked.
+		// it, so the caller may read no revision: say what was not checked. A
+		// command that itself needs revision read is refused with a hint instead.
 		noticef(
 			notices,
 			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)",
