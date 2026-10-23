@@ -208,6 +208,10 @@ export function installFixture(scenario, evidence) {
     // Simulates returning from a GitHub callback started in this tab.
     sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
   }
+  if (scenario.expiredSession) {
+    // Simulates a tab that had a session before it expired; a first visit has none.
+    sessionStorage.setItem("occ.console.signedIn", "1");
+  }
   if (scenario.pendingGoogleAttempt) {
     // Simulates returning from a Google callback started in this tab.
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));

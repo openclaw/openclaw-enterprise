@@ -855,18 +855,35 @@ export const scenarios = {
     name: "Session expired",
     path: draft,
     signedOut: true,
+    expiredSession: true,
     description:
-      "A protected deep link with no session redirects to sign-in and retains the return destination.",
+      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
     steps: [
       "Sign in with the fixture credentials and confirm the Agent draft page returns.",
       "Confirm no draft is saved or deployment started by signing in.",
     ],
+  },
+  firstVisit: {
+    group: "Pages/Sign in",
+    name: "Deep link, first visit",
+    path: draft,
+    signedOut: true,
+    description:
+      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
     name: "Session unavailable",
     rules: [{ path: "/api/auth/session", status: 503 }],
     description: "The console cannot verify the session. Private data stays hidden.",
+  },
+  namespaceAccessRefused: {
+    group: "Pages/Sign in",
+    name: "Namespace access refused",
+    rules: [{ path: "/namespaces", status: 403, code: "FORBIDDEN" }],
+    description:
+      "A signed-in account whose access was removed is refused Namespaces. Private data stays hidden, and the panel offers Sign out beside Retry.",
+    steps: ["Choose Sign out and confirm the sign-in page replaces the panel."],
   },
   loading: {
     group: "Pages/Sign in",

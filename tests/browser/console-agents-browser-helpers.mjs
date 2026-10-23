@@ -264,12 +264,13 @@ export async function loginThroughForm(
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
-// (session owner key, admin flag and observability URL), which never holds drafts or
-// credentials.
+// (session owner key, admin flag and observability URL) and the tab's signed-in mark, which
+// never hold drafts or credentials.
 export async function consoleStorage(page) {
   return page.evaluate(() => {
     const session = { ...sessionStorage };
     delete session["occ.console.installationAccess"];
+    delete session["occ.console.signedIn"];
     return { local: { ...localStorage }, session };
   });
 }
@@ -289,6 +290,14 @@ export async function selectSecret(scope, label, secret, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
   await field.fill(options.query ?? secret.name);
   await scope.getByRole("option", { name: secretOptionLabel(secret), exact: true }).click();
+}
+
+// Expires every session the app holds, as time passing would: the API then refuses each one.
+// Better Auth's memory adapter stores session expiry as Date values.
+export function expireSessions(fixture) {
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
 }
 
 export async function expectNoText(page, pattern) {

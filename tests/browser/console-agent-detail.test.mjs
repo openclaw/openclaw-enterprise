@@ -12,6 +12,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expireSessions,
   holdRequests,
   login,
   nativeValues,
@@ -2212,9 +2213,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const field = dialog.getByLabel("Value", { exact: true });
   await field.fill("synthetic-unsent-value");
   const input = await field.evaluateHandle((node) => node);
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
   release.resolve();
   assert.equal((await refused).status(), 401);
