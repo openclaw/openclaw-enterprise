@@ -36,6 +36,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { SystemSshCommandExecutor } from "../../apps/controller/src/drivers/compute/ssh/executor.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 
@@ -969,6 +970,34 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
     /unsupported field unsupportedField/,
   );
   assert.deepEqual(hooks, beforeInvalidAuth);
+});
+
+// Finding 2268: when the lifecycle cleanup after a failed activation fails too, the activation's
+// own failure stays first, so the worker classifies the deployment by it, and the cleanup
+// failure follows it instead of replacing it.
+test("SSH activation keeps its own failure first when the lifecycle cleanup also fails", async (t) => {
+  const f = await fixture(t, {
+    lifecycleDrivers: [
+      {
+        id: "hooks",
+        implementation: "test",
+        capability: "configuration",
+        computeLifecycleHooks: {
+          async beforeWorkloadStart() {},
+          async beforeWorkloadStop() {
+            throw new Error("lifecycle cleanup refused");
+          },
+        },
+      },
+    ],
+  });
+  const failed = await stage(f);
+  await writeFile(join(f.revisionDir(failed), "revision.json"), JSON.stringify({ broken: true }));
+  const error = await f.driver.activateRevision(failed).then(
+    () => assert.fail("the activation must fail"),
+    (failure) => failure,
+  );
+  assertCleanupFailure(error, /snapshot|ownership/i, [/lifecycle hook beforeWorkloadStop failed/]);
 });
 
 test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {

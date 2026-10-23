@@ -200,6 +200,7 @@ import {
 import { nodeProgramArguments } from "../node-program.ts";
 import { codexGatewayModelConfiguration } from "../codex-model-configuration.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { failureAfterCleanup, mapPrimaryFailure } from "../cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
@@ -6020,7 +6021,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     try {
       return await this.prepareRevisionWorkloads(revision, context);
     } catch (error) {
-      throw transientKubernetesFailure(error);
+      throw mapPrimaryFailure(error, transientKubernetesFailure);
     }
   }
 
@@ -7300,18 +7301,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       return agentReadiness;
     } catch (error) {
-      const failures = [error];
-      if (launchPrepared) {
-        try {
-          await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Agent workload preparation and cleanup failed.");
-      }
-      throw error;
+      throw await failureAfterCleanup(
+        error,
+        "Agent workload preparation and cleanup failed.",
+        launchPrepared
+          ? [() => this.lifecycle.beforeWorkloadStop(revision, { cleanup: true })]
+          : [],
+      );
     }
   }
 
@@ -7323,7 +7319,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     try {
       await this.activateRevisionWorkloads(revision, context);
     } catch (error) {
-      throw transientKubernetesFailure(error);
+      throw mapPrimaryFailure(error, transientKubernetesFailure);
     }
   }
 
@@ -7489,8 +7485,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
             namespace,
           );
         } catch (error) {
-          await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
-          throw error;
+          throw await failureAfterCleanup(
+            error,
+            "Agent workload activation and lifecycle cleanup failed.",
+            [() => this.lifecycle.beforeWorkloadStop(revision, { cleanup: true })],
+          );
         }
         // The Recreate Gateway no longer runs the older revision it served, and the
         // active pointer already names this one. Its copies go now: if this
@@ -7635,8 +7634,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }
           await this.reconcile(replacement, { ...ownership, revisionId: revision.id }, namespace);
         } catch (error) {
-          await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
-          throw error;
+          throw await failureAfterCleanup(
+            error,
+            "Agent workload activation and lifecycle cleanup failed.",
+            [() => this.lifecycle.beforeWorkloadStop(revision, { cleanup: true })],
+          );
         }
         deployment = await this.getOwned("Deployment", revisionName, namespace, {
           ...ownership,

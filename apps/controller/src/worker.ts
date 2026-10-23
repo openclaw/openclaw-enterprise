@@ -113,6 +113,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
+import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
   withComputeAbortSignal,
@@ -288,12 +289,81 @@ function causeStatusLogFields(error: object): {
 }
 
 /**
+ * The cleanup failures a Compute Driver reported beside each primary failure the worker took out
+ * of a ComputeCleanupFailedError, so the pass's log line still shows that cleanup failed.
+ */
+const computeCleanupFailures = new WeakMap<object, readonly unknown[]>();
+
+/**
+ * The failure a Compute Driver operation's outcome follows. A Driver whose cleanup also failed
+ * reports both; the operation's own failure decides, so a refusal still fails at once and an
+ * outage still waits, and the cleanup failure is kept for the log fields (finding 2268). A
+ * primary failure that is not an object cannot carry that record, so its aggregate stays whole
+ * and retries as before.
+ */
+function primaryComputeFailure(error: unknown): unknown {
+  if (!(error instanceof ComputeCleanupFailedError)) {
+    return error;
+  }
+  const primary = error.primary;
+  if (primary === null || typeof primary !== "object" || error.cleanupFailures.length === 0) {
+    return error;
+  }
+  computeCleanupFailures.set(primary, error.cleanupFailures);
+  return primary;
+}
+
+/** The error class a log line may name: its own name or constructor's, else `Error`. */
+function loggedErrorClass(error: unknown): string {
+  const record = error !== null && typeof error === "object" ? error : undefined;
+  return (
+    (record === undefined
+      ? undefined
+      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" &&
+            candidate !== "Error" &&
+            LOGGED_ERROR_NAME.test(candidate),
+        )) ?? "Error"
+  );
+}
+
+/**
  * Log fields that say which dependency failed and why, without provider text:
  * a transient dependency names itself and a closed reason; any other failure
  * gives its error class and any fixed Driver request diagnostic. Other errors add
  * the HTTP status of an SDK error, its own or its cause's, and the Status reason a cause keeps.
+ * A failure whose Compute cleanup also failed adds `cleanupCause`, the first cleanup failure's
+ * class, so a failed cleanup never reads as a clean one (finding 2268).
  */
 function revisionFailureLogFields(error: unknown): {
+  readonly dependency?: string;
+  readonly cause?: string;
+  readonly status?: number;
+  readonly reason?: string;
+  readonly method?: string;
+  readonly grpcStatus?: number;
+  readonly validationCategory?: string;
+  readonly cleanupCause?: string;
+} {
+  const fields = primaryFailureLogFields(error);
+  const cleanup = cleanupFailuresOf(error);
+  return cleanup === undefined ? fields : { ...fields, cleanupCause: loggedErrorClass(cleanup[0]) };
+}
+
+function cleanupFailuresOf(error: unknown): readonly unknown[] | undefined {
+  if (error === null || typeof error !== "object") {
+    return undefined;
+  }
+  // A Sandbox gateway outage reaches the log as the transient failure that wraps it.
+  const cause = (error as { readonly cause?: unknown }).cause;
+  return (
+    computeCleanupFailures.get(error) ??
+    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined)
+  );
+}
+
+function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
   readonly status?: number;
@@ -306,16 +376,7 @@ function revisionFailureLogFields(error: unknown): {
     return { dependency: error.dependency, cause: error.reason, ...causeStatusLogFields(error) };
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
-  const name =
-    record === undefined
-      ? undefined
-      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" &&
-            candidate !== "Error" &&
-            LOGGED_ERROR_NAME.test(candidate),
-        );
-  const errorClass = name ?? "Error";
+  const errorClass = loggedErrorClass(error);
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -1620,7 +1681,11 @@ export class ControllerWorker {
       this.validateExecutionAdmission(revision);
       this.stoppedPredecessors.delete(revision.id);
     }
-    await stage.call(this.compute, revision, context);
+    try {
+      await stage.call(this.compute, revision, context);
+    } catch (error) {
+      throw primaryComputeFailure(error);
+    }
   }
 
   private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
@@ -1792,7 +1857,8 @@ export class ControllerWorker {
         }
       }
       return prepared;
-    } catch (error) {
+    } catch (failure) {
+      const error = primaryComputeFailure(failure);
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).

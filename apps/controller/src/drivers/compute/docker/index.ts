@@ -32,6 +32,7 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
@@ -657,28 +658,14 @@ export class DockerComputeDriver implements ComputeDriver {
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
       return { ...result, ready: gateway.ready };
     } catch (error) {
-      const failures = [error];
-      for (const name of [gatewayCreated, agentCreated]) {
-        if (name === undefined) {
-          continue;
-        }
-        try {
-          await this.removeContainer(name);
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (launchPrepared) {
-        try {
-          await this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true });
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Docker workload preparation and cleanup failed.");
-      }
-      throw error;
+      throw await failureAfterCleanup(error, "Docker workload preparation and cleanup failed.", [
+        ...[gatewayCreated, agentCreated]
+          .filter((name): name is string => name !== undefined)
+          .map((name) => () => this.removeContainer(name)),
+        ...(launchPrepared
+          ? [() => this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true })]
+          : []),
+      ]);
     }
   }
 

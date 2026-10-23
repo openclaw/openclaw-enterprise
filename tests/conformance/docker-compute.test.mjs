@@ -11,6 +11,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
@@ -760,6 +761,53 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
       "missing credentials must fail closed without adopting a new token",
     );
   });
+});
+
+// Finding 2268: when preparation fails and its cleanup fails too, the preparation's own failure
+// stays first, so the worker classifies the deployment by it. Every cleanup still runs after an
+// earlier one fails: the created container's removal, then the lifecycle cleanup.
+test("Docker preparation keeps its own failure first when every cleanup also fails", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  driver.setLifecycleDrivers([
+    {
+      id: "hooks",
+      capability: "configuration",
+      implementation: "test",
+      computeLifecycleHooks: {
+        async beforeWorkloadStart() {},
+        async beforeWorkloadStop() {
+          throw new Error("lifecycle cleanup refused");
+        },
+      },
+    },
+  ]);
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-cleanup",
+    agentId: "agent-cleanup",
+    mode: "dedicated",
+  });
+  const primary = new Error("gateway reconcile refused");
+  driver.reconcileGateway = async () => {
+    throw primary;
+  };
+  const removed = [];
+  driver.removeContainer = async (name) => {
+    removed.push(name);
+    throw new Error("container removal refused");
+  };
+  const error = await withModelKey(() =>
+    driver.prepareRevision(revision).then(
+      () => assert.fail("the preparation must fail"),
+      (failure) => failure,
+    ),
+  );
+  assertCleanupFailure(error, primary, [
+    /container removal refused/,
+    /lifecycle hook beforeWorkloadStop failed/,
+  ]);
+  assert.deepEqual(removed, [driver.agentContainerName(tenant.id, revision.agentId, revision.id)]);
+  assert.equal(containers.size, 1, "only the agent container was created");
 });
 
 // Every topology keeps one gateway container per Agent, so preparing a redeploy candidate

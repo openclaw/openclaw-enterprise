@@ -49,6 +49,7 @@ const ALLOWED_FIELDS = new Set([
   "attempt",
   "candidatePreparationReached",
   "cause",
+  "cleanupCause",
   "code",
   "computeDriverId",
   "deployPasses",
