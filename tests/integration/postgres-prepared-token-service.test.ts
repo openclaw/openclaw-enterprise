@@ -638,10 +638,10 @@ test(
     await due();
     // Revocations of the rejected token: the test's own revocation of `late`, then retirement.
     const [{ index: rejected }] = gh.issuesOfTokens;
-    const revocations = () =>
+    const revocations = (index = rejected) =>
       gh.trace.filter(
         ({ method, target, tokenIndex }) =>
-          method === "DELETE" && target === "/installation/token" && tokenIndex === rejected,
+          method === "DELETE" && target === "/installation/token" && tokenIndex === index,
       ).length;
     assert.equal(revocations(), 1);
     // The commit moves the rejected token into retirement custody. A loser whose pass reaches
@@ -675,6 +675,7 @@ test(
       ).length,
       2,
     );
+    assert.equal(revocations(gh.issuesOfTokens[1]!.index), 0, "never retire the replacement");
     const next = await dispatched(true);
     gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);
     await due();

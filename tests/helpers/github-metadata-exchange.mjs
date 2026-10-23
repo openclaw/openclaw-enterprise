@@ -3,6 +3,7 @@ import { get } from "node:https";
 
 // The test plays the enrolled supervisor. OCE owns the genuine signed installation
 // exchange, private response acceptance and material/dispatch/response decisions.
+// `raceMaintenance` is the prepared GitHub owner race these tests share.
 export function captureMetadata(f, changed = {}) {
   const captured = f.capture();
   const [route] = f.installation.plan.routes;
@@ -78,8 +79,8 @@ export async function dispatchMetadata(
 
 /** Runs one maintenance pass on every owner at once over the same durable family. Exactly one
  * owner claims the due family and commits; returns the other owners' results, sorted. A loser
- * finds no due family, so its pass reports only its own retirement step: `idle`, or `retired`
- * when it ran after the winner's commit moved the superseded token into retirement custody. */
+ * claims nothing, so it reports only its own retirement step: `idle`, or `retired` when a
+ * superseded token was already in retirement custody by then. */
 export async function raceMaintenance(owners, signal) {
   const results = await Promise.all(owners.map((owner) => owner.maintain(signal)));
   const committed = results.filter((result) => result === "committed");
