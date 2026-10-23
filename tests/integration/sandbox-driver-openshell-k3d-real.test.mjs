@@ -1920,6 +1920,14 @@ function createIntegrationSandboxDriverFactory(
           throw error;
         }
       },
+      // Compute admits the workspace-node connection only from the revision's
+      // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
+      async workspaceNodePeerLabels(context) {
+        const endpoint = existingEndpointForNamespace(context);
+        return await delegate(undefined, context.namespace.name, endpoint).workspaceNodePeerLabels(
+          context,
+        );
+      },
       // Compute asks for the OpenShell-exposed Codex endpoint and points the Agent Gateway at it.
       // The real Driver supports this only for dedicated Codex, so the bridge proof omits it.
       ...(enableCompatibilityBridges
@@ -1962,16 +1970,6 @@ function createIntegrationSandboxDriverFactory(
                 endpoint,
                 context,
               ).withdrawHarnessExposure(context);
-            },
-            // Compute admits the workspace-node connection only from the revision's
-            // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
-            async workspaceNodePeerLabels(context) {
-              const endpoint = existingEndpointForNamespace(context);
-              return await delegate(
-                undefined,
-                context.namespace.name,
-                endpoint,
-              ).workspaceNodePeerLabels(context);
             },
           }),
       async cleanup(context) {
