@@ -6816,20 +6816,54 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     "https://models.example.test/v1",
     "https://models.example.test/api/v1/",
     "https://API.OpenAI.com:443/v1/",
-    "https://models.example.test:8443/v1",
+    "https://models.example.test:443/v1",
     "https://bücher.example.test/v1",
     "https://192.0.2.1/v1",
     "https://192.0.2.1\\v1",
     "https:\\\\192.0.2.1/v1",
     "HTTPS://192.0.2.1/v1",
-    // These concrete URL forms remain valid here; this does not prove provider
-    // support or reachability through a deployment's network policy.
-    "https://[2001:db8::1]/v1",
-    "https://[::1]/v1",
+    // Public IPv4 just outside each range the model egress policy excludes.
+    "https://11.0.0.1/v1",
+    "https://100.128.0.1/v1",
+    "https://172.32.0.1/v1",
+    "https://192.169.0.1/v1",
+    "https://169.255.0.1/v1",
     "https://models.example.test./v1",
   ]) {
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+    );
+  }
+  // The Harness reaches the endpoint only through its model egress policy: TCP/443 to IPv4
+  // outside the excluded ranges. Startup refuses what that policy blocks (finding 1740).
+  for (const [codexModelBaseUrl, message] of [
+    ["https://models.example.test:8443/v1", /must use port 443: Harness model egress allows/],
+    ["https://192.0.2.1:444/v1", /must use port 443: Harness model egress allows/],
+    ["https://[2001:db8::1]/v1", /must not be an IPv6 address/],
+    ["https://[::1]/v1", /must not be an IPv6 address/],
+    ["https://[::ffff:203.0.113.1]/v1", /must not be an IPv6 address/],
+    [
+      "https://10.1.2.3/v1",
+      /IPv4 host must be public: Harness model egress excludes 10\.0\.0\.0\/8,/,
+    ],
+    ["https://100.127.255.255/v1", /IPv4 host must be public/],
+    ["https://172.31.0.1/v1", /IPv4 host must be public/],
+    ["https://192.168.0.10/v1", /IPv4 host must be public/],
+    ["https://169.254.169.254/v1", /IPv4 host must be public/],
+  ]) {
+    assert.throws(
+      () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
+      (error) => {
+        assert.ok(error instanceof SharedConfigurationValidationError);
+        assert.deepEqual(
+          error.error.details.map(({ path }) => path),
+          ["/runtime/codexModelBaseUrl"],
+        );
+        assert.match(error.error.details[0].message, /^Codex model endpoint /);
+        assert.match(error.error.details[0].message, message);
+        return true;
+      },
+      codexModelBaseUrl,
     );
   }
   for (const codexModelBaseUrl of [

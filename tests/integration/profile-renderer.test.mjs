@@ -2838,6 +2838,19 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
+    // Harness model egress is TCP/443 to public IPv4 only (finding 1740).
+    [
+      "https://models.example.com:8443/v1",
+      "must use port 443: Harness model egress allows only TCP/443.",
+    ],
+    [
+      "https://[2001:db8::1]/v1",
+      "must not be an IPv6 address: Harness model egress allows only IPv4.",
+    ],
+    [
+      "https://10.0.0.1/v1",
+      "IPv4 host must be public: Harness model egress excludes 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16.",
+    ],
   ]) {
     await assertFieldRefusals("codex", codexInput(), field, [value], message);
     assert.throws(

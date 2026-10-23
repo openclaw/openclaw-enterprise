@@ -42,6 +42,11 @@ import {
 import { BlockList, isIP } from "node:net";
 import { isAbsolute, posix } from "node:path";
 import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-name.ts";
+import {
+  MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
+  MODEL_EGRESS_PORT,
+  modelEgressRefusal,
+} from "./model-egress.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -3739,6 +3744,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
               (openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl)
                 ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
                 : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
+            "/runtime/codexModelBaseUrl",
+          );
+        }
+        // Fail at startup, not at the first Codex auth probe: the Harness reaches the endpoint
+        // only through its model egress policy (finding 1740).
+        const unreachableModelEndpoint =
+          options.runtime.codexModelBaseUrl === undefined
+            ? undefined
+            : modelEgressRefusal(
+                "Codex model endpoint",
+                normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl)!,
+              );
+        if (unreachableModelEndpoint !== undefined) {
+          throw configurationConstraintFailure(
+            unreachableModelEndpoint,
             "/runtime/codexModelBaseUrl",
           );
         }
@@ -14708,20 +14728,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       {
         to: [
           {
-            ipBlock: {
-              cidr: "0.0.0.0/0",
-              except: [
-                "10.0.0.0/8",
-                // Carrier-grade NAT: some VPC Pod/Service ranges and cloud metadata use it.
-                "100.64.0.0/10",
-                "172.16.0.0/12",
-                "192.168.0.0/16",
-                "169.254.0.0/16",
-              ],
-            },
+            ipBlock: { cidr: "0.0.0.0/0", except: [...MODEL_EGRESS_EXCLUDED_IPV4_CIDRS] },
           },
         ],
-        ports: [{ protocol: "TCP", port: 443 }],
+        ports: [{ protocol: "TCP", port: MODEL_EGRESS_PORT }],
       },
     ];
     const repositoryEgress =
