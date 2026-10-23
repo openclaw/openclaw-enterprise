@@ -201,14 +201,18 @@ export function createShell({
     return svg;
   }
 
+  // A second action sits beside the first, for example Sign out next to Retry: this panel has
+  // no account menu (finding 1894).
   function publicPanel(
     title: string,
     description: string,
     actionLabel?: string,
     action?: () => void,
+    secondary?: { label: string; action: () => void },
   ) {
     menuControls = null;
     drawerControls = null;
+    const primary = action ? button(actionLabel, action) : null;
     app.replaceChildren(
       element(
         "main",
@@ -216,7 +220,14 @@ export function createShell({
         element("p", { className: "brand" }, ...brandContents(40)),
         element("h1", {}, title),
         element("p", { role: "status", className: "muted" }, description),
-        action ? button(actionLabel, action) : null,
+        secondary
+          ? element(
+              "div",
+              { className: "status-actions" },
+              primary,
+              button(secondary.label, secondary.action),
+            )
+          : primary,
       ),
     );
   }

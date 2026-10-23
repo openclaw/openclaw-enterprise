@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 
+import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { completeJsonLines } from "../helpers/ci-logging.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
@@ -1357,6 +1358,14 @@ test(
                 reason: "unreachable",
                 failure: "TimeoutError",
               }),
+              // A token-shaped failure class is dropped, as the sanitizer drops it elsewhere.
+              line({
+                severity: "WARN",
+                event: "device_authorization.start_failed",
+                requestId,
+                reason: "unavailable",
+                failure: `ghp_${canary}`,
+              }),
               // The denied call and Kubernetes namespace stay in local logs.
               line({
                 severity: "WARN",
@@ -1511,6 +1520,11 @@ test(
           "occ.device_authorization.failure": "TimeoutError",
         }),
         api("WARN", {
+          "event.name": "device_authorization.start_failed",
+          "request.id": requestId,
+          "occ.device_authorization.reason": "unavailable",
+        }),
+        api("WARN", {
           "event.name": "agent_runtime_credentials.cluster_denied",
           "request.id": requestId,
         }),
@@ -1544,6 +1558,281 @@ test(
         }),
       ]),
     );
+    assert.doesNotMatch(JSON.stringify(exported), new RegExp(canary));
+  },
+);
+
+// The fields the OCC log sanitizer keeps as fixed codes or a route fence
+// (apps/controller/src/logging.ts), and the attribute the Collector exports each as.
+const codeAttributes = {
+  check: "occ.check",
+  failure: "occ.failure",
+  harnessState: "occ.harness_state",
+  hintCode: "occ.hint_code",
+  reasonCode: "occ.reason_code",
+  fence: "occ.fence",
+};
+
+// Worker records with code fields, each with the attributes the Collector must export besides
+// its event name, stream and request ID. The sanitizer must keep the same code fields.
+function codeFieldCases({ canary, identity, exportedIdentity }) {
+  const longest = `a${"b".repeat(63)}`;
+  // `sandboxDriverId`, `status` and `reason` stay in local logs.
+  const kept = [
+    {
+      record: {
+        event: "worker.openshell-git-expiry",
+        ...identity,
+        outcome: "pending",
+        check: "original-launch-and-pods",
+        failure: "gateway_unavailable",
+      },
+      exported: {
+        ...exportedIdentity,
+        "work.outcome": "pending",
+        "occ.check": "original-launch-and-pods",
+        "occ.failure": "gateway_unavailable",
+      },
+    },
+    {
+      record: {
+        event: "worker.openshell-git-expiry",
+        ...identity,
+        outcome: "withdrawn",
+        check: "record-reduced-generation",
+      },
+      exported: {
+        ...exportedIdentity,
+        "work.outcome": "withdrawn",
+        "occ.check": "record-reduced-generation",
+      },
+    },
+    {
+      record: { event: "worker.openshell-git-expiry", outcome: "retire-runtime", check: longest },
+      exported: { "work.outcome": "retire-runtime", "occ.check": longest },
+    },
+    {
+      record: { event: "worker.repository-delivery-pending", sandboxDriverId: canary },
+      exported: {},
+    },
+    {
+      record: {
+        event: "worker.openshell-git-route-warning",
+        ...identity,
+        status: "refused",
+        reason: `route ${canary}`,
+        reasonCode: "repository_expired",
+      },
+      exported: { ...exportedIdentity, "occ.reason_code": "repository_expired" },
+    },
+    {
+      record: { event: "worker.openshell-git-route", ...identity, status: "installed", fence: 7 },
+      exported: { ...exportedIdentity, "occ.fence": "7" },
+    },
+    { record: { event: "worker.openshell-git-route", fence: 0 }, exported: { "occ.fence": "0" } },
+    {
+      record: { event: "worker.openshell-git-route", fence: Number.MAX_SAFE_INTEGER },
+      exported: { "occ.fence": String(Number.MAX_SAFE_INTEGER) },
+    },
+    {
+      record: {
+        event: "worker.completed",
+        outcome: "permanent",
+        code: "SANDBOX_GATEWAY_UNAUTHORIZED",
+        hintCode: "sandbox-gateway-identity",
+        harnessState: "starting",
+      },
+      exported: {
+        "work.outcome": "permanent",
+        "occ.code": "SANDBOX_GATEWAY_UNAUTHORIZED",
+        "occ.hint_code": "sandbox-gateway-identity",
+        "occ.harness_state": "starting",
+      },
+    },
+    // Short or unanchored near-matches of a token shape are codes, as in the sanitizer.
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: "ghp_short", check: "task_sk-a" },
+      exported: { "occ.reason_code": "ghp_short", "occ.check": "task_sk-a" },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: "xghp_abcdefghijklmnop" },
+      exported: { "occ.reason_code": "xghp_abcdefghijklmnop" },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: "a_ghp_abcdefghijklmnop" },
+      exported: { "occ.reason_code": "a_ghp_abcdefghijklmnop" },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(17)}` },
+      exported: { "occ.reason_code": `AKIA${"Q".repeat(17)}` },
+    },
+    {
+      record: { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(16)}_x` },
+      exported: { "occ.reason_code": `AKIA${"Q".repeat(16)}_x` },
+    },
+  ];
+  // Values the sanitizer drops lose the field, never the event: text, a leading digit or
+  // punctuation, more than 64 characters, a token shape, a non-string code, and a fence
+  // that is negative, fractional, unsafe or a string.
+  const dropped = [
+    { event: "worker.openshell-git-expiry", check: "original launch", failure: "1timeout" },
+    { event: "worker.openshell-git-expiry", check: `${longest}c`, failure: "gateway.unavailable" },
+    { event: "worker.openshell-git-expiry", check: "", failure: `_${canary}` },
+    { event: "worker.openshell-git-expiry", check: 42, failure: ["timeout"], outcome: canary },
+    { event: "worker.openshell-git-route-warning", reasonCode: `ghp_${"A1".repeat(10)}` },
+    { event: "worker.openshell-git-route-warning", reasonCode: `step-ghs_${"a".repeat(12)}` },
+    { event: "worker.openshell-git-route-warning", reasonCode: `github_pat_${"b".repeat(12)}` },
+    { event: "worker.openshell-git-denied", reasonCode: `sk-proj-${"c".repeat(12)}` },
+    { event: "worker.openshell-git-denied", reasonCode: `XOXB-${"1".repeat(10)}` },
+    { event: "worker.openshell-git-denied", reasonCode: `x-AKIA${"Q".repeat(16)}` },
+    { event: "worker.openshell-git-denied", reasonCode: `AKIA${"Q".repeat(16)}-x` },
+    { event: "worker.completed", hintCode: `akia${"q".repeat(16)}`, harnessState: { state: "a" } },
+    { event: "worker.completed", hintCode: "sandbox gateway", harnessState: `starting${canary}!` },
+    { event: "worker.openshell-git-route", fence: -1 },
+    { event: "worker.openshell-git-route", fence: 1.5 },
+    { event: "worker.openshell-git-route", fence: Number.MAX_SAFE_INTEGER + 1 },
+    { event: "worker.openshell-git-route", fence: "7" },
+  ];
+  return [...kept, ...dropped.map((record) => ({ record, exported: {} }))];
+}
+
+test("the Collector keeps exactly the code fields the OCC log sanitizer keeps", () => {
+  const lines = [];
+  const emit = createWorkerLogEmitter(
+    createOccLogger({
+      component: "occ-worker",
+      destination: { write: (text) => lines.push(JSON.parse(text)) },
+    }),
+  );
+  const identity = { namespaceId: `ns_${randomUUID()}` };
+  const cases = codeFieldCases({
+    canary: "canarysanitizer",
+    identity,
+    exportedIdentity: { "occ.namespace.id": identity.namespaceId },
+  });
+  for (const { record, exported } of cases) {
+    emit(record);
+    const line = lines.at(-1);
+    assert.equal(line.event, record.event);
+    assert.deepEqual(
+      Object.fromEntries(
+        Object.entries(codeAttributes)
+          .filter(([field]) => Object.hasOwn(line, field))
+          .map(([field, attribute]) => [attribute, String(line[field])]),
+      ),
+      Object.fromEntries(
+        Object.entries(exported).filter(([attribute]) =>
+          Object.values(codeAttributes).includes(attribute),
+        ),
+      ),
+      JSON.stringify(record),
+    );
+  }
+});
+
+test(
+  "native Collector exports OpenShell Git expiry and delivery events with the sanitizer's code fields",
+  {
+    skip: selected
+      ? false
+      : "Set OCC_TEST_LOGGING_COLLECTOR=1 for pinned Collector worker code-field proof.",
+    timeout: 180_000,
+  },
+  async (t) => {
+    const fixture = await collectorFixture(t, "occ-codes");
+    const receiverAddress = await startKubernetesProcessors(fixture);
+    const canary = `canary${fixture.suffix}`;
+    const namespaceId = `ns_${randomUUID()}`;
+    const agentId = `agt_${randomUUID()}`;
+    const revisionId = `rev_${randomUUID()}`;
+    const identity = { namespaceId, agentId, revisionId };
+    const exportedIdentity = {
+      "occ.namespace.id": namespaceId,
+      "occ.agent.id": agentId,
+      "occ.revision.id": revisionId,
+    };
+    const cases = codeFieldCases({ canary, identity, exportedIdentity }).map((entry) => ({
+      ...entry,
+      requestId: `req_${randomUUID()}`,
+    }));
+    const line = (record) => ({
+      timeUnixNano: String(BigInt(Date.now()) * 1000000n),
+      body: {
+        stringValue: JSON.stringify({
+          time: new Date().toISOString(),
+          service: "worker",
+          severity: "INFO",
+          note: canary,
+          ...record,
+        }),
+      },
+      attributes: [{ key: "log.iostream", value: { stringValue: "stdout" } }],
+    });
+    const resource = (component) => ({
+      attributes: Object.entries({
+        "occ.application": "openclaw-enterprise",
+        "occ.component": component,
+        "k8s.pod.uid": `pod-${randomUUID()}`,
+        "container.id": `containerd://${randomUUID()}`,
+      }).map(([key, value]) => ({ key, value: { stringValue: value } })),
+    });
+    await postLogs(receiverAddress, [
+      {
+        resource: resource("worker"),
+        scopeLogs: [
+          {
+            logRecords: [
+              ...cases.map(({ record, requestId }) => line({ ...record, requestId })),
+              // Near-matches of the reviewed names are still dropped.
+              line({ event: "worker.openshell-git-expiry-unreviewed", check: "model-provider" }),
+              line({ event: "worker.repository-delivery-pending-unreviewed" }),
+            ],
+          },
+        ],
+      },
+      sentinelLogs({
+        attributes: Object.entries({
+          "occ.managed_by": "openclaw-enterprise",
+          "occ.role": "gateway",
+          "k8s.pod.uid": `pod-${randomUUID()}`,
+          "container.id": `containerd://${randomUUID()}`,
+        }).map(([key, value]) => ({ key, value: { stringValue: value } })),
+      }),
+    ]);
+    const exported = await exportedThroughSentinel(fixture, (resource, record) => ({
+      resource: attributes(resource.resource?.attributes),
+      record,
+      fields: Object.fromEntries(
+        record.attributes.map(({ key, value }) => [
+          key,
+          // OTLP JSON carries an int64 as a string; a JSON number may arrive as either.
+          value.stringValue ?? String(value.intValue ?? value.doubleValue),
+        ]),
+      ),
+    }));
+    assert.equal(exported.length, cases.length);
+    for (const { record, exported: fields, requestId } of cases) {
+      const actual = exported.find((entry) => entry.fields["request.id"] === requestId);
+      assert.ok(actual, `${record.event} ${JSON.stringify(record)} is exported`);
+      assert.equal(actual.resource["service.name"], "occ-worker");
+      assert.equal(actual.record.body.stringValue, record.event);
+      assert.equal(actual.record.severityText, "INFO");
+      if (fields["occ.fence"] !== undefined) {
+        // A fence is exported as an integer, never a double or string.
+        const fence = actual.record.attributes.find(({ key }) => key === "occ.fence");
+        assert.equal(String(fence.value.intValue), fields["occ.fence"]);
+      }
+      assert.deepEqual(
+        actual.fields,
+        {
+          "event.name": record.event,
+          "log.iostream": "stdout",
+          "request.id": requestId,
+          ...fields,
+        },
+        JSON.stringify(record),
+      );
+    }
     assert.doesNotMatch(JSON.stringify(exported), new RegExp(canary));
   },
 );

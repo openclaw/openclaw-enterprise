@@ -208,6 +208,13 @@ export function installFixture(scenario, evidence) {
     // Simulates returning from a GitHub callback started in this tab.
     sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43));
   }
+  // Preview frames share tab storage, so every scenario sets the signed-in mark itself: only
+  // one whose tab had a session before it expired keeps it; a first visit has none.
+  if (scenario.expiredSession) {
+    sessionStorage.setItem("occ.console.signedIn", "1");
+  } else {
+    sessionStorage.removeItem("occ.console.signedIn");
+  }
   if (scenario.pendingGoogleAttempt) {
     // Simulates returning from a Google callback started in this tab.
     sessionStorage.setItem("occ.console.googleAttempt", "a".repeat(43));

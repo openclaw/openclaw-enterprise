@@ -151,20 +151,13 @@ OCC_TEST_HARNESS_K3D_REAL=1 OCC_TEST_SLACK_LIVE=0 \
   node --env-file="$TEST_ENV_FILE" --test tests/integration/harness-topology-k3d-real.test.mjs
 ```
 
-All five non-Slack cases must pass: dedicated Codex, embedded OpenClaw, Secret
-lifecycle, and startup-failure evidence with plugins disabled and enabled. A
+All six non-Slack cases must pass: dedicated Codex, dedicated Skill source
+uploads, embedded OpenClaw, Secret lifecycle, and startup-failure evidence with
+plugins disabled and enabled. The Skill source case needs local `zip`. A
 selected suite fails on missing prerequisites; an unselected suite skips. The
 suite does not install OCC with Helm. Credentials belong only in the selected
 runtime Pods, not controllers, logs, or shell history. For private workspace
 routing, run the separate [gateway routing suite](#private-gateway-routing).
-
-For a candidate image with paired-node Skill upload support and local `zip`:
-
-```sh
-OCC_TEST_SKILL_SOURCE_LIFECYCLE=1 node --env-file="$TEST_ENV_FILE" --test \
-  --test-name-pattern='candidate dedicated Skill source' \
-  tests/integration/harness-topology-k3d-real.test.mjs
-```
 
 For custom provider and image settings see the test's
 [source](../../tests/integration/harness-topology-k3d-real.test.mjs) and

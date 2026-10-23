@@ -193,13 +193,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		}
 		return nil, nil
 	case http.StatusOK:
-		var envelope responseEnvelope
-		var data any
-		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
-			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-		}
-		return data, nil
+		return decodeResponseData(status, responseBody)
 	default:
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)

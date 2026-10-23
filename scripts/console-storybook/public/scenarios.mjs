@@ -855,12 +855,22 @@ export const scenarios = {
     name: "Session expired",
     path: draft,
     signedOut: true,
+    expiredSession: true,
     description:
-      "A protected deep link with no session redirects to sign-in and retains the return destination.",
+      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
     steps: [
       "Sign in with the fixture credentials and confirm the Agent draft page returns.",
       "Confirm no draft is saved or deployment started by signing in.",
     ],
+  },
+  firstVisit: {
+    group: "Pages/Sign in",
+    name: "Deep link, first visit",
+    path: draft,
+    signedOut: true,
+    description:
+      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
+    steps: ["Sign in with the fixture credentials and confirm the Agent draft page returns."],
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
@@ -1487,7 +1497,9 @@ export const scenarios = {
     name: "Access denied",
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", status: 403 }],
-    description: "Namespace discovery is denied.",
+    description:
+      "Namespace discovery is denied, as for an account whose access was removed. Private data stays hidden, and the panel offers Sign out beside Retry.",
+    steps: ["Choose Sign out and confirm the sign-in page replaces the panel."],
   },
   settings: {
     group: "Pages/Settings",

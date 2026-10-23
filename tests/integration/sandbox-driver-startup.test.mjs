@@ -5926,6 +5926,10 @@ test(
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        assert.equal(
+          protectedGit.computeDriver.admitRevision(rev),
+          "protected-codex-no-connection-retry:v1",
+        );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
         // Compute's preparation refuses the profile too, so a revision admitted before this check
         // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own

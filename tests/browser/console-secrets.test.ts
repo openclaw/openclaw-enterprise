@@ -17,10 +17,10 @@ import type {
   SecretListResponse,
 } from "../../packages/contracts/src/api/resources.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { consoleStorage } from "../helpers/console-storage.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
   apiRequests,
-  consoleStorage,
   expectWriteAsksBeforeUnload,
   fileBrowser,
   hasFocus,

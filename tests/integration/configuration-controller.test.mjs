@@ -843,6 +843,14 @@ const withAgents = (agents) => ({ agents: { defaults: runtimeDefaults, ...agents
 const gatewayId = (path) =>
   `The OpenClaw Gateway rejects the Agent ID in ${path}: use up to 64 letters, digits, _ or -, not starting with -.`;
 
+// Deployment's text for a model selection whose model names no provider.
+const providerModel = (path) =>
+  setting(
+    `${path}.model`,
+    "must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1",
+  );
+const withModel = (model) => withAgents({ defaults: { ...runtimeDefaults, model } });
+
 // A selected Compute with no Configuration rules is not the same as no Compute selected.
 // The shared content rules (model providers, settings, roster) must protect Configuration create
 // and update in either case.
@@ -910,6 +918,17 @@ const rosterRefusals = [
   [
     withAgents({ ownership: "explicit" }),
     'The OpenClaw Gateway needs at least one agents.entries entry when agents.ownership is "explicit": add one, or remove agents.ownership.',
+  ],
+  // Finding 1828: a model without its provider, as a primary, a fallback or an entry's model;
+  // OpenClaw's openrouter:auto selector among them. Fallbacks that are not a list.
+  [withModel("fast"), providerModel("agents.defaults")],
+  [withModel({ primary: "openai/gpt-4.1", fallbacks: ["fast"] }), providerModel("agents.defaults")],
+  [withModel({ primary: "openrouter:auto" }), providerModel("agents.defaults")],
+  [withModel({ fallbacks: ["openai/gpt-4.1"] }), providerModel("agents.defaults")],
+  [withAgents({ entries: { main: { model: "openai/" } } }), providerModel("agents.entries.main")],
+  [
+    withModel({ primary: "openai/gpt-4.1", fallbacks: "openai/gpt-4.1-mini" }),
+    setting("agents.defaults.model.fallbacks", "must be an array"),
   ],
 ];
 
@@ -1004,6 +1023,14 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       withAgents({ entries: { [`${"a".repeat(65)}{{ vars.id }}`]: {} } }),
       gatewayId(`agents.entries["${"a".repeat(65)}{{ vars.id }}"]`),
     ],
+    // A model no filling makes <provider>/<model>: written text that starts or ends with a
+    // slash, or a number variable that is the whole model.
+    [withModel("/{{ vars.id }}"), providerModel("agents.defaults")],
+    [
+      withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai{{ vars.id }}/"] }),
+      providerModel("agents.defaults"),
+    ],
+    [withModel("{{ vars.count }}"), providerModel("agents.defaults")],
     // Finding 1315: many adjacent variables are matched in linear time. Keep this case last.
     ownership(`${"{{ vars.ownership }}".repeat(64)}x`),
   ];
@@ -1024,7 +1051,7 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   // An Agent ID or ownership that a filling can still make valid saves, and the launch's
   // Configuration is checked in full: two IDs that normalize alike, or an ownership filled with
   // anything but "explicit", are refused there with the Configuration save text.
-  await t.test("accepts a roster whose Agent ID or ownership waits on a variable", async () => {
+  await t.test("accepts a roster or model that waits on a variable", async () => {
     const accepted = [
       withAgents({ ownership: "explicit", entries: { "{{ vars.id }}": {}, main: {} } }),
       withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
@@ -1032,11 +1059,22 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
       withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
       withAgents({ ownership: "ex{{ vars.ownership }}plicit", entries: { main: {}, helper: {} } }),
       withAgents({ entries: { [`${"a".repeat(64)}{{ vars.id }}`]: {} } }),
+      withModel("{{ vars.id }}"),
+      withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai/{{ vars.id }}"] }),
+      // A variable key that a filling can make `primary` supplies the primary model.
+      withModel({ "{{ vars.id }}": "openai/gpt-4.1" }),
     ];
     for (const [index, values] of accepted.entries()) {
       const saved = await savePreset(context, template(values), `Templated-${index}`);
       assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
     }
+    const launch = (values, inputs) =>
+      request(context.app, "POST", context.collection, {
+        body: {
+          kind: "agent",
+          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
+        },
+      });
     for (const [values, inputs, message] of [
       [
         accepted[0],
@@ -1044,15 +1082,13 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
         "The OpenClaw Gateway normalizes agents.entries.Main and agents.entries.main to the same Agent ID: rename one.",
       ],
       [accepted[2], { ownership: "shared" }, onlyExplicit],
+      [accepted[6], { id: "fast" }, providerModel("agents.defaults")],
+      [accepted[8], { id: "other" }, providerModel("agents.defaults")],
     ]) {
-      const launched = await request(context.app, "POST", context.collection, {
-        body: {
-          kind: "agent",
-          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
-        },
-      });
-      assertRefused(launched, message);
+      assertRefused(await launch(values, inputs), message);
     }
+    const primary = await launch(accepted[8], { id: "primary" });
+    assert.equal(primary.status, 201, JSON.stringify(primary.body));
   });
 });
 
@@ -1881,12 +1917,12 @@ test("Preset save refuses a model selection or apiKey off the primary model's pr
   });
 });
 
-test("Configuration and Preset saves check an OpenRouter compatibility selector as a model fallback or primary", async (t) => {
-  // Finding 1320: the fallback rule kept only references with a slash, so OpenClaw's
-  // openrouter:auto and openrouter:free were never checked. A Codex primary with an
-  // openrouter:auto fallback saved and deployment refused it with a message that named no
-  // setting, and any fallback under an openrouter:auto primary saved unchecked. Both read as the
-  // openrouter provider's models now (finding 1310), so the rule names the setting at save.
+test("Configuration and Preset saves refuse an OpenRouter compatibility selector as a model primary or fallback, as deployment does", async (t) => {
+  // Finding 1320: the fallback rule kept only references with a slash, so a Codex primary with
+  // an openrouter:auto fallback saved. Every deployment refuses a model selection without a
+  // slash, OpenClaw's openrouter:auto and openrouter:free included, so every save refuses it
+  // with deployment's text, which names the setting (finding 1828). Other settings still read
+  // the two selectors as the openrouter provider's models (finding 1310).
   const context = await saveFixture(
     t,
     kubernetesRules("compute-openrouter-fallbacks", ...configurationRules),
@@ -1895,19 +1931,15 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
     model: "codex/gpt-5",
     models: { "codex/gpt-5": { agentRuntime: { id: "codex" } } },
   };
-  const withModel = (model, defaults = codex) => ({
-    agents: { defaults: { ...defaults, model } },
-  });
-  const fallbacks = (path) =>
-    setting(`${path}.model.fallbacks`, "must use the primary model's provider");
+  const codexModel = (model) => ({ agents: { defaults: { ...codex, model } } });
   const created = await request(context.app, "POST", context.collection, {
-    body: { kind: "agent", values: withModel(codex.model) },
+    body: { kind: "agent", values: codexModel(codex.model) },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const item = `${context.collection}/${created.body.data.id}`;
   for (const [values, path] of [
-    [withModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
-    [withModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
+    [codexModel({ primary: codex.model, fallbacks: ["openrouter:auto"] }), "agents.defaults"],
+    [codexModel({ primary: codex.model, fallbacks: [" OpenRouter:Free "] }), "agents.defaults"],
     [
       {
         agents: {
@@ -1917,21 +1949,30 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
       },
       "agents.entries.main",
     ],
-    // An openrouter:auto primary keeps its fallbacks on openrouter.
-    [withModel({ primary: "openrouter:auto", fallbacks: ["codex/gpt-5"] }), "agents.defaults"],
-    [withModel({ primary: "openrouter:free", fallbacks: ["openai/gpt-5"] }), "agents.defaults"],
+    [codexModel({ primary: "openrouter:auto", fallbacks: ["codex/gpt-5"] }), "agents.defaults"],
+    [
+      codexModel({
+        primary: "openrouter:auto",
+        fallbacks: ["openrouter:free", "openrouter/meta/m"],
+      }),
+      "agents.defaults",
+    ],
+    [
+      codexModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
+      "agents.defaults",
+    ],
   ]) {
-    await refusedOnSave(context, values, fallbacks(path), { item });
+    await refusedOnSave(context, values, providerModel(path), { item });
   }
   await assertNothingStored(context, [`${created.body.data.id}.json`]);
 
   // A Preset selector that waits on a variable is checked once filled: a default fills it here.
-  const waiting = withModel({ primary: codex.model, fallbacks: ["openrouter:{{ vars.kind }}"] });
+  const waiting = codexModel({ primary: codex.model, fallbacks: ["openrouter:{{ vars.kind }}"] });
   const filled = await savePreset(context, {
     variables: { kind: { type: "string", default: "auto" } },
     configuration: { values: waiting },
   });
-  assertRefused(filled, fallbacks("agents.defaults"));
+  assertRefused(filled, providerModel("agents.defaults"));
   const deferred = await savePreset(
     context,
     { variables: { kind: { type: "string" } }, configuration: { values: waiting } },
@@ -1939,12 +1980,11 @@ test("Configuration and Preset saves check an OpenRouter compatibility selector 
   );
   assert.equal(deferred.status, 201, JSON.stringify(deferred.body));
 
-  // Fallbacks on the primary model's provider save, a compatibility selector among them.
+  // Fallbacks on the primary model's provider save, and so do the selectors outside the model
+  // selection. Only the two selectors name openrouter there: another bare name is an alias.
   for (const [index, values] of [
-    withModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
-    withModel({ primary: "openrouter:auto", fallbacks: ["openrouter:free", "openrouter/meta/m"] }),
-    withModel({ primary: "openrouter/meta/m", fallbacks: [" OpenRouter:Auto "] }),
-    // Only the two selectors name openrouter: another bare name is an alias, as written.
+    codexModel({ primary: codex.model, fallbacks: ["codex/gpt-5-mini"] }),
+    codexModel({ primary: "openrouter/meta/m", fallbacks: ["openrouter/meta/n"] }),
     {
       agents: {
         defaults: {

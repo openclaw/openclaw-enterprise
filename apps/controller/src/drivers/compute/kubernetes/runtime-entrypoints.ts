@@ -3423,7 +3423,11 @@ function codexRetryDelay(retry) {
 }
 `;
 
-export const AGENT_RUNTIME_ENTRYPOINT = String.raw`
+// Preserve the legacy command bytes: running Sandboxes compare their immutable command.
+// Zero provider retry budgets do not disable native connection waiting. Protected
+// launches turn that feature off explicitly in both native CLI invocations.
+function agentRuntimeEntrypoint(disableUnboundedConnectionRetries: boolean): string {
+  return String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
 const { spawn, spawnSync } = require("node:child_process");
@@ -3755,7 +3759,7 @@ function probeCodexAuthentication(timeout) {
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
     result = spawnSync("codex", [
-      ...disabled.flatMap((feature) => ["--disable", feature]),
+${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
       "--model", selectedModel.slice(selectedModel.indexOf("/") + 1),
@@ -3979,7 +3983,7 @@ const child = spawn(
     "-c",
     "shell_environment_policy.set.PATH=" + JSON.stringify(process.env.PATH ?? ""),
     ...(loginMode === "chatgptAuthTokens" || providerManagedPat ? ["-c", "cli_auth_credentials_store=file"] : []),
-    "app-server",
+${disableUnboundedConnectionRetries ? '    "--disable", "unbounded_connection_retries",\n' : ""}    "app-server",
     "--listen",
     "ws://0.0.0.0:" + process.env.APP_SERVER_PORT,
     "--ws-auth",
@@ -4044,6 +4048,10 @@ if (!protectedStartup) {
   });
 }
 `;
+}
+
+export const AGENT_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(false);
+export const PROTECTED_CODEX_RUNTIME_ENTRYPOINT = agentRuntimeEntrypoint(true);
 
 // Kubernetes Codex implementation: this file-only node is not an OpenClaw
 // execution worker; its explicit command allowlist disables worker hosting.
@@ -4058,7 +4066,8 @@ if (!protectedStartup) {
 // the saved device identity. No deadline here: the controller's convergence
 // deadline governs a setup that never arrives. SandboxDriver Harnesses still
 // receive OPENCLAW_NODE_SETUP_CODE in the environment.
-export const AGENT_WITH_NODE_ENTRYPOINT = String.raw`
+function agentWithNodeEntrypoint(entrypoint: string): string {
+  return String.raw`
 const { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } = require("node:fs");
 const { join } = require("node:path");
 const { execFile, spawn, spawnSync } = require("node:child_process");
@@ -4251,7 +4260,7 @@ const processes = [
   { name: "workspace node", args: nodeArguments, env: nodeEnv },
   {
     name: "Codex",
-    args: ${JSON.stringify(["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)])},
+    args: ${JSON.stringify(["-e", ...nodeProgramArguments(entrypoint)])},
     env: codexEnv,
     prepare: prepareHookDirectory,
   },
@@ -4333,6 +4342,12 @@ nodeSetupWait = Date.now();
 // Codex first: it does not wait for the node setup.
 for (const slot of [...processes].reverse()) start(slot);
 `;
+}
+
+export const AGENT_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(AGENT_RUNTIME_ENTRYPOINT);
+export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+);
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");

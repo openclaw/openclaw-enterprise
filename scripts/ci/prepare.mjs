@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
@@ -29,6 +29,7 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
+import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
@@ -125,29 +126,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function randomSuffix(bytes = 6) {
-  return randomUUID()
-    .replaceAll("-", "")
-    .slice(0, bytes * 2);
-}
-
-function slug(value, separator = "-") {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, separator)
-    .replace(new RegExp(`${separator}+`, "g"), separator)
-    .replace(new RegExp(`^${separator}|${separator}$`, "g"), "");
-}
-
-function ownedName(prefix, label, { maxLength = 63, separator = "-" } = {}) {
-  const suffix = randomSuffix();
-  const normalizedPrefix = slug(prefix, separator);
-  const normalizedLabel = slug(label, separator) || "resource";
-  const fixedLength = normalizedPrefix.length + suffix.length + 2;
-  const labelLength = Math.max(1, maxLength - fixedLength);
-  return [normalizedPrefix, normalizedLabel.slice(0, labelLength), suffix].join(separator);
 }
 
 function databaseName(kind, label) {

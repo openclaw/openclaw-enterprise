@@ -234,6 +234,8 @@ import {
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_CONFIGURATION_DIRECTORY,
@@ -554,9 +556,13 @@ interface GatewayConfigurationSnapshot {
   readonly nativeWorkerNodeId?: string;
 }
 
+const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
+
 interface PluginRuntimeSnapshot {
   readonly name: string;
   readonly runtime: PluginRuntimeSpec;
+  readonly entrypoint: string;
+  readonly workspaceEntrypoint: string;
 }
 
 interface PluginRuntimeStatus {
@@ -6770,6 +6776,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             revision,
             nodeSetupFile,
             workspaceSetup,
+            pluginRuntime?.workspaceEntrypoint,
           );
         } else {
           this.addNativeWorker(agentDeployment, node.name, node.ca, workspaceSetup);
@@ -7612,6 +7619,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 revision,
                 nodeSetupFile,
                 workspaceSetup,
+                pluginRuntime?.workspaceEntrypoint,
               );
             } else {
               this.addNativeWorker(replacement, node.name, node.ca, workspaceSetup);
@@ -11606,6 +11614,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     setupFile: boolean,
     workspaceSetup: WorkspaceSetup | undefined,
+    workspaceEntrypoint = AGENT_WITH_NODE_ENTRYPOINT,
   ): void {
     const { container, variables } = this.addNodeEnrollmentState(deployment, name, ca, setupFile);
     const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
@@ -11638,7 +11647,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             this.sandboxDriverForRevision(revision)?.provisionHarness === undefined
               ? "/home/node/workspace"
               : { environment: "OPENCLAW_WORKSPACE_DIR" },
-          )) + AGENT_WITH_NODE_ENTRYPOINT,
+          )) + workspaceEntrypoint,
     );
   }
 
@@ -13583,14 +13592,49 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     return `public-github-read:v1:${sha256Hex(JSON.stringify([reader.address, reader.namespace, labels]))}`;
   }
 
+  private protectedCodexInference(revision: Readonly<AgentRevision>): boolean {
+    assertExecutionAdmission(revision);
+    return (
+      this.options.runtime !== undefined &&
+      revision.executionAdmission.mode === "protected" &&
+      revision.harness.id === "codex" &&
+      revision.harness.mode === "dedicated" &&
+      revision.harnessAuth.method === "credential_source" &&
+      revision.egressPlan !== undefined &&
+      Boolean(harnessEgressEnrollment(revision.egressPlan).inference) &&
+      revision.egressPlan.routes.every(
+        ({ binding: { grant } }) => grant.kind !== "inference" || grant.providerTools === "none",
+      )
+    );
+  }
+
+  private hasProtectedCodexAdmission(revision: AgentRevision): boolean {
+    if (revision.compute.admission !== PROTECTED_CODEX_NO_CONNECTION_RETRY) {
+      return false;
+    }
+    if (!this.protectedCodexInference(revision)) {
+      throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
+    }
+    return true;
+  }
+
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
+    // A launch fact, not an authorization grant. Never infer it for stored revisions:
+    // older workers must refuse the new command and older Sandboxes keep their exact command.
+    if (this.protectedCodexInference(revision)) {
+      return PROTECTED_CODEX_NO_CONNECTION_RETRY;
+    }
     return this.publicGithubReadCandidate(revision) === undefined
       ? undefined
       : this.publicGithubReadAdmission();
   }
 
   private publicGithubReadForRevision(revision: AgentRevision) {
-    if (revision.compute.admission !== undefined && !this.hasPublicGithubReadAdmission(revision)) {
+    if (
+      revision.compute.admission !== undefined &&
+      !this.hasProtectedCodexAdmission(revision) &&
+      !this.hasPublicGithubReadAdmission(revision)
+    ) {
       throw new ConfigurationFailure("AgentRevision Compute admission is invalid.");
     }
     const admission = this.publicGithubReadAdmission();
@@ -13747,9 +13791,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (runtime === undefined) {
       return undefined;
     }
+    const protectedCodex = this.hasProtectedCodexAdmission(revision);
     return {
       name: `plugin-runtime-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       runtime,
+      entrypoint: protectedCodex ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
+      workspaceEntrypoint: protectedCodex
+        ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
+        : AGENT_WITH_NODE_ENTRYPOINT,
     };
   }
 
@@ -16036,7 +16085,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                           (role === "gateway"
                             ? GATEWAY_RUNTIME_ENTRYPOINT
                             : nativeRuntime === undefined
-                              ? AGENT_RUNTIME_ENTRYPOINT
+                              ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
                               : NATIVE_WORKER_ENTRYPOINT),
                       ),
                     }),
