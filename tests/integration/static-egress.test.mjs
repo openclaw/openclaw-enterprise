@@ -1676,7 +1676,16 @@ test("requests refused before capture leave the replay table to every Sandbox", 
 
 test("one Sandbox's replay share bounds it without refusing other Sandboxes", async (t) => {
   const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes();
+  let gate;
+  let entered;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    async installation(peer) {
+      entered?.resolve();
+      await gate?.promise;
+      return ports.installation(peer);
+    },
+  }));
   const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
   // Material was selected, so each ID stays reserved after its handle closes.
   const use = async (name) => {
@@ -1697,9 +1706,18 @@ test("one Sandbox's replay share bounds it without refusing other Sandboxes", as
   }
   assert.equal(REPLAY_SANDBOX_SHARE * 4, REPLAY_TABLE_CAPACITY);
   assert.deepEqual(await use("e"), saturated, "the installation-wide bound still holds");
-  // Fixed 30-second horizons return both the shares and the table.
-  f.advance(30_000);
-  assert.equal(await use("a"), "ready");
+  // Fixed 30-second horizons return both the shares and the table, including
+  // horizons that pass while a request's installation lookup is pending.
+  f.advance(29_000);
+  gate = Promise.withResolvers();
+  entered = Promise.withResolvers();
+  const crossing = use("a");
+  await entered.promise;
+  f.advance(1_000);
+  gate.resolve();
+  assert.equal(await crossing, "ready");
+  gate = undefined;
+  entered = undefined;
   assert.equal(await use("e"), "ready");
 });
 

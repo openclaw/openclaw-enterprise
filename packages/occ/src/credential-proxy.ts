@@ -223,6 +223,10 @@ export class CredentialProxy implements CredentialProxyExchange {
         this.discard(handle, record);
       }
     }
+    this.pruneReplay(now);
+  }
+
+  private pruneReplay(now: number): void {
     for (const [key, { expiresAt, share }] of this.requests) {
       if (expiresAt <= now) {
         this.requests.delete(key);
@@ -245,12 +249,18 @@ export class CredentialProxy implements CredentialProxyExchange {
     if (this.requests.has(key)) {
       return refuse("invalid_handle");
     }
-    const held = this.replayShares.get(share) ?? 0;
-    if (this.requests.size >= REPLAY_TABLE_CAPACITY || held >= REPLAY_SANDBOX_SHARE) {
-      return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+    const full = () =>
+      this.requests.size >= REPLAY_TABLE_CAPACITY ||
+      (this.replayShares.get(share) ?? 0) >= REPLAY_SANDBOX_SHARE;
+    if (full()) {
+      // Entries may have expired while the installation lookup was pending.
+      this.pruneReplay(this.ports.now());
+      if (full()) {
+        return { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+      }
     }
     this.requests.set(key, { expiresAt, share });
-    this.replayShares.set(share, held + 1);
+    this.replayShares.set(share, (this.replayShares.get(share) ?? 0) + 1);
   }
 
   async resolve(
