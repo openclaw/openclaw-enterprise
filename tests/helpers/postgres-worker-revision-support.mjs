@@ -75,6 +75,23 @@ export function waitForWorkPass(description, fixture, work, read, options) {
   );
 }
 
+// Waits like the fixture's work() for `work` to reach `state`, making its queued retries due.
+export function waitForWorkStateDue(fixture, work, state, timeoutMs = 30_000) {
+  return waitForWorkPass(
+    `work ${work.idempotencyKey} to become ${state}`,
+    fixture,
+    work,
+    async () => {
+      const { rows } = await fixture.observerPool.query(
+        "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
+        [work.idempotencyKey],
+      );
+      return rows[0]?.state === state ? rows[0] : undefined;
+    },
+    timeoutMs,
+  );
+}
+
 function waitAdvancing(description, read, advance, options) {
   return waitFor(
     description,

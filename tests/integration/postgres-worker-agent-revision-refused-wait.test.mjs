@@ -13,7 +13,11 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { completedPasses, waitForWorkPass } from "../helpers/postgres-worker-revision-support.mjs";
+import {
+  completedPasses,
+  waitForWorkPass,
+  waitForWorkStateDue,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -351,7 +355,9 @@ for (const refuse of ["revoked", "unsupported"]) {
         },
       });
       const { owner, replacement, driver } = scenario;
-      await stop.waitForFailures(2, 30_000);
+      await waitForWorkPass("two failed refused stops", fixture, replacement, async () =>
+        stop.failed.length >= 2 ? true : undefined,
+      );
       lifted = true;
       // Only the unsupported candidate's stop succeeds. A revoked candidate's never does, so a
       // pass denied just before the grant cannot publish its refusal.
@@ -359,7 +365,7 @@ for (const refuse of ["revoked", "unsupported"]) {
         stop.succeed();
       }
       if (refuse === "revoked") {
-        await fixture.work(replacement, "succeeded", 30_000);
+        await waitForWorkStateDue(fixture, replacement, "succeeded");
         const active = await fixture.activePointer(owner);
         assert.equal(active.rows[0].active_revision_id, replacement.id);
         assert.ok(driver.running.has(replacement.id), "the deployment kept its candidate");
@@ -369,6 +375,7 @@ for (const refuse of ["revoked", "unsupported"]) {
           replacement,
           "failed_permanent",
           "SANDBOX_HARNESS_UNSUPPORTED",
+          due,
         );
         assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
         assert.equal(driver.preparations(replacement), 2);
@@ -412,10 +419,14 @@ test(
           ({ event, workId }) =>
             event === "worker.completed" && workId === replacement.idempotencyKey,
         );
-    await waitFor("two candidate passes after the newer admission, or its end", async () =>
-      passes().length >= 2 || passes().some(({ outcome }) => outcome !== "pending")
-        ? true
-        : undefined,
+    await waitForWorkPass(
+      "two candidate passes after the newer admission, or its end",
+      fixture,
+      replacement,
+      async () =>
+        passes().length >= 2 || passes().some(({ outcome }) => outcome !== "pending")
+          ? true
+          : undefined,
     );
     assert.deepEqual(
       passes().map(({ outcome, code, refusal }) => [outcome, code, refusal]),
@@ -427,10 +438,11 @@ test(
     );
     assert.ok(driver.running.has(replacement.id), "the stop has not succeeded yet");
     stop.succeed();
-    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED");
+    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED", due);
     assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
-    // Its sweep retried on the queue's growing backoff while the stop failed.
-    await fixture.work(newer, "succeeded", 75_000);
+    // Its sweep retried on the queue's growing backoff while the stop failed (each failure spent
+    // an attempt, so only now is its next retry made due).
+    await waitForWorkStateDue(fixture, newer, "succeeded");
   },
 );
 
@@ -546,8 +558,10 @@ async function refusedStopRestarts(context, shape, restart) {
       [candidate.idempotencyKey],
     );
   for (let count = 1; count <= restarts; count += 1) {
-    const ended = await waitFor(
+    const ended = await waitForWorkPass(
       `refused stop ${count + failedStops} to block, or the work to end`,
+      fixture,
+      candidate,
       async () => {
         if (release !== undefined) {
           return { blocked: true };
@@ -594,7 +608,7 @@ async function refusedStopRestarts(context, shape, restart) {
     }
     await fixture.start(compute, { emit: (event) => events.push(event) });
   }
-  await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED");
+  await assertWorkEnds(fixture, candidate, "failed_permanent", "AUTHORIZATION_DENIED", due);
   assert.equal(
     stopCalls,
     failedStops + restarts + 1,

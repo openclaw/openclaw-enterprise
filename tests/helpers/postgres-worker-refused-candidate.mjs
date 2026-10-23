@@ -5,7 +5,7 @@ import {
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
 } from "../../packages/occ/src/index.ts";
-import { waitForWorkPass } from "./postgres-worker-revision-support.mjs";
+import { waitForWorkStateDue } from "./postgres-worker-revision-support.mjs";
 import { waitFor } from "./wait-for.mjs";
 
 // Refused-candidate fakes shared by the worker revision -replacement, -refused-stop,
@@ -209,23 +209,7 @@ export function waitForRefusedStopWaits(events, candidate, count, timeoutMs) {
  * but not on their backoff.
  */
 export async function assertWorkEnds(fixture, work, state, code, { due = false } = {}) {
-  if (due) {
-    await waitForWorkPass(
-      `work ${work.idempotencyKey} to become ${state}`,
-      fixture,
-      work,
-      async () => {
-        const { rows } = await fixture.observerPool.query(
-          "SELECT state FROM occ.controller_work WHERE idempotency_key = $1",
-          [work.idempotencyKey],
-        );
-        return rows[0]?.state === state ? true : undefined;
-      },
-      30_000,
-    );
-  } else {
-    await fixture.work(work, state, 30_000);
-  }
+  await (due ? waitForWorkStateDue(fixture, work, state) : fixture.work(work, state, 30_000));
   const result = await fixture.workResult(work);
   assert.equal(result.rows[0].reason_code, code);
 }
