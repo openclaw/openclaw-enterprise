@@ -119,7 +119,7 @@ attempts, and failure recovery.
 
 ### 4. The API admits only local development traffic
 
-`apps/controller/src/server.mjs:start`,
+`apps/controller/src/api-startup.mjs:startApi`,
 `apps/controller/src/composition/development-postgres.ts:composePostgresDevelopment`,
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver`
 

@@ -11,6 +11,7 @@ import {
   requiresPostgres,
 } from "./postgres-backend-state.mjs";
 import { waitFor } from "./wait-for.mjs";
+import { installationDriverConfigurations } from "../../apps/controller/src/composition/installation-config.ts";
 
 export const CREDENTIAL_GATEWAY_FIXTURE_ID = "credential-gateway-worker-fixture";
 
@@ -71,6 +72,8 @@ const disposeLimitsMs = {
 // wait for exits on its own first. The file must run under `node --test`, whose parent process
 // counts the file's results (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
+// Set by `createWorkerRevisionFixtures`; the fixture's own exit tests pass a shorter grace.
+let exitGraceMs = abandonedExitGraceMs;
 let abandonedSteps = 0;
 let exitTimer;
 let exitHookAdded = false;
@@ -78,7 +81,7 @@ let exitHookAdded = false;
 function exitIfAbandoned() {
   if (abandonedSteps > 0) {
     // process.exit() keeps the exit code; the test runner reads results from its reports.
-    exitTimer ??= setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+    exitTimer ??= setTimeout(() => process.exit(), exitGraceMs).unref();
   }
 }
 
@@ -135,11 +138,16 @@ export async function disposeStep(step, limitMs, work) {
 }
 
 // Importing this helper registers no tests or hooks.
-// `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
+// `exitGraceMs` and `exitBackstopMs` replace the abandoned-step grace and backstop for the
+// fixture's own exit tests.
 export function createWorkerRevisionFixtures(
   testFile,
-  { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
+  {
+    exitGraceMs: graceMs = abandonedExitGraceMs,
+    exitBackstopMs: backstopMs = abandonedExitBackstopMs,
+  } = {},
 ) {
+  exitGraceMs = graceMs;
   // The owning file registers this as a root after hook: `after(cleanup)`.
   function cleanup(context) {
     exitBackstopMs ??= backstopMs;
@@ -158,8 +166,9 @@ export function createWorkerRevisionFixtures(
     // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
     // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
     // CI state lock briefly, but a file's first test still waits for that lock while the runner
-    // migrates the files that start with it. Before, each file migrated a template of its own
-    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    // prepares the files that start with it. Those are copies of one migrated lane template
+    // since finding 2178; a migration per file there made a 4 s first test take 10-26 s on CI.
+    // Before that, each file also migrated a template of its own (findings 1209, 1270).
     assert.ok(
       process.env.OCC_TEST_DATABASE_URL,
       "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",
@@ -222,6 +231,7 @@ export function createWorkerRevisionFixtures(
       onProgress,
       metrics,
       repoDriver,
+      driverSelections = {},
       secretAuthMethod = "api_key",
       // Shorter teardown step limits, for a test of the teardown itself.
       disposeLimitsMs: limitsMs,
@@ -252,6 +262,7 @@ export function createWorkerRevisionFixtures(
     const createWorkerPool = () => createPool(1);
     let workerPool = createWorkerPool();
     const state = new PostgresPlatformState(observerPool);
+    repoDriver?.bindReceiptState?.(state);
     const installation = await ensureInstallation(state, "revision-worker");
     const actor = authorizedPrincipal(await state.loadNativeIAMState(), [
       ["deploy", "agent"],
@@ -295,7 +306,13 @@ export function createWorkerRevisionFixtures(
           }),
     };
     const secretDriver = createBackendWorkerDrivers(compute, []).secretDriver;
-    const controller = createBackendController({ installation, state }, { backends: [] });
+    const controller = createBackendController(
+      { installation, state },
+      {
+        backends: [],
+        driverConfigurations: installationDriverConfigurations({ drivers: driverSelections }),
+      },
+    );
     controller.registerDriver(secretDriver);
     controller.selectDriver("secret", secretDriver.id);
     const secretRoleId = `role-${randomUUID()}`;
@@ -319,6 +336,7 @@ export function createWorkerRevisionFixtures(
         grantHarnessSecret = true,
         auth = "secret",
         nonModelSources = 0,
+        modelConfig = {},
       } = {},
     ) {
       const id = `agt_${randomUUID()}`;
@@ -332,6 +350,7 @@ export function createWorkerRevisionFixtures(
           type: "bearer-token",
           config: { host: `api-${index}.example.com`, env_var: `TOOL_TOKEN_${index}` },
           secrets: {},
+          ownerCapability: "credential_gateway",
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
@@ -353,8 +372,9 @@ export function createWorkerRevisionFixtures(
           namespaceId: namespace.id,
           name: `${label}-${randomUUID()}`,
           type: "openai",
-          config: {},
+          config: modelConfig,
           secrets: {},
+          ownerCapability: "credential_gateway",
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
           state: "registering",
           createdAt: new Date().toISOString(),
@@ -471,6 +491,7 @@ export function createWorkerRevisionFixtures(
       {
         harness,
         sandboxDriverId,
+        protectedRepositoryDriver,
         repositoryCredentials,
         actorId = actor.id,
         plugins,
@@ -534,6 +555,7 @@ export function createWorkerRevisionFixtures(
         configurationId: owner.configurationId,
         configurationKind: "agent",
         configurationGeneration: 1,
+        executionAdmission: { version: 2, mode: "unprotected" },
         harness: approvedHarness,
         compute: { id: compute.id, implementation: compute.implementation },
         ...(sandboxDriverId === undefined ? {} : { sandboxDriverId }),
@@ -544,6 +566,51 @@ export function createWorkerRevisionFixtures(
         ...(repositoryCredentials === undefined ? {} : { repositoryCredentials }),
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
+      if (protectedRepositoryDriver) {
+        const sandbox = protectedRepositoryDriver.require("sandbox");
+        await state.transact(async (unit) => {
+          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          assert.deepEqual(auth, harnessAuth);
+          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          assert.deepEqual(sources, credentialSources);
+          const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
+          const plan = (chosen) =>
+            controller.admitProxyPlan(
+              unit,
+              owner,
+              candidate.id,
+              configuration,
+              sandbox.id,
+              repositoryCredentials,
+              chosen,
+            );
+          await assert.rejects(
+            plan({ ...auth, sourceId: "unselected" }),
+            /explicitly admitted source/,
+          );
+          const egressPlan = await plan(auth);
+          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          assert.deepEqual(
+            egressPlan.routes,
+            [],
+            "no model route or credential was granted to Git",
+          );
+          Object.assign(candidate, {
+            configuration,
+            egressPlan,
+            executionAdmission: {
+              version:
+                egressPlan.repositoryGitAuthorization === "request-hook-observed"
+                  ? 6
+                  : egressPlan.repositoryGitAuthorization === "online-request"
+                    ? 5
+                    : 4,
+              mode: "protected",
+            },
+            sandboxDriverId: sandbox.id,
+          });
+        });
+      }
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;
       let admitted;
       await state.transactWithQueue(async (unit, queue) => {
@@ -621,7 +688,9 @@ export function createWorkerRevisionFixtures(
     function start(
       computeDriver,
       {
-        emit = () => {},
+        emit = /** @type {NonNullable<Parameters<typeof createControllerWorker>[0]["emit"]>} */ (
+          () => {}
+        ),
         convergenceTimeoutMs,
         providers,
         pool = workerPool,
@@ -631,8 +700,14 @@ export function createWorkerRevisionFixtures(
       const configuredDrivers = createBackendWorkerDrivers(computeDriver, providers ?? []);
       const drivers = transformDrivers({
         ...configuredDrivers,
+        installation: {
+          ...configuredDrivers.installation,
+          drivers: { ...configuredDrivers.installation.drivers, ...driverSelections },
+        },
         secretDriver,
-        ...(repoDriver === undefined ? {} : { repoDriver }),
+        ...(repoDriver === undefined
+          ? {}
+          : { repositoryPolicy: repoDriver, nativeRepositorySender: repoDriver }),
       });
       worker = createControllerWorker({
         metrics,

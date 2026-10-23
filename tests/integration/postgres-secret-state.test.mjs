@@ -152,6 +152,7 @@ function revisionFor(agent, configuration, storedSecret, revisionNumber = 1) {
     configuration: { models: { providers: { codex: {} } } },
     harness: { id: "codex", version: "1.0.0", mode: agent.executionMode },
     compute: { id: "compute-test", implementation: "deterministic-test" },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: agent.servicePrincipalId,
     createdAt: new Date().toISOString(),
     secretDriverId: "kubernetes-secret",
@@ -605,11 +606,13 @@ test(
             compute: { id: "compute-test", implementation: "deterministic-test" },
             secret_driver_id: "kubernetes-secret",
             secret_bindings: bindingFor(sqlSecret),
+            harness_auth: { method: "runtime" },
+            execution_admission: { version: 2, mode: "unprotected" },
             unexpected: true,
           }),
         ],
       ),
-      { code: "23514" },
+      { code: "23514", constraint: "agent_revisions_admitted_snapshot" },
     );
 
     await pool.query(

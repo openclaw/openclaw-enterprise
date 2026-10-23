@@ -22,6 +22,8 @@ export const RUNTIME_DIAGNOSTIC_CODES = Object.freeze([
   "DISCONNECTED",
   "INCOMPATIBLE_RESPONSE",
   "PROBE_FAILED",
+  // Compute's own evidence: the revision's prepared Git route is closed for good (finding 2136).
+  "REPOSITORY_ROUTE_BLOCKED",
 ]);
 
 /** The startup steps a runtime entrypoint holds a failure under. */
@@ -31,6 +33,10 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
   "peer-bridge-record",
   "plugin-approvers",
   "state-migration",
+  // A protected execution's Harness could not enroll with its egress proxy (finding 2054).
+  "egress-enrollment",
+  // The worker's prepared Git route for an OpenShell Sandbox is blocked (finding 2136).
+  "repository-git-route",
 ]);
 
 /**

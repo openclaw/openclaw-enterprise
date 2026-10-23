@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -26,8 +27,6 @@ const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
 const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
-const isFocused = (locator) =>
-  locator.evaluate((node) => node === globalThis.document.activeElement);
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
 // A deployment record read; the list shows its status and, for a failure, its error.
@@ -324,7 +323,7 @@ for (const outcome of ["fills", "is refused"]) {
     // The pending cell's text is blank for its first 250 ms (finding 1656); its holder has focus.
     const loading = row.locator(".agent-deployment [data-return-focus-href]");
     assert.equal(await loading.textContent(), READING);
-    assert.equal(await isFocused(loading), true, "Back focused the pending deployment");
+    assert.equal(await hasFocus(loading), true, "Back focused the pending deployment");
     // Blank on screen, the focused holder's text still reaches a screen reader.
     assert.match(await loading.ariaSnapshot(), /Reading deployment…/);
     const listUrl = page.url();
@@ -341,13 +340,13 @@ for (const outcome of ["fills", "is refused"]) {
         "Deployment access denied",
       );
       assert.equal(
-        await isFocused(row.getByRole("link", { name: target.name, exact: true })),
+        await hasFocus(row.getByRole("link", { name: target.name, exact: true })),
         true,
         "focus moved to the row's Agent link",
       );
     } else {
       assert.match(await deploymentLink.textContent(), /^v2 · Completed/);
-      assert.equal(await isFocused(deploymentLink), true, "the fresh link kept focus");
+      assert.equal(await hasFocus(deploymentLink), true, "the fresh link kept focus");
     }
     assert.equal(await viewTag(page), "kept");
   });
@@ -856,7 +855,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
-        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
+        linkColor: globalThis.getComputedStyle(node.querySelector("tbody a")).color,
         rows,
       };
     });
@@ -921,12 +920,15 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       if (width === 360) {
         assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
       }
-      // A current version reads as its number, not its revision ID (finding 2093), in the text
-      // colour.
+      // The current version is a link like the Agent name, labelled by version rather than revision ID.
       if (index % 2 === 1) {
         assert.equal(row.revision.text, "v1", `${width}: row ${index} revision`);
         assert.doesNotMatch(row.revision.fontFamily, /monospace/, `${width}: row ${index} font`);
-        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
+        assert.equal(
+          row.revision.color,
+          layout.linkColor,
+          `${width}: row ${index} revision colour`,
+        );
       }
       assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
     }

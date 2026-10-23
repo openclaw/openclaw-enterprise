@@ -9,10 +9,13 @@ const credentialDirectories = [
   "drivers/repo/credentials",
   "drivers/repo/github",
   "backends/repository-credentials",
+  "backends/token-service",
 ];
+const sharedConfigurationFields = "composition/installation-fields.ts";
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
   ...processEntrypoints,
+  sharedConfigurationFields,
   "composition/repository-credentials/check-config.ts",
   "composition/repository-credentials/projected-inputs.ts",
   "composition/repository-credentials/probe.ts",
@@ -22,6 +25,7 @@ const requiredEntrypoints = [
   "drivers/repo/github/credentials/client/native-git.ts",
   "drivers/repo/github/credentials/client/hook-dispatch.ts",
   "drivers/repo/github/credentials/client/router.ts",
+  "drivers/repo/github/credentials/client/draft-pr.ts",
 ];
 const clientDirectory = "drivers/repo/github/credentials/client/";
 const clientContracts = "drivers/repo/credentials/client-contracts.ts";
@@ -30,14 +34,28 @@ const sourceExtensions = new Set([".ts", ".mts", ".cts", ".js", ".mjs", ".cjs", 
 
 // Adding an I/O owner or member requires security review; see the owning test guide.
 const reviewedImports = {
+  [sharedConfigurationFields]: {
+    "@openclaw-enterprise/utils": ["asRecord", "isNonEmptyString"],
+    "node:path": ["isAbsolute"],
+  },
+  "drivers/repo/github/credentials/prepared-configuration.ts": {
+    "../../../../composition/installation-fields.ts": ["object", "closed", "nonempty"],
+  },
+  "drivers/repo/github/installation.ts": {
+    "../../../composition/installation-fields.ts": [
+      "object",
+      "closed",
+      "nonempty",
+      "openShellRepositoryConfiguration",
+    ],
+    // Hash selected configuration without loading mounted key bytes.
+    "node:crypto": ["createHash"],
+    "@openclaw-enterprise/occ": ["SandboxRepositoryRecipientUnverifiedError"],
+  },
   "drivers/repo/github/credentials/material.ts": {
     "node:crypto": ["KeyObject", "constants", "sign"],
   },
   "drivers/repo/github/credentials/provider-transport/request.ts": {
-    "node:https": ["request"],
-  },
-  // The registry-backed metadata owner sends one authorized, metadata-only GET.
-  "drivers/repo/github/credentials/descriptions.ts": {
     "node:https": ["request"],
   },
   // Separate tokenless listener and fixed-origin anonymous GET; this owner and
@@ -45,6 +63,12 @@ const reviewedImports = {
   "drivers/repo/github/public-read/server.ts": {
     "node:http": ["createServer"],
     "node:https": ["Agent", "get"],
+  },
+  // The image draft helper uses only its selected broker, session bearer and operator-projected public CA.
+  "drivers/repo/github/credentials/client/draft-pr.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:https": ["Agent", "request"],
+    "node:util": ["parseArgs"],
   },
   "drivers/repo/github/credentials/client/commands.ts": { "node:child_process": ["spawnSync"] },
   "drivers/repo/github/credentials/client/config.ts": {
@@ -81,14 +105,18 @@ const reviewedImports = {
     "node:fs/promises": ["lstat", "open"],
   },
   "composition/repository-credentials/config.ts": {
-    "node:crypto": ["createPrivateKey"],
     "node:tls": ["createSecureContext"],
+  },
+  "composition/repository-credentials/platform.ts": {
+    // Shared, synchronous JSON validation has no credential or I/O access.
+    "@openclaw-enterprise/contracts": ["requireConfiguration"],
   },
   "composition/repository-credentials/protected-file.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["lstat", "open"],
   },
-  "composition/repository-credentials/platform.ts": {
+  // Bounded, descriptor-checked PEM from the Installation's read-only public CA projection.
+  "composition/repository-credentials/public-ca.ts": {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
     "node:tls": ["createSecureContext"],
@@ -104,21 +132,82 @@ const reviewedImports = {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
   },
-  "drivers/repo/github/credentials/registry.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/credentials/registry.ts": {
+    "node:crypto": ["createHash"],
+    // Compare the complete resolved binding before proposing standing scope; no I/O.
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
+  "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
+  "backends/token-service/service.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // The prepared owner reads only the Installation custody mount. The App issuer comes
+  // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
+  "drivers/repo/github/credentials/prepared-lifecycle.ts": {
+    "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
+    "node:fs/promises": ["readFile"],
+    "node:util": ["isDeepStrictEqual"],
+    "@openclaw-enterprise/contracts": [
+      "githubMetadataGrant",
+      "preparedGitHubProviderRef",
+      "preparedGitHubSourceFromRoute",
+    ],
+    // Bind the admitted source and its exact current version on the send transaction; the error
+    // class only reports an unsettled withdrawal and carries no material or I/O authority.
+    "@openclaw-enterprise/occ": ["CredentialTokenUnsettledError", "postgresPreparedGitHubProof"],
+  },
+  // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
+  "drivers/repo/github/credentials/prepared-postgres.ts": {
+    // Reuse the platform transaction's metadata predicates; no new material or I/O authority.
+    "@openclaw-enterprise/occ": ["preparedGitHubLive", "readPreparedGitHubMetadata"],
+    "node:crypto": ["createCipheriv", "createDecipheriv", "randomBytes", "randomUUID"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // The prepared Git owner and route observation must compare the same recipient fields. No I/O.
+  "drivers/repo/credentials/protected-repository-git-installation.ts": {
+    "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
+  },
+  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+    // Existing stateful helper on the caller's transaction, not general OCC access.
+    "@openclaw-enterprise/occ": ["CredentialDeliveries"],
+    // Process-local identity for the existing recipient-delivery worker.
+    "node:crypto": ["randomUUID"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // Worker only: the Installation's read-only App and custody mounts, public key
+  // fingerprint, and preparation attempt ID. The broker has neither key mount.
+  "backends/repository-credentials/prepared-git-owner.ts": {
+    // Pure canonical scope hashing shared with admission; no new state or signing authority.
+    "@openclaw-enterprise/occ": ["repositoryApprovalFingerprint"],
+    "node:crypto": ["createHash", "createPrivateKey", "createPublicKey", "randomUUID"],
+    "node:fs": ["constants"],
+    "node:fs/promises": ["open"],
+    "node:util": ["isDeepStrictEqual"],
+  },
+  // One use of committed material via the private Unix socket; no preparation operation.
+  "drivers/repo/github/credentials/warm-use.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:http": ["request"],
+  },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/policy.ts": {
+    "@openclaw-enterprise/occ": ["ScopeViolationError"],
+  },
   "drivers/repo/github/driver.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.
-  "drivers/repo/github/credentials/admission-probe.mjs": {
+  "drivers/repo/github/credentials/admission-probe.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError"],
   },
   // The broker journal client writes only nonsecret receipts over a local Unix socket.
   "drivers/repo/credentials/control.ts": { "node:crypto": ["randomUUID"] },
   "drivers/repo/credentials/receipt-client.ts": { "node:http": ["request"] },
-  // The worker owns the private journal socket; parent and socket identity are checked.
-  "backends/repository-credentials/receipt-server.ts": {
+  // Worker-private receipt and prepared-use sockets; parent and socket identity are checked.
+  "backends/repository-credentials/private-request-server.ts": {
     "node:http": ["createServer"],
     "node:fs/promises": ["chmod", "lstat", "mkdir", "realpath", "unlink"],
   },
@@ -131,6 +220,11 @@ const reviewedImports = {
   },
   "drivers/repo/credentials/sessions.ts": {
     "node:crypto": ["createHash", "randomBytes", "randomUUID"],
+  },
+  // Hash the selected Git request, including the bounded body after decompression.
+  "drivers/repo/credentials/transport/agent.ts": {
+    "node:crypto": ["createHash"],
+    "node:util": ["promisify"],
   },
   "drivers/repo/credentials/transport/request-headers.ts": {
     "node:http": ["validateHeaderName", "validateHeaderValue"],
@@ -146,9 +240,27 @@ const ordinaryBuiltins = new Set([
   "node:url",
   "node:zlib",
 ]);
-const senderConsumers = {
-  "drivers/repo/github/credentials/descriptions.ts": {
-    "composition/repository-credentials/config.ts": ["createGitHubRepositoryDescriptions"],
+// Restrict imports and re-exports inside scanned credential source. The worker
+// entrypoint is outside that source; packaging and runtime tests cover that boundary.
+const capabilityConsumers = {
+  "composition/repository-credentials/public-ca.ts": {
+    "composition/repository-credentials/config.ts": ["loadPublicCa"],
+    "composition/repository-credentials/platform.ts": ["loadPublicCa"],
+  },
+  "backends/repository-credentials/private-request-server.ts": {
+    "backends/repository-credentials/receipt-server.ts": ["servePrivateRepositoryRequest"],
+    "backends/repository-credentials/prepared-git-owner.ts": ["servePrivateRepositoryRequest"],
+  },
+  // Selected directly by worker.mjs; no runtime import from credential source is authorized.
+  "backends/repository-credentials/prepared-git-owner.ts": {},
+  "drivers/repo/github/credentials/prepared-repository-git.ts": {
+    "backends/repository-credentials/prepared-git-owner.ts": ["PreparedRepositoryGitStore"],
+  },
+  "drivers/repo/github/credentials/warm-use.ts": {
+    "drivers/repo/github/credentials/warm-registry-factory.ts": ["authorizePreparedGitSend"],
+  },
+  "drivers/repo/credentials/transport/agent.ts": {
+    "drivers/repo/credentials/server.ts": ["createAgentHandler"],
   },
   "drivers/repo/github/credentials/provider-transport/request.ts": {
     "drivers/repo/github/credentials/provider-transport.ts": ["sendProviderRequest"],
@@ -162,9 +274,7 @@ const senderConsumers = {
   "backends/repository-credentials/control-client.ts": {
     "composition/repository-credentials/platform.ts": ["UnixRepositoryCredentialControlClient"],
     "drivers/repo/github/driver.ts": ["RepositoryCredentialControlError"],
-    "drivers/repo/github/credentials/admission-probe.mjs": [
-      "UnixRepositoryCredentialControlClient",
-    ],
+    "drivers/repo/github/credentials/admission-probe.ts": ["UnixRepositoryCredentialControlClient"],
   },
 };
 const rawGlobals = new Set([
@@ -214,9 +324,16 @@ const reviewedProcessMembers = {
     "exitCode",
     "stderr",
   ],
+  "drivers/repo/github/credentials/client/draft-pr.ts": [
+    "argv",
+    "env",
+    "exitCode",
+    "stderr",
+    "stdout",
+  ],
   "drivers/repo/github/credentials/client/router.ts": ["argv", "env", "exitCode", "stderr"],
   "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "drivers/repo/github/credentials/admission-probe.mjs": ["argv", "exitCode", "stderr", "stdout"],
+  "drivers/repo/github/credentials/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/private-files.ts": ["getuid"],
   "composition/repository-credentials/protected-file.ts": ["getuid"],
   "composition/repository-credentials/service.ts": ["exit", "once", "stderr", "stdout"],
@@ -231,7 +348,7 @@ const reviewedProcessMembers = {
   "repository-credentials.ts": ["argv", "exitCode", "stderr", "stdout"],
   "repository-credentials.mjs": ["exitCode", "stderr"],
   "drivers/repo/credentials/server.ts": ["getuid"],
-  "backends/repository-credentials/receipt-server.ts": ["getuid"],
+  "backends/repository-credentials/private-request-server.ts": ["getuid"],
 };
 const runtimeTypeScript = new Set([
   "TSAsExpression",
@@ -325,13 +442,14 @@ function inspectSource(path, root, sources, ast) {
       continue;
     }
     const source = node.source.value;
-    if (ordinaryBuiltins.has(source)) {
+    if (ordinaryBuiltins.has(source) && file !== sharedConfigurationFields) {
       continue;
     }
-    if (source.startsWith(".")) {
+    if (source.startsWith(".") && file !== sharedConfigurationFields) {
       const target = relativeSource(path, root, source, sources);
       const restricted =
-        senderConsumers[target] ||
+        target === sharedConfigurationFields ||
+        capabilityConsumers[target] ||
         (!file.startsWith(clientDirectory) && target.startsWith(clientDirectory)) ||
         (file === "repository-credentials.mjs" && source === "../dist/repository-credentials.js");
       if (!restricted) {
@@ -350,6 +468,22 @@ function inspectSource(path, root, sources, ast) {
   function edge(node, specifier, names, kind) {
     if (typeof specifier !== "string") {
       deny(node, "nonliteral module loading requires security review");
+      return;
+    }
+    // The pure owner and its consumers admit only exact module spellings and symbols.
+    // Do not inherit ordinary builtin or relative-source permissions here.
+    if (
+      file === sharedConfigurationFields ||
+      (specifier.startsWith(".") &&
+        relativeSource(path, root, specifier, sources) === sharedConfigurationFields)
+    ) {
+      if (
+        kind === "import" &&
+        names.every((binding) => reviewedImports[file]?.[specifier]?.includes(binding))
+      ) {
+        return;
+      }
+      deny(node, `unreviewed shared field validation ${kind} from ${specifier}`);
       return;
     }
     if (specifier.startsWith(".")) {
@@ -390,7 +524,7 @@ function inspectSource(path, root, sources, ast) {
       ) {
         deny(node, `client runtime cannot load service owner ${target}`);
       }
-      const consumers = senderConsumers[target];
+      const consumers = capabilityConsumers[target];
       if (
         consumers &&
         (kind !== "import" || !names.every((binding) => consumers[file]?.includes(binding)))
@@ -536,7 +670,7 @@ export async function verifyRepositoryCredentialBoundary(root = sourceRoot) {
     }
     files.push(...owned.sort());
   }
-  for (const entrypoint of processEntrypoints) {
+  for (const entrypoint of [...processEntrypoints, sharedConfigurationFields]) {
     const path = join(root, entrypoint);
     const stat = await lstat(path).catch((error) => {
       if (error.code !== "ENOENT") {
