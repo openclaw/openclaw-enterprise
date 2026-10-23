@@ -903,7 +903,7 @@ export const scenarios = {
     description:
       "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
-      "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
+      "Check text, search input, buttons, and the current navigation item. Switch Appearance to dark and check the same controls.",
       "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
       "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
       "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",

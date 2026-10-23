@@ -56,6 +56,10 @@ Colors accept `#RRGGBB` or `#RRGGBBAA`. CSS expressions are rejected. The genera
 stylesheet overrides semantic tokens after the bundled styles without changing
 typography, spacing, or layout.
 
+The Console follows the system light or dark appearance. A bundle that sets any
+color keeps the light appearance, because its colors replace roles chosen for
+light surfaces. A bundle with only a name or images follows the system appearance.
+
 | Roles                                               | Surfaces                                                    |
 | --------------------------------------------------- | ----------------------------------------------------------- |
 | `bg`, `surface`, `surface2`, `surfaceHover`         | Page, cards, secondary panels, hover backgrounds            |

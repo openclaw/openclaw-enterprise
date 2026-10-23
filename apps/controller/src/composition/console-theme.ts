@@ -178,6 +178,7 @@ export async function loadConsoleTheme(
       logoUrl,
       ...(faviconUrl === undefined ? {} : { faviconUrl }),
       ...(appleTouchIconUrl === undefined ? {} : { appleTouchIconUrl }),
+      hasColors: declarations.length > 0,
       assets,
     });
   } catch (error) {

@@ -89,7 +89,21 @@ export function story(id: string, options: PreviewOptions = {}) {
       reset.addEventListener("click", () => {
         frame.src = src;
       });
-      root.append(reset);
+      // The frame's color-scheme sets prefers-color-scheme inside it, so the Console follows it.
+      const appearance = document.createElement("select");
+      appearance.setAttribute("aria-label", "Appearance");
+      appearance.style.margin = "0 0 12px 12px";
+      for (const [value, label] of [
+        ["light dark", "Appearance: system"],
+        ["light", "Appearance: light"],
+        ["dark", "Appearance: dark"],
+      ]) {
+        appearance.append(new Option(label, value));
+      }
+      appearance.addEventListener("change", () => {
+        frame.style.colorScheme = appearance.value;
+      });
+      root.append(reset, appearance);
       if (options.instructions) {
         const instructions = document.createElement("p");
         instructions.textContent = options.instructions;

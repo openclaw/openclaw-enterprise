@@ -72,6 +72,64 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).first().click();
   await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await page.locator(".brand-name").textContent(), "Example Agents");
+  // Operator colors are chosen against light surfaces, so a color theme keeps them.
+  await page.emulateMedia({ colorScheme: "dark" });
+  const branded = await appearance(page, "input");
+  assert.ok(branded.background > 0.8, `branded background stays light: ${branded.background}`);
+  assert.ok(branded.control > 0.8, `branded inputs stay light: ${branded.control}`);
+});
+
+// Relative luminance of the page and of one control's surface, and body text contrast.
+const appearance = (page, control) =>
+  page.evaluate((selector) => {
+    const luminance = (color) => {
+      const channels = color
+        .match(/[\d.]+/g)
+        .slice(0, 3)
+        .map(Number);
+      const [r, g, b] = channels.map((value) => {
+        const c = value / 255;
+        return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const root = globalThis.getComputedStyle(globalThis.document.documentElement);
+    const background = luminance(root.backgroundColor);
+    const text = luminance(root.color);
+    const [light, dark] = background > text ? [background, text] : [text, background];
+    const element = globalThis.document.querySelector(selector);
+    return {
+      background,
+      contrast: (light + 0.05) / (dark + 0.05),
+      control: luminance(globalThis.getComputedStyle(element).backgroundColor),
+    };
+  }, control);
+
+test("the console follows the system light or dark appearance before and after sign-in", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Appearance", { ready: true });
+  await fixture.createAgent(namespace.id, "Appearance assistant");
+  const { page } = await newPage(t, fixture);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto(`${fixture.origin}/console/login`);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  const signIn = await appearance(page, "input");
+  assert.ok(signIn.background < 0.05, `dark sign-in background: ${signIn.background}`);
+  assert.ok(signIn.control < 0.05, `dark sign-in inputs: ${signIn.control}`);
+  assert.ok(signIn.contrast >= 7, `dark sign-in text contrast: ${signIn.contrast}`);
+  // A change of system appearance applies without a reload.
+  await page.emulateMedia({ colorScheme: "light" });
+  const light = await appearance(page, "input");
+  assert.ok(light.background > 0.8, `light sign-in background: ${light.background}`);
+  assert.ok(light.contrast >= 7, `light sign-in text contrast: ${light.contrast}`);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Appearance assistant", { exact: true }).waitFor();
+  const agents = await appearance(page, ".sidebar");
+  assert.ok(agents.background < 0.05, `dark Agents background: ${agents.background}`);
+  assert.ok(agents.control < 0.05, `dark navigation surface: ${agents.control}`);
+  assert.ok(agents.contrast >= 7, `dark Agents text contrast: ${agents.contrast}`);
 });
 
 const routeHoldTimeoutMs = 30_000;

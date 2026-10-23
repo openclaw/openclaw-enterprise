@@ -42,6 +42,9 @@ test("mounted console themes serve public branding without changing API failures
   assert.match(shell.text, /occ-console-display-name/);
   assert.match(shell.text, /href="\/console\/theme\/colors.css"/);
   assert.match(shell.text, /href="\/console\/theme\/icon.png"/);
+  // Operator colors are checked against light surfaces, so the shell keeps light from first paint.
+  assert.match(shell.text, /<html lang="en" data-theme-colors>/);
+  assert.match(shell.text, /<meta name="color-scheme" content="light" \/>/);
   assert.equal(shell.response.headers.get("cache-control"), "no-store");
   const policy = shell.response.headers.get("content-security-policy");
   assert.ok(policy);
@@ -108,6 +111,9 @@ test("minimal themes inherit bundled branding and absent configuration keeps the
   const response = await fixture.rawRequest("GET", "/console/");
   assert.match(response.text, /<title>OpenClaw Enterprise<\/title>/);
   assert.match(response.text, /\/console\/oce-mascot.png/);
+  // Without operator colors the shell still follows the system appearance.
+  assert.match(response.text, /<meta name="color-scheme" content="light dark" \/>/);
+  assert.match(response.text, /<html lang="en">/);
 });
 
 test("invalid theme manifests fail configuration rather than falling back", async (t) => {

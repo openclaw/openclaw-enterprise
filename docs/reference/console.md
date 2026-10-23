@@ -51,8 +51,10 @@ hidden. Namespace rows open their Agents.
 
 [Create a Namespace](../guides/console/create-namespace.md) explains creation and recovery.
 
-The Console uses light appearance and OCC-served fonts. Navigation focuses the
-destination heading; **Open navigation** opens the mobile drawer.
+The Console follows the system light or dark appearance and uses OCC-served fonts.
+A [theme](console/theming.md#color-roles) that sets colors keeps the light
+appearance. Navigation focuses the destination heading; **Open navigation**
+opens the mobile drawer.
 
 Click an Agent name or an open area of its row to open its details. Version links
 and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to

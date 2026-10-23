@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-21
-last_updated_session: authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287
+updated: 2026-10-23
+last_updated_session: authoring-run/8d7f8ba3-f41e-46d5-ba36-6adca6c837e7
 ---
 
 # Platform console request flow
@@ -104,8 +104,10 @@ graph TD
 `apps/controller/src/api-startup.mjs:startApi` loads an optional
 [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
 ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mts:brandContents`
-renders the name as text. `/console/theme/` serves only referenced images and
+branding and links the generated stylesheet. When the bundle sets colors, it marks
+`<html data-theme-colors>` and sets the `color-scheme` meta to `light`, so
+`console.css` skips its `prefers-color-scheme: dark` role set.
+`console/shell.mts:brandContents` renders the name as text. `/console/theme/` serves only referenced images and
 generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
 API restart can replace the theme.
 
@@ -375,6 +377,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-23 04:12: Follow the system dark appearance; color themes keep light. (authoring-run/8d7f8ba3-f41e-46d5-ba36-6adca6c837e7 - 311567902)
 - 2026-10-21 22:22: Connect console themes to API startup and the shared shell. (authoring-run/634a754f-a79e-4aac-94fe-0646caf6a287 - 2c9e7f6c4)
 - 2026-10-20 15:53: Add Namespace Secret management and uncertain-write recovery in the accompanying console change. (authoring-run/9b10a6df-a6ce-4d38-859d-480a59d95cf0 - e8185dac8)
 - 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
