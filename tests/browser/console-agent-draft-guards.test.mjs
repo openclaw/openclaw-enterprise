@@ -877,8 +877,8 @@ for (const [scenario, heldRead, heldMs, reader] of [
     admitted.release();
     await versionRead.requested;
     if (reader === "goes back") {
-      // The Loading page has replaced the held draft by now; Back returns to the draft.
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      // Once the Loading page has replaced the held draft, Back returns to the draft.
+      await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
       await page.goBack({ waitUntil: "commit" });
       versionRead.release();
       await page.waitForURL(/revision=draft/);

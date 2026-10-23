@@ -657,7 +657,7 @@ export const nextFrames = (page) =>
 // so a node that holds focus for less than a frame (a busy page paints late) still shows. Nodes
 // are numbered, so a replaced heading is a new entry. `loadingShown` turns true once the content
 // shows one of `loadingTexts`; `frames` counts sampled frames.
-export const recordFocusTrail = (page, loadingTexts) =>
+export const recordFocusTrail = (page, loadingTexts = []) =>
   page.evaluate((loadingTexts) => {
     const ids = new WeakMap();
     let next = 0;

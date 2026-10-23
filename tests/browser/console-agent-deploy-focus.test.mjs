@@ -47,7 +47,7 @@ test("A reader who leaves the held heading during an admitted deployment is not 
     const leave = (event) => {
       if (event.target.tagName === "H1") {
         globalThis.document.removeEventListener("focusin", leave, true);
-        setTimeout(() => event.target.blur());
+        setTimeout(() => event.target.blur(), 0);
       }
     };
     globalThis.document.addEventListener("focusin", leave, true);
