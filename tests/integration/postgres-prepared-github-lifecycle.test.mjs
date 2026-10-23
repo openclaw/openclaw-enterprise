@@ -685,7 +685,8 @@ test(
       let bytes;
       t.mock.method(client, "query", async (sql, ...args) => {
         const result = await query(sql, ...args);
-        if (sql === "COMMIT") {
+        // The pass first commits its Agent discovery on this same connection; lose the claim's.
+        if (sql === "COMMIT" && open.mock.callCount()) {
           bytes = open.mock.calls[0].result;
           assert.ok(
             bytes.some((byte) => byte !== 0),
@@ -870,6 +871,83 @@ test(
     assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
     // Settlement never rewrites the recorded outcome.
     assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+test(
+  "PostgreSQL prepared custody: deleting the bound Agent stops renewal and revokes its tokens",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2215: the worker renewed an Agent-bound source forever after its Agent was deleted.
+    // A nine-minute provider lifetime keeps renewal due on every pass of a live family.
+    let onIssue;
+    const { gh, f, lifecycle, source } = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 9 * 60_000,
+      // GitHub has minted the token; its answer is still on the way.
+      issueResponseGate: () => onIssue?.(),
+    });
+    const signal = new AbortController().signal;
+    const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
+    const due = () =>
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=now() WHERE source_id=$1",
+        [source.key.source.id],
+      );
+    const custody = async () =>
+      (
+        await f.pool.query(
+          `SELECT f.enabled, a.state, a.custody FROM occ.prepared_github_families f
+           JOIN occ.prepared_github_attempts a USING (source_id) WHERE source_id=$1 ORDER BY a.started_at`,
+          [source.key.source.id],
+        )
+      ).rows;
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    const { ready } = await f.resolve(captureMetadata(f));
+    assert.ok(ready, "signed resolve must select the prepared family");
+    const evidence = JSON.parse(ready.evidence.authority_evidence);
+    const proveCurrent = () =>
+      f.state.transact((unit) =>
+        unit.preparedTokenProof.current(source, evidence, lifecycle.issuerAuthority, readWindow()),
+      );
+    assert.equal(await proveCurrent(), true);
+
+    // The Agent is deleted while a renewal is in flight: the token GitHub minted is never published.
+    onIssue = async () => {
+      onIssue = undefined;
+      const deleted = await f.request(
+        "DELETE",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}`,
+      );
+      assert.equal(deleted.status, 202);
+    };
+    await due();
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.equal(onIssue, undefined, "the renewal reached GitHub");
+    assert.equal(gh.issuesOfTokens.length, 2);
+    // Use stops as deletion commits, before any worker pass.
+    assert.equal(await lifecycle.ready(source, signal), false);
+    assert.equal(await lifecycle.readWarm(source, readWindow()), undefined);
+    assert.equal(await proveCurrent(), false);
+
+    // The next passes withdraw the family and revoke both tokens; nothing is issued again.
+    await due();
+    const passes = [];
+    for (let pass = 0; pass < 5 && passes.at(-1) !== "idle"; pass++) {
+      passes.push((await lifecycle.maintain(signal)) ?? "idle");
+    }
+    assert.deepEqual(passes, ["retired", "retired", "idle"]);
+    await due();
+    assert.equal((await lifecycle.maintain(signal)) ?? "idle", "idle");
+    assert.equal(gh.issuesOfTokens.length, 2, "a deleted Agent's source was renewed");
+    assert.deepEqual(
+      gh.tokenState().map((token) => token.revoked),
+      [true, true],
+    );
+    assert.deepEqual(await custody(), [
+      { enabled: false, state: "committed", custody: "revoked" },
+      { enabled: false, state: "quarantined", custody: "revoked" },
+    ]);
     assert.deepEqual(gh.errors, []);
   },
 );

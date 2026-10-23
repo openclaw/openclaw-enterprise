@@ -107,6 +107,10 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     }
     tokenService.register(this, postgresPreparedGitHubProof);
     this.maintenance = tokenService.ownFamilies({
+      discover: async (signal) => {
+        signal.throwIfAborted();
+        await this.db.withdrawEndedAgents();
+      },
       retire: async (signal) => {
         const result = await this.retire(null, signal);
         if (result === "issuer-mismatch") {

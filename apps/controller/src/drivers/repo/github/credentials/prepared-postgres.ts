@@ -189,6 +189,27 @@ export class PreparedGitHubPostgres {
     });
   }
 
+  /** Withdraw this issuer's metadata families whose Agent is deleting or gone. Agent deletion
+   * is one-way and fences use at once (see the live predicate); retirement then revokes the
+   * current token. Agent deletion never waits on GitHub; deleting the source settles custody.
+   * A family locked by another transaction is skipped until the next pass. */
+  async withdrawEndedAgents() {
+    await this.transaction(async (c) => {
+      await c.query(
+        `WITH ended AS (SELECT source_id FROM ${families} f
+          WHERE enabled AND f.source->>'adoption'='prepared' AND admission->>'issuerAuthority'=$1
+          AND NOT EXISTS (SELECT 1 FROM occ.agents g WHERE g.status='active'
+            AND g.namespace_id=f.source #>> '{key,namespaceId}' AND g.id=f.source #>> '{grant,isolationId}')
+          FOR UPDATE OF f SKIP LOCKED),
+        stopped AS (UPDATE ${families} f SET enabled=false,worker_claim=NULL FROM ended e
+          WHERE f.source_id=e.source_id RETURNING f.source_id)
+        UPDATE ${attempts} a SET custody='retire' FROM stopped s
+        WHERE a.source_id=s.source_id AND a.custody='current'`,
+        [this.issuerAuthority],
+      );
+    });
+  }
+
   /** Settled, or the earliest time every unsettled attempt settles (none for live custody). */
   async withdrawalSettlement(source: Source) {
     return this.transaction(async (c) => {
