@@ -4,7 +4,7 @@ import type { AgentAccessContext } from "./credential-access.mjs";
 import { message } from "./list.mjs";
 
 const warning =
-  "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions and can be overwritten by deployment.";
+  "Gateway managed mode restricts administrative changes by default. OCE deployments can overwrite changes made while managed mode is off.";
 
 type Availability =
   | { status: "available"; url: string }

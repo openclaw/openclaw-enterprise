@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
+import { inflateRawSync } from "node:zlib";
 import {
   createDockerDevelopmentComputeDriverFromEnv,
   DockerComputeDriver,
@@ -550,6 +553,49 @@ test("Docker Compute rejects unsupported native gateway settings before Docker e
   assert.doesNotThrow(() => driver.validateGatewaySettings({ gateway: { bind: "lan" } }));
 });
 
+test("Docker prepares configuration before starting a managed Gateway", async () => {
+  const { body, environment } = await gatewayContainerLaunch();
+  const program = inflateRawSync(Buffer.from(body.Cmd.slice(2).join(""), "base64")).toString();
+  const nativeRequire = createRequire(import.meta.url);
+  const events = [];
+  runInNewContext(program, {
+    process: { env: { ...environment }, on() {} },
+    require(specifier) {
+      if (specifier === "node:fs") {
+        return {
+          chmodSync() {},
+          mkdirSync() {},
+          readdirSync: () => [],
+          writeFileSync(path) {
+            events.push({ path });
+          },
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          spawn(_command, args, { env }) {
+            events.push({ args: [...args], env });
+            return { on() {} };
+          },
+        };
+      }
+      return nativeRequire(specifier);
+    },
+  });
+  assert.equal(events.length, 2);
+  const [configWrite, gatewayLaunch] = events;
+  assert.equal(configWrite.path, environment.OPENCLAW_CONFIG_PATH);
+  assert.deepEqual(gatewayLaunch.args, [
+    "/app/openclaw.mjs",
+    "gateway",
+    "--port",
+    environment.OPENCLAW_GATEWAY_PORT,
+  ]);
+  assert.equal(gatewayLaunch.env.OPENCLAW_CONFIG_READONLY, "1");
+  assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
+  assert.equal(gatewayLaunch.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+});
+
 async function gatewayContainerLaunch(configuration = {}) {
   const driver = new DockerComputeDriver({
     images: { gateway: "gateway:local", agent: "agent:local" },
@@ -621,6 +667,7 @@ function dockerGatewayRevision(driver, configuration = {}) {
     configurationGeneration: 1,
     executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(configuration, "info"),
+    gatewayManagedMode: true,
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
     servicePrincipalId: "service-principal-docker-auth",

@@ -19,6 +19,7 @@ import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
+  gatewayRuntimeEntrypoint,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { startupPhaseHelper } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
 import {
@@ -151,6 +152,7 @@ function revision(overrides = {}) {
     configurationId: agent.configurationId,
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: true,
     configuration: admitLoggingConfiguration(native, "info"),
     harnessAuth: {
       method: "api_key",
@@ -3552,6 +3554,7 @@ async function startCodexGatewaySupervisor(
   {
     bindingDeviceId,
     writableConfig = false,
+    managedMode = false,
     savedFiles,
     initialPeerStatus,
     runtimeStatus = false,
@@ -3749,7 +3752,7 @@ async function startCodexGatewaySupervisor(
       }
       if (specifier === "node:child_process") {
         return {
-          spawn(command, args) {
+          spawn(command, args, options) {
             assert.equal(command, "node");
             assert.deepEqual(plain(args), [
               "/app/openclaw.mjs",
@@ -3759,6 +3762,7 @@ async function startCodexGatewaySupervisor(
             ]);
             const child = {
               token: sandbox.process.env.APP_SERVER_TOKEN,
+              env: { ...options.env },
               config: JSON.parse(fixture.files.get("/home/node/.openclaw/openclaw.json")),
               killed: [],
               exited: undefined,
@@ -3796,7 +3800,7 @@ async function startCodexGatewaySupervisor(
     pluginAppServerToken("base-app-server-token", revisionId, startupId);
   // The peer poll is the last interval the wrapper registers.
   fixture.pollPeer = () => fixture.intervals.at(-1)();
-  vm.runInNewContext(GATEWAY_RUNTIME_ENTRYPOINT, sandbox);
+  vm.runInNewContext(gatewayRuntimeEntrypoint(managedMode), sandbox);
   if (expectStart) {
     await waitForCondition("gateway supervisor start", () => fixture.children.length === 1);
   }
@@ -4216,8 +4220,8 @@ test("Codex gateway supervisor retains refusal of a native-edited managed bridge
   assert.notEqual(bridges[0].plugins.linear.name, "Native edit");
 });
 
-test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness peer", async (t) => {
-  const gateway = await startCodexGatewaySupervisor(t);
+test("Codex gateway supervisor keeps managed-mode restrictions when respawning for a changed Harness peer", async (t) => {
+  const gateway = await startCodexGatewaySupervisor(t, { managedMode: true, writableConfig: true });
   const [first] = gateway.children;
   assert.equal(first.token, gateway.token("agent-startup-1"));
   assert.equal(
@@ -4247,6 +4251,11 @@ test("Codex gateway supervisor respawns OpenClaw in place for a changed Harness 
   first.exit(null, "SIGTERM");
   await waitForCondition("the respawned Gateway", () => gateway.children.length === 2);
   const second = gateway.children[1];
+  for (const child of [first, second]) {
+    assert.equal(child.env.OPENCLAW_CONFIG_READONLY, "1");
+    assert.equal(child.env.OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS, "1");
+    assert.equal(child.env.OPENCLAW_DISABLE_CRON_HOST_EXECUTION, "1");
+  }
   assert.equal(second.token, gateway.token("agent-startup-2"));
   assert.equal(
     second.config.plugins.entries.codex.config.codexPlugins.plugins.linear.enabled,

@@ -3067,6 +3067,7 @@ test("production Compute refuses protected admission and release, including empt
   assert.equal((await compute.prepareRevision(unprotected)).ready, false);
   await compute.activateRevision({
     ...unprotected,
+    gatewayManagedMode: false,
     compute: { id: compute.id, implementation: compute.implementation },
   });
 

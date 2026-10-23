@@ -98,6 +98,7 @@ export function routedRevision(driver, overrides = {}) {
     configurationId: "cfg_00000000-0000-4000-8000-000000000009",
     configurationKind: "agent",
     configurationGeneration: 1,
+    gatewayManagedMode: driver.options?.runtime !== undefined,
     configuration: {
       agents: { defaults: { model: "codex/gpt-5" } },
       logging: {

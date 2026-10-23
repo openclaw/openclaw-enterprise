@@ -323,20 +323,25 @@ export function sampleValue(random, schema, shared, root = schema, depth = 0) {
   if (Array.isArray(schema.enum)) {
     return structuredClone(pick(random, schema.enum));
   }
-  const union = schema.anyOf ?? schema.oneOf;
+  const unionKey = Array.isArray(schema.anyOf) ? "anyOf" : "oneOf";
+  const union = schema[unionKey];
   if (Array.isArray(union)) {
     // Deep recursive values (SafeJsonValue) lean towards the leaves.
     const branches =
       depth > 5
         ? union.filter((branch) => branch.type !== "object" && branch.type !== "array")
         : union;
-    return sampleValue(
-      random,
-      pick(random, branches.length > 0 ? branches : union),
-      shared,
-      root,
-      depth + 1,
-    );
+    const branch = pick(random, branches.length > 0 ? branches : union);
+    const { [unionKey]: _union, ...siblings } = schema;
+    // Union branches add constraints to the surrounding schema.
+    const selected = branch === false ? false : { ...siblings, ...branch };
+    if (siblings.properties && branch?.properties) {
+      selected.properties = { ...siblings.properties, ...branch.properties };
+    }
+    if (siblings.required && branch?.required) {
+      selected.required = [...new Set([...siblings.required, ...branch.required])];
+    }
+    return sampleValue(random, selected, shared, root, depth + 1);
   }
   if (Array.isArray(schema.allOf) && schema.allOf.length > 0) {
     return sampleValue(random, schema.allOf[0], shared, root, depth + 1);

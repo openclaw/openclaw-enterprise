@@ -9,7 +9,11 @@ import {
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
-import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
+import {
+  gatewayManagedModeEnvironment,
+  gatewayStateMigrationHelper,
+  startupPhaseHelper,
+} from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
 // and 5s supervisor margin. Idle Gateways exit as soon as their work settles.
@@ -2266,7 +2270,10 @@ function publishAgentPluginSkillPath() {
 
 `;
 
-export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
+export const GATEWAY_RUNTIME_ENTRYPOINT = gatewayRuntimeEntrypoint(false);
+
+export function gatewayRuntimeEntrypoint(managedMode: boolean): string {
+  return String.raw`
 const { accessSync, constants: fsConstants, mkdirSync, rmSync } = require("node:fs");
 const { dirname, join } = require("node:path");
 const { spawn } = require("node:child_process");
@@ -2394,13 +2401,7 @@ function requireWorkspaceNodePlugins(config) {
 function configureWorkspaceNodePlugins(config, workspaceNodeId) {
   requireWorkspaceNodePlugins(config);
   const plugins = config.plugins ??= {};
-  if (Array.isArray(plugins.allow)) {
-    plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
-  }
   const entries = plugins.entries ??= {};
-  const transfer = entries["file-transfer"] ??= {};
-  transfer.enabled = true;
-  const fileConfig = transfer.config ??= {};
   // Provider-owned Harnesses can relocate the workspace. Deployment-backed
   // Kubernetes Harnesses retain the canonical path when no override is present.
   const nativeWorkspace = process.env.OPENCLAW_NATIVE_WORKER_PROFILE === undefined
@@ -2412,6 +2413,15 @@ function configureWorkspaceNodePlugins(config, workspaceNodeId) {
     const appServer = (entries.codex.config ??= {}).appServer ??= {};
     appServer.remoteWorkspaceRoot ??= remoteRoot;
   }
+  // The path is known at startup. Pairing supplies only the node identity, so
+  // loading file-transfer should not also replace the Codex plugin.
+  if (workspaceNodeId === undefined) return;
+  if (Array.isArray(plugins.allow)) {
+    plugins.allow = [...new Set([...plugins.allow, "file-transfer"])];
+  }
+  const transfer = entries["file-transfer"] ??= {};
+  transfer.enabled = true;
+  const fileConfig = transfer.config ??= {};
   // OCC edits four owner documents; native previews read the Agent workspace.
   const editable = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
   const memoryPaths = ["MEMORY.md", "memory.md", "DREAMS.md", "dreams.md", "memory", "memory/**"]
@@ -2820,12 +2830,9 @@ function configureGateway(peerStatus) {
     commands.allow = [...new Set([...(commands.allow ?? []), "file.fetch", "file.stat", "file.write", "file.create", "dir.list", "workspace.memory", "workspace.skills"])];
     if (environmentWorkspaceNodeId !== undefined || workspaceNodeBindingPath !== undefined) {
       // Refuse a revision that cannot host its node now, not when the node arrives.
-      requireWorkspaceNodePlugins(config);
-      excludeGatewayLocalCodexTools(config);
-    }
-    workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
-    if (workspaceNodeId !== undefined) {
+      workspaceNodeId = environmentWorkspaceNodeId ?? readWorkspaceNodeBinding();
       configureWorkspaceNodePlugins(config, workspaceNodeId);
+      excludeGatewayLocalCodexTools(config);
     }
     writeOpenClawConfig(config);
   }
@@ -2861,7 +2868,7 @@ function startGatewayProcess() {
   const spawned = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-    { stdio: "inherit", env: gatewayEnvironment() },
+    { stdio: "inherit", env: { ...gatewayEnvironment(), ...${gatewayManagedModeEnvironment(managedMode)} } },
   );
   child = spawned;
   childRunning = true;
@@ -3178,6 +3185,7 @@ if (followsPeerStatus) {
 });
 }
 `;
+}
 
 // Codex 0.158 app-server hard-codes FmtSpan::FULL on its stderr layer, so each
 // instrumented call prints span "new" and "close" records, and each poll of an

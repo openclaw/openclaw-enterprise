@@ -1,8 +1,7 @@
 diff --git a/extensions/codex/openclaw.plugin.json b/extensions/codex/openclaw.plugin.json
-index 8755f1b..bd525a5 100644
 --- a/extensions/codex/openclaw.plugin.json
 +++ b/extensions/codex/openclaw.plugin.json
-@@ -454,6 +454,10 @@
+@@ -468,6 +468,10 @@
                    "enum": ["allow", "none"]
                  }
                },
@@ -13,7 +12,7 @@ index 8755f1b..bd525a5 100644
                "proxyUrl": { "type": "string" },
                "socksUrl": { "type": "string" },
                "enableSocks5": { "type": "boolean" },
-@@ -782,6 +786,11 @@
+@@ -796,6 +800,11 @@
        "help": "Unix socket allow and none rules for Codex sandboxed networking.",
        "advanced": true
      },
@@ -26,10 +25,9 @@ index 8755f1b..bd525a5 100644
        "label": "HTTP Proxy URL",
        "help": "HTTP listener URL used by Codex sandboxed networking.",
 diff --git a/extensions/codex/src/app-server/config-network-proxy.test.ts b/extensions/codex/src/app-server/config-network-proxy.test.ts
-index ef2da68..a92aa91 100644
 --- a/extensions/codex/src/app-server/config-network-proxy.test.ts
 +++ b/extensions/codex/src/app-server/config-network-proxy.test.ts
-@@ -74,6 +74,104 @@ describe("Codex network proxy config admission", () => {
+@@ -66,6 +66,104 @@
      );
    });
 
@@ -135,10 +133,9 @@ index ef2da68..a92aa91 100644
      for (const appServer of [
        {
 diff --git a/extensions/codex/src/app-server/config-parsing.ts b/extensions/codex/src/app-server/config-parsing.ts
-index 56a05ef..d2a98d7 100644
 --- a/extensions/codex/src/app-server/config-parsing.ts
 +++ b/extensions/codex/src/app-server/config-parsing.ts
-@@ -61,6 +61,7 @@ const codexAppServerNetworkProxySchema = z.strictObject({
+@@ -61,6 +61,7 @@
    mode: z.enum(["limited", "full"]).optional(),
    domains: z.record(z.string(), z.enum(["allow", "deny"])).optional(),
    unixSockets: z.record(z.string(), z.enum(["allow", "none"])).optional(),
@@ -147,7 +144,6 @@ index 56a05ef..d2a98d7 100644
    socksUrl: z.string().trim().min(1).optional(),
    enableSocks5: z.boolean().optional(),
 diff --git a/extensions/codex/src/app-server/config-security.ts b/extensions/codex/src/app-server/config-security.ts
-index 211fdb9..bfad9f9 100644
 --- a/extensions/codex/src/app-server/config-security.ts
 +++ b/extensions/codex/src/app-server/config-security.ts
 @@ -1,4 +1,5 @@
@@ -156,7 +152,7 @@ index 211fdb9..bfad9f9 100644
  import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
  import { isLoopbackHost } from "openclaw/plugin-sdk/request-url";
  import type {
-@@ -65,6 +66,7 @@ export function resolveCodexAppServerNetworkProxy(
+@@ -63,6 +64,7 @@
    const profile = {
      filesystem: {
        ":minimal": "read",
@@ -164,10 +160,12 @@ index 211fdb9..bfad9f9 100644
        ":project_roots": {
          ".": fileSystemMode,
        },
-@@ -109,6 +111,72 @@ function normalizeNetworkProxyPermissionMap(
+@@ -95,6 +97,72 @@
+     .map(([key, permission]) => [key.trim(), permission === "none" ? "deny" : permission] as const)
+     .filter(([key]) => key.length > 0);
    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
- }
-
++}
++
 +function resolveNetworkProxyReadOnlyPaths(
 +  config: CodexAppServerNetworkProxyConfig,
 +): Record<string, "read"> | undefined {
@@ -232,16 +230,13 @@ index 211fdb9..bfad9f9 100644
 +  return new Error(
 +    'Invalid plugins.entries.codex.config.appServer.networkProxy.readOnlyPaths; fix this field before starting Codex with network restrictions. Run "openclaw doctor --fix" for supported repairs.',
 +  );
-+}
-+
+ }
+
  function removeUndefinedJsonFields(value: Record<string, JsonValue | undefined>): JsonObject {
-   return Object.fromEntries(
-     Object.entries(value).filter((entry): entry is [string, JsonValue] => entry[1] !== undefined),
 diff --git a/extensions/codex/src/app-server/config.test.ts b/extensions/codex/src/app-server/config.test.ts
-index 97fbc47..5ef2dd3 100644
 --- a/extensions/codex/src/app-server/config.test.ts
 +++ b/extensions/codex/src/app-server/config.test.ts
-@@ -204,15 +204,25 @@ describe("Codex app-server config", () => {
+@@ -336,15 +336,25 @@
        networkProxy: {
          enabled: true,
          profileName: "mock-proxy",
@@ -270,14 +265,17 @@ index 97fbc47..5ef2dd3 100644
        },
      });
 
-@@ -230,19 +240,26 @@ describe("Codex app-server config", () => {
+@@ -356,18 +366,28 @@
+         default_permissions: "mock-proxy",
+         permissions: {
            "mock-proxy": {
-             filesystem: {
-               ":minimal": "read",
+-            filesystem: { ":minimal": "read", ":project_roots": { ".": "write" } },
++            filesystem: {
++              ":minimal": "read",
 +              "/app/node_modules/openclaw": "read",
 +              "/opt/openclaw/repository-credentials": "read",
-               ":project_roots": { ".": "write" },
-             },
++              ":project_roots": { ".": "write" },
++            },
              network: {
                enabled: true,
 -              mode: "limited",

@@ -740,6 +740,10 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
   });
   const configPath = "/home/node/.openclaw/openclaw.json";
   const atStart = JSON.parse(files.get(configPath));
+  assert.equal(
+    atStart.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
+    "/sandbox/enterprise",
+  );
   assert.deepEqual(atStart.plugins.entries.codex.config.appServer.nativeHookRelay, {
     ...baseConfig.plugins.entries.codex.config.appServer.nativeHookRelay,
     credentialDirectory: hookDirectory,
@@ -806,10 +810,7 @@ test("a running Gateway hot-applies its workspace node under plugins.* and acks 
     nodeId: "enrolled-node",
     remoteRoot: "/sandbox/enterprise",
   });
-  assert.equal(
-    applied.plugins.entries.codex.config.appServer.remoteWorkspaceRoot,
-    "/sandbox/enterprise",
-  );
+  assert.deepEqual(applied.plugins.entries.codex, atStart.plugins.entries.codex);
   // The write was a whole-file replacement, not an in-place rewrite.
   assert.equal(
     [...files.keys()].some((path) => path.includes(".workspace-node-")),
@@ -1361,6 +1362,7 @@ test("a workspace-node Gateway keeps owner Codex tool excludes, pins the codex p
   assert.equal(localConfig.cron, undefined);
   assert.equal(localConfig.agents, undefined);
   assert.deepEqual(localConfig.models, localBase.models);
+  assert.equal(localConfig.plugins.entries.codex.config.appServer.remoteWorkspaceRoot, undefined);
 });
 
 test("Gateway launch binds the enrolled node without expanding owner writes or changing its snapshot", async () => {
@@ -1371,7 +1373,13 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
       entries: {
         codex: {
           enabled: true,
-          config: { appServer: { transport: "websocket", url: "wss://harness.example.test" } },
+          config: {
+            appServer: {
+              transport: "websocket",
+              url: "wss://harness.example.test",
+              remoteWorkspaceRoot: "/owner/harness-workspace",
+            },
+          },
         },
       },
     },
@@ -1420,10 +1428,7 @@ test("Gateway launch binds the enrolled node without expanding owner writes or c
   assert.deepEqual(effective.plugins.entries.codex, {
     enabled: true,
     config: {
-      appServer: {
-        ...baseConfig.plugins.entries.codex.config.appServer,
-        remoteWorkspaceRoot: "/home/node/workspace",
-      },
+      appServer: baseConfig.plugins.entries.codex.config.appServer,
       codexDynamicToolsExclude: GATEWAY_LOCAL_CODEX_TOOLS,
     },
   });

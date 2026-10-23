@@ -161,6 +161,7 @@ async function setup(context) {
       namespaceId: namespace.id,
       agentId: owner.id,
       revision: number,
+      gatewayManagedMode: owner.gatewayManagedMode,
       configuration: { revision: String(number) },
       configurationId: owner.configurationId,
       configurationKind: "agent",

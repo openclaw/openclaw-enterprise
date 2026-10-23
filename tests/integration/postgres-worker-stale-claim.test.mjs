@@ -862,6 +862,7 @@ test(
       backendId: null,
       harnessAuth: { method: "runtime" },
       executionMode: "embedded",
+      gatewayManagedMode: true,
       servicePrincipalId: `service-agent-${randomUUID()}`,
       createdAt: new Date().toISOString(),
     };
@@ -877,6 +878,7 @@ test(
       configurationId: owner.configurationId,
       configurationKind: "agent",
       configurationGeneration: 1,
+      gatewayManagedMode: owner.gatewayManagedMode,
       harness: { ...DEVELOPMENT_HARNESS_DESCRIPTOR, mode: "embedded" },
       compute: {
         id: compute.id,

@@ -3,6 +3,19 @@
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
+// Apply the controls to the Gateway child, after OCE finishes configuration and plugin setup.
+export function gatewayManagedModeEnvironment(managedMode: boolean): string {
+  return JSON.stringify(
+    managedMode
+      ? {
+          OPENCLAW_CONFIG_READONLY: "1",
+          OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS: "1",
+          OPENCLAW_DISABLE_CRON_HOST_EXECUTION: "1",
+        }
+      : {},
+  );
+}
+
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.
 // A failed phase may add a fixed upper-case cause code, which the Collector exports,
@@ -37,11 +50,11 @@ async function timeStartupPhase(phase, run) {
 
 /**
  * OpenClaw's agent database schema (`OPENCLAW_AGENT_SCHEMA_VERSION` in
- * src/state/openclaw-agent-db-contract.ts) at the runtime image's pinned
+ * src/state/openclaw-schema-versions.ts) at the runtime image's pinned
  * OPENCLAW_COMMIT. The runtime image test that migrates a released Gateway
  * fails when a pin moves it; update it with the pin.
  */
-export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 24;
+export const OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION = 31;
 
 // A Gateway keeps its agent databases across runtime image upgrades. OpenClaw
 // refuses one with an older schema (exit 78) until "openclaw doctor --fix"

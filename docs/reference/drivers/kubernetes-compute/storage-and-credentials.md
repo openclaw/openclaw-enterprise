@@ -58,8 +58,11 @@ writer.
 A stop deletes the Gateway and waits for its Pod to disappear before stopping the
 Harness, which finishes active work meanwhile; a refused candidate's stop deletes
 both at once. The Gateway supervisor and Pod allow up to 330 seconds for the
-pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination can leave an owner lease until it
-expires and delay the successor; a longer grace period does not make it a clean shutdown.
+pinned runtime's drain and cleanup; idle Gateways exit promptly. Forced termination
+can leave an unverifiable owner lease that blocks the successor. A platform operator
+must confirm the predecessor stopped or fence it before
+[lock recovery](https://github.com/openclaw/openclaw/blob/9cc4450e9d79a993a51dc6fa362468f46c6f1819/docs/cli/gateway/running.md#recover-an-unverifiable-state-lock).
+Age alone cannot authorize takeover.
 
 Only the Gateway Pod mounts these writable directories, including SQLite
 databases and their WAL/SHM siblings:
@@ -193,10 +196,10 @@ for retry and preserves the Agent's database identity.
 
 ## Managed native configuration
 
-Ordinary runtime gateways read the managed ConfigMap at
-`/etc/openclaw/openclaw.json`. Native admin editing uses a writable copy only
-when runtime gateway images and private `gatewayRouting` are configured and
-the saved native Configuration explicitly enables the pilot shape:
+Gateway versions with [managed mode](../../agent-native-admin.md#gateway-managed-mode) off use a writable native
+configuration copy. With managed mode on, Kubernetes creates a copy only when runtime
+Gateway images and private `gatewayRouting` are configured and the saved native
+Configuration explicitly enables the pilot shape:
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
   with `operator.admin` identity scopes.
@@ -204,11 +207,11 @@ the saved native Configuration explicitly enables the pilot shape:
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.
 
-For those gateways, the managed ConfigMap remains read-only at
+For those Gateways, the managed ConfigMap remains read-only at
 `/etc/openclaw-managed/openclaw.json`. The nonroot init container copies it to
 `/home/node/.openclaw/openclaw.json` on the Pod-local `emptyDir`, and
-`OPENCLAW_CONFIG_PATH` points to that writable copy. Gateways without the full
-opt-in shape, including ordinary routed gateways, keep the read-only path.
+`OPENCLAW_CONFIG_PATH` points to that writable copy. All other Gateways read the
+managed ConfigMap directly at `/etc/openclaw/openclaw.json`.
 
 Native edits change only the copy; Pod replacement or Agent redeployment
 restores the managed snapshot, while the persistent gateway and workspace claims

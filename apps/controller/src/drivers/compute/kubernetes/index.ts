@@ -238,7 +238,6 @@ import {
   AGENT_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT,
   GATEWAY_STOP_TIMEOUT_MS,
   MANAGED_CONFIGURATION_DIRECTORY,
   NATIVE_HOOK_CREDENTIAL_DIRECTORY,
@@ -246,6 +245,7 @@ import {
   RUNTIME_READINESS_PATH,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
+  gatewayRuntimeEntrypoint,
 } from "./runtime-entrypoints.ts";
 
 import {
@@ -545,6 +545,7 @@ interface GatewayConfigurationSnapshot {
   readonly name: string;
   readonly revision: number;
   readonly revisionId: string;
+  readonly gatewayManagedMode: boolean;
   readonly usesGatewayPasswordEnv: boolean;
   readonly usesWritableNativeAdminConfig: boolean;
   readonly annotations: Readonly<Record<string, string>>;
@@ -3185,6 +3186,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return revision.harness.mode === "dedicated";
   }
 
+  private validateGatewayManagedMode(revision: Readonly<AgentRevision>): void {
+    if (revision.gatewayManagedMode === true && this.options.runtime === undefined) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode requires a supported Gateway runtime on Kubernetes Compute.",
+      );
+    }
+  }
+
   static readonly configurationSchema = Object.freeze({
     type: "object",
     required: ["authentication", "images", "resources", "network", "servicePrincipalCredentials"],
@@ -3389,6 +3398,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   readonly id: string;
   readonly capability = "compute" as const;
   readonly implementation: string;
+  readonly supportsGatewayManagedMode = true as const;
   readonly supportsWorkspaceSetup = true as const;
   readonly requiresAgentRuntimeCredentials?: true;
   readonly agentProvisioning = Object.freeze({
@@ -6057,6 +6067,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Configuration ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -7336,6 +7347,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       throw new ConfigurationFailure("AgentRevision Compute ownership is invalid.");
     }
+    this.validateGatewayManagedMode(revision);
     if (execution === "withdraw-public-reader") {
       const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
       const observed = await this.getNamespace(namespace);
@@ -12730,6 +12742,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      gatewayManagedMode: revision.gatewayManagedMode,
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -13720,6 +13733,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   admitRevision(revision: Readonly<AgentRevision>): string | undefined {
+    this.validateGatewayManagedMode(revision);
     // A launch fact, not an authorization grant. Never infer it for stored revisions:
     // older workers must refuse the new command and older Sandboxes keep their exact command.
     if (this.protectedCodexInference(revision)) {
@@ -15498,13 +15512,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         : undefined;
     const runtime = this.options.runtime;
     const dedicated = !embedded;
-    const privateHome = runtime !== undefined || dedicated;
     const writableConfiguration =
       role === "gateway" &&
       configuration !== undefined &&
-      runtime !== undefined &&
-      this.options.gatewayRouting !== undefined &&
-      configuration.usesWritableNativeAdminConfig;
+      (configuration.gatewayManagedMode === false ||
+        (runtime !== undefined &&
+          this.options.gatewayRouting !== undefined &&
+          configuration.usesWritableNativeAdminConfig));
+    const privateHome = runtime !== undefined || dedicated || writableConfiguration;
     const volumes: V1Volume[] = [];
     const volumeMounts: V1VolumeMount[] = [];
     const variables: V1EnvVar[] = [];
@@ -16026,7 +16041,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         ) {
           variables.push({
             name: "NODE_EXTRA_CA_CERTS",
-            value: `${configuration?.usesWritableNativeAdminConfig ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
+            value: `${writableConfiguration ? MANAGED_CONFIGURATION_DIRECTORY : CONFIGURATION_DIRECTORY}/execution-ca.pem`,
           });
         }
       } else {
@@ -16068,6 +16083,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             },
           }
         : {};
+    let runtimeEntrypoint: string | undefined;
+    if (runtime !== undefined) {
+      if (role === "gateway") {
+        if (typeof configuration?.gatewayManagedMode !== "boolean") {
+          throw new ConfigurationFailure(
+            "Gateway runtime requires the Agent revision's managed mode.",
+          );
+        }
+        runtimeEntrypoint = gatewayRuntimeEntrypoint(configuration.gatewayManagedMode);
+      } else {
+        runtimeEntrypoint =
+          nativeRuntime === undefined
+            ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
+            : NATIVE_WORKER_ENTRYPOINT;
+      }
+    }
     return {
       ...deployment,
       metadata: {
@@ -16169,7 +16200,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                   ...codexSeccompProfile,
                 },
                 ...(volumeMounts.length === 0 ? {} : { volumeMounts }),
-                ...(runtime === undefined
+                ...(runtimeEntrypoint === undefined
                   ? {}
                   : {
                       // Under tini, SIGTERM stops the wrapper in every startup phase.
@@ -16182,12 +16213,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                               role === "gateway"
                                 ? required(configuration?.workspace, "Initial workspace directory")
                                 : harnessSetupWorkspace,
-                            )) +
-                          (role === "gateway"
-                            ? GATEWAY_RUNTIME_ENTRYPOINT
-                            : nativeRuntime === undefined
-                              ? (pluginRuntime?.entrypoint ?? AGENT_RUNTIME_ENTRYPOINT)
-                              : NATIVE_WORKER_ENTRYPOINT),
+                            )) + runtimeEntrypoint,
                       ),
                     }),
               },

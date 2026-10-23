@@ -20,6 +20,7 @@ import type {
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
+import { ConfigurationHarnessError } from "@openclaw-enterprise/occ";
 import {
   asRecord,
   immutableCopy,
@@ -570,6 +571,11 @@ export class SshComputeDriver implements ComputeDriver {
     context?: ComputeRevisionContext,
   ): void {
     this.validateRevision(revision);
+    if (revision.gatewayManagedMode) {
+      throw new ConfigurationHarnessError(
+        "Agent setting gatewayManagedMode is not supported on SSH Compute.",
+      );
+    }
     sshGatewayConfigurationDocument(revision.configuration);
     if (
       (context?.secretEnvironment.length ?? 0) > 0 ||

@@ -47,6 +47,7 @@ function computeDriver({
   credentialGatewayDriver,
 } = {}) {
   const driver = createTestKubernetesComputeDriver("console-compute", {
+    gatewayRuntime: true,
     repositoryCredentials,
     sandboxDriver,
     credentialGatewayDriver,
@@ -55,11 +56,9 @@ function computeDriver({
 
   return Object.assign(driver, {
     implementation: "test-memory-lifecycle",
-    // A channel runtime needs runtime storage, whose Agent runtime credentials this fixture
-    // does not provision unless repository credentials ask for them.
-    ...(channelRuntime && !repositoryCredentials
-      ? { requiresAgentRuntimeCredentials: undefined }
-      : {}),
+    // Gateway startup and transport credentials are simulated unless repository credentials
+    // are in scope. Console, OCC and IAM routes still use production code.
+    ...(repositoryCredentials ? {} : { requiresAgentRuntimeCredentials: undefined }),
     // Most Console cases use drafts. Branch-selection tests can retain the actual
     // Compute capability while verifying that their flow avoids the durable queue.
     ...(agentProvisioning ? {} : { agentProvisioning: undefined }),
@@ -246,6 +245,7 @@ export function fileConsoleApp(options = {}) {
 }
 
 export async function createConsoleAppFixture(t, options = {}) {
+  const defaultAgentGatewayManagedMode = options.agentGatewayManagedMode;
   const installationId = `ins_${randomUUID()}`;
   // The ports are part of the origins the app is configured with, so hold them until the
   // listeners bind them; a released probe port can be taken by another listener meanwhile.
@@ -757,6 +757,9 @@ export async function createConsoleAppFixture(t, options = {}) {
           ? {}
           : { credentialSources: options.credentialSources }),
         ...(options.executionMode === undefined ? {} : { executionMode: options.executionMode }),
+        ...(defaultAgentGatewayManagedMode === undefined
+          ? {}
+          : { gatewayManagedMode: defaultAgentGatewayManagedMode }),
       },
     });
     assert.equal(agent.status, 201);

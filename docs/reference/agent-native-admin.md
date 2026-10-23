@@ -1,6 +1,6 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent gateway; it does not create an OCE-managed configuration editor.
+Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent Gateway, subject to [Gateway managed mode](#gateway-managed-mode).
 
 The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
@@ -91,16 +91,45 @@ The console and Agent hosts share the ordinary OCE session cookie through the co
 
 Native chat or other activity in the Agent tab does not renew the console session. Session expiry, logout, session revocation, permission removal, pilot disablement, Agent unavailability, or a version change closes active WebSockets during the authorization lease. Reconnecting uses the same stable Agent host and the selected version when the shared OCE session, exact Agent permission, and native configuration remain valid.
 
+## Gateway managed mode
+
+OCE enables managed mode by default for each Agent, independently of this UI pilot.
+On a supporting runtime, it prevents Gateway administrators from changing
+configuration through OpenClaw, opening Gateway-local terminals, and running
+Gateway-hosted command jobs. OCE supplies `OPENCLAW_CONFIG_READONLY=1`,
+`OPENCLAW_DISABLE_GATEWAY_LOCAL_TERMINALS=1`, and
+`OPENCLAW_DISABLE_CRON_HOST_EXECUTION=1`; the config watcher stays enabled.
+Node-relayed terminals, scheduled Agent turns, and Harness shell access are separate.
+Harness Gateway policies apply in either mode.
+
+Creating an Agent with `gatewayManagedMode=false` or changing the saved setting
+requires Installation `administer` in addition to the operation's normal permissions.
+In the Console, use the version draft's **Configuration** tab. Anyone authorized
+to deploy can apply the saved setting. Gateway administrators cannot change it
+through OpenClaw. The Agent revision records the requested mode, not live
+enforcement: OCC can select the revision before the replacement Gateway starts.
+A successful deployment and a supporting runtime are required to confirm enforcement.
+
+The [default runtime source pin](../../deploy/runtime/Dockerfile) includes these
+controls. The deployed runtime must be built from a supporting source and qualified
+for the selected Compute Driver. Compute Drivers must declare managed-mode support.
+Kubernetes requires a configured Gateway runtime; SSH rejects managed revisions.
+See [Docker deployment limits](drivers/docker-compute.md).
+Re-enabling managed mode restores OCE configuration and can discard Gateway-local
+changes; replacement can interrupt service. Filesystem protection is additional
+hardening when actors with direct write access to Gateway configuration files are in scope.
+
 ## Native authority and drift
 
 The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes availability, proxy admission, and socket closure checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
 
-Native admin changes affect gateway-local state outside OCE Configurations and
-immutable AgentRevisions. Manage durable configuration through OCE. In the
-Kubernetes pilot, native configuration edits affect a Pod-local copy that resets
-from the managed snapshot when the Pod is recreated or the Agent is redeployed.
+When Gateway managed mode is off, native admin changes affect gateway-local state
+outside OCE Configurations and immutable AgentRevisions. Manage durable
+configuration through OCE. In the Kubernetes pilot, native configuration edits
+affect a Pod-local copy that resets from the managed snapshot when the Pod is
+recreated or the Agent is redeployed.
 See [Kubernetes managed native configuration](drivers/kubernetes-compute/storage-and-credentials.md#managed-native-configuration)
-for the opt-in predicate, mounts, and copy lifecycle.
+for mount selection and the copy lifecycle.
 
 Do not change `gateway.bind`, `gateway.customBindHost`, or
 `gateway.tailscale.mode` in that copy. OCE checks these listener settings in the

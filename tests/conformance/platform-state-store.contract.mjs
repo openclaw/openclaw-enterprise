@@ -87,6 +87,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
+    gatewayManagedMode: true,
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
@@ -100,6 +101,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     namespaceId: namespace.id,
     agentId: agent.id,
     revision: 1,
+    gatewayManagedMode: true,
     backendId: null,
     configurationId: configuration.id,
     configurationKind: configuration.kind,
@@ -921,6 +923,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     backendId: null,
     executionMode: "dedicated",
+    gatewayManagedMode: true,
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: {

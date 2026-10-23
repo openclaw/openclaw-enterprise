@@ -915,6 +915,7 @@ test("Unsupported Compute refuses repository deployment while ordinary deploymen
   const agent = await f.createAgent({
     repositoryBindings: selection,
     harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
   });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
@@ -1041,7 +1042,10 @@ test("Kubernetes admission supports dedicated Codex repositories for every profi
 
 test("Repository capability remains optional when no repository Backend or Driver is configured", async (t) => {
   const f = await fixture(t, { compute: sshCompute(), repositories: false });
-  const agent = await f.createAgent({ harnessAuth: { method: "runtime" } });
+  const agent = await f.createAgent({
+    harnessAuth: { method: "runtime" },
+    gatewayManagedMode: false,
+  });
   await f.prepareDeployment(agent);
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));

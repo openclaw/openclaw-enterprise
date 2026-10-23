@@ -15,6 +15,7 @@
     "tests/integration/postgres-backend-ownership.test.mjs",
     "tests/integration/postgres-restart-recovery.test.mjs",
     "tests/integration/postgres-agent-deletion-audit.test.mjs",
+    "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
     "tests/integration/postgres-agent-runtime-logs.test.mjs",
     "tests/integration/postgres-repository-broker-receipts.test.mjs",
     "tests/integration/postgres-worker-stale-claim.test.mjs",
@@ -197,6 +198,12 @@
       "path": "tests/integration/postgres-agent-deletion-audit.test.mjs",
       "expectedTests": [
         "Agent delete audit lists every AccessBinding and Restriction the deletion finalizer removes"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-gateway-managed-mode.test.ts",
+      "expectedTests": [
+        "an Installation admin controls Gateway managed mode and a deployer applies the saved setting"
       ]
     },
     {
