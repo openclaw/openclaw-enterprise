@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-20
-last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
+updated: 2026-10-23
+last_updated_session: authoring-run/fe91b832-589c-438d-88f4-117e449312fe
 ---
 
 # Agent Native Admin UI Flow
@@ -89,7 +89,10 @@ An existing helper-owned name cannot change this selection.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:configureAgent`
 
 API and worker derive trusted Installation origins through `nativeAdminTarget`.
-Helm supplies matching inputs. Deployment and provisioning pass the allocated
+Helm supplies matching inputs. For the Compose/OpenShell profile,
+`compose.native-admin.yaml:services` supplies the same enablement, Agent domain
+and public HTTPS origin to the controller and Kubernetes worker. Cookie settings
+remain API-only. Deployment and provisioning pass the allocated
 Agent and frozen Sandbox copy to Compute through `agentRuntimeConfiguration`.
 Agent save remains unchanged. Kubernetes prepares gateway identity, device
 approval and exact origins; conflicts refuse admission and opt-outs stay disabled.
@@ -250,6 +253,8 @@ admin Configuration remains Pod-local.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 18:34: Pass matching native-admin origin inputs to the Compose Kubernetes worker for guided provisioning. (authoring-run/fe91b832-589c-438d-88f4-117e449312fe - f3fbd358b87b6e0fc0090ba55e6d12fa6de2b1ef)
 
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 
