@@ -1712,7 +1712,7 @@ test("one Sandbox's replay share bounds it without refusing other Sandboxes", as
   gate = Promise.withResolvers();
   entered = Promise.withResolvers();
   const crossing = use("a");
-  await entered.promise;
+  await Promise.race([entered.promise, crossing]);
   f.advance(1_000);
   gate.resolve();
   assert.equal(await crossing, "ready");
@@ -1765,7 +1765,7 @@ test("a request ID stays reserved once policy or Secret work can start", async (
   gate = Promise.withResolvers();
   entered = Promise.withResolvers();
   const late = s.resolve("a");
-  await entered.promise;
+  await Promise.race([entered.promise, late]);
   f.advance(30_000);
   gate.resolve();
   assert.deepEqual(await late, { kind: "refused", error: { kind: "deadline_exceeded" } });
