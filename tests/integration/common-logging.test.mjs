@@ -685,6 +685,57 @@ test("worker stop-yield counts survive local JSON logging on pending and complet
   }
 });
 
+test("worker log keeps fixed codes and route fences, and drops anything shaped otherwise", () => {
+  const output = memoryDestination();
+  const emit = createWorkerLogEmitter(
+    createOccLogger({ component: "occ-worker", destination: output.destination }),
+  );
+
+  // The shapes the OpenShell Git runtime and the worker emit (finding 2244). The runtime's own
+  // events go through its fixture logger in openshell-git-runtime.test.mjs.
+  const kept = [
+    {
+      event: "worker.openshell-git-expiry",
+      outcome: "pending",
+      check: "reduced-generation-moved-across-provider-check",
+      failure: "admission_limit",
+    },
+    {
+      event: "worker.openshell-git-denied",
+      reason: "ref_not_allowed",
+      reasonCode: "route_blocked",
+    },
+    { event: "worker.openshell-git-route", status: "adopted", fence: 7 },
+    { event: "worker.completed", code: "REPOSITORY_EXECUTION_UNVERIFIED", harnessState: "lost" },
+  ];
+  for (const event of kept) {
+    emit(event);
+    const line = output.lines.at(-1);
+    for (const [key, value] of Object.entries(event)) {
+      assert.equal(line[key], value, `${event.event} keeps ${key}`);
+    }
+  }
+
+  // Free text, a credential shape, an overlong value or a non-string never passes as a code;
+  // a fence is a non-negative safe integer.
+  const rejected = [
+    ["check", "the detach is still pending"],
+    ["failure", "connect ECONNREFUSED 10.0.0.1:443"],
+    ["reasonCode", "sk-proj-abcdefghijklmnopqrstuvwx"],
+    ["reasonCode", `r${"x".repeat(64)}`],
+    ["harnessState", { state: "lost" }],
+    ["failure", 14],
+    ["fence", -1],
+    ["fence", 1.5],
+    ["fence", "3"],
+    ["fence", Number.MAX_SAFE_INTEGER + 1],
+  ];
+  for (const [key, value] of rejected) {
+    emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });
+    assert.equal(Object.hasOwn(output.lines.at(-1), key), false, `${key}: ${String(value)}`);
+  }
+});
+
 test("worker startup diagnostics honor logging YAML and stay on stderr", async (t) => {
   const path = await fixture(t, "logging:\n  level: debug\n");
   const result = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import { randomUUID } from "node:crypto";
 import { ObservedHookPreview } from "../../apps/controller/src/drivers/egress-proxy/openshell-request-hook-preview.ts";
 import {
@@ -19,6 +19,7 @@ import {
   openShellGitRuntimeWorkerAfterRestart as workerAfterRestart,
   reconciledOpenShellGitRuntimeFixture as reconciledFixture,
   registry,
+  takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import {
   DependencyUnavailableError,
@@ -26,6 +27,10 @@ import {
 } from "../../packages/occ/src/errors.ts";
 import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+
+// Every field the runtime emits reaches the worker log: the production logger drops what it
+// does not allowlist, so an event asserted only before the logger can be lost (finding 2244).
+afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
 
 // The worker-local runtime's reconcile and lookup, driven at the class boundary with a fake
 // gateway client, provider and material owner: no OpenShell wire, no database. The provider's

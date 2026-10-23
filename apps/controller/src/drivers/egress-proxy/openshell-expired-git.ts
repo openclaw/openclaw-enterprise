@@ -23,6 +23,26 @@ export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime
  */
 export type OpenShellGitExpiryPendingFailure =
   "unconfirmed" | "admission_limit" | "gateway_unavailable" | "timeout" | "failed";
+/** The step an expiry pass reports, a fixed name that operators can alert on. */
+export type OpenShellGitExpiryCheck =
+  | "model-provider"
+  | "original-launch-and-pods"
+  | "original-git-provider"
+  | "attachment-after-send-intent"
+  | "original-git-installation"
+  | "before-detach"
+  | "sandbox-version-moved-before-intent"
+  | "detach-intent"
+  | "conditional-detach"
+  | "repeated-conditional-detach"
+  | "launch-after-uncertain-detach"
+  | "launch-after-detach"
+  | "git-revocation-on-original-supervisor"
+  | "retained-provider-profiles"
+  | "model-on-original-supervisor"
+  | "reduced-generation-moved-across-provider-check"
+  | "sandbox-version-moved-after-read"
+  | "record-reduced-generation";
 type Client = Pick<
   OpenShellGatewayClient,
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
@@ -297,13 +317,13 @@ export async function subtractExpiredOpenShellGit(
   verifyRetainedProviders: (providers: readonly string[]) => Promise<boolean>,
   report?: (
     outcome: OpenShellGitExpiryResult,
-    check: string,
+    check: OpenShellGitExpiryCheck,
     failure?: OpenShellGitExpiryPendingFailure,
   ) => void,
 ): Promise<OpenShellGitExpiryResult> {
   const { observed: git, retainedLaunchHash, detach } = saved;
   const { workspace, sandbox: name, provider, executionId } = git;
-  let check = "model-provider";
+  let check: OpenShellGitExpiryCheck = "model-provider";
   const result = (
     outcome: OpenShellGitExpiryResult,
     step = check,
