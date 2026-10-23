@@ -2859,9 +2859,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
       "https://models.example.com:8443/v1",
       "uses port 8443 but Harness model egress allows only TCP/443",
     ],
-    ["https://10.0.0.5:8443/v1", "uses port 8443 but Harness model egress allows only TCP/443"],
+    [
+      "https://10.0.0.5:8443/v1",
+      "uses port 8443 but Harness model egress allows only TCP/443 and has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes",
+    ],
     ["https://[2001:db8::1]/v1", "is an IPv6 address but Harness model egress allows only IPv4"],
-    ["https://10.0.0.1/v1", "IPv4 host is in 10.0.0.0/8 which Harness model egress excludes"],
+    ["https://10.0.0.1/v1", "has an IPv4 host in 10.0.0.0/8 which Harness model egress excludes"],
   ]) {
     const warned = await render("codex", codexInput({ runtime: { codexModelBaseUrl: value } }));
     assert.ok(

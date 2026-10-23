@@ -56,8 +56,8 @@ by hand: the old namespace's claims, routes and transport Secrets would not move
 
 ## Requirements
 
-- Kubernetes 1.35 or later. On an older API server, startup logs
-  `compute.preflight-warning` and continues, unsupported and untested.
+- Kubernetes 1.35 or later. On older, unsupported versions the API and worker
+  log `compute.preflight-warning` and start.
 - A Kubernetes cluster dedicated to one OpenClaw Enterprise Installation; shared
   clusters are not supported.
 - Enforced Kubernetes NetworkPolicies, verified Kubernetes API TLS, and

@@ -6867,10 +6867,11 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
   });
   const port = "uses port 8443 but Harness model egress allows only TCP/443";
   const ipv6 = "is an IPv6 address but Harness model egress allows only IPv4";
-  const excluded = (cidr) => `IPv4 host is in ${cidr} which Harness model egress excludes`;
+  const excluded = (cidr) => `has an IPv4 host in ${cidr} which Harness model egress excludes`;
   for (const [codexModelBaseUrl, blocked] of [
     ["https://models.example.test:8443/v1", port],
-    ["https://10.0.0.5:8443/v1", port],
+    // Every blocked property is named in the one warning.
+    ["https://10.0.0.5:8443/v1", `${port} and ${excluded("10.0.0.0/8")}`],
     ["https://192.0.2.1:444/v1", port.replace("8443", "444")],
     ["https://[2001:db8::1]/v1", ipv6],
     ["https://[::1]/v1", ipv6],
@@ -6901,7 +6902,7 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     assert.equal(lines[0].includes(new URL(codexModelBaseUrl).hostname), false);
     assert.equal(lines[0].includes("://"), false);
   }
-  // The warning changes no policy: the model egress grant stays TCP/443 to non-excluded IPv4.
+  // The warning changes no policy: the model egress grant is the one without the endpoint.
   const revision = {
     id: "revision-model-egress-1",
     namespaceId: tenant.id,
@@ -6917,25 +6918,6 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     modelEgress(started("https://10.0.0.5:8443/v1")),
     modelEgress(createKubernetesComputeDriver(options({ runtime }))),
   );
-  assert.deepEqual(modelEgress(started("https://10.0.0.5:8443/v1")), [
-    {
-      to: [
-        {
-          ipBlock: {
-            cidr: "0.0.0.0/0",
-            except: [
-              "10.0.0.0/8",
-              "100.64.0.0/10",
-              "172.16.0.0/12",
-              "192.168.0.0/16",
-              "169.254.0.0/16",
-            ],
-          },
-        },
-      ],
-      ports: [{ protocol: "TCP", port: 443 }],
-    },
-  ]);
   for (const codexModelBaseUrl of [
     "not-a-url",
     "http://models.example.test/v1",

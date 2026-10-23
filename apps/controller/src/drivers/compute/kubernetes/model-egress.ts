@@ -29,23 +29,26 @@ const excludedRanges = MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.map((cidr) => {
  * operator's own policy can open the endpoint, and a CNI that does not enforce NetworkPolicy
  * blocks nothing. Only a literal address is checked: a host name may resolve anywhere, which
  * admission cannot know. Like the policy, it leaves other special-use IPv4 ranges (loopback,
- * 198.18.0.0/15) alone. The text is plain (no commas or quotes), so the worker log keeps it and
- * it never repeats the URL.
+ * 198.18.0.0/15) alone. The text names every blocked property in plain words (no commas or
+ * quotes), so the worker log keeps it, and never repeats the URL.
  */
 export function modelEgressWarning(subject: string, endpoint: string): string | undefined {
   const url = new URL(endpoint);
-  let blocked: string | undefined;
+  const blocked: string[] = [];
   if (url.port !== "" && Number(url.port) !== MODEL_EGRESS_PORT) {
-    blocked = `uses port ${url.port} but Harness model egress allows only TCP/${MODEL_EGRESS_PORT}`;
-  } else if (url.hostname.startsWith("[")) {
-    blocked = "is an IPv6 address but Harness model egress allows only IPv4";
+    blocked.push(
+      `uses port ${url.port} but Harness model egress allows only TCP/${MODEL_EGRESS_PORT}`,
+    );
+  }
+  if (url.hostname.startsWith("[")) {
+    blocked.push("is an IPv6 address but Harness model egress allows only IPv4");
   } else if (isIP(url.hostname) === 4) {
     const excluded = excludedRanges.find(({ range }) => range.check(url.hostname, "ipv4"));
     if (excluded !== undefined) {
-      blocked = `IPv4 host is in ${excluded.cidr} which Harness model egress excludes`;
+      blocked.push(`has an IPv4 host in ${excluded.cidr} which Harness model egress excludes`);
     }
   }
-  return blocked === undefined
+  return blocked.length === 0
     ? undefined
-    : `${subject} ${blocked}: the generated policy will not admit it unless another NetworkPolicy does.`;
+    : `${subject} ${blocked.join(" and ")}: the generated policy will not admit it unless another NetworkPolicy does.`;
 }
