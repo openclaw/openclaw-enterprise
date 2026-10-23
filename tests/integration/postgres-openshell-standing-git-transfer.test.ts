@@ -26,10 +26,9 @@ import { invoke, token } from "../helpers/openshell-online-wire.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
-import { waitFor } from "../helpers/wait-for.mjs";
 import {
-  advanceCleanupRetries,
   expireStoppedClaims,
+  waitForRevisionPass,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
@@ -499,19 +498,13 @@ test(
       assert.equal(preparationFailure, undefined);
       assert.equal(preparationClaims.length, 3);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
-      // Queue cadences are not under test here: make this revision's queued maintenance and
-      // cleanup passes due while waiting. The worker still claims and runs every pass, and the
-      // token and admission deadlines below are still crossed in real time.
-      const due = async () => {
-        await f.advanceMaintenance(revision);
-        await advanceCleanupRetries(f, revision);
-      };
-      const execution = await waitFor(
+      // Queue cadences are not under test here: waits on a worker pass make this revision's
+      // queued passes due. The token and admission deadlines are still crossed in real time.
+      const execution = await waitForRevisionPass(
         "admitted standing execution",
-        async () => {
-          await due();
-          return known();
-        },
+        f,
+        revision,
+        () => known(),
         15_000,
       );
       const first = (await attempts())[0]!;
@@ -642,10 +635,11 @@ test(
       );
       assert.equal(await runtime.lookup(id, signal), undefined);
       await start();
-      await waitFor(
+      await waitForRevisionPass(
         "same execution with a newly installed bounded successor",
+        f,
+        revision,
         async () => {
-          await due();
           if (world.writes !== 2) {
             return undefined;
           }
@@ -766,12 +760,11 @@ test(
       await start();
       // Stop both owners after the peer committed detach but lost its reply. Recovery must
       // observe the reduced policy, never send a second detach or bootstrap an installation.
-      await waitFor(
+      await waitForRevisionPass(
         "lost detach reply",
-        async () => {
-          await due();
-          return lostDetachReply || undefined;
-        },
+        f,
+        revision,
+        () => lostDetachReply || undefined,
         60_000,
       );
       await f.stop();
@@ -796,12 +789,11 @@ test(
       const beforeRestartObservations = withdrawn;
       await expireStoppedClaims(f, revision);
       await start();
-      await waitFor(
+      await waitForRevisionPass(
         "withdrawal followed by ordinary maintenance on the reduced execution",
-        async () => {
-          await due();
-          return (withdrawn >= beforeRestartObservations + 2 && true) || undefined;
-        },
+        f,
+        revision,
+        () => (withdrawn >= beforeRestartObservations + 2 && true) || undefined,
         100_000,
       );
       await f.stop();

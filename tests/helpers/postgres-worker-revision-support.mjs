@@ -4,7 +4,7 @@ import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/sr
 import { RepositoryReceiptStore } from "../../apps/controller/src/backends/repository-credentials/receipt-store.ts";
 import { waitFor } from "./wait-for.mjs";
 
-// Helpers shared by the postgres-worker-agent-revision*.test.mjs files.
+// Helpers shared by the PostgreSQL worker integration tests.
 
 // The worker emits worker.completed after its queue transaction commits, so another
 // connection can see the committed Work state first. Wait for the event instead of
@@ -40,6 +40,30 @@ export async function advanceCleanupRetries(fixture, revision) {
     `UPDATE occ.controller_work SET available_at = clock_timestamp()
      WHERE state = 'queued' AND idempotency_key LIKE $1`,
     [`agent_revision:${revision.id}:repository_cleanup:%`],
+  );
+}
+
+// Make this revision's queued maintenance and cleanup passes due now, for tests that wait on
+// a pass but not on its cadence. The worker still claims and runs each pass. A pass that runs
+// early schedules the next one a full interval later, so later waits on these cadences must
+// advance them too.
+export async function advanceRevisionQueue(fixture, revision) {
+  await fixture.advanceMaintenance(revision);
+  await advanceCleanupRetries(fixture, revision);
+}
+
+// Polls like waitFor, making this revision's queued passes due after each miss.
+export function waitForRevisionPass(description, fixture, revision, read, options) {
+  return waitFor(
+    description,
+    async () => {
+      const value = await read();
+      if (value === undefined) {
+        await advanceRevisionQueue(fixture, revision);
+      }
+      return value;
+    },
+    options,
   );
 }
 

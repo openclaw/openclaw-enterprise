@@ -8,6 +8,7 @@ import {
   seedBackendBinding,
 } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { waitForRevisionPass } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   observationGateway,
   setupStandingWorkerAuthority,
@@ -502,20 +503,20 @@ for (const scenario of [
           throw error;
         });
         // The first standing observation runs on the revision's maintenance schedule (a
-        // tenth of the 90 s session). Make each queued pass due now instead of waiting for it;
-        // the worker still claims and runs that pass and records the observation itself.
-        await waitFor(
+        // tenth of the 90 s session). Make the queued pass due instead of waiting for it; the
+        // worker still claims and runs that pass and records the observation itself.
+        await waitForRevisionPass(
           "durable execution observation",
-          async () => {
-            await f.advanceMaintenance(revision);
-            return f.state.read((v) =>
+          f,
+          revision,
+          () =>
+            f.state.read((v) =>
               v.repositorySessions.findStandingExecution({
                 namespaceId: f.namespace.id,
                 agentId: owner.id,
                 revisionId: revision.id,
               }),
-            );
-          },
+            ),
           15_000,
         );
         const provider = credentials.repositories[0]!.github;
