@@ -949,8 +949,10 @@ test(
     });
     const pass = lifecycle.maintain(signal);
     await revoking;
+    const settlement = t.mock.method(lifecycle.repository, "withdrawalSettlement");
     const withdrawn = lifecycle.withdraw(source, AbortSignal.timeout(30_000));
-    await delay(1000);
+    // Answer only once the deletion has found the revocation unsettled and checked again.
+    await waitUntil("the deletion to recheck settlement", () => settlement.mock.callCount() >= 2);
     release();
     assert.equal(await pass, "retired");
     await withdrawn;

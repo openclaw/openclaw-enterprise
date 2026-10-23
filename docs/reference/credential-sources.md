@@ -243,6 +243,7 @@ requires exact `delete` and returns `204`:
   it issued may still be valid: GitHub's answer to an issue or revocation was lost.
   The record stays `deleting`. Retry after the time in the message, at most 72
   minutes after the attempt. A refused issue with no token does not block deletion.
+  While the worker is revoking a token, deletion waits up to 25 seconds for GitHub's answer.
 - Within 70 seconds of registration, deletion removes the copy but returns `503`
   and keeps the record, because a timed-out registration could still create a
   copy. Retry after that window.

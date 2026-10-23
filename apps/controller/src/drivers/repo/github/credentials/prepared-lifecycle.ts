@@ -250,6 +250,9 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     const until = Date.now() + 25_000;
     while (!settlement.settled && settlement.revoking && Date.now() < until && !signal.aborted) {
       await new Promise((resolve) => setTimeout(resolve, 250));
+      if (signal.aborted) {
+        break;
+      }
       settlement = await db.withdrawalSettlement(source);
     }
     if (!settlement.settled) {
