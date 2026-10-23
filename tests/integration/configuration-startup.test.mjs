@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { createHash, randomUUID } from "node:crypto";
+import {
+  createHash,
+  createPublicKey,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+} from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -32,6 +38,7 @@ import {
   createInstallationDriverConfiguration as installation,
 } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 
 function jsonLines(text) {
@@ -852,6 +859,80 @@ test("repository startup constructs the same local resolver without a private so
   });
   assert.equal(server.status, 1);
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
+});
+
+test("the worker refuses a repository App key that cannot sign before it reports ready", async (t) => {
+  // Finding 2217: the worker read the App key only at its first token preparation, so it
+  // reported ready and each pass logged PREPARED_GITHUB_MAINTENANCE_FAILED without a reason.
+  const { configuration, registry, registrySource } = await repositoryInstallation(t);
+  // The prepared owner admits only one explicit write ref per Namespace.
+  Object.assign(registry.repositories[0].namespaces[0], {
+    profiles: ["git-write"],
+    transport: "git-only",
+    pushRefAllowlist: ["refs/heads/review"],
+  });
+  await writeFile(registrySource, JSON.stringify(registry));
+  const { preparedGitHub, nativeSender } = configuration.repository;
+  nativeSender.controlSocket = join(await socketDirectory(t, "occ-app-key-"), "p", "control.sock");
+  await writeFile(preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 });
+  const directory = dirname(preparedGitHub.custodyKeyPath);
+  const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const pkcs8 = { type: "pkcs8", format: "pem" };
+  const keys = [
+    ["valid", rsa.export(pkcs8), 0o600],
+    ["group-writable", rsa.export(pkcs8), 0o620, "app_key_unreadable"],
+    ["missing", undefined, 0o600, "app_key_unreadable"],
+    [
+      "public",
+      createPublicKey(rsa).export({ type: "spki", format: "pem" }),
+      0o600,
+      "app_key_unparsable",
+    ],
+    [
+      "encrypted",
+      rsa.export({ ...pkcs8, cipher: "aes-256-cbc", passphrase: "unused-passphrase" }),
+      0o600,
+      "app_key_unparsable",
+    ],
+    [
+      "ec",
+      generateKeyPairSync("ec", { namedCurve: "P-256" }).privateKey.export(pkcs8),
+      0o600,
+      "app_key_unsupported",
+    ],
+  ];
+  await Promise.all(
+    keys.map(async ([name, pem, mode, reason]) => {
+      const keyPath = join(directory, `${name}.pem`);
+      if (pem !== undefined) {
+        await writeFile(keyPath, pem, { mode });
+        await chmod(keyPath, mode);
+      }
+      const mutated = structuredClone(configuration);
+      mutated.repository.preparedGitHub.privateKeyPath = keyPath;
+      mutated.repository.nativeSender.controlSocket = nativeSender.controlSocket.replace(
+        "/p/",
+        `/${name}/`,
+      );
+      const worker = await boot("apps/controller/src/worker.mjs", {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: await fixture(t, mutated),
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      });
+      assert.equal(worker.status, 1, name);
+      const diagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+      // A usable key gets past the owner to the unreachable database.
+      assert.deepEqual(
+        [diagnostic.code, diagnostic.reason],
+        reason === undefined
+          ? ["PERSISTENCE_UNAVAILABLE", undefined]
+          : ["PREPARED_GITHUB_APP_KEY_INVALID", reason],
+        `${name}: ${worker.stderr}`,
+      );
+      assert.ok(!worker.stderr.includes("PRIVATE KEY") && !worker.stderr.includes(directory));
+    }),
+  );
 });
 
 function nativeSenderRefusal(path, code) {

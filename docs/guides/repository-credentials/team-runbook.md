@@ -177,6 +177,13 @@ repository from the App installation and publish a new immutable registry policy
 
 ## Replace a rejected App key
 
+The worker reads and parses the mounted key at startup. A key that cannot sign stops it
+with `PREPARED_GITHUB_APP_KEY_INVALID` and a `reason`: `app_key_unreadable` (missing,
+empty, over 32 KiB, or open to group write or other users), `app_key_unparsable` (a
+public key, certificate or passphrase-protected key) or `app_key_unsupported` (not
+RSA of 2048 to 8192 bits). The log never includes key bytes. Replace the key as below;
+the worker starts once the Secret holds a usable key.
+
 Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
 `blocked`) for the affected revision and repository. Already issued material can
 remain usable until expiry. An active Agent or a working model reply does not
