@@ -143,7 +143,8 @@ const adminCredentials = Object.freeze({
   email: "admin-openshell-sandboxdriver@example.test",
   password: "openshell-sandboxdriver-admin-password",
 });
-const credentialMountPath = "/run/enterprise-credentials";
+// OpenShell reserves /run for its control files; keep the read-only test bridge outside it.
+const credentialMountPath = "/enterprise-credentials";
 const pluginRuntimeMountPath = "/etc/openclaw/plugin-runtime";
 const runtimeAssetsMountPath = "/home/node/openclaw-runtime-assets";
 const nativeTemporaryMountPath = "/tmp/openclaw-native-worker";
