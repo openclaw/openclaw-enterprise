@@ -635,7 +635,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
         path,
         ...extra,
       ],
-      { allowFailure: true },
+      { env: clean(), allowFailure: true },
     );
   const failed = (result) => {
     assert.equal(result.code, 1);
