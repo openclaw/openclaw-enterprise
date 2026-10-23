@@ -109,10 +109,25 @@ function refuse(): never {
   throw new OpenShellPreparedGitProviderError("refused");
 }
 
+/**
+ * How long a provider write may run once it is sent. The caller's signal bounds the reads
+ * before it and decides whether the write starts; it never abandons a write in flight, which
+ * would leave its outcome unknown and close the route for good (finding 2211). The gateway
+ * client's own request deadline (10 s by default) normally ends a hung call first.
+ */
+const WRITE_TIMEOUT_MS = 30_000;
+
 /** Classifies a failed gateway read behind a refusal. The provider's own refusals (refuse(),
- * a mismatched profile) classify as nothing: the write was refused, not merely unobserved. */
-function readFailure(error: unknown): OpenShellPreparedGitReadFailure | undefined {
-  if (error instanceof OpenShellPreparedGitProviderError) {
+ * a mismatched profile) classify as nothing: the write was refused, not merely unobserved.
+ * A read the caller's signal ended (its budget, or the worker stopping) is a timeout, whatever
+ * the signal's reason. A refused identity (gRPC PERMISSION_DENIED or UNAUTHENTICATED) is not a
+ * read failure: it stays a refusal, never retried. */
+function readFailure(
+  error: unknown,
+  signal: AbortSignal,
+): OpenShellPreparedGitReadFailure | undefined {
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  if (error instanceof OpenShellPreparedGitProviderError || code === 7 || code === 16) {
     return undefined;
   }
   if (error instanceof SandboxGatewayUnavailableError) {
@@ -121,7 +136,10 @@ function readFailure(error: unknown): OpenShellPreparedGitReadFailure | undefine
   if (error instanceof DependencyUnavailableError) {
     return "gateway_request_failed";
   }
-  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+  if (
+    signal.aborted ||
+    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+  ) {
     return "timeout";
   }
   return undefined;
@@ -448,9 +466,12 @@ export class OpenShellPreparedGitProvider {
       ) {
         refuse();
       }
+      // A caller out of time sends nothing: refused before the write, so it can be retried.
+      signal.throwIfAborted();
       writing = true;
-      await this.client.importProviderProfile(this.scope.workspace, this.profile, signal);
-      const profileVersion = await this.profileVersion(signal);
+      const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
+      await this.client.importProviderProfile(this.scope.workspace, this.profile, write);
+      const profileVersion = await this.profileVersion(write);
       const provider = await this.client.createProvider(
         {
           workspace: this.scope.workspace,
@@ -462,7 +483,7 @@ export class OpenShellPreparedGitProvider {
             ? { credentialExpirationTimes: { [KEY]: token.expiresAt } }
             : {}),
         },
-        signal,
+        write,
       );
       return this.binding(provider, profileVersion, token.expiresAt, credentialState);
     } catch (error) {
@@ -471,7 +492,7 @@ export class OpenShellPreparedGitProvider {
       // automatically retry or delete it.
       throw new OpenShellPreparedGitProviderError(
         writing ? "unknown" : "refused",
-        writing ? undefined : readFailure(error),
+        writing ? undefined : readFailure(error, signal),
       );
     }
   }
@@ -794,6 +815,8 @@ export class OpenShellPreparedGitProvider {
       }
       this.token(token);
       phase = "writing";
+      // The write runs to its own deadline, not the caller's remaining read budget (finding 2211).
+      const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
       const updated = await this.client.updateProviderCredentialsConditionally(
         {
           workspace: this.scope.workspace,
@@ -804,7 +827,7 @@ export class OpenShellPreparedGitProvider {
           credentialExpirationTimes: { [KEY]: token.expiresAt },
         },
         previous.resourceVersion,
-        signal,
+        write,
       );
       if (
         updated.id !== previous.providerId ||
@@ -846,7 +869,7 @@ export class OpenShellPreparedGitProvider {
       }
       throw new OpenShellPreparedGitProviderError(
         phase === "writing" ? "unknown" : "refused",
-        phase === "writing" ? undefined : readFailure(error),
+        phase === "writing" ? undefined : readFailure(error, signal),
       );
     }
   }
