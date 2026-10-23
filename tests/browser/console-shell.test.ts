@@ -123,6 +123,15 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   const topbar = page.locator(".topbar");
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
+  const mascot = await topbar.locator(".brand img").evaluate((image) => {
+    const { width, color, filter } = globalThis.getComputedStyle(image);
+    return { width, color, filter };
+  });
+  assert.equal(mascot.width, "20px");
+  assert.ok(
+    mascot.filter.includes(mascot.color),
+    "the mascot outline uses the wordmark colour on the dark bar",
+  );
   const header = await page
     .locator(".page-header")
     .evaluate((node) => node.getBoundingClientRect().bottom + globalThis.scrollY);

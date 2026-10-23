@@ -42,6 +42,10 @@ font, pair type sizes with their line heights (for example, `--text-md` with
 The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
 cover these scales and the supported breakpoints.
 
+Navigation uses the inverse surface. The shell outlines the bundled 20 px mascot
+in the wordmark colour so its silhouette stays visible on navy. Keep that treatment
+with the mascot; an operator-supplied logo brings its own artwork.
+
 Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
 both places. Register new assets in the

@@ -127,8 +127,7 @@
   --overlay: var(--color-overlay);
   --shadow: var(--shadow-1);
   --radius: var(--radius-md);
-  /* Keep the scrollbar's space whether or not the page scrolls, so the header and content do not
-     move sideways between short and long pages with classic scrollbars (finding 1520). */
+  /* Keep desktop pages aligned when a classic scrollbar comes and goes (finding 1520). */
   scrollbar-gutter: stable;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -646,6 +645,13 @@ p {
 .topbar .brand,
 .runtime-debug h2 {
   color: inherit;
+}
+/* Outline the mascot's silhouette in the wordmark colour. Leave forced-colour palettes alone. */
+@media (forced-colors: none) {
+  :is(.sidebar, .topbar) .brand-mascot {
+    filter: drop-shadow(-0.75px 0 currentColor) drop-shadow(0.75px 0 currentColor)
+      drop-shadow(0 -0.75px currentColor) drop-shadow(0 0.75px currentColor);
+  }
 }
 .sidebar .brand {
   padding: var(--space-2) var(--space-3) 0;
@@ -1348,6 +1354,11 @@ p {
   display: none;
 }
 @media (max-width: 760px) {
+  /* Let the top bar, modal backdrop and sheet reach the edge when there is no scrollbar.
+     A real classic scrollbar still gets its space, including while a sheet is open. */
+  :root {
+    scrollbar-gutter: auto;
+  }
   .shell {
     /* A flow root keeps the menu button's margin inside the shell; collapsing through body,
        it moved the whole page when the shell replaced the startup status (finding 1413). */

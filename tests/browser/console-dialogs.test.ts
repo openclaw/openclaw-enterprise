@@ -51,6 +51,7 @@ const openDialog = (page: Page) =>
         radius: corners.slice(0, 2).join(" "),
         border: `${style.borderTopWidth} ${style.borderTopStyle} ${style.borderTopColor}`,
       },
+      clientWidth: document.documentElement.clientWidth,
       bottomRadius: corners.slice(2).join(" "),
       animation: `${style.animationName} ${style.animationDuration}`,
       box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
@@ -206,10 +207,11 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   for (const { name } of cases) {
     const phone = seen.get(`${name} 390`);
     assert.ok(phone, `${name} was measured at phone width`);
-    const { box, viewport, chrome, bottomRadius } = phone;
+    // clientWidth excludes a real scrollbar, but not an unnecessarily reserved empty gutter.
+    const { box, viewport, clientWidth, chrome, bottomRadius } = phone;
     assert.deepEqual(
       { left: box.left, right: box.right, bottom: Math.round(box.bottom) },
-      { left: 0, right: viewport.width, bottom: viewport.height },
+      { left: 0, right: clientWidth, bottom: viewport.height },
       `${name} is a full-width sheet on the bottom edge at 390`,
     );
     assert.ok(box.top > 0, `${name} leaves the page visible above the sheet`);

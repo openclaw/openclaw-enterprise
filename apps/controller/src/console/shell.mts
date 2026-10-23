@@ -32,13 +32,14 @@ export function brandContents(size: number) {
   const displayName =
     document.querySelector<HTMLMetaElement>('meta[name="occ-console-display-name"]')?.content ??
     "OpenClaw Enterprise";
+  const mascot = "/console/oce-mascot.png";
   const src =
-    document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ??
-    "/console/oce-mascot.png";
-  return [
-    element("img", { src, alt: "", width: String(size), height: String(size) }),
-    element("span", { className: "brand-name", title: displayName }, displayName),
-  ];
+    document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ?? mascot;
+  const logo = element("img", { src, alt: "", width: String(size), height: String(size) });
+  if (src === mascot) {
+    logo.className = "brand-mascot";
+  }
+  return [logo, element("span", { className: "brand-name", title: displayName }, displayName)];
 }
 
 export function panel(

@@ -71,6 +71,11 @@ test("mounted theme brands sign-in, Agent navigation and mobile without losing s
   await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
+  const logo = await page.locator(".topbar .brand img").evaluate((node) => {
+    const { width, filter } = globalThis.getComputedStyle(node);
+    return { width, filter };
+  });
+  assert.deepEqual(logo, { width: "20px", filter: "none" }, "the theme logo keeps its own artwork");
   await page.getByRole("button", { name: "Open navigation", exact: true }).click();
   await page.locator(".sidebar nav").waitFor({ state: "visible" });
   await page.keyboard.press("Escape");
