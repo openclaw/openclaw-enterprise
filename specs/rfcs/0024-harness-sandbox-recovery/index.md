@@ -6,7 +6,7 @@ author: freeqaz
 
 # Proposal: Recover a lost Harness Sandbox by resuming it
 
-- **ID:** RFC-0025
+- **ID:** RFC-0024
 - **Created:** 2026-10-22
 - **Last updated:** 2026-10-23
 - **RFC PR:** [#3233](https://github.com/openclaw/openclaw-enterprise/pull/3233)
@@ -84,7 +84,7 @@ At the pinned OpenShell 0.1.5 (`bdb956f2`):
   Sandbox's gateway token and bootstrap secrets, starts a new supervisor session, and admits the stored
   provider configuration again.
 - Each mutation sent with a `request_id` holds one of 1,000 durable admissions for OCC's identity, and a
-  failed one never expires. Recovery therefore sends no `request_id`; the phase makes a repeated start safe.
+  failed one never expires. Recovery omits `request_id`. If the worker loses the reply, it records the attempt and observes the Sandbox before deciding whether another start is safe.
 
 ### Detection
 
@@ -136,8 +136,8 @@ OCC asks OpenShell for a durable stop reason. When one exists, OCC never resumes
 | Attempts exhausted | `lost`. Observe every 5 minutes; a later `running` closes it `recovered`.                 |
 | Lost again         | Within one hour of `recovered`, reopen the same incident with its attempt count.          |
 
-Attempts back off 0 s, 30 s, 1 min, 2 min, 5 min, and 10 min: six attempts in about 20 minutes. An attempt
-fails if the Sandbox does not serve 10 minutes after its start. The incident record owns the next attempt
+Attempts back off 0 s, 30 s, 1 min, 2 min, 5 min, and 10 min: about 20 minutes of backoff across six attempts. Each start also has a 10-minute serving deadline.
+The worker keeps observing a pending start. It cannot issue another while the outcome remains unknown. The incident record owns the next attempt
 time and is written in the same transaction as the work item.
 
 ### Recovery attempt
@@ -157,8 +157,8 @@ Under the Agent's work claim:
    - refreshes the workspace node setup material before the start;
    - rereads the Agent's desired state and pending withdrawals;
    - for an `ERROR` that `StartSandbox` refuses (question 1), records its own stop and calls `StopSandbox` first;
-   - calls `StartSandbox` for at most 60 seconds. A timeout means the start continues; the next pass
-     observes it.
+   - calls `StartSandbox` for at most 60 seconds. A timeout leaves the outcome unknown. The next pass reads the same Sandbox.
+     It waits through `STARTING`, prepares a running Sandbox, and sends no new mutation on an unreadable phase.
 4. When the Sandbox reads `running`, run the revision's normal maintenance preparation. Success closes the
    incident `recovered`.
 
@@ -298,7 +298,7 @@ Required evidence:
   ([edge cases](decisions.md#edge-cases)).
 - **Status scope:** Agent lists show a Health badge, and messages carry plain-language cause hints from
   node and Pod events. Hints never trigger or block an action.
-- **Defaults:** a 60-second interval (the only operator setting), six attempts in about 20 minutes,
+- **Defaults:** a 60-second interval (the only operator setting), six attempts with about 20 minutes of total backoff,
   then every 5 minutes, and `stalled` after 15 minutes.
 
 ## Unresolved questions

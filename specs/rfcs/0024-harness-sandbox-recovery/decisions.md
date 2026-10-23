@@ -5,19 +5,19 @@ rfc: index.md
 # Harness Sandbox recovery: owner decisions and remaining choices
 
 This companion records the owner's answers of 2026-10-23 to the questions in
-[RFC-0025](index.md), the evidence behind the two questions that stay open, and the
+[RFC-0024](index.md), the evidence behind the two questions that stay open, and the
 user experience the answers ask for. Code references are to OCE main `29ac81c7d` and
 OpenShell 0.1.5 (`bdb956f2`), the pinned version.
 
 ## Summary
 
-| Question                              | Owner answer                                            | Result                                                                                                              |
-| ------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 1. Rebuild a broken Sandbox           | Easy if disk and prompts are kept; murkier otherwise    | **Open.** They are kept. Proposed rule in [Question 1](#question-1-what-a-sandbox-keeps).                           |
-| 2. Repository Git revisions           | "What are the options?"                                 | **Open.** Four options in [Question 2](#question-2-repository-git-options).                                         |
-| 3. Resume when no `STOPPING` was seen | Yes; query the state; think through edge cases; nice UX | **Decided.** [Question 3](#question-3-state-queries-and-edge-cases).                                                |
-| 4. Health in Agent lists, event hints | Yes; whatever is good UX                                | **Decided.** [Question 4](#question-4-health-in-lists-and-cause-hints).                                             |
-| 5. Interval and bounds                | "That seems fine"                                       | **Decided.** 60 s, six attempts in about 20 minutes, `stalled` after 15 minutes. Only the interval is configurable. |
+| Question                              | Owner answer                                            | Result                                                                                                                           |
+| ------------------------------------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Rebuild a broken Sandbox           | Easy if disk and prompts are kept; murkier otherwise    | **Open.** They are kept. Proposed rule in [Question 1](#question-1-what-a-sandbox-keeps).                                        |
+| 2. Repository Git revisions           | "What are the options?"                                 | **Open.** Four options in [Question 2](#question-2-repository-git-options).                                                      |
+| 3. Resume when no `STOPPING` was seen | Yes; query the state; think through edge cases; nice UX | **Decided.** [Question 3](#question-3-state-queries-and-edge-cases).                                                             |
+| 4. Health in Agent lists, event hints | Yes; whatever is good UX                                | **Decided.** [Question 4](#question-4-health-in-lists-and-cause-hints).                                                          |
+| 5. Interval and bounds                | "That seems fine"                                       | **Decided.** 60 s, six attempts with about 20 minutes of backoff, `stalled` after 15 minutes. Only the interval is configurable. |
 
 ## Question 1: what a Sandbox keeps
 
@@ -168,7 +168,7 @@ deploying account's reauthorization. The CLI gets `occ agent recover <agent>`.
 
 ## Question 5: defaults
 
-Accepted: a 60-second watch interval, six attempts over about 20 minutes, then a check every
+Accepted: a 60-second watch interval, six attempts with about 20 minutes of total backoff, then a check every
 5 minutes, and `stalled` after 15 minutes of starting. Only the interval is an operator setting
 (`OCC_WORKER_HARNESS_WATCH_INTERVAL_MS`; `0` turns watching off), because it trades API load
 against detection time. The attempt schedule and the stall time stay constants until an operator needs
