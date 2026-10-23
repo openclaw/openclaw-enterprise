@@ -51,8 +51,8 @@ import {
 } from "../helpers/kubernetes-real.mjs";
 import {
   observeSandboxProbe,
-  tokenEchoCall,
   tokenEchoDigest,
+  tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createEnvoyWorkspaceGatewayPlan,
@@ -3574,7 +3574,7 @@ async function assertRefreshCredentialSources(topology) {
     // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
     // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
     // check below treats it as a missing token.
-    const echoed = (source) => tokenEchoCall(commands, source.url, secrets).reply;
+    const echoed = (source) => tokenEchoReply(commands, source.url, secrets);
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
   };
   // The Sandbox supervisor picks up a re-minted token on its provider poll, every 10 seconds by
@@ -3594,11 +3594,13 @@ async function assertRefreshCredentialSources(topology) {
     assert.equal(
       observed?.placeholder,
       false,
-      observed?.unparsed === undefined
-        ? `${source.type} must arrive substituted`
-        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+      `${source.type} must arrive substituted: ${observed?.shown}`,
     );
-    assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
+    assert.equal(
+      observed?.jwt?.valid,
+      true,
+      `${source.type} must carry a valid Keycloak token: ${observed?.shown}`,
+    );
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
   };
@@ -3878,19 +3880,20 @@ async function assertNonModelCredentialSource(topology) {
       .filter((item) => item?.type === "commandExecution");
     const environment = commands.find(({ command }) => String(command).includes("cut -c1-9"));
     assert.ok(environment, "the Harness must read its tool placeholder");
-    // Each tool's `digest` and `shown`: the command, its exit code and what it printed,
-    // redacted, so a failed check names its cause (finding 2281). Output that is not JSON fails.
+    // Each tool's echo reply carries `shown`: the command, its exit code and what it printed,
+    // redacted, so a failed check names its cause (finding 2281).
     return {
       placeholder: String(environment.aggregatedOutput ?? "").trim(),
-      a: tokenEchoDigest(commands, toolA.url, secrets),
-      b: tokenEchoDigest(commands, toolB.url, secrets),
+      a: tokenEchoReply(commands, toolA.url, secrets),
+      b: tokenEchoReply(commands, toolB.url, secrets),
     };
   };
-  // Digests are compared, never shown; `shown` says what the command printed instead.
+  // Digests are compared, never shown; `shown` says what the command printed instead. A checked
+  // call whose output is not JSON fails in tokenEchoDigest.
   const assertDelivered = (observed, tool, message) =>
-    assert.equal(observed.digest === tool.digest, true, `${message}: ${observed.shown}`);
+    assert.equal(tokenEchoDigest(observed) === tool.digest, true, `${message}: ${observed.shown}`);
   const assertWithheld = (observed, tool, message) =>
-    assert.equal(observed.digest === tool.digest, false, `${message}: ${observed.shown}`);
+    assert.equal(tokenEchoDigest(observed) === tool.digest, false, `${message}: ${observed.shown}`);
   const withdrawalPath = (tool) =>
     `/namespaces/${namespaceId}/agents/${agentId}/credential-sources/${tool.id}`;
   const readWithdrawal = async (tool) => {

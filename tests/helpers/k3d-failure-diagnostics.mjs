@@ -399,20 +399,19 @@ const echoShownChars = 300;
 const placeholderValue = /(openshell:resolve:)[^\s"'\\,;}\]]*/gu;
 const echoDigest = /("digest":\s*")[0-9a-f]{64}/gu;
 
+// Whitespace is collapsed only after redaction, so a secret value keeps its exact shape.
 function shownEchoText(text, secrets, limit) {
-  const oneLine = String(text ?? "")
+  const masked = String(text ?? "")
     .replace(placeholderValue, "$1[placeholder]")
-    .replace(echoDigest, "$1[sha256]")
-    .replace(/\s+/gu, " ")
-    .trim();
-  return redactLogLine(oneLine, secrets, limit);
+    .replace(echoDigest, "$1[sha256]");
+  return redactLogLine(masked, secrets, limit).replace(/\s+/gu, " ").trim();
 }
 
 /**
- * The echo's reply to the Harness command that called `url`, and `shown`: that command, its
+ * The echo's reply to the Harness command that called `url`, with `shown`: that command, its
  * exit code and the start of its output, redacted, for an assertion message.
  */
-export function tokenEchoCall(commands, url, secrets) {
+export function tokenEchoReply(commands, url, secrets) {
   const echo = commands.find(({ command }) => String(command).includes(url));
   assert.ok(echo, `the Harness must call ${url}`);
   const output = String(echo.aggregatedOutput ?? "").trim();
@@ -427,22 +426,20 @@ export function tokenEchoCall(commands, url, secrets) {
     // Not JSON: kept as `unparsed` below.
   }
   if (reply === null || typeof reply !== "object" || Array.isArray(reply)) {
-    return { reply: { unparsed: shownEchoText(output, secrets, echoOutputChars) }, shown };
+    return { unparsed: shownEchoText(output, secrets, echoOutputChars), shown };
   }
-  return { reply, shown };
+  return { ...reply, shown };
 }
 
 /**
- * The digest the echo reported for the Harness command that called `url`. Output that is not
- * the echo's or OpenShell's JSON fails here, naming the command and what it printed (finding
- * 2281: a curl error or two merged commands read as digest `undefined`). JSON without a digest,
- * such as OpenShell's credential refusal, is returned with `digest` undefined, for the caller
- * to judge with `shown` in its message.
+ * The digest in a token echo reply. Output that is not the echo's or OpenShell's JSON fails
+ * here, naming the command and what it printed (finding 2281: a curl error or two merged
+ * commands read as digest `undefined`). JSON without a digest, such as OpenShell's credential
+ * refusal, gives `undefined`, for the caller to judge with `reply.shown` in its message.
  */
-export function tokenEchoDigest(commands, url, secrets) {
-  const { reply, shown } = tokenEchoCall(commands, url, secrets);
+export function tokenEchoDigest(reply) {
   if (reply.unparsed !== undefined) {
-    assert.fail(`the call to ${url} must print JSON: ${shown}`);
+    assert.fail(`the token echo call must print JSON: ${reply.shown}`);
   }
-  return { digest: typeof reply.digest === "string" ? reply.digest : undefined, shown };
+  return typeof reply.digest === "string" ? reply.digest : undefined;
 }

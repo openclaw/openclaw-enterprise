@@ -7,8 +7,8 @@ import {
   codexTurnTrace,
   observeSandboxProbe,
   podFailureDiagnostic,
-  tokenEchoCall,
   tokenEchoDigest,
+  tokenEchoReply,
 } from "../helpers/k3d-failure-diagnostics.mjs";
 import { commandCalls, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import { diagnosticRequestTimeout, withinDiagnosticDeadline } from "../helpers/kubernetes-real.mjs";
@@ -673,12 +673,14 @@ test("a token echo call that prints no JSON fails naming the command and its red
     `placeholder ${syntheticPlaceholder}\n` +
     `{"path":"/tool-a","digest":"${sha256}"}\n` +
     "x".repeat(5_000);
-  const commands = [echoCommand(output, 56)];
+  const reply = tokenEchoReply([echoCommand(output, 56)], echoUrl, echoSecrets);
+  // The refresh phase's checks read it as a reply with no token; the tool checks fail on it.
+  assert.deepEqual(Object.keys(reply), ["unparsed", "shown"]);
   assert.throws(
-    () => tokenEchoDigest(commands, echoUrl, echoSecrets),
+    () => tokenEchoDigest(reply),
     (error) => {
       assert.equal(error.name, "AssertionError");
-      assert.match(error.message, /^the call to http:\/\/token-echo\S+ must print JSON: `/);
+      assert.match(error.message, /^the token echo call must print JSON: `/);
       assert.ok(error.message.includes(`${echoUrl}'\``), "names the command");
       assert.match(error.message, /\(exit 56\) printed curl: \(56\) Recv failure/);
       assert.match(error.message, /openshell:resolve:\[placeholder\]/);
@@ -687,26 +689,23 @@ test("a token echo call that prints no JSON fails naming the command and its red
       for (const hidden of [syntheticToolToken, syntheticPlaceholder, sha256]) {
         assert.equal(JSON.stringify(error).includes(hidden), false, hidden);
         assert.equal(error.message.includes(hidden), false, hidden);
+        assert.equal(reply.unparsed.includes(hidden), false, hidden);
       }
       return true;
     },
   );
-  // The refresh phase's checks read the same call as an unparsed reply instead.
-  const { reply } = tokenEchoCall(commands, echoUrl, echoSecrets);
-  assert.deepEqual(Object.keys(reply), ["unparsed"]);
-  assert.equal(reply.unparsed.includes(syntheticToolToken), false);
-  assert.throws(() => tokenEchoDigest([], echoUrl, echoSecrets), /the Harness must call/);
+  assert.throws(() => tokenEchoReply([], echoUrl, echoSecrets), /the Harness must call/);
 });
 
 test("a token echo reply gives its digest, and OpenShell's refusal is shown without one", () => {
-  const echoed = tokenEchoDigest(
+  const echoed = tokenEchoReply(
     [echoCommand(`{"path":"/tool-a","digest":"${sha256}","placeholder":false,"length":43}\n`)],
     echoUrl,
     echoSecrets,
   );
-  assert.equal(echoed.digest, sha256);
+  assert.equal(tokenEchoDigest(echoed), sha256);
   assert.equal(echoed.shown.includes(sha256), false, "digests are compared, never shown");
-  const refused = tokenEchoDigest(
+  const refused = tokenEchoReply(
     [
       echoCommand(
         '{"error":"credential_unavailable","message":"Credential placeholder could not be resolved"}',
@@ -715,6 +714,6 @@ test("a token echo reply gives its digest, and OpenShell's refusal is shown with
     echoUrl,
     echoSecrets,
   );
-  assert.equal(refused.digest, undefined);
+  assert.equal(tokenEchoDigest(refused), undefined);
   assert.match(refused.shown, /\(exit 0\) printed \{"error":"credential_unavailable"/);
 });
