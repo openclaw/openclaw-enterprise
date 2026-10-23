@@ -33,14 +33,21 @@ export async function completedPasses(events, work, outcome = "success") {
   return passes;
 }
 
-// Model the next cleanup interval without waiting an hour for the boundary
-// Driver. Change only this revision's queued due times; claims remain real.
-export async function advanceCleanupRetries(fixture, revision) {
+// Make the queued Work whose idempotency key matches `keys` (a LIKE pattern) due now, for
+// tests that wait on a pass but not on its cadence or backoff. Only due times change: claims
+// stay real, and the worker still claims and runs each pass.
+export async function makeQueuedWorkDue(fixture, keys) {
   await fixture.observerPool.query(
     `UPDATE occ.controller_work SET available_at = clock_timestamp()
      WHERE state = 'queued' AND idempotency_key LIKE $1`,
-    [`agent_revision:${revision.id}:repository_cleanup:%`],
+    [keys],
   );
+}
+
+// Model the next cleanup interval without waiting an hour for the boundary
+// Driver. Change only this revision's queued due times; claims remain real.
+export async function advanceCleanupRetries(fixture, revision) {
+  await makeQueuedWorkDue(fixture, `agent_revision:${revision.id}:repository_cleanup:%`);
 }
 
 // Make this revision's queued maintenance and cleanup passes due now, for tests that wait on
@@ -54,12 +61,27 @@ export async function advanceRevisionQueue(fixture, revision) {
 
 // Polls like waitFor, making this revision's queued passes due after each miss.
 export function waitForRevisionPass(description, fixture, revision, read, options) {
+  return waitAdvancing(description, read, () => advanceRevisionQueue(fixture, revision), options);
+}
+
+// Polls like waitFor, making `work`'s own queued retry due after each miss, for waits on its
+// retries (a refused candidate's stop, a dependency outage) but not on their backoff.
+export function waitForWorkPass(description, fixture, work, read, options) {
+  return waitAdvancing(
+    description,
+    read,
+    () => makeQueuedWorkDue(fixture, work.idempotencyKey),
+    options,
+  );
+}
+
+function waitAdvancing(description, read, advance, options) {
   return waitFor(
     description,
     async () => {
       const value = await read();
       if (value === undefined) {
-        await advanceRevisionQueue(fixture, revision);
+        await advance();
       }
       return value;
     },
