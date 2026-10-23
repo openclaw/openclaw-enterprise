@@ -4,6 +4,7 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -591,25 +592,34 @@ test("Configuration save names the field that holds an inline model credential w
 });
 
 test("Agent deployment shows the API's reason when it rejects the saved model", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model");
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model", {
+    configurationDriver,
+  });
   const values = nativeValues("unqualified-model");
   const agent = await fixture.createAgent(namespace.id, "Unqualified model Agent", values, {
     harnessAuth: { method: "runtime" },
   });
-  // The Configuration accepts a bare model name; only deployment requires provider/model form.
+  const bare = {
+    ...values,
+    agents: { ...values.agents, defaults: { ...values.agents.defaults, model: "gpt-5.1" } },
+  };
+  const reason =
+    "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.";
+  // Save refuses a bare model name with deployment's text (finding 1828).
   const saved = await fixture.request(
     "PATCH",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    {
-      body: {
-        values: {
-          ...values,
-          agents: { ...values.agents, defaults: { ...values.agents.defaults, model: "gpt-5.1" } },
-        },
-      },
-    },
+    { body: { values: bare } },
   );
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.status, 400, JSON.stringify(saved.body));
+  assert.equal(saved.body.error.message, reason);
+  // A row an older release saved with it still reads, and deployment refuses it.
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  await configurationDriver.update({ ...stored, values: bare });
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
@@ -621,12 +631,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   assert.equal((await rejected).status(), 400);
   // The generic "check the entered values" text cannot tell the user which setting to fix.
-  await page
-    .getByText(
-      "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(reason, { exact: true }).waitFor();
   const revisions = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
