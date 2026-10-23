@@ -41,11 +41,8 @@ const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
-  "candidate dedicated Skill source uploads honor default and denied node-write policy",
-  {
-    skip: process.env.OCC_TEST_SKILL_SOURCE_LIFECYCLE !== "1",
-    timeout: 1_200_000,
-  },
+  "production dedicated Skill source uploads honor default and denied node-write policy",
+  { ...requiresProductionCluster, timeout: 1_200_000 },
   async (testContext) => {
     const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated");
