@@ -9,6 +9,7 @@ import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compu
 import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
+  clusterEventLines,
   createApi,
   observeAgentStop,
   smokeSlotNames,
@@ -368,4 +369,42 @@ test("a malformed or out-of-range smoke slot fails with the setting's name", () 
       value,
     );
   }
+});
+
+test("cluster events print oldest to newest by observed instant, whatever field carries it", () => {
+  const event = (name, times, count) => ({
+    metadata: { namespace: "occ-agent", name: `${name}.1` },
+    involvedObject: { kind: "Pod", name: "harness-0" },
+    type: "Normal",
+    reason: name,
+    message: `${name} message`,
+    ...(count && { count }),
+    ...times,
+  });
+  const second = "2026-10-23T00:00:10";
+  const lines = clusterEventLines({
+    items: [
+      // eventTime-only writers have no lastTimestamp; --sort-by=.lastTimestamp printed them first.
+      event("Newest", { eventTime: "2026-10-23T00:00:12.000001Z" }),
+      event("SeriesLatest", {
+        eventTime: "2026-10-23T00:00:01.000000Z",
+        series: { lastObservedTime: "2026-10-23T00:00:11.500000Z", count: 4 },
+      }),
+      // Text order puts "10.100000Z" before "10Z"; the whole-second event is the older one.
+      event("FractionalSameSecond", { eventTime: `${second}.100000Z` }),
+      event(
+        "WholeSecond",
+        { firstTimestamp: "2026-10-23T00:00:00Z", lastTimestamp: `${second}Z` },
+        3,
+      ),
+      event("Undated", {}),
+    ],
+  }).split("\n");
+  assert.deepEqual(lines, [
+    "unknown-time occ-agent Normal Undated Pod/harness-0: Undated message",
+    `${second}Z occ-agent Normal WholeSecond Pod/harness-0 x3: WholeSecond message`,
+    `${second}.100000Z occ-agent Normal FractionalSameSecond Pod/harness-0: FractionalSameSecond message`,
+    "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
+    "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
+  ]);
 });

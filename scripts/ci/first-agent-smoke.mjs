@@ -1660,6 +1660,37 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
   }
 }
 
+// Finding 2224: `kubectl --sort-by=.lastTimestamp` put events that carry only eventTime (written
+// through events.k8s.io) first, so the 20 kB tail printed could drop the newest of them. Order by the
+// last observed instant, parsed rather than compared as text: whole-second lastTimestamp and
+// microsecond eventTime in the same second do not sort lexically. Newest last; ties keep order.
+function eventObservedAt(event) {
+  const time =
+    event.series?.lastObservedTime ??
+    event.lastTimestamp ??
+    event.eventTime ??
+    event.firstTimestamp ??
+    event.metadata?.creationTimestamp;
+  const instant = Date.parse(time ?? "");
+  return { time: time ?? "unknown-time", instant: Number.isNaN(instant) ? 0 : instant };
+}
+
+export function clusterEventLines(list) {
+  return (list.items ?? [])
+    .map((event) => ({ event, ...eventObservedAt(event) }))
+    .sort((left, right) => left.instant - right.instant)
+    .map(({ event, time }) => {
+      const object = event.involvedObject ?? {};
+      const count = event.series?.count ?? event.count ?? 1;
+      return `${time} ${event.metadata?.namespace ?? "-"} ${event.type ?? "-"} ${
+        event.reason ?? "-"
+      } ${object.kind ?? "-"}/${object.name ?? "-"}${count > 1 ? ` x${count}` : ""}: ${
+        event.message ?? ""
+      }`;
+    })
+    .join("\n");
+}
+
 async function diagnostics(stack) {
   log("collecting diagnostics");
   const attempt = async (label, operation) => {
@@ -1677,9 +1708,11 @@ async function diagnostics(stack) {
     return;
   }
   await attempt("pods", () => kubectl(stack, ["get", "pods", "-A", "-o", "wide"]));
-  await attempt("events", () =>
-    kubectl(stack, ["get", "events", "-A", "--sort-by=.lastTimestamp"]),
-  );
+  await attempt("events", async () => ({
+    stdout: clusterEventLines(
+      JSON.parse((await kubectl(stack, ["get", "events", "-A", "-o", "json"])).stdout),
+    ),
+  }));
   for (const agent of stack.agents ?? []) {
     const stopState = await agentStopDiagnostic(() =>
       stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
