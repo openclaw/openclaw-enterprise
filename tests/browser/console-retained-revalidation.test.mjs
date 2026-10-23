@@ -11,6 +11,8 @@ import {
   login,
   nativeValues,
   newPage,
+  recordFocusTrail,
+  stopFocusTrail,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -910,45 +912,21 @@ for (const shown of ["is loading", "has loaded"]) {
       await agentShown(page);
     }
     assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
-    // Every frame from Back until the Agent's link has focus: the focused node, numbered so a
-    // replaced heading counts as a new one.
-    await page.evaluate(() => {
-      const ids = new WeakMap();
-      let next = 0;
-      const trail = [];
-      globalThis.focusTrail = trail;
-      globalThis.focusFrames = 0;
-      const sample = () => {
-        globalThis.focusFrames += 1;
-        const node = globalThis.document.activeElement;
-        if (node && node !== globalThis.document.body && !ids.has(node)) {
-          ids.set(node, ++next);
-        }
-        const entry =
-          !node || node === globalThis.document.body
-            ? "BODY"
-            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-        if (trail.at(-1) !== entry) {
-          trail.push(entry);
-        }
-        if (node?.tagName !== "A") {
-          globalThis.requestAnimationFrame(sample);
-        }
-      };
-      sample();
-    });
+    // Every node that holds focus from Back until the Agent's link has it, numbered so a replaced
+    // heading counts as a new one.
+    await recordFocusTrail(page);
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await page.goBack();
     await recheck.requested;
     // Hold the list for a dozen sampled frames.
-    const held = await page.evaluate(() => globalThis.focusFrames);
-    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+    const held = await page.evaluate(() => globalThis.focusFrames.frames);
+    await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 12, held);
     recheck.release();
     const link = page.locator(settledView).getByRole("link", { name: agent.name });
     await link.waitFor();
-    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
-    const trail = await page.evaluate(() => globalThis.focusTrail);
+    await page.waitForFunction(() => globalThis.focusFrames.trail.at(-1)?.startsWith("A#"));
+    const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(link), true, trail.join(" | "));
     const heading = shown === "is loading" ? "Agent details" : agent.name;
     // The Agent page's heading, the held page's heading under the same name, then the link.
@@ -1019,35 +997,6 @@ for (const focusTarget of [
   });
 }
 
-// Records the focused node in every frame until a link in the shown page has focus, numbering
-// nodes so a replaced one counts as new: "BODY" marks a frame with focus on the body.
-function trackFocusUntilPageLink() {
-  const document = globalThis.document;
-  const ids = new WeakMap();
-  let next = 0;
-  const trail = [];
-  globalThis.focusTrail = trail;
-  globalThis.focusFrames = 0;
-  const sample = () => {
-    globalThis.focusFrames += 1;
-    const node = document.activeElement;
-    if (node && node !== document.body && !ids.has(node)) {
-      ids.set(node, ++next);
-    }
-    const entry =
-      !node || node === document.body
-        ? "BODY"
-        : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-    if (trail.at(-1) !== entry) {
-      trail.push(entry);
-    }
-    if (!node?.matches('.content [aria-live="polite"] a')) {
-      globalThis.requestAnimationFrame(sample);
-    }
-  };
-  sample();
-}
-
 // The sidebar's Agents link, pressed on an Agent page, held that page inert until the list
 // revalidated. The shell rebuilt around it replaced the pressed link, so keyboard focus fell to
 // the body for the whole hold (2-12 frames, about 0.9 s on a slow link) before the Agent's link
@@ -1064,18 +1013,18 @@ for (const how of ["Enter", "a click"]) {
     await agentShown(page);
     const sidebar = page.getByRole("link", { name: "Agents", exact: true });
     await sidebar.focus();
-    await page.evaluate(trackFocusUntilPageLink);
+    await recordFocusTrail(page);
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await (how === "Enter" ? sidebar.press("Enter") : sidebar.click());
     await recheck.requested;
     // Hold the list for a dozen sampled frames.
-    const held = await page.evaluate(() => globalThis.focusFrames);
-    await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+    const held = await page.evaluate(() => globalThis.focusFrames.frames);
+    await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 12, held);
     recheck.release();
     await agentLink.waitFor();
-    await page.waitForFunction(() => globalThis.focusTrail.at(-1)?.startsWith("A#"));
-    const trail = await page.evaluate(() => globalThis.focusTrail);
+    await page.waitForFunction(() => globalThis.focusFrames.trail.at(-1)?.startsWith("A#"));
+    const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(agentLink), true, trail.join(" | "));
     // The pressed link, the held page's heading, then the Agent's link in the list.
     assert.deepEqual(
