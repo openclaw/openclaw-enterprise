@@ -29,9 +29,19 @@ const publicEnvNames = new Set([
 // PEM keys, and PGP's "PRIVATE KEY BLOCK" armor.
 const privateKeyShape =
   /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
+// An auth scheme's value stops at a quote, backslash or closing bracket that ends it, so a quoted
+// header keeps its closing quote (finding 1556). A run of those followed by more token text
+// (`\/`, `a)b`, a log-escaped quote) belongs to the value; one followed by punctuation, as a
+// closing quote before `,"status"` is, ends it. A quote may open the value and is kept. A short
+// value is redacted when it has a digit, so "Bearer token expired" stays readable.
+const authSchemeValueChar = String.raw`(?:[^\s"'\\)\]}]|["'\\)\]}]+(?=[\w.~+/=-]))`;
+const authSchemeShape = new RegExp(
+  String.raw`\b(?:[Bb]earer|BEARER|Basic|Token)\s+(["']?)(?:${authSchemeValueChar}{8,}|(?=${authSchemeValueChar}*\d)${authSchemeValueChar}+)`,
+  "gu",
+);
 const secretShapes = [
   privateKeyShape,
-  /\b(?:[Bb]earer|BEARER|Basic|Token)\s+\S{8,}/gu,
+  authSchemeShape,
   /\b(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*)/gu,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{12,}/gu,
   /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/gu,
@@ -46,8 +56,104 @@ const secretShapes = [
 // the safe side.
 const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
-const secretAssignment =
-  /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?["']?\s*[:=]\s*["']?)[^\s"',;}&]+/giu;
+
+const secretKeywords = String.raw`password|passwd|passphrase|pwd|secret|token|(?:api|private|client|access)[_-]?key|authorization|cookie|credential|signature|sig`;
+// After these keys a colon may be followed by words separated by spaces: a passphrase in
+// prose or YAML, or an Authorization header's scheme and value.
+const multiWordKeywords = /^(?:password|passwd|passphrase|pwd|authorization)$/iu;
+const multiWordEnd = /[\n\r"',;}&\]]/u;
+const assignment = new RegExp(
+  String.raw`\b([A-Za-z_-]{0,40}(${secretKeywords})s?(?:\\*["'])?\s*([:=])\s*)(?:(\\*)(["'])|([{[])|[^\s"',;}&]+)`,
+  "giu",
+);
+
+// A diagnostic can pretty-print a credential across lines and quote a literal closing bracket.
+// Resume only after the matching close. If the bounded input ends first or the delimiters do not match,
+// suppress the rest rather than publish what might still be part of the credential.
+function bracketValueEnd(text, start) {
+  const closes = [];
+  let quote;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (quote !== undefined) {
+      if (char === "\\") {
+        index += 1;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+    } else if (char === '"' || char === "'") {
+      quote = char;
+    } else if (char === "{" || char === "[") {
+      closes.push(char === "{" ? "}" : "]");
+    } else if (char === "}" || char === "]") {
+      if (closes.pop() !== char) {
+        return text.length;
+      }
+      if (closes.length === 0) {
+        return index + 1;
+      }
+    }
+  }
+  return text.length;
+}
+
+// A quoted value can contain spaces, punctuation, or an escaped quote. When JSON has itself
+// been serialized, its opening delimiter tells us how many backslashes end the value. A value
+// that opens with "{" or "[" is redacted through its matching close.
+function redactSecretAssignments(text) {
+  let result = "";
+  let end = 0;
+  assignment.lastIndex = 0;
+  for (let match; (match = assignment.exec(text));) {
+    const [value, key, keyword, separator, escapes = "", quote = "", bracket] = match;
+    const delimiter = escapes + quote;
+    result += text.slice(end, match.index) + key + delimiter + "[redacted]";
+    end = assignment.lastIndex;
+    if (bracket) {
+      end = bracketValueEnd(text, match.index + value.length - 1);
+      // Text glued to the close (`[a]b`) is part of the same value.
+      while (end < text.length && !/[\s"',;}\]&]/u.test(text[end])) {
+        end += 1;
+      }
+      assignment.lastIndex = end;
+      continue;
+    }
+    if (!quote) {
+      if (separator === ":" && multiWordKeywords.test(keyword)) {
+        // Take the following words up to the end of the phrase, but not its trailing spaces.
+        // The next key starts its own assignment, so its quoted value is found; stopping
+        // there also keeps the scan linear.
+        const next = assignment.exec(text);
+        const limit = next === null ? text.length : next.index;
+        let phraseEnd = end;
+        for (let index = end; index < limit && !multiWordEnd.test(text[index]); index += 1) {
+          if (!/\s/u.test(text[index])) {
+            phraseEnd = index + 1;
+          }
+        }
+        end = phraseEnd;
+        assignment.lastIndex = end;
+      }
+      continue;
+    }
+
+    // In ordinary JSON, a closing quote follows an even number of backslashes. Each
+    // serialization doubles that escape width. An unclosed value stays private through the
+    // end of the input, including newlines in diagnostic text that isn't JSON.
+    const escapeWidth = 2 * delimiter.length;
+    let backslashes = 0;
+    while (end < text.length) {
+      const char = text[end++];
+      if (char === quote && backslashes % escapeWidth === escapes.length) {
+        result += delimiter;
+        break;
+      }
+      backslashes = char === "\\" ? backslashes + 1 : 0;
+    }
+    assignment.lastIndex = end;
+  }
+  return result + text.slice(end);
+}
 
 function isPublicEnvName(name) {
   return (
@@ -109,10 +215,12 @@ function redactText(text, limit, secrets, root, cut = text?.length >= failureInp
     result = result.replaceAll(value, `[env:${name}]`);
   }
   for (const shape of secretShapes) {
-    result = result.replace(shape, "[redacted]");
+    result =
+      shape === authSchemeShape
+        ? result.replace(shape, (_, quote) => `${quote}[redacted]`)
+        : result.replace(shape, "[redacted]");
   }
-  result = result
-    .replace(secretAssignment, "$1[redacted]")
+  result = redactSecretAssignments(result)
     .replace(urlCredential, "://[redacted]@")
     .replace(/[^\P{Cc}\n\t]/gu, "");
   if (cut) {
@@ -247,6 +355,27 @@ export function maskPrivateKeyLines(lines) {
     mask(endLine - orphanKeyLines, endLine);
   }
   return masked;
+}
+
+// The newest lines of a container log that match `pattern` and not `exclude`, each
+// redacted and then clipped to `lineChars`, within `budget` characters, oldest first.
+// Private keys are masked across lines before the filter: a key's body line could match
+// a short pattern word, and redactLogLine sees one line at a time (finding 1551).
+export function newestMatchingLogLines(logs, secrets, { pattern, exclude, budget, lineChars }) {
+  const kept = [];
+  let length = 0;
+  for (const line of maskPrivateKeyLines(logs.split("\n")).reverse()) {
+    if (!pattern.test(line) || exclude?.test(line)) {
+      continue;
+    }
+    const shown = redactLogLine(line, secrets, lineChars);
+    if (length + shown.length + 1 > budget) {
+      break;
+    }
+    kept.push(shown);
+    length += shown.length + 1;
+  }
+  return kept.reverse().join("\n");
 }
 
 // Lines of a failed file's output (or a component log) for the diagnostics

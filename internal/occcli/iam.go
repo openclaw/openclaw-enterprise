@@ -123,7 +123,7 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 				return fmt.Errorf("--name must be 1 to 32 characters and contain a non-whitespace character")
 			}
 			if app.namespace != "" {
-				if err := namespaceIDArg.check(app.namespace); err != nil {
+				if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 					return fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 				}
 			}
@@ -140,6 +140,11 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 					_ = os.Remove(outFile)
 				}
 			}()
+			// Creation mode is filtered by umask. Establish the promised private,
+			// owner-readable file before issuing a key that must be saved here.
+			if err := file.Chmod(0o600); err != nil {
+				return fmt.Errorf("failed to set key file permissions: %w", err)
+			}
 			client, err := app.client()
 			if err != nil {
 				return err

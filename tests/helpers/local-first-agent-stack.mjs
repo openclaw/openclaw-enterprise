@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, mkdir, readFile, realpath } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,8 @@ function withoutModelCredentials(environment) {
   const result = { ...environment };
   delete result.OPENAI_API_KEY;
   delete result.OPENAI_API_KEY_FILE;
+  delete result.CODEX_ACCESS_TOKEN;
+  delete result.CODEX_ACCESS_TOKEN_FILE;
   return result;
 }
 
@@ -279,9 +281,11 @@ export async function localFirstAgentStack(context) {
       "OCC_DEVELOPMENT_STATE_DIRECTORY must select valid Kubernetes Local Setup state for this checkout.",
     );
   }
-  if (!process.env.OPENAI_API_KEY?.trim()) {
+  const credentialVariable =
+    sandboxDriver === "openshell" ? "CODEX_ACCESS_TOKEN" : "OPENAI_API_KEY";
+  if (!process.env[credentialVariable]?.trim()) {
     throw new Error(
-      "OPENAI_API_KEY is required to provision the protected local first-Agent test.",
+      `${credentialVariable} is required to provision the protected local first-Agent test.`,
     );
   }
   const safe = withoutModelCredentials({ ...testEnvironment, COMPOSE_DISABLE_ENV_FILE: "1" });
@@ -327,6 +331,19 @@ export async function localFirstAgentStack(context) {
     OCC_URL: "http://127.0.0.1:" + controller,
   };
   const subprocessEnvironment = withoutModelCredentials(environment);
+  const startupArguments = ["dev", "up"];
+  if (sandboxDriver === "openshell") {
+    // Exercise the public startup input before the regular Agent workflow.
+    // The policy file is separate from dev-owned state and stays keyless.
+    const policyFile = `${directory}-network-policy.yaml`;
+    await writeFile(
+      policyFile,
+      "networkPolicies:\n  - name: python-web\n    binaries:\n      - path: /usr/bin/python3.11\n    endpoints:\n      - host: example.com\n        ports: [443]\n        tls: skip\n",
+      { mode: 0o600, flag: "wx" },
+    );
+    context.after(() => rm(policyFile, { force: true }));
+    startupArguments.push("--sandbox-network-policy-file", policyFile);
+  }
   let initializationAttempted = false;
   context.after(async () => {
     if (!initializationAttempted) {
@@ -346,6 +363,6 @@ export async function localFirstAgentStack(context) {
     }
   });
   initializationAttempted = true;
-  await run(cli, ["dev", "up"], subprocessEnvironment, "Start Local Setup", 18 * minute);
+  await run(cli, startupArguments, subprocessEnvironment, "Start Local Setup", 18 * minute);
   return { directory, environment };
 }

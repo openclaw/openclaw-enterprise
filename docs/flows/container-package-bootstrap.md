@@ -63,7 +63,7 @@ hosted bootstrap or subsequent release has succeeded.
 
 `scripts/ci/container-bootstrap.mjs:main` reuses
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
-`verifyEnvironment`. Source equals the trusted main workflow revision and
+`verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
 
@@ -79,7 +79,7 @@ only the non-sensitive marker attempt. Authorization and other API errors fail.
 ### 2. Build and transfer only marker bytes
 
 `scripts/ci/container-bootstrap.mjs:main` creates a temporary context with a
-scratch Dockerfile and fixed text marker. Repository source and revision labels
+scratch Dockerfile and fixed text marker. Repository source and source commit labels
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
 Skopeo authenticates using the workflow token over stdin and a temporary auth file.
@@ -108,7 +108,7 @@ smoke and publish actual Enterprise images.
 It checks public package identity and rejects conflicting repository metadata.
 When GitHub omits repository metadata, it accepts the omission without querying
 approval history. Package linkage is configured during
-[operator setup](../../.github/containers.md#confirm-package-linkage).
+[operator setup](../release/containers.md#confirm-package-linkage).
 
 ### 4. Recover retained publication bytes after a partial failure
 
@@ -130,7 +130,7 @@ matching existing source tag is inspected remotely and left untouched, even if
 package metadata has not caught up. Only the registry's explicit manifest-unknown
 response permits copying an unlisted tag; authorization and transport failures
 stop recovery. A conflicting tag or remote digest fails.
-Metadata GET transport failures are bounded and report the endpoint. No archive
+Metadata GET requests use a 30-second timeout per attempt and report the endpoint if transport retries fail. No archive
 is rebuilt and no original seal is rewritten.
 
 Only after both remote digests match does `resume` write the recovery receipt,
@@ -138,7 +138,7 @@ separating original image provenance from the current publishing run. The
 operator retains that receipt and uses digest references from it. The current
 Docker Hub promotion workflow does not consume recovery receipts. A failed
 recovery can leave one image published; follow the
-[recovery procedure](../../.github/containers.md#recover-a-partial-publication)
+[recovery procedure](../release/containers.md#recover-a-partial-publication)
 without deleting the original archives or rerunning their producer.
 
 ## Debugging and Verification
@@ -160,7 +160,7 @@ without deleting the original archives or rerunning their producer.
 
 ## Related docs
 
-- [Container publication procedure](../../.github/containers.md)
+- [Container publication procedure](../release/containers.md)
 - [First container release specification](../../specs/plans/32-first-container-release.md)
 - [CI execution flow](github-actions-testing.md)
 

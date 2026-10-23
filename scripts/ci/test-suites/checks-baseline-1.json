@@ -5,14 +5,22 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/dev-up.test.mjs",
+    "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
+    "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/precompiled-route-compilers.test.mjs",
+    "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
+    "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
+    "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/kubernetes-provider-harness.test.mjs",
+    "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
     "tests/integration/presets-controller.test.mjs",
     "tests/integration/plugin-discovery-api.test.mjs",
@@ -21,15 +29,18 @@
     "tests/integration/console-api.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
+    "tests/integration/openshell-device-authorization-api.test.mjs",
     "tests/integration/dependency-unavailable-log.test.mjs",
     "tests/integration/git-hooks.test.mjs",
     "tests/integration/profile-renderer.test.mjs",
+    "tests/integration/profile-public-github-read.test.mjs",
     "tests/integration/profile-preflight-chart-parity.test.mjs",
     "tests/conformance/runtime-logs-content.test.mjs",
     "tests/conformance/node-enrollment-client.test.mjs",
@@ -43,10 +54,12 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
-    "tests/integration/sandbox-driver-startup.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
+    "tests/conformance/openshell-oauth-wire.test.mjs",
+    "tests/conformance/openshell-codex-device.test.mjs",
     "tests/conformance/openshell-harness-status.test.mjs",
     "tests/integration/bootstrap-volume.test.mjs",
     "tests/integration/secret-driver-startup.test.mjs",
@@ -56,6 +69,7 @@
     "tests/conformance/configuration-occ.test.mjs",
     "tests/conformance/credential-source-occ.test.mjs",
     "tests/conformance/kubernetes-real-kubectl.test.mjs",
+    "tests/conformance/k3d-failure-diagnostics.test.mjs",
     "tests/conformance/secret-occ.test.mjs",
     "tests/conformance/http-errors.test.mjs",
     "tests/conformance/docker-compute.test.mjs",
@@ -64,7 +78,6 @@
     "tests/conformance/codex-seccomp-profile.test.mjs",
     "tests/conformance/kubernetes-ownership.test.mjs",
     "tests/conformance/service-account-driver.test.mjs",
-    "tests/conformance/harness-device-auth.test.mjs",
     "tests/conformance/iam.test.mjs",
     "tests/conformance/platform-state-memory.test.mjs",
     "tests/conformance/contracts.test.mjs",
@@ -74,15 +87,36 @@
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.mjs",
+    "tests/conformance/console-design-tokens.test.mjs",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
+    "tests/conformance/console-carry.test.mjs",
+    "tests/conformance/console-namespace-name.test.mjs",
+    "tests/conformance/console-agent-name-runs.test.mjs",
+    "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
     "tests/conformance/split-layout-tenants.test.mjs",
-    "tests/conformance/split-layout-adopt.test.mjs"
+    "tests/conformance/split-layout-adopt.test.mjs",
+    "tests/conformance/url-authority.test.mjs",
+    "tests/integration/static-egress.test.mjs",
+    "tests/integration/credential-proxy-peer-pin.test.ts",
+    "tests/integration/egress-stock-online-authority.test.mjs",
+    "tests/integration/egress-stock-online-git-authority.test.mjs",
+    "tests/conformance/openshell-prepared-git-provider.test.mjs",
+    "tests/conformance/openshell-git-runtime.test.mjs",
+    "tests/integration/openshell-observed-request-hook.test.ts",
+    "tests/integration/credential-free-online-grant.test.mjs",
+    "tests/integration/credential-free-metadata-grant.test.ts",
+    "tests/integration/egress-enrollment.test.mjs",
+    "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/credential-policy-recovery.test.ts",
+    "tests/conformance/kubernetes-prepared-repository.test.mjs",
+    "tests/integration/egress-installation-exchange.test.mjs",
+    "tests/integration/egress-prepared-github-metadata.test.mjs"
   ],
   "files": [
     {
@@ -101,7 +135,22 @@
       "path": "tests/conformance/filesystem-configuration.test.mjs"
     },
     {
+      "path": "tests/conformance/console-agent-name-runs.test.mjs"
+    },
+    {
       "path": "tests/conformance/console-api-client.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-carry.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-namespace-name.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-json-errors.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-design-tokens.test.mjs"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"
@@ -117,9 +166,6 @@
     },
     {
       "path": "tests/docs/generated-api-reference.test.mjs"
-    },
-    {
-      "path": "tests/conformance/harness-device-auth.test.mjs"
     },
     {
       "path": "tests/conformance/http-errors.test.mjs"
@@ -140,6 +186,12 @@
       "path": "tests/conformance/kubernetes-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-provider-harness.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-harness-workspace-volume.test.mjs"
+    },
+    {
       "path": "tests/conformance/node-enrollment-client.test.mjs"
     },
     {
@@ -152,13 +204,20 @@
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-api-read.test.mjs"
+    },
+    {
+      "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
+    },
+    {
       "path": "tests/conformance/kubernetes-runtime-credentials.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-configuration.test.mjs"
     },
     {
-      "path": "tests/conformance/kubernetes-ownership.test.mjs"
+      "path": "tests/conformance/kubernetes-ownership.test.mjs",
+      "expectedTests": ["sealed Namespace compares SDK-deserialized ingress exactly"]
     },
     {
       "path": "tests/conformance/kubernetes-secret-driver.test.mjs"
@@ -183,6 +242,12 @@
     },
     {
       "path": "tests/conformance/openshell-gateway-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-oauth-wire.test.mjs"
+    },
+    {
+      "path": "tests/conformance/openshell-codex-device.test.mjs"
     },
     {
       "path": "tests/conformance/openshell-harness-status.test.mjs"
@@ -215,6 +280,9 @@
       "path": "tests/conformance/socket-directory.test.mjs"
     },
     {
+      "path": "tests/conformance/temporary-directory.test.mjs"
+    },
+    {
       "path": "tests/conformance/utils.test.mjs"
     },
     {
@@ -234,8 +302,17 @@
       "expectedTests": ["preflight rejects noncanonical SHA-256 image digests"]
     },
     {
+      "path": "tests/integration/profile-public-github-read.test.mjs",
+      "expectedTests": [
+        "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer"
+      ]
+    },
+    {
       "path": "tests/integration/profile-preflight-chart-parity.test.mjs",
-      "expectedTests": ["trusted proxy CIDRs get the same verdict from the preflight and the chart"]
+      "expectedTests": [
+        "trusted proxy CIDRs get the same verdict from the preflight and the chart",
+        "trusted proxy client address headers get the same verdict from the preflight and the chart"
+      ]
     },
     {
       "path": "tests/integration/bootstrap-output.test.mjs"
@@ -253,7 +330,13 @@
       "path": "tests/integration/json-body-depth.test.mjs"
     },
     {
-      "path": "tests/integration/configuration-startup.test.mjs"
+      "path": "tests/integration/configuration-startup.test.mjs",
+      "expectedTests": [
+        "closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody"
+      ]
+    },
+    {
+      "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
       "path": "tests/integration/console-api.test.mjs"
@@ -274,6 +357,15 @@
       "path": "tests/integration/occ-api.test.mjs"
     },
     {
+      "path": "tests/integration/stored-document-serialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/precompiled-route-compilers.test.mjs"
+    },
+    {
+      "path": "tests/integration/list-summaries.test.mjs"
+    },
+    {
       "path": "tests/integration/production-controller-security.test.mjs"
     },
     {
@@ -283,19 +375,22 @@
       "path": "tests/integration/production-image-upgrade.test.mjs"
     },
     {
-      "path": "tests/integration/sandbox-driver-startup.test.mjs",
-      "expectedTests": [
-        "OpenShell reconciles renewed workspace-node setup into its revision provider"
-      ]
+      "path": "tests/integration/secret-api.test.mjs"
     },
     {
-      "path": "tests/integration/secret-api.test.mjs"
+      "path": "tests/integration/credential-source-api.test.mjs",
+      "expectedTests": [
+        "Installation discovery serializes OpenShell model authentication and refresh source metadata"
+      ]
     },
     {
       "path": "tests/integration/plugin-discovery-api.test.mjs"
     },
     {
       "path": "tests/integration/device-authorization-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/openshell-device-authorization-api.test.mjs"
     },
     {
       "path": "tests/integration/dependency-unavailable-log.test.mjs"
@@ -316,18 +411,37 @@
       "path": "tests/integration/common-logging.test.mjs"
     },
     {
+      "path": "tests/integration/dev-entry-cdpath.test.mjs",
+      "expectedTests": [
+        "development wrappers resolve relative paths without changing CDPATH",
+        "k3d and CI tool setup resolve the checkout without CDPATH"
+      ]
+    },
+    {
       "path": "tests/integration/dev-up.test.mjs",
+      "expectedTests": [
+        "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
+        "Kubernetes Compute defaults to the Compose control plane",
+        "Kubernetes dev-up rejects an unsupported control-plane selection",
+        "Kubernetes dev-up rolls back owned resources after node-dns-refused",
+        "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",
+        "cancelling Kubernetes startup during readiness rolls back its owned resources",
+        "launcher case recovery follows real Go rollback after node-dns-refused"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-compose.test.mjs",
       "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
         "dev-up applies per-image overrides on top of the shared runtime image",
-        "Kubernetes dev-up rejects an unsupported control-plane selection",
         "dev-up rejects a public controller port rendered by real Compose",
         "dev-up refuses an existing key destination before invoking Compose",
         "dev-up fails closed when bootstrap exits unsuccessfully",
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
-        "dev-up rejects an authenticated installation response for a different Installation"
+        "dev-up rejects an authenticated installation response for a different Installation",
+        "development cleanup defaults to the Compose profile"
       ]
     },
     {
@@ -337,10 +451,125 @@
       "path": "tests/conformance/plugin-compute.test.mjs"
     },
     {
+      "path": "tests/conformance/codex-native-startup.test.mjs"
+    },
+    {
       "path": "tests/conformance/split-layout-tenants.test.mjs"
     },
     {
       "path": "tests/conformance/split-layout-adopt.test.mjs"
+    },
+    {
+      "path": "tests/conformance/url-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/credential-proxy-peer-pin.test.ts",
+      "expectedTests": [
+        "exchange send rejects identity changes before receipt creation",
+        "exchange response and renewal reject identity changes",
+        "exchange accepts stable keys and both absent keys",
+        "exchange rejects malformed peer expiry at each public boundary",
+        "exchange renewal preserves progress while bounded by original peer expiry",
+        "exchange renewal respects a shorter fresh peer expiry",
+        "exchange send snapshots authenticated peers across receipt reservation",
+        "exchange held response respects a shorter authenticated lifetime",
+        "exchange busy phases retain concurrent authenticated lifetime reductions",
+        "exchange reserves simultaneous response phases without discarding the winner",
+        "exchange busy lifetime observation requires a live exact owner",
+        "duplicate send retains only an exact authenticated lifetime contraction",
+        "duplicate send contraction bounds pending receipt work"
+      ]
+    },
+    {
+      "path": "tests/integration/static-egress.test.mjs",
+      "expectedTests": [
+        "Responses output text assembled across parts and messages cannot reveal selected material",
+        "Responses assistant projections protect independent items and seeded deltas",
+        "Responses incremental text snapshots cannot reveal selected material",
+        "signed Responses Plan projections protect completed and response-wide streamed text",
+        "live-shaped Responses envelopes pass while undeclared or credential-bearing envelope fields refuse",
+        "protected admission refuses an Agent's network policy additions instead of dropping them",
+        "the policy endpoint refuses additions and live application while the active revision is protected",
+        "the policy endpoint refuses additions before an Agent's first protected deploy",
+        "the OpenShell Driver refuses a protected revision carrying Agent network policy additions",
+        "the policy worker names protected execution when it fails queued live application"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-stock-online-authority.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
+      "expectedTests": [
+        "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
+        "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
+        "protected Git replies to this online decision before its authority deadline"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-git-runtime.test.mjs",
+      "expectedTests": [
+        "a gateway that does not answer closes the Git route and restores it without a tombstone",
+        "the Git route tombstone stays for a replaced execution, an unknown write and withdrawal",
+        "the Git route reports bootstrap, material and binding states for Compute readiness"
+      ]
+    },
+    {
+      "path": "tests/conformance/openshell-prepared-git-provider.test.mjs",
+      "expectedTests": [
+        "prepared Git static token and rotation use released fields without returning credentials or readiness",
+        "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
+        "prepared Git refuses stale, partial, mismatched and unavailable installation observations"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-observed-request-hook.test.ts",
+      "expectedTests": [
+        "a per-start denial joins the authenticated request to the refusal actually returned; neither side can substitute",
+        "observed-hook preview has its own durable admission and cannot reinterpret v4, v5, or narrow Git"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-free-online-grant.test.mjs",
+      "expectedTests": [
+        "signed stock request observes an OCC credential-free grant and its withdrawal",
+        "a signed stock request cannot carry a credential-free grant across revision replacement",
+        "a signed stock request loses a credential-free grant when OCC IAM access is removed",
+        "OCC cannot observe a live credential grant as credential-free metadata"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-free-metadata-grant.test.ts",
+      "expectedTests": [
+        "credential-free metadata exchange accepts a reordered Driver grant",
+        "credential-free route admission rejects changed, missing and undefined extra grant fields"
+      ]
+    },
+    {
+      "path": "tests/integration/protected-driver-registration.test.ts",
+      "expectedTests": [
+        "one installed Driver owns both protected capabilities, lifecycle and verified release",
+        "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
+        "repository scope changes invalidate the external Driver identity while a reload preserves it"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-policy-recovery.test.ts",
+      "expectedTests": [
+        "Git reduction recovery observes its original operation despite discovery failure"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-enrollment.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-prepared-repository.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-installation-exchange.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-prepared-github-metadata.test.mjs"
     }
   ]
 }

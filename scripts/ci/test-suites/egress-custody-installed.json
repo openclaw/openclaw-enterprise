@@ -1,0 +1,36 @@
+{
+  "env": {
+    "OCC_TEST_EGRESS_CONNECTED": "1",
+    "OCC_TEST_EGRESS_CUSTODY_INSTALLED": "1"
+  },
+  "requiredEnv": [
+    "OCC_TEST_EGRESS_CONNECTED_INPUTS",
+    "OCC_TEST_EGRESS_CONNECTED_CONTROLLER",
+    "OCC_TEST_EGRESS_CONNECTED_SERVICE_KEY",
+    "OCC_TEST_DATABASE_URL",
+    "OCC_TEST_EGRESS_DISPATCH_OBSERVER_SOCKET"
+  ],
+  "prepare": {},
+  "files": [
+    {
+      "path": "tests/integration/egress-custody-authorized-wire.test.mjs",
+      "expectedTests": [
+        "authorized wrong sink presents copied opening first and splices a pending real reply",
+        "two live authorized streams cannot cross their resolved dispatch handles"
+      ]
+    },
+    {
+      "path": "tests/integration/egress-response-custody-installed-real.test.mjs",
+      "expectedTests": [
+        "installed protected repository read binds execution, exact dispatch and final response",
+        "two ordinary clients in the admitted execution receive only the selected repository identity",
+        "unmanaged direct TCP cannot reach the independently observed permitted target",
+        "a forbidden final actual trailer reaches origin once and releases zero provider bytes",
+        "loss of the exact authorized dispatch COMMIT acknowledgement and authority restart produce no send",
+        "two simultaneously authorized installed executions receive only their own interleaved replies",
+        "a replacement execution cannot inherit the old pending request or receive its late response",
+        "explicit protected credential-free read, removal of authority and final route withdrawal"
+      ]
+    }
+  ]
+}

@@ -102,6 +102,9 @@ not require Origin, and an invalid key never falls back to a session cookie.
 | `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
 
+Human-session Namespace IAM writes retain assigning authority through their transaction; see
+[Sharing commit guarantees](authorization.md#manage-namespace-policy).
+
 The `sessionKey` names the current session, stays stable across reads, and changes
 on each sign-in. It cannot authenticate; the token stays in its HttpOnly cookie.
 Sending it back as `x-occ-session-key` narrows a request to that session: a
@@ -187,8 +190,8 @@ check. With external sign-in, a disabled account's entries verify
 nothing until it is enabled again; reset the password as well to revoke them for
 good. The controller reads the account only for an entry issued for the attempted
 email, so forged or foreign cookies add no timing signal about which emails exist,
-and a completed read that rejects the binding gives no exemption. Proof reads are
-bounded per controller: 30 per signed entry per minute, two active per entry,
+and a completed read that rejects the binding gives no exemption. Each controller
+limits proof reads to 30 per signed entry per minute, two active per entry,
 600 per minute overall, and 16 active overall. There is no proof cache or waiting
 queue. If a read fails or is refused, its signed entry keys also constrain the
 ordinary email/address lane: losing proof cannot reopen a spent device allowance.
@@ -237,7 +240,7 @@ names so browsers never choose between duplicates.
 
 Native-host requests authenticate the shared OCE session, resolve the exact
 Agent represented by the requested host, authorize exact Agent `administer`, and
-validate the current active revision and supported native configuration before
+validate the selected version and supported native configuration before
 proxying. OCC strips browser cookies, `Authorization`, API and session keys,
 forwarded identity, and native scope headers before forwarding upstream, so the native
 gateway never receives the OCE session cookie. Native chat or other Agent-host

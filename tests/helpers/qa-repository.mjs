@@ -1,15 +1,101 @@
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { allowsPushRef } from "../../apps/controller/src/drivers/repo/credentials/client-contracts.ts";
+import {
+  PREPARED_REPOSITORY_DIRECTORY,
+  REPOSITORY_CONTROL_SOCKET,
+  REPOSITORY_REGISTRY_PATH,
+  preparedRepositoryBackend,
+  preparedRepositoryInstallation,
+} from "../../scripts/lib/prepared-repository-installation.mjs";
 import { verifyNativeRepositoryJourney } from "./repository-native-journey.mjs";
+import { createGitHubAppRepositoryObserver } from "./github-app-observer.mjs";
 import {
   createRepositoryObserver,
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
 import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
+
+/** The one run-owned branch that every repository scenario of a QA run may push. */
+export function qaRepositoryBranch(suffix) {
+  return `oce-qa-${suffix}`;
+}
+
+/**
+ * Narrow the selected registry to what prepared native Git can serve. The worker
+ * refuses any policy but git-write on exactly one branch with explicit Git
+ * transport (PREPARED_REPOSITORY_REQUIRES_ONE_EXPLICIT_REVIEW_REF), and `occ dev up`
+ * refuses it before touching the cluster. git-only grants no PR route, so the QA
+ * journey pushes and stops there. Only narrowing is allowed: each policy must
+ * already grant a write profile, and one that lists push refs must authorize the
+ * run-owned branch.
+ */
+export function grantQaRepositoryBranch(registry, suffix) {
+  assert.equal(registry.repositories.length, 1, "select exactly one authorized repository");
+  const ref = `refs/heads/${qaRepositoryBranch(suffix)}`;
+  for (const policy of registry.repositories[0].namespaces) {
+    // Narrow a write grant; never turn a read-only policy into one.
+    assert.ok(
+      policy.profiles?.some((profile) => profile === "git-write" || profile === "git-full"),
+      "selected registry must already grant git-write or git-full",
+    );
+    if (policy.pushRefAllowlist) {
+      assert.ok(
+        allowsPushRef(policy.pushRefAllowlist, ref),
+        "selected registry must authorize the run-owned branch name",
+      );
+    }
+    policy.profiles = ["git-write"];
+    policy.transport = "git-only";
+    policy.pushRefAllowlist = [ref];
+    delete policy.pullRequestBase;
+    delete policy.draftPullLimit;
+  }
+  return registry;
+}
+
+/** The repository service's own configuration: it sends native Git and holds no App key. */
+export function qaRepositoryServiceConfig(registry, host) {
+  return {
+    gateway: {
+      listen: "0.0.0.0:8443",
+      publicOrigin: `https://${host}`,
+      controlSocket: REPOSITORY_CONTROL_SOCKET,
+      tlsCertFile: "/etc/openclaw/repository-ca/ca.crt",
+      tlsKeyFile: "/etc/openclaw/repository-inputs/tls.key",
+    },
+    sessionPolicy: {
+      maximumDurationSeconds: registry.maximumDurationSeconds,
+      defaultProfile: "git-write",
+      allowedProfiles: ["git-write"],
+    },
+    backend: {
+      kind: "github-prepared-git-registry",
+      backendId: registry.backendId,
+      registryFile: REPOSITORY_REGISTRY_PATH,
+    },
+  };
+}
+
+/** Point the Installation at the Compose repository service through the relay. */
+export function applyQaRepositoryInstallation(configuration, registry, podLabels) {
+  configuration.backend = [preparedRepositoryBackend({ backendId: registry.backendId })];
+  delete configuration.drivers.repo;
+  configuration.repository = preparedRepositoryInstallation({
+    sessionDurationSeconds: registry.maximumDurationSeconds,
+  });
+  configuration.drivers.compute.configuration.network.repositoryCredentials = {
+    namespace: "oce-system",
+    podLabels,
+    port: 8443,
+  };
+  return configuration;
+}
 
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
@@ -23,17 +109,18 @@ export async function prepareQaRepository(f) {
     "select exactly one authorized disposable repository",
   );
   const entry = registry.repositories[0];
-  assert.ok(entry.namespaces[0].profiles.includes("git-full"));
-  assert.ok(entry.namespaces[0].profiles.includes("git-read"));
+  // createQaInstallation wrote the registry through grantQaRepositoryBranch.
+  assert.deepEqual(entry.namespaces[0].profiles, ["git-write"]);
+  assert.deepEqual(entry.namespaces[0].pushRefAllowlist, [
+    `refs/heads/${qaRepositoryBranch(f.suffix)}`,
+  ]);
   f.repositoryEntry = entry;
   if (f.controlPlane === "kubernetes") {
     return;
   }
-  entry.namespaces = [
-    { ...entry.namespaces[0], namespaceId: f.namespace.id, profiles: ["git-read", "git-full"] },
-  ];
+  entry.namespaces = [{ ...entry.namespaces[0], namespaceId: f.namespace.id }];
   const directory = join(f.directory, "repository");
-  for (const child of ["registry", "inputs", "ca", "control/private"]) {
+  for (const child of ["registry", "inputs", "ca", "control/private", "prepared"]) {
     await mkdir(join(directory, child), { recursive: true, mode: 0o700 });
   }
   const write = async (name, value) =>
@@ -41,10 +128,12 @@ export async function prepareQaRepository(f) {
       mode: 0o600,
     });
   await write("registry/registry.json", registry);
+  // Only the worker holds the App key and the custody key that seals the tokens it prepares.
   await write(
-    "inputs/private-key.pem",
+    "prepared/private-key.pem",
     await protectedText(join(input, "private-key.pem"), "repository App key"),
   );
+  await writeFile(join(directory, "prepared/custody.key"), randomBytes(32), { mode: 0o600 });
   const host = "git.oce-system.svc.cluster.local";
   await f.run("openssl", [
     "req",
@@ -68,26 +157,7 @@ export async function prepareQaRepository(f) {
     chmod(join(directory, "ca/ca.crt"), 0o600),
     chmod(join(directory, "inputs/tls.key"), 0o600),
   ]);
-  await write("inputs/config.json", {
-    gateway: {
-      listen: "0.0.0.0:8443",
-      publicOrigin: `https://${host}`,
-      controlSocket: "/run/openclaw/repository-control/private/control.sock",
-      tlsCertFile: "/etc/openclaw/repository-ca/ca.crt",
-      tlsKeyFile: "/etc/openclaw/repository-inputs/tls.key",
-    },
-    sessionPolicy: {
-      maximumDurationSeconds: registry.maximumDurationSeconds,
-      defaultProfile: "git-full",
-      allowedProfiles: ["git-read", "git-full"],
-    },
-    backend: {
-      kind: "github-app-registry",
-      backendId: registry.backendId,
-      registryFile: "/etc/openclaw/repository-registry/registry.json",
-      privateKeyFile: "/etc/openclaw/repository-inputs/private-key.pem",
-    },
-  });
+  await write("inputs/config.json", qaRepositoryServiceConfig(registry, host));
   const path = join(f.stateDirectory, "compose.yaml");
   const compose = loadYaml(await readFile(path, "utf8"));
   const mount = (source, target, readOnly = true) => ({
@@ -136,6 +206,7 @@ export async function prepareQaRepository(f) {
     if (name === "worker-kubernetes") {
       compose.services[name].volumes.push(
         mount("control", "/run/openclaw/repository-control", false),
+        mount("prepared", PREPARED_REPOSITORY_DIRECTORY),
       );
     }
   }
@@ -247,27 +318,7 @@ export async function prepareQaRepository(f) {
     "deployment/qa-repository-relay",
     "--timeout=120s",
   );
-  f.configuration.backend = [
-    {
-      id: registry.backendId,
-      type: "github",
-      configuration: { registryPath: "/etc/openclaw/repository-registry/registry.json" },
-      drivers: { repo: "repository-credentials" },
-    },
-  ];
-  f.configuration.drivers.repo = {
-    id: "repository-credentials",
-    configuration: {
-      controlSocket: "/run/openclaw/repository-control/private/control.sock",
-      sessionDurationSeconds: registry.maximumDurationSeconds,
-      publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-    },
-  };
-  compute.network.repositoryCredentials = {
-    namespace: "oce-system",
-    podLabels: labels,
-    port: 8443,
-  };
+  applyQaRepositoryInstallation(f.configuration, registry, labels);
   await f.saveInstallation(f.configuration);
 }
 
@@ -574,7 +625,12 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
   return f.record(`${label}-platform-logs`, { capturedAt: new Date().toISOString(), logs });
 }
 
-export async function verifyQaRepository(f, agent, profile = "git-full") {
+// "git-write" pushes one commit to the run's granted branch. "git-push-denied" pushes
+// to another branch, which the grant does not cover. Both bind git-write: prepared
+// native Git serves no other profile.
+export async function verifyQaRepository(f, agent, scenario = "git-write") {
+  assert.ok(["git-write", "git-push-denied"].includes(scenario));
+  const denied = scenario === "git-push-denied";
   assert.ok(!f.retained, "unresolved repository cleanup prevents opening another session");
   assert.equal(
     process.env.OCC_TEST_QA_REPOSITORY_AUTHORIZED,
@@ -583,15 +639,25 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   );
   const entry = f.repositoryEntry;
   const repository = entry.repository;
-  const observerToken = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE
-    ? await protectedText(
-        process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE,
-        "independent GitHub observer credential",
-      )
+  const observerTokenPath = process.env.OCC_TEST_QA_GITHUB_OBSERVER_TOKEN_FILE;
+  const observerAppInput = process.env.OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY;
+  const observerBinary = process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY;
+  if (process.env.QA_REPOSITORY_FIXTURE === "isolated") {
+    assert.ok(observerAppInput, "isolated repository fixture requires App-backed observer input");
+    assert.ok(
+      !observerTokenPath,
+      "isolated repository fixture must not use a static observer token",
+    );
+    assert.ok(!observerBinary, "isolated repository fixture must not use a managed gh wrapper");
+  }
+  const observerToken = observerTokenPath
+    ? await protectedText(observerTokenPath, "independent GitHub observer credential")
     : undefined;
-  assert.ok(
-    observerToken || process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY,
-    "select an independent observer credential or managed gh wrapper",
+  const selectedObservers = [observerToken, observerAppInput, observerBinary].filter(Boolean);
+  assert.equal(
+    selectedObservers.length,
+    1,
+    "select exactly one independent observer credential, App input directory, or managed gh wrapper",
   );
   // A selected managed wrapper may authenticate from its caller's environment.
   // Forward credentials only to the host observer/Git calls, never the launcher
@@ -599,22 +665,31 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   const observerEnvironment = observerToken
     ? { GH_TOKEN: observerToken }
     : Object.fromEntries(
-        ["GH_TOKEN", "GITHUB_TOKEN"]
-          .filter((name) => process.env[name])
-          .map((name) => [name, process.env[name]]),
+        observerAppInput
+          ? []
+          : ["GH_TOKEN", "GITHUB_TOKEN"]
+              .filter((name) => process.env[name])
+              .map((name) => [name, process.env[name]]),
       );
   for (const value of Object.values(observerEnvironment)) {
     registerQaSecret(value);
   }
-  const observe = createRepositoryObserver({
-    repository,
-    binary: process.env.OCC_TEST_QA_GITHUB_OBSERVER_BINARY ?? "gh",
-    run: (cmd, args, options) =>
-      f.run(cmd, args, {
-        ...options,
-        env: { ...f.env, ...options?.env, ...observerEnvironment },
-      }),
-  });
+  const runObserverCommand = (cmd, args, options) =>
+    f.run(cmd, args, {
+      ...options,
+      env: { ...f.env, ...options?.env, ...observerEnvironment },
+    });
+  const observe = observerAppInput
+    ? await createGitHubAppRepositoryObserver({
+        repository,
+        inputDirectory: observerAppInput,
+        run: runObserverCommand,
+      })
+    : createRepositoryObserver({
+        repository,
+        binary: observerBinary ?? "gh",
+        run: runObserverCommand,
+      });
   const { data: remote } = await observe("GET");
   assert.equal(String(remote.id), String(entry.repositoryId));
   assert.equal(remote.full_name.toLowerCase(), repository.toLowerCase());
@@ -622,8 +697,8 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   const { data: baseline } = await observe("GET", `git/ref/heads/${encodeURIComponent(base)}`);
   const baseSha = baseline.object.sha;
   assert.match(baseSha, /^[a-f0-9]{40}$/);
-  const suffix = `${f.suffix}-${agent.preset.toLowerCase()}-${profile}`;
-  const branch = `oce-qa-${suffix}`;
+  const suffix = `${f.suffix}-${agent.preset.toLowerCase()}-${scenario}`;
+  const branch = denied ? `${qaRepositoryBranch(f.suffix)}-denied` : qaRepositoryBranch(f.suffix);
   const file = `qa-${suffix}.txt`;
   const content = `QA repository proof ${suffix}\n`;
   const marker = `<!-- oce-qa:${suffix} -->`;
@@ -663,7 +738,7 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
   );
   await f.api("PATCH", path, {
     configurationId: agent.configuration.id,
-    repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile }],
+    repositoryBindings: [{ repositoryRef: entry.repositoryRef, profile: "git-write" }],
   });
   let workFailure;
   let remoteEvidence;
@@ -674,7 +749,7 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
     // A rejected draft update above creates no session-cleanup obligation.
     f.pendingRepositories.add(agent.id);
     await f.deployAndWait(agent);
-    const readOnly = profile === "git-read";
+    const readOnly = denied;
     const gateway = await f.pod(agent, "gateway");
     const consumer = dedicated ? await f.pod(agent, "agent") : gateway;
     const consumerName = dedicated ? "agent" : "gateway";
@@ -826,6 +901,7 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
       remote,
       readSession,
       submitViaLoopback: true,
+      pullRequest: false,
     });
   } catch (error) {
     workFailure = error;
@@ -870,13 +946,18 @@ export async function verifyQaRepository(f, agent, profile = "git-full") {
         file,
         content,
         marker,
-        readOnly: profile === "git-read",
+        readOnly: denied,
         commitMessage: `Installed credential proof ${suffix}`,
         expectedSha: remoteEvidence?.commitSha,
       });
     }
   } catch (error) {
     cleanupFailure = error;
+    // Every git-write scenario of the run pushes the one granted branch. Keep a later
+    // one from tripping over what this one could not clean up.
+    if (!denied) {
+      f.retained = true;
+    }
   }
   if (f.pendingRepositories.has(agent.id)) {
     f.retained = true;

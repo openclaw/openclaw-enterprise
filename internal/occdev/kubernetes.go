@@ -347,7 +347,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "1792Mi"}, "limits": map[string]string{"cpu": "2", "memory": "3Gi"}}
 	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
 	config := map[string]any{
-		"occ": map[string]string{"cluster": s.Cluster}, "backend": []any{},
+		"sandboxNetworkPolicyCeiling": s.SandboxNetworkPolicyCeiling,
+		"occ":                         map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
 			"configuration": map[string]any{"id": "config-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"iam":           map[string]any{"id": "native-iam", "configuration": map[string]any{}},
@@ -360,6 +361,9 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
 			}},
 		},
+	}
+	if len(s.SandboxNetworkPolicyCeiling) == 0 {
+		delete(config, "sandboxNetworkPolicyCeiling")
 	}
 	if codexSeccompProfile != "" {
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
@@ -393,10 +397,20 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 			"address": openShellGatewayAddress,
 			"port":    8080,
 		}
-		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources)
+		config["drivers"].(map[string]any)["sandbox"] = openShellInstallationConfiguration(s, openShell.workspaceResources, harnessResources)
 		config["drivers"].(map[string]any)["credential_gateway"] = map[string]any{
-			"id":            openShellCredentialGatewayID,
-			"configuration": map[string]any{"binaries": openShellCodexBinaries()},
+			"id": openShellCredentialGatewayID,
+			// Native OpenClaw uses Node; retain both architecture-specific Codex allowances.
+			"configuration": map[string]any{"binaries": append(openShellCodexBinaries(), "/usr/local/bin/node")},
+		}
+		if s.ProtectedEgress {
+			if s.egressKeyID == "" {
+				return fmt.Errorf("protected egress requires the generated OpenShell JWT key identifier")
+			}
+			config["drivers"].(map[string]any)["credential_proxy"] = developmentEgressConfiguration(s)
+			sandbox := config["drivers"].(map[string]any)["sandbox"].(map[string]any)["configuration"].(map[string]any)
+			gateway := sandbox["gateway"].(map[string]any)
+			gateway["networkPolicyResources"] = append(gateway["networkPolicyResources"].([]any), developmentAuthorityEgressPolicy(s))
 		}
 		config["backend"] = []any{openShellBackendConfiguration(s)}
 	}
@@ -424,6 +438,17 @@ func openShellCodexBinaries() []string {
 // openShellBackendConfiguration owns the gateway connection shared by the Sandbox and
 // Credential Gateway Drivers.
 func openShellBackendConfiguration(s *developmentState) map[string]any {
+	if s.ProtectedEgress {
+		return map[string]any{
+			"id": "openshell", "type": "openshell",
+			"configuration": map[string]any{
+				"endpoint":            fmt.Sprintf("https://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace),
+				"rootCertificatePath": "/etc/openclaw/openshell/ca.crt", "requestTimeoutMs": 30000,
+				"auth": map[string]string{"mode": "mtls", "certificatePath": "/etc/openclaw/openshell/tls.crt", "privateKeyPath": "/etc/openclaw/openshell/tls.key"},
+			},
+			"drivers": map[string]string{"sandbox": openShellSandboxID, "credential_gateway": openShellCredentialGatewayID, "credential_proxy": developmentEgressDriver},
+		}
+	}
 	endpoint := fmt.Sprintf("http://k3d-%s-server-0:%d", s.Cluster, openShellNodePort)
 	if s.DeploymentMode == "k3d" {
 		endpoint = fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", openShellGatewayService, s.PlatformNamespace)
@@ -442,7 +467,7 @@ func openShellBackendConfiguration(s *developmentState) map[string]any {
 	}
 }
 
-func openShellInstallationConfiguration(s *developmentState, workspaceResources []any) map[string]any {
+func openShellInstallationConfiguration(s *developmentState, workspaceResources []any, harnessResources map[string]any) map[string]any {
 	gatewayNamespace := openShellGatewayNamespace
 	if s.DeploymentMode == "k3d" {
 		gatewayNamespace = s.PlatformNamespace
@@ -454,8 +479,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// OpenShell v0.1.3-pre.2 exposes the route before the canonical
-			// process listens. Keep the first Gateway from consuming it early.
+			// Keep the existing delay before the first Gateway uses the route.
 			"startupDelayMs": 30000,
 			"gateway": map[string]any{
 				"workspaceMode": "operator",
@@ -483,16 +507,20 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			},
 			"kubernetes": map[string]any{
 				"runtimeClassName": openShellRuntimeClass,
+				"userNamespaces":   false,
+				// Provider-owned Harness Pods need the same budget as Compute-owned
+				// Harnesses; otherwise the namespace's smaller default applies.
+				"agentResources":   harnessResources,
 				"serviceAccount":   map[string]string{"mode": "gatewayConfigured"},
 				"sandboxDataMount": map[string]any{"subPath": "workspace", "mountPath": "/sandbox/enterprise", "readOnly": false},
 			},
 			"policy": map[string]any{
 				"process": map[string]string{"runAsUser": "1000", "runAsGroup": "1000"},
-				"networkPolicies": []any{
+				"networkPolicies": append([]any{
 					// Model egress comes from the credential source's OpenShell profile, which
 					// terminates TLS so the proxy can inject the key; an uninspected rule would conflict.
 					map[string]any{"name": "source-control", "endpoints": []any{map[string]any{"host": "github.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/usr/bin/git"}}},
-				},
+				}, s.SandboxNetworkPolicies...),
 			},
 			"sandboxNamePrefix": "os",
 		},

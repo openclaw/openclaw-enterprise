@@ -82,11 +82,11 @@ requires `read` on both accounts. An Agent can reference an account before it
 has a credential, but deployment rejects that state.
 
 Deletion requires `delete` on the exact account and is rejected with `409` while
-an Agent draft, active revision, queued or claimed deployment, or queued or running
+an Agent draft, selected version, queued or claimed deployment, or queued or running
 Agent provisioning request references it; the message lists these kinds, not the
 specific resources. Detaching
 the draft alone does not release an active or pending deployment's account.
-Inactive historical revisions and permanently failed deployments do not block
+Inactive historical versions and permanently failed deployments do not block
 deletion unless the account is still referenced by other live state.
 Backend-managed deletion removes
 the exact upstream credential, the account-owned Secret, and the upstream
@@ -122,11 +122,13 @@ choice is made on the locked account row, so a token issued meanwhile is
 reported, not missed. An API Pod still running without the Backend during a
 rollout that re-adds it can force-delete; avoid forcing until the rollout ends.
 
-## Revision snapshots and credential delivery
+<a id="revision-snapshots-and-credential-delivery" class="anchor-alias"></a>
+
+## Version snapshots and credential delivery
 
 Deploying an Agent freezes the account ID, credential kind, Secret reference,
 and nullable `backendId` in its immutable AgentRevision. It does not copy
-credential bytes into the revision. Later account edits do not rewrite that snapshot. A Secret reference
+credential bytes into the version. Later account edits do not rewrite that snapshot. A Secret reference
 is not a snapshot of the Secret's value. Before dispatch, the worker reauthorizes
 exact-account `read` for the actor who requested the deployment.
 
@@ -137,8 +139,8 @@ For an `access_token`, the Agent must select the binding's exact nonnull
 Admission and worker reconciliation validate that private metadata before
 workload effects; a public credential kind is not proof of ownership. Only
 dedicated Codex execution is supported. Kubernetes
-delivers the token from the account-owned CP source through a revision-owned
-data-plane runtime Secret into the exact
+delivers the token from the account-owned CP source through a
+data-plane runtime Secret for that Agent revision into the exact
 Codex Pod:
 
 | Account Secret key | Codex environment variable | Purpose                            |
@@ -148,11 +150,11 @@ Codex Pod:
 Both managed-account and Secret sources use `codex_pat` with
 `CODEX_LOGIN_MODE=codex_pat`. Codex authenticates through
 `codex -c cli_auth_credentials_store=file login --with-access-token`, derives
-account identity from the token, and saves login state only in its bounded
-ephemeral workload volume. Workspace ownership remains a control-plane
+account identity from the token, and saves login state only in its temporary
+workload volume, which has a `1Gi` size limit. Workspace ownership remains a control-plane
 admission and reconciliation check; no workspace override is projected into
 Codex. The separate Gateway receives no model credential. The trusted worker reads the source and manages
-the revision projection; workloads receive no Secret API permission. No API-key
+the version projection; workloads receive no Secret API permission. No API-key
 fallback is used. The projection does not narrow provider-side token authority.
 
 ### Native API-key references
@@ -205,12 +207,18 @@ provider, not IAM, Compute, OCC, or the Harness.
   it answers `503`, and the API log says the credential could not be removed.
 - Unknown Secret outcome: a failed token Secret create deletes the account-owned
   Secret holding this request's token, so issuance can be retried. If it cannot
-  read or delete that Secret, it answers `503`. The leftover Secret then blocks
-  each retry with a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus
-  the first 32 hex digits of the account ID's SHA-256, in the Namespace's control
-  namespace (omitted when that name is long). An operator deletes it, for example
-  `kubectl delete secret -n <namespace> <name>`, then retries. The failed issuance
-  still revokes its token.
+  read or delete that Secret, it answers `503` and still revokes its token.
+- Issuance that never commits: a crash, or an unknown COMMIT that failed, skips
+  compensation, so the provider credential and its token Secret stay. The Secret
+  records the credential's ID, so the next issuance or the account's deletion
+  revokes that credential and deletes the Secret. A crash before the Secret is
+  stored leaves only the provider credential, which expires at its TTL.
+- A leftover Secret that records no valid credential ID blocks each issuance with
+  a `409 RESOURCE_CONFLICT` that names it: `service-account-` plus the first 32
+  hex digits of the account ID's SHA-256, in the Namespace's control namespace
+  (omitted when that name is long). An operator deletes it, for example
+  `kubectl delete secret -n <namespace> <name>`, then retries. Deleting the
+  account with the ChatGPT Backend configured also removes it.
 - Expired token: Execution fails closed; automated refresh and rotation are
   not implemented.
 
@@ -223,12 +231,12 @@ and its causes' class and code. The logging Collector exports only the event and
 ## Evidence and related references
 
 The [controller domain operations](../../packages/occ/src/index.ts) own account
-admission, association, deletion, and revision snapshots. The
+admission, association, deletion, and version snapshots. The
 [ChatGPT Driver](../../apps/controller/src/drivers/service-account/chatgpt.ts)
 owns private upstream bindings and compensation; the
 [worker](../../apps/controller/src/worker.ts) reauthorizes the deployment actor.
 
-- [Service-account testing](../testing/service-accounts.md)
+- [Service-account testing](../testing/slack.md#chatgpt-service-accounts)
 - [ServiceAccountDriver contract](drivers/service-account.md)
 - [Kubernetes Compute reference](drivers/kubernetes-compute.md)
 - [Authorization](authorization.md)
@@ -241,6 +249,6 @@ owns private upstream bindings and compensation; the
 
 ## Changelog
 
-- 2026-09-01 08:47: Centralize Provider configuration and document matching Agent/revision ownership. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
+- 2026-09-01 08:47: Centralize Provider configuration and document matching Agent and revision IDs. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 
 - [2026-08-28 17:54]: Reorganize as a current feature reference; distinguish account lifecycle, immutable references, and supported credential delivery. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

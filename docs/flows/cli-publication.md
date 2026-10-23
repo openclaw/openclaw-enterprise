@@ -40,7 +40,7 @@ graph TD
 ### 1. Bind the source to a tested OCE version
 
 `scripts/ci/cli-release.mjs:validate` requires a manual dispatch from this
-repository's `main`, a full source SHA matching the selected workflow revision,
+repository's `main`, a full source SHA matching the selected workflow source commit,
 and a successful `CI Required` job from the exact main-push CI run. The root
 package version and chart `version` and `appVersion` must agree. These checks do
 not prove that the chart or images have been published; the operator coordinates
@@ -50,7 +50,7 @@ those separate releases from the same source.
 
 `scripts/ci/cli-release.mjs:packageCli` builds with `CGO_ENABLED=0` for Darwin
 and Linux on amd64 and arm64 using pinned Go 1.27.1. The build embeds
-`v<version>` in the CLI, checks the source revision and Go platform metadata,
+`v<version>` in the CLI, checks the source commit and Go platform metadata,
 runs `--version` and `--help` on the runner-native
 binary, and writes `SHA256SUMS`. The prepare job has read-only repository
 permission and retains its output as one workflow artifact. The publication
@@ -91,7 +91,7 @@ provenance.
 
 ## Related docs
 
-- [Publish the OCC CLI](../../.github/cli-publication.md)
+- [Publish the OCC CLI](../release/cli-publication.md)
 - [Set up the OCC CLI](../guides/cli.md)
 - [Container publication flow](container-publication.md)
 
