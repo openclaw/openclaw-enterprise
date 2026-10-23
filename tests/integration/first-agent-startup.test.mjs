@@ -11,6 +11,7 @@ import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  reuseFirstAgentRecord,
 } from "../../scripts/first-agent-model.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
@@ -234,6 +235,53 @@ test("first-Agent flags a prior OpenShell PAT revision and points at --replace-k
   assert.match(warning, /shell tools fail/);
   assert.match(warning, /--replace-key/);
   assert.match(warning, /current sandbox mode \(danger-full-access/);
+});
+
+test("first-Agent refuses records from an older helper as such", () => {
+  const selection = {
+    name: "state-contract-test",
+    namespaceId: "ns_default",
+    harness: "openclaw",
+    sandboxDriver: "none",
+    controlUi: false,
+  };
+  const saved = { version: 3, authMethod: "api_key", model: "gpt-test", ...selection };
+  assert.equal(reuseFirstAgentRecord(saved, selection), saved);
+
+  // Versions 1 and 2 predate the Harness and Control UI fields, and version 3 records saved
+  // before PAT support have no authMethod. None can be verified, so the refusal says the
+  // record is old instead of blaming a selection or authentication method the caller kept.
+  const beforePat = { ...saved };
+  delete beforePat.authMethod;
+  for (const [label, record] of [
+    ["version 1", { ...saved, version: 1 }],
+    ["version 2", { ...saved, version: 2 }],
+    ["version 3 without authMethod", beforePat],
+  ]) {
+    assert.throws(
+      () => reuseFirstAgentRecord(record, selection),
+      (error) => {
+        assert.match(error.message, /recorded by an older first-agent helper/);
+        assert.match(error.message, /Choose a new Agent name/);
+        assert.doesNotMatch(error.message, /differs|Personal access tokens/);
+        return true;
+      },
+      label,
+    );
+  }
+  for (const [key, value] of [
+    ["name", "other-agent"],
+    ["namespaceId", "ns_other"],
+    ["harness", "codex"],
+    ["sandboxDriver", "openshell"],
+    ["controlUi", true],
+  ]) {
+    assert.throws(
+      () => reuseFirstAgentRecord(saved, { ...selection, [key]: value }),
+      /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
+      key,
+    );
+  }
 });
 
 test("first-Agent admits dedicated Codex with OpenShell development state", async (t) => {

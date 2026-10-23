@@ -15,6 +15,7 @@ import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  reuseFirstAgentRecord,
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
@@ -859,36 +860,31 @@ async function main(options) {
   await withRecord(local.directory, options.name, async (existing, save) => {
     const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
     const model = selectFirstAgentModel(configuredModel, existing);
-    if (
-      existing &&
-      (existing.version !== 3 ||
-        existing.name !== options.name ||
-        existing.namespaceId !== namespace.id ||
-        existing.harness !== options.harness ||
-        existing.sandboxDriver !== local.sandboxDriver ||
-        existing.controlUi !== options.controlUi)
-    ) {
-      throw new Error(
-        "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
-      );
-    }
-    const record = existing ?? {
-      version: 3,
-      authMethod:
-        process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
-          ? "codex_pat"
-          : "api_key",
-      name: options.name,
-      namespaceId: namespace.id,
-      model,
-      harness: options.harness,
-      sandboxDriver: local.sandboxDriver,
-      controlUi: options.controlUi,
-      secretName: `first-agent-${randomUUID()}`,
-      ...(local.sandboxDriver === "openshell"
-        ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
-        : {}),
-    };
+    const record = existing
+      ? reuseFirstAgentRecord(existing, {
+          name: options.name,
+          namespaceId: namespace.id,
+          harness: options.harness,
+          sandboxDriver: local.sandboxDriver,
+          controlUi: options.controlUi,
+        })
+      : {
+          version: 3,
+          authMethod:
+            process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE
+              ? "codex_pat"
+              : "api_key",
+          name: options.name,
+          namespaceId: namespace.id,
+          model,
+          harness: options.harness,
+          sandboxDriver: local.sandboxDriver,
+          controlUi: options.controlUi,
+          secretName: `first-agent-${randomUUID()}`,
+          ...(local.sandboxDriver === "openshell"
+            ? { credentialSourceName: `first-agent-openai-${randomUUID()}` }
+            : {}),
+        };
     if (
       !["api_key", "codex_pat"].includes(record.authMethod) ||
       (record.authMethod === "codex_pat" &&
