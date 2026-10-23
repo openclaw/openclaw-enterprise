@@ -547,9 +547,9 @@ async function repositoryGitJourney(
             t,
             revision,
             {
-              sandbox: { id, implementation: "openshell", configuration: sandbox["options"] },
+              sandbox: { id, implementation: "openshell", configuration: { ...sandbox["options"] } },
               createSandbox: (configuration, selection) =>
-                new OpenShellSandboxDriver(configuration as (typeof sandbox)["options"], selection),
+                new OpenShellSandboxDriver(configuration as unknown as (typeof sandbox)["options"], selection),
               backend: {
                 ...backend,
                 client: { ...backend.client, close: async () => {} },

@@ -415,6 +415,7 @@ async function fixture(t: TestContext, options: Options = {}) {
           image: "runtime@sha256:" + "a".repeat(64),
           command: ["codex", "app-server"],
           workspaceMounts: [],
+          retainedDirectories: [],
           environment: [{ name: "APP_SERVER_PORT", value: "8080" }],
           files: [],
           credentialAttachments: [],
