@@ -192,7 +192,7 @@ its bounds in memory, per API process:
 | Bound                                                         | Limit                         | Released                                          |
 | ------------------------------------------------------------- | ----------------------------- | ------------------------------------------------- |
 | Operations in progress, from the call until the handle closes | 1024                          | When the operation settles or its deadline passes |
-| Request IDs, installation-wide                                | 8192                          | 30 s after each ID's UUIDv7 creation time         |
+| Request IDs, all Sandboxes                                    | 8192                          | 30 s after each ID's UUIDv7 creation time         |
 | Request IDs, per Sandbox                                      | 2048 (a quarter of the table) | Same                                              |
 
 The ID bounds allow about 270 protected requests per second per API process, and
