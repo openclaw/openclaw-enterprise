@@ -56,6 +56,23 @@ work fails in the worker log.
 **Steps.** Grant the worker `list` and `delete` on `configmaps` and
 `serviceaccounts` in the namespace, then repeat the `DELETE`.
 
+## 2026-10-23: SSH initial workspace files need a main-only roster at save
+
+**What breaks.** On SSH Compute, Agent create and update refuse initial
+workspace files when the Configuration's `agents.entries` is empty or holds an
+entry besides `main`, as Kubernetes and Docker Compute do. Deploying an Agent
+whose setup is still pending is refused the same way. An empty roster used to
+deploy; since #3371 the host refused it and each deployment failed after its
+retries.
+
+**Who is affected.** SSH Installations with such an Agent or Configuration.
+
+**How to tell.** The request answers `400` with `Configuration setting
+agents.entries must hold only main, or be omitted, for initial workspace files`.
+
+**Steps.** Remove `agents.entries` or leave only `main` in it, then save or
+deploy again. _untested_
+
 ## 2026-10-23: saves refuse a model without its provider
 
 **What breaks.** Configuration create and update, Agent provisioning, Agent
