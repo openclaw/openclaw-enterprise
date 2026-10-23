@@ -2059,18 +2059,19 @@ test("Git expiry observes the original model in the reduced stock installation, 
       expiries(f)
         .filter((event) => event.outcome === "pending")
         .map((event) => event.failure);
-    const expectedFailures = {
-      "version churn": ["unconfirmed"],
-      "lost reply": ["failed"],
-      "intent without effect": ["unavailable"],
-      "outcome uncertain at gateway": ["deadline"],
-      "first send still applying": ["deadline"],
-      "pass ran out of time": ["deadline"],
-      "admission limit": ["admission_limit", "admission_limit"],
-      "Sandbox moved after intent": ["unavailable"],
-      "profile unavailable": ["unavailable"],
-      "model rotates during profile check": ["unconfirmed"],
-    }[fault] ?? [];
+    const expectedFailures =
+      {
+        "version churn": ["unconfirmed"],
+        "lost reply": ["failed"],
+        "intent without effect": ["unavailable"],
+        "outcome uncertain at gateway": ["deadline"],
+        "first send still applying": ["deadline"],
+        "pass ran out of time": ["deadline"],
+        "admission limit": ["admission_limit", "admission_limit"],
+        "Sandbox moved after intent": ["unavailable"],
+        "profile unavailable": ["unavailable"],
+        "model rotates during profile check": ["unconfirmed"],
+      }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
       assert.deepEqual(failures(), expectedFailures);
       if (["replacement Pod", "Git profile scope changed"].includes(fault)) {

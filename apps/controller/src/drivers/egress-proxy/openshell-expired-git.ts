@@ -19,11 +19,7 @@ export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime
  * gateway did not answer, a request or the pass ran out of time, or another request failed.
  */
 export type OpenShellGitExpiryPendingFailure =
-  | "unconfirmed"
-  | "admission_limit"
-  | "unavailable"
-  | "deadline"
-  | "failed";
+  "unconfirmed" | "admission_limit" | "unavailable" | "deadline" | "failed";
 type Client = Pick<
   OpenShellGatewayClient,
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
