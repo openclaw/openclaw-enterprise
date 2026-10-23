@@ -247,7 +247,7 @@ supervisor rereads it before node retries and retains valid setup during project
 gaps. The raw app-server token stays outside the provider. Plugins and repository
 broker configuration fail before creation.
 
-Agent revision cleanup deletes the Sandbox before its runtime provider; Namespace
+Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
 cleanup removes unused profiles. Adoption requires matching
 Namespace, Agent, and Agent revision IDs and nonsecret configuration,
 except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains

@@ -309,12 +309,11 @@ Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
 fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 `DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
-deletes the runtime provider. `cleanupNativeWorkspace` retires
-interrupted preparers without a Sandbox, refusing foreign/replaced resources. Namespace cleanup
-removes unused runtime profiles.
+deletes the Git provider and profile and the runtime provider. `cleanupNativeWorkspace` retires
+interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
-After retirement, Namespace `cleanup` verifies Workspace ownership, removes
-owned providers/profile, sends idempotent `DeleteWorkspace`, then removes chart
+Namespace `cleanup` then verifies Workspace ownership, removes
+owned runtime/Git providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
 resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
