@@ -9,7 +9,6 @@ import {
 } from "../../../composition/installation-fields.ts";
 import type { SelectedDriverConfiguration } from "../../../composition/installation-config.ts";
 import type { PreparedRepositoryGitConfiguration } from "../../../backends/repository-credentials/prepared-git-owner.ts";
-import { GitHubNativeRepositorySender } from "./driver.ts";
 import { preparedGitHubConfiguration } from "./credentials/prepared-configuration.ts";
 import type { GitHubRepositoryRegistry } from "./credentials/registry.ts";
 
@@ -35,10 +34,6 @@ export function githubRepositoryConfiguration(input: unknown, mode: "development
       controlSocket: nonempty(native.controlSocket, "repository.nativeSender.controlSocket"),
       publicCaPath: nonempty(native.publicCaPath, "repository.nativeSender.publicCaPath"),
     };
-    GitHubNativeRepositorySender.validateConfiguration({
-      ...object(selection.configuration, "repository.configuration"),
-      ...nativeSender,
-    });
   }
   return {
     selection,
