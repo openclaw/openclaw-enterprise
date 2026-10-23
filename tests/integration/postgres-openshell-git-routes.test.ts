@@ -511,6 +511,11 @@ test(
     });
     assert.equal(await store.writing(revision.id, 1, "bootstrap"), undefined, "a stale fence");
     assert.equal(await store.writing(revision.id, 2, "bootstrap"), 3);
+    assert.equal(
+      await store.cancelWriting(revision.id, 1),
+      false,
+      "a stale clear cannot clear the new reservation",
+    );
     const generation = {
       credentialState: "bootstrap" as const,
       expiresAt: "",

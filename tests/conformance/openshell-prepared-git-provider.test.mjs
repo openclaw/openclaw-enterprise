@@ -405,17 +405,40 @@ test("prepared Git writes outlive the caller's read budget, and a caller out of 
       error.readFailure === "timeout",
   );
   assert.deepEqual([fresh.state.profile, fresh.state.provider], [undefined, undefined]);
+  // Out of time just after the last read answered: the write does not start.
+  const between = await wire(t);
+  const ended = new AbortController();
+  const getProvider = between.client.getProvider.bind(between.client);
+  between.client.getProvider = async (...args) => {
+    const answer = await getProvider(...args);
+    ended.abort(new Error("claim lost"));
+    return answer;
+  };
+  await assert.rejects(
+    between.binding.bootstrap(ended.signal),
+    (error) => error.outcome === "refused" && error.readFailure === "timeout",
+  );
+  assert.deepEqual([between.state.profile, between.state.provider], [undefined, undefined]);
 
-  // A gateway that refuses the worker's identity is a refusal, never a retryable read failure.
+  // A gateway that refuses the worker's identity is a refusal, never a retryable read failure,
+  // even when the caller's signal ends at the same moment.
   const denied = await wire(t);
   denied.state.denyReads = true;
-  await assert.rejects(
-    denied.binding.bootstrap(signal()),
-    (error) =>
-      error instanceof OpenShellPreparedGitProviderError &&
-      error.outcome === "refused" &&
-      error.readFailure === undefined,
-  );
+  const refusedAs = (readFailure) => (error) =>
+    error instanceof OpenShellPreparedGitProviderError &&
+    error.outcome === "refused" &&
+    error.readFailure === readFailure;
+  await assert.rejects(denied.binding.bootstrap(signal()), refusedAs(undefined));
+  const deniedCaller = new AbortController();
+  const getProfile = denied.client.getProviderProfile.bind(denied.client);
+  denied.client.getProviderProfile = async (...args) => {
+    try {
+      return await getProfile(...args);
+    } finally {
+      deniedCaller.abort(new Error("claim lost"));
+    }
+  };
+  await assert.rejects(denied.binding.bootstrap(deniedCaller.signal), refusedAs(undefined));
   assert.equal(denied.state.provider, undefined);
 });
 
