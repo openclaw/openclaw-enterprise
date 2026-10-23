@@ -8,7 +8,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ .Release.Name }}-prometheus-discovery
-  namespace: {{ .Values.occ.namespace }}
+  namespace: {{ .Values.occ.namespace | quote }}
 rules:
   - apiGroups: [""]
     resources: [pods]
@@ -18,7 +18,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ .Release.Name }}-prometheus-discovery
-  namespace: {{ .Values.occ.namespace }}
+  namespace: {{ .Values.occ.namespace | quote }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
@@ -26,7 +26,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ .Release.Name }}-prometheus
-    namespace: {{ .Release.Namespace }}
+    namespace: {{ .Release.Namespace | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap

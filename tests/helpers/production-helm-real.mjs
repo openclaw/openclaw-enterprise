@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { failureSecrets } from "../../scripts/ci/failure-redaction.mjs";
+import { podFailureDiagnostic } from "./k3d-failure-diagnostics.mjs";
+import {
+  createKubernetesClient,
+  diagnosticDeadlineMs,
+  withinDiagnosticDeadline,
+} from "./kubernetes-real.mjs";
 
 // The caller owns the disposable namespace and registers its cleanup before installation.
 export async function installProductionHelmControlPlane({
@@ -22,9 +29,16 @@ export async function installProductionHelmControlPlane({
   databaseName = "openclaw_enterprise",
   run,
   kubernetes,
-  createSecretValue: secret,
+  createSecretValue,
   record,
 }) {
+  // The values this installation creates, so a failure diagnostic can redact them.
+  const secretValues = [];
+  const secret = () => {
+    const value = createSecretValue();
+    secretValues.push(value);
+    return value;
+  };
   assert.match(databaseName, /^[a-z][a-z0-9_]+$/);
   const { kubectl, waitFor } = kubernetes;
   const apply = (object) =>
@@ -150,7 +164,9 @@ export async function installProductionHelmControlPlane({
             { name: "init", mountPath: "/docker-entrypoint-initdb.d", readOnly: true },
           ],
           readinessProbe: {
-            exec: { command: ["pg_isready", "-U", "postgres", "-d", databaseName] },
+            exec: {
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", databaseName],
+            },
             initialDelaySeconds: 2,
             periodSeconds: 2,
           },
@@ -232,7 +248,45 @@ export async function installProductionHelmControlPlane({
       "300s",
     ],
     { timeout: 330_000 },
-  );
+  ).catch(async (error) => {
+    throw await withHelmInstallDiagnostic(error, {
+      selection,
+      namespace: system,
+      release,
+      secrets: failureSecrets([
+        process.env,
+        Object.fromEntries(secretValues.map((value, index) => [`INSTALL_SECRET_${index}`, value])),
+      ]),
+    });
+  });
   await record("Helm initialization, API and worker ready", { namespace: system });
   return { adminEmail };
+}
+
+// A failed install says only which hook or resource failed (finding 1574: the initialization
+// hook Job's BackoffLimitExceeded). Before the caller's cleanup removes the namespace, the error
+// gains each Pod's state, the namespace's events and the hook Job Pod's logs from every
+// container, init containers included. The hook keeps its failed Job until the next install.
+export async function withHelmInstallDiagnostic(error, { selection, namespace, release, secrets }) {
+  const job = `${release}-initialization`.slice(0, 63).replace(/-$/u, "");
+  // Its kubectl stops at the diagnostic's deadline (finding 1557).
+  const { kubectl } = createKubernetesClient({ selection });
+  const detail = await withinDiagnosticDeadline(
+    () =>
+      podFailureDiagnostic({
+        kubectl,
+        namespace,
+        logLabels: { "job-name": job },
+        secrets,
+      }).catch(
+        (diagnosticError) =>
+          `\nHelm install diagnostic unavailable: ${diagnosticError?.name ?? "Error"}`,
+      ),
+    { timedOut: `\nHelm install diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s` },
+  );
+  if (error instanceof Error) {
+    error.message = `${error.message}${detail}`;
+    return error;
+  }
+  return new Error(`${String(error)}${detail}`);
 }

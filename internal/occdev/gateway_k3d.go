@@ -10,8 +10,6 @@ import (
 	"encoding/hex"
 	"encoding/json/v2"
 	"fmt"
-	"io"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -40,7 +38,6 @@ type composeDevelopmentRouting struct {
 	podCIDR           string
 	trustedProxyCIDRs []string
 	reference         string
-	apiURL            string
 	postgresCIDR      string
 	nodeCIDR          string
 	nodeContainer     string
@@ -55,32 +52,6 @@ var developmentRoutingControllers = []struct {
 }{
 	{"cert-manager", "https://github.com/cert-manager/cert-manager/releases/download/v1.18.4/cert-manager.yaml", "aff085b4f0126f67372e3a02cb18feb70eed37dbd4de01973a159e6c13482f83"},
 	{"envoy-gateway", "https://github.com/envoyproxy/gateway/releases/download/v1.6.7/install.yaml", "9a250c698d78b92c670d9d2bd6bd54615f1dee41ddd520ece9704edf63088df8"},
-}
-
-func downloadDevelopmentRoutingManifest(ctx context.Context, url, expected string) ([]byte, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: 90 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, fmt.Errorf("download routing controller manifest: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download routing controller manifest: HTTP %d", response.StatusCode)
-	}
-	const limit = 32 * 1024 * 1024
-	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
-	if err != nil || len(data) > limit {
-		return nil, fmt.Errorf("routing controller manifest could not be read within its size limit")
-	}
-	digest := sha256.Sum256(data)
-	if hex.EncodeToString(digest[:]) != expected {
-		return nil, fmt.Errorf("routing controller manifest checksum does not match the pinned version")
-	}
-	return data, nil
 }
 
 // Preserve k3s's Gateway API CRDs instead of replacing their storage versions.
@@ -194,7 +165,7 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 
 func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state *developmentState, timeout time.Duration) (string, error) {
 	for _, controller := range developmentRoutingControllers {
-		data, err := downloadDevelopmentRoutingManifest(ctx, controller.url, controller.sha256)
+		data, err := downloadDevelopmentRoutingManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentRoutingManifestRetry)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", controller.name, err)
 		}
@@ -244,21 +215,9 @@ func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state
 	if err := r.run(ctx, "kubectl", "wait", "--for=condition=Accepted", "gatewayclass/eg", "--timeout", timeout.String()); err != nil {
 		return "", err
 	}
-	nodeData, err := r.output(ctx, "kubectl", "get", "node", "k3d-"+state.Cluster+"-server-0", "-o", "json")
+	prefix, err := r.developmentNodePodCIDR(ctx, "k3d-"+state.Cluster+"-server-0", 32)
 	if err != nil {
 		return "", err
-	}
-	var node struct {
-		Spec struct {
-			PodCIDR string `json:"podCIDR"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(nodeData, &node); err != nil {
-		return "", fmt.Errorf("invalid k3d node information")
-	}
-	prefix, err := netip.ParsePrefix(node.Spec.PodCIDR)
-	if err != nil || !prefix.Addr().Is4() || prefix.Bits() < 16 || prefix != prefix.Masked() {
-		return "", fmt.Errorf("k3d node must have a canonical bounded IPv4 Pod CIDR")
 	}
 	return prefix.String(), nil
 }
@@ -424,12 +383,14 @@ func (r *runner) composeServiceAddress(
 }
 
 func composeDevelopmentRoutingValues(
+	state *developmentState,
 	routing *composeDevelopmentRouting,
 	remoteNodeCIDRs []string,
 ) map[string]any {
+	_, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 	return map[string]any{
 		"images": map[string]string{"controller": routing.reference},
-		"auth":   map[string]string{"baseUrl": routing.apiURL},
+		"auth":   map[string]string{"baseUrl": state.BrowserOrigin},
 		"bootstrap": map[string]any{
 			"adminEmail": "admin@development.openclaw.invalid",
 			"password":   map[string]string{"claimName": "bootstrap-password"},
@@ -438,9 +399,11 @@ func composeDevelopmentRoutingValues(
 			"namespace": developmentEnvoyNamespace,
 			"podLabels": map[string]string{"app.kubernetes.io/name": "envoy"},
 		}}},
-		"database":         map[string]any{"cidrs": []string{routing.postgresCIDR}},
-		"cluster":          map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
-		"agentNativeAdmin": map[string]any{"enabled": false},
+		"database": map[string]any{"cidrs": []string{routing.postgresCIDR}},
+		"cluster":  map[string]any{"cidrs": []string{routing.nodeCIDR}, "port": 6443},
+		"agentNativeAdmin": map[string]any{
+			"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain,
+		},
 		"gatewayRouting": map[string]any{
 			"enabled":          true,
 			"gatewayClassName": "eg",
@@ -460,7 +423,7 @@ func (r *runner) applyComposeDevelopmentRouting(
 	remoteNodeCIDRs []string,
 	name string,
 ) error {
-	values, err := json.Marshal(composeDevelopmentRoutingValues(routing, remoteNodeCIDRs))
+	values, err := json.Marshal(composeDevelopmentRoutingValues(state, routing, remoteNodeCIDRs))
 	if err != nil {
 		return err
 	}
@@ -551,7 +514,7 @@ func (r *runner) copyComposeGatewayCA(ctx context.Context, state *developmentSta
 func (r *runner) prepareComposeDevelopmentRouting(
 	ctx context.Context,
 	state *developmentState,
-	reference, apiURL string,
+	reference string,
 	timeout time.Duration,
 ) (*composeDevelopmentRouting, error) {
 	podCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
@@ -593,7 +556,6 @@ func (r *runner) prepareComposeDevelopmentRouting(
 		},
 		podCIDR:       podCIDR,
 		reference:     reference,
-		apiURL:        apiURL,
 		postgresCIDR:  postgresAddress + "/32",
 		nodeCIDR:      nodeAddress + "/32",
 		nodeContainer: nodeContainer,

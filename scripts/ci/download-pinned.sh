@@ -15,6 +15,13 @@
 # The budget does not cut a running attempt short:
 # each attempt may take up to 300 seconds (curl --max-time), so a download
 # gives up within about seven minutes.
+# An attempt that moves less than 100 KiB/s for 30 seconds is cut off as a
+# stall (curl exit 28) and retried like any other timeout. Healthy runner
+# downloads move tens of MB/s, and the 300 second cap already needs about
+# 195 KB/s for the largest pinned file (kubectl, about 59 MB), so this only
+# ends an attempt that has all but stopped. DOWNLOAD_PINNED_SPEED_LIMIT
+# (bytes/s) and DOWNLOAD_PINNED_SPEED_TIME (seconds) override the threshold
+# for tests.
 # The checksum is checked once, on the final file, and a mismatch is never
 # retried.
 set -euo pipefail
@@ -30,6 +37,8 @@ expected_sha256="$3"
 max_attempts=8
 max_delay_seconds=20
 retry_budget_seconds=120
+speed_limit_bytes="${DOWNLOAD_PINNED_SPEED_LIMIT:-102400}"
+speed_time_seconds="${DOWNLOAD_PINNED_SPEED_TIME:-30}"
 
 if ! command -v curl >/dev/null 2>&1; then
   echo "Missing required command: curl" >&2
@@ -48,14 +57,37 @@ is_transient() {
   esac
 }
 
+# Publish only bytes that passed the pinned checksum. Keep the temporary file
+# beside the destination so the final rename stays on the same filesystem.
+if [[ -d "${destination}" ]]; then
+  echo "Download destination is a directory: ${destination}" >&2
+  exit 1
+fi
+temporary="$(mktemp "${destination}.download.XXXXXX")"
+trap 'rm -f "${temporary}"' EXIT
+# curl preserves the mode when replacing an existing file. Seed the temporary
+# file the same way so successful publication retains that behavior.
+if [[ -f "${destination}" ]]; then
+  cp -p "${destination}" "${temporary}"
+else
+  new_file_mode="$(printf '%o' "$((0666 & ~$(umask)))")"
+fi
+
 attempt=1
 delay=2
 started=${SECONDS}
 while :; do
   status=0
-  http_code="$(curl --fail --silent --show-error --location \
+  attempt_started=${SECONDS}
+  transfer="$(curl --fail --silent --show-error --location \
     --connect-timeout 20 --max-time 300 \
-    --write-out '%{http_code}' --output "${destination}" "${url}")" || status=$?
+    --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
+    --write-out '%{http_code} %{speed_download}' --output "${temporary}" "${url}")" || status=$?
+  http_code="${transfer%% *}"
+  # curl --silent hides progress, so name slow attempts for the next stall investigation.
+  if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
+    echo "Slow download attempt ${attempt}: $((SECONDS - attempt_started))s, average ${transfer#* } bytes/s, curl exit ${status}: ${url}" >&2
+  fi
   if [[ ${status} -eq 0 ]]; then
     break
   fi
@@ -72,7 +104,14 @@ while :; do
 done
 
 if command -v sha256sum >/dev/null 2>&1; then
-  echo "${expected_sha256}  ${destination}" | sha256sum -c -
+  echo "${expected_sha256}  ${temporary}" | sha256sum -c -
 else
-  echo "${expected_sha256}  ${destination}" | shasum -a 256 -c -
+  echo "${expected_sha256}  ${temporary}" | shasum -a 256 -c -
 fi
+
+# Keep a first download private until verification has succeeded, then publish
+# it with the same umask-derived permissions curl would have created.
+if [[ -n "${new_file_mode:-}" ]]; then
+  chmod "${new_file_mode}" "${temporary}"
+fi
+mv -f "${temporary}" "${destination}"

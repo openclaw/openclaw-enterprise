@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
 	"unicode"
 	"unicode/utf16"
-	"unicode/utf8"
 
-	"github.com/openclaw/openclaw-enterprise/internal/occclient"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -46,6 +43,57 @@ func (app *application) printSecret(value any, collection bool) error {
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
 	})
+}
+
+// printSecretDetail adds a CONSUMERS column to the single-Secret table: the
+// referencing resource IDs the caller may read, the count of those it may not,
+// and whether OCC stopped examining references. Structured output keeps the
+// full consumers object.
+func (app *application) printSecretDetail(value any) error {
+	if app.output == "table" {
+		if resource, ok := value.(map[string]any); ok {
+			row := maps.Clone(resource)
+			row["consumers"] = secretConsumersText(resource["consumers"])
+			value = row
+		}
+	}
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "NAME", key: "name"},
+		{title: "CONSUMERS", key: "consumers"},
+	})
+}
+
+// secretConsumersText renders consumers as "kind:id" pairs, then "N unreadable"
+// and "more" when present, or nil (shown as "-") when nothing references the
+// Secret.
+func secretConsumersText(value any) any {
+	consumers, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	parts := []string{}
+	for _, kind := range []struct{ key, label string }{
+		{"agents", "agent"},
+		{"configurations", "configuration"},
+		{"credentialSources", "credential-source"},
+		{"provisioningRequests", "provisioning"},
+	} {
+		ids, _ := consumers[kind.key].([]any)
+		for _, id := range ids {
+			parts = append(parts, kind.label+":"+displayValue(id))
+		}
+	}
+	if unreadable, ok := consumers["unreadable"].(float64); ok && unreadable > 0 {
+		parts = append(parts, strconv.FormatFloat(unreadable, 'f', -1, 64)+" unreadable")
+	}
+	if truncated, _ := consumers["truncated"].(bool); truncated {
+		parts = append(parts, "more")
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return strings.Join(parts, ", ")
 }
 
 // printPreset shows Preset identity in tables; structured output includes the template.
@@ -105,6 +153,7 @@ func (app *application) printIAMRole(value any, collection bool) error {
 func (app *application) printIAMAccessBinding(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
+		{title: "SUBJECT KIND", key: "subjectKind"},
 		{title: "SUBJECT", key: "subjectId"},
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},
@@ -112,8 +161,25 @@ func (app *application) printIAMAccessBinding(value any, collection bool) error 
 	})
 }
 
-func (app *application) printAgent(value any, collection bool) error {
+func (app *application) printIAMServicePrincipal(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
+		{title: "ID", key: "id"},
+		{title: "NAMESPACE", key: "namespaceId"},
+	})
+}
+
+func (app *application) printServiceKey(value any) error {
+	return app.printItems(value, false, []column{
+		{title: "ID", key: "id"},
+		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
+		{title: "NAMESPACE", key: "namespaceId"},
+		{title: "NAME", key: "name"},
+		{title: "EXPIRES", key: "expiresAt"},
+	})
+}
+
+func (app *application) printAgent(value any, collection bool) error {
+	return app.printBrowsingItems(value, collection, []column{
 		{title: "ID", key: "id"},
 		{title: "NAME", key: "name"},
 		{title: "SERVICE PRINCIPAL", key: "servicePrincipalId"},
@@ -142,7 +208,7 @@ func (app *application) printAgentRevisionList(rows []any) error {
 		}
 		table = append(table, row)
 	}
-	return printTable(app.out, table, []column{
+	return app.printBrowsingItems(table, true, []column{
 		{title: "ACTIVE", key: "active"},
 		{title: "ID", key: "id"},
 		{title: "REVISION", key: "revision"},
@@ -155,11 +221,13 @@ func (app *application) printAgentRevisionList(rows []any) error {
 
 // printDeploymentStatus shows startup warnings in the table too: a succeeded
 // deployment can still have disabled a selected plugin (PLUGIN_AUTH_REQUIRED,
-// PLUGIN_INSTALL_FAILED). Structured output keeps the full warnings array.
+// PLUGIN_INSTALL_FAILED). The ERROR cell reads "CODE: message" (D608).
+// Structured output keeps the full error and warnings.
 func (app *application) printDeploymentStatus(value any) error {
 	if app.output == "table" {
 		if resource, ok := value.(map[string]any); ok {
 			row := maps.Clone(resource)
+			row["error"] = deploymentErrorText(resource["error"])
 			row["warnings"] = deploymentWarningsText(resource["warnings"])
 			value = row
 		}
@@ -171,6 +239,42 @@ func (app *application) printDeploymentStatus(value any) error {
 		{title: "ERROR", key: "error"},
 		{title: "WARNINGS", key: "warnings"},
 	})
+}
+
+// deploymentErrorText renders a deployment error as "CODE: message" on one
+// line, then the classified cause of a failed startup model check (finding 323)
+// or a pointer to the diagnostic data that only structured output shows. A
+// value without a string code is left as it is, so the table still shows it.
+// Free text (message, cause detail) is collapsed to one line; code and cause
+// kind are schema tokens, and tableCell escapes anything hidden in any of them.
+func deploymentErrorText(value any) any {
+	deploymentError, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	code, ok := deploymentError["code"].(string)
+	if !ok || code == "" {
+		return value
+	}
+	text := code
+	if message, ok := deploymentError["message"].(string); ok && strings.TrimSpace(message) != "" {
+		text += ": " + strings.Join(strings.Fields(message), " ")
+	}
+	data, hasData := deploymentError["data"]
+	if !hasData || data == nil {
+		return text
+	}
+	if data, ok := data.(map[string]any); ok {
+		failure, _ := data["runtimeFailure"].(map[string]any)
+		if cause, ok := failure["cause"].(map[string]any); ok {
+			kind, _ := cause["kind"].(string)
+			detail, _ := cause["detail"].(string)
+			if kind != "" || detail != "" {
+				return text + " (cause: " + strings.TrimSpace(kind+" "+strings.Join(strings.Fields(detail), " ")) + ")"
+			}
+		}
+	}
+	return text + " (details: -o json)"
 }
 
 // deploymentWarningsText renders warnings as "pluginId (CODE)" pairs, or nil
@@ -212,6 +316,33 @@ func (app *application) printDeletion(kind, id string) error {
 	return app.printStructured(value)
 }
 
+// printUnrevokedServiceAccountDeletion reports a forced deletion that left the account's
+// access token valid at the provider, with a warning naming who must revoke it.
+func (app *application) printUnrevokedServiceAccountDeletion(warnings io.Writer, id string, value any) error {
+	data, _ := value.(map[string]any)
+	backend := "its former ChatGPT Backend"
+	if backendID, ok := data["backendId"].(string); ok && backendID != "" {
+		backend = "ChatGPT Backend " + strconv.Quote(backendID)
+	}
+	noticef(
+		warnings,
+		"warning: the access token of service account %s was not revoked; an administrator must revoke it at the provider (%s). The audit event names its credential ID.",
+		id,
+		backend,
+	)
+	result := map[string]any{"deleted": true, "kind": "service account", "id": id}
+	for key, entry := range data {
+		if key != "id" {
+			result[key] = entry
+		}
+	}
+	if app.output == "table" {
+		_, err := fmt.Fprintf(app.out, "Deleted service account %s; its access token was not revoked.\n", id)
+		return err
+	}
+	return app.printStructured(result)
+}
+
 func (app *application) printItems(value any, collection bool, columns []column) error {
 	if app.output != "table" {
 		return app.printStructured(value)
@@ -225,6 +356,40 @@ func (app *application) printItems(value any, collection bool, columns []column)
 		}
 	}
 	return printTable(app.out, items, columns)
+}
+
+// printBrowsingItems keeps metadata readable while making saved-settings errors visible.
+// Structured output preserves the API's typed error; tables add a column only when needed.
+func (app *application) printBrowsingItems(value any, collection bool, columns []column) error {
+	if app.output != "table" {
+		return app.printItems(value, collection, columns)
+	}
+	items := []any{value}
+	if collection {
+		var ok bool
+		items, ok = value.([]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource collection")
+		}
+	}
+	rows := make([]any, 0, len(items))
+	hasError := false
+	for _, item := range items {
+		resource, ok := item.(map[string]any)
+		if !ok {
+			return fmt.Errorf("OCC returned an invalid resource")
+		}
+		row := maps.Clone(resource)
+		if readError, ok := resource["configurationReadError"].(map[string]any); ok {
+			row["configurationReadError"] = fmt.Sprintf("%s (%s)", displayValue(readError["code"]), displayValue(readError["field"]))
+			hasError = true
+		}
+		rows = append(rows, row)
+	}
+	if hasError {
+		columns = append(columns, column{title: "CONFIGURATION ERROR", key: "configurationReadError"})
+	}
+	return printTable(app.out, rows, columns)
 }
 
 func (app *application) printStructured(value any) error {
@@ -323,213 +488,4 @@ func tableCell(value any) string {
 
 func isHiddenRune(character rune) bool {
 	return !unicode.IsGraphic(character)
-}
-
-// visibleText escapes every invisible or control character in text, and any
-// invalid UTF-8 byte, as a Go escape such as \u202e. OCC strips terminal
-// escapes and C0/C1 controls from runtime log text but not bidirectional,
-// zero-width or other format characters, which would reorder or hide what an
-// operator's terminal shows. Escaping, not dropping, keeps the evidence.
-func visibleText(text string) string {
-	if strings.IndexFunc(text, isHiddenRune) < 0 && utf8.ValidString(text) {
-		return text
-	}
-	var escaped strings.Builder
-	for index := 0; index < len(text); {
-		character, size := utf8.DecodeRuneInString(text[index:])
-		switch {
-		case character == utf8.RuneError && size == 1:
-			fmt.Fprintf(&escaped, `\x%02x`, text[index])
-		case isHiddenRune(character):
-			quoted := strconv.QuoteRuneToGraphic(character)
-			escaped.WriteString(quoted[1 : len(quoted)-1])
-		default:
-			escaped.WriteString(text[index : index+size])
-		}
-		index += size
-	}
-	return escaped.String()
-}
-
-// noticef prints one notice line to out with visibleText applied, since
-// notices carry server-provided revision IDs, reasons and error messages.
-func noticef(out io.Writer, format string, args ...any) {
-	fmt.Fprintln(out, visibleText(fmt.Sprintf(format, args...)))
-}
-
-type runtimeLogRecord struct {
-	Type      string         `json:"type"`
-	Time      *string        `json:"time"`
-	Level     string         `json:"level"`
-	Kind      string         `json:"kind"`
-	Subsystem string         `json:"subsystem"`
-	Message   string         `json:"message"`
-	Fields    map[string]any `json:"fields"`
-	Reason    string         `json:"reason"`
-	Remedy    string         `json:"remedy"`
-	Count     int            `json:"count"`
-}
-
-func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, notices io.Writer) error {
-	if string(page.Stream) == "null" || len(page.Stream) == 0 {
-		noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
-	}
-	for _, raw := range page.Records {
-		var record runtimeLogRecord
-		if err := json.Unmarshal(raw, &record); err != nil {
-			return fmt.Errorf("OCC returned an invalid runtime log record")
-		}
-		at := "-"
-		if record.Time != nil {
-			at = *record.Time
-		}
-		switch record.Type {
-		case "gap":
-			noticef(notices, "notice: %s gap %s: %s", at, record.Reason, record.Remedy)
-		case "withheld":
-			noticef(notices, "notice: %s %d lines withheld (%s)", at, record.Count, record.Reason)
-		}
-		if app.output == "json" {
-			// NDJSON: one record per line, exactly as OCC returned it.
-			if _, err := fmt.Fprintln(app.out, string(raw)); err != nil {
-				return err
-			}
-			continue
-		}
-		if record.Type != "line" {
-			continue
-		}
-		if _, err := fmt.Fprintln(app.out, runtimeLogLineText(at, record)); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func runtimeLogLineText(at string, record runtimeLogRecord) string {
-	var text strings.Builder
-	fmt.Fprintf(&text, "%s %s %s", at, strings.ToUpper(record.Level), record.Kind)
-	if record.Subsystem != "" {
-		fmt.Fprintf(&text, " [%s]", record.Subsystem)
-	}
-	text.WriteString(" " + record.Message)
-	names := make([]string, 0, len(record.Fields))
-	for name := range record.Fields {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	for _, name := range names {
-		value := displayValue(record.Fields[name])
-		// Quote a value that is empty, holds a space (any Unicode space, which
-		// would read as a field break) or a separator, or holds anything
-		// strconv.Quote would escape.
-		if value == "" || strings.ContainsAny(value, "\"=") || !utf8.ValidString(value) ||
-			strings.ContainsFunc(value, func(character rune) bool { return character == ' ' || !strconv.IsPrint(character) }) {
-			value = strconv.Quote(value)
-		}
-		fmt.Fprintf(&text, " %s=%s", name, value)
-	}
-	// Quoted values are already escaped; this covers the message and the rest.
-	return visibleText(text.String())
-}
-
-func (app *application) printRuntime(description any) error {
-	resource, ok := description.(map[string]any)
-	if !ok {
-		return fmt.Errorf("OCC returned an invalid runtime description")
-	}
-	pods, _ := resource["pods"].([]any)
-	rows := make([]any, 0, len(pods))
-	events := []any{}
-	for _, item := range pods {
-		pod, ok := item.(map[string]any)
-		if !ok {
-			return fmt.Errorf("OCC returned an invalid runtime description")
-		}
-		podEvents, _ := pod["events"].([]any)
-		for _, entry := range podEvents {
-			event, ok := entry.(map[string]any)
-			if !ok {
-				return fmt.Errorf("OCC returned an invalid runtime description")
-			}
-			events = append(events, map[string]any{
-				"pod":            pod["name"],
-				"container":      event["container"],
-				"type":           event["type"],
-				"reason":         event["reason"],
-				"count":          event["count"],
-				"lastObservedAt": event["lastObservedAt"],
-				"message":        event["message"],
-			})
-		}
-		row := map[string]any{
-			"role":    pod["role"],
-			"name":    pod["name"],
-			"cluster": pod["cluster"],
-			"phase":   pod["phase"],
-			"ready":   pod["ready"],
-		}
-		containers, _ := pod["containers"].([]any)
-		for _, entry := range containers {
-			container, _ := entry.(map[string]any)
-			if container["name"] != pod["role"] && len(containers) > 1 {
-				continue
-			}
-			row["restarts"] = container["restartCount"]
-			row["state"] = container["state"]
-			if termination, ok := container["lastTermination"].(map[string]any); ok {
-				parts := []string{}
-				if reason, ok := termination["reason"].(string); ok {
-					parts = append(parts, reason)
-				}
-				if code, ok := termination["exitCode"].(float64); ok {
-					parts = append(parts, fmt.Sprintf("exit %d", int(code)))
-				}
-				row["lastTermination"] = strings.Join(parts, " ")
-			}
-			break
-		}
-		rows = append(rows, row)
-	}
-	if err := printTable(app.out, rows, []column{
-		{title: "ROLE", key: "role"},
-		{title: "POD", key: "name"},
-		{title: "CLUSTER", key: "cluster"},
-		{title: "PHASE", key: "phase"},
-		{title: "READY", key: "ready"},
-		{title: "STATE", key: "state"},
-		{title: "RESTARTS", key: "restarts"},
-		{title: "LAST TERMINATION", key: "lastTermination"},
-	}); err != nil {
-		return err
-	}
-	sources, _ := resource["sources"].([]any)
-	if len(sources) > 0 {
-		if _, err := fmt.Fprintln(app.out); err != nil {
-			return err
-		}
-		if err := printTable(app.out, sources, []column{
-			{title: "SOURCE", key: "id"},
-			{title: "AVAILABLE", key: "available"},
-			{title: "RETENTION", key: "retention"},
-		}); err != nil {
-			return err
-		}
-	}
-	if len(events) == 0 {
-		return nil
-	}
-	if _, err := fmt.Fprintln(app.out); err != nil {
-		return err
-	}
-	// Pod Events arrive newest first per Pod; CONTAINER is "-" for Pod-level Events.
-	return printTable(app.out, events, []column{
-		{title: "POD", key: "pod"},
-		{title: "CONTAINER", key: "container"},
-		{title: "TYPE", key: "type"},
-		{title: "REASON", key: "reason"},
-		{title: "COUNT", key: "count"},
-		{title: "LAST SEEN", key: "lastObservedAt"},
-		{title: "MESSAGE", key: "message"},
-	})
 }

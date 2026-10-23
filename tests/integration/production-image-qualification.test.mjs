@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { checkBrokerCapability } from "../../scripts/upgrade-repository-image-probe.mjs";
+import { commandPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const script = fileURLToPath(new URL("../../scripts/upgrade-node-platform.py", import.meta.url));
@@ -20,8 +22,7 @@ const imageIdentityScript = fileURLToPath(
 );
 
 async function qualify(t, nodes, selector = {}) {
-  const root = await mkdtemp(join(tmpdir(), "occ-node-platform-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-node-platform-");
   const inventory = join(root, "nodes.json");
   const values = join(root, "values.json");
   await writeFile(inventory, JSON.stringify({ items: nodes }));
@@ -39,6 +40,116 @@ function node(name, architecture, labels = {}) {
     status: { nodeInfo: { operatingSystem: "linux", architecture } },
   };
 }
+
+test("image identity keeps filesystem layers outside the metadata budget", async (t) => {
+  const root = await temporaryDirectory(t, "occ-image-metadata-");
+  // Docker's OCI export contains compressed filesystem layers alongside JSON
+  // metadata. Valid small layers must not exhaust the metadata-only allowance.
+  const fixture = String.raw`
+import gzip, hashlib, io, json, pathlib, random, sys, tarfile
+root = pathlib.Path(sys.argv[1])
+blobs = {}
+def blob(data):
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    blobs[digest] = data
+    return digest
+layers = []
+diff_ids = []
+for index in range(34):
+    contents = random.Random(index).randbytes(1024 * 1024)
+    filesystem = io.BytesIO()
+    with tarfile.open(fileobj=filesystem, mode="w") as archive:
+        member = tarfile.TarInfo(f"layer-{index}")
+        member.size = len(contents)
+        archive.addfile(member, io.BytesIO(contents))
+    raw = filesystem.getvalue()
+    compressed = gzip.compress(raw)
+    digest = blob(compressed)
+    layers.append({"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": digest, "size": len(compressed)})
+    diff_ids.append("sha256:" + hashlib.sha256(raw).hexdigest())
+config = json.dumps({"os": "linux", "architecture": "arm64", "rootfs": {"type": "layers", "diff_ids": diff_ids}}).encode()
+config_digest = blob(config)
+manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config_digest, "size": len(config)}, "layers": layers}).encode()
+manifest_digest = blob(manifest)
+index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": manifest_digest, "size": len(manifest), "platform": {"os": "linux", "architecture": "arm64"}}]}).encode()
+root_digest = blob(index)
+with tarfile.open(root / "image.tar", "w") as archive:
+    for digest, data in blobs.items():
+        member = tarfile.TarInfo("blobs/sha256/" + digest.removeprefix("sha256:"))
+        member.size = len(data)
+        archive.addfile(member, io.BytesIO(data))
+state = {"root": root_digest, "manifest": manifest_digest, "config": config_digest}
+(root / "identity.json").write_text(json.dumps(state))
+print(json.dumps(state))
+`;
+  const { stdout } = await execute("python3", ["-c", fixture, root]);
+  const identity = JSON.parse(stdout);
+  await writeCommand(
+    root,
+    "docker",
+    `import json, os, pathlib, sys
+root = pathlib.Path(__file__).parent
+identity = json.loads((root / "identity.json").read_text())
+if sys.argv[1:3] == ["image", "inspect"]:
+    selected = "--platform" in sys.argv
+    print(json.dumps([{"Descriptor": {"digest": identity["manifest" if selected else "root"]}, "Os": "linux", "Architecture": "arm64"}]))
+elif sys.argv[1:3] == ["image", "save"]:
+    sys.stdout.buffer.write((root / os.environ.get("IMAGE_FIXTURE_ARCHIVE", "image.tar")).read_bytes())
+else:
+    sys.exit(2)
+`,
+    { interpreter: "python3" },
+  );
+  // The actual CLI performs admission, reads the export, hashes metadata and
+  // resolves the selected manifest's configuration. Only Docker I/O is a fixture.
+  const image = `example.invalid/qualification@${identity.root}`;
+  const result = await execute("python3", [imageIdentityScript, image, "linux/arm64"], {
+    env: {
+      ...process.env,
+      PATH: commandPath(root),
+      IMAGE_FIXTURE_ARCHIVE: "image.tar",
+    },
+  });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    image,
+    platform: "linux/arm64",
+    rootDigest: identity.root,
+    manifestDigest: identity.manifest,
+    configDigest: identity.config,
+  });
+  // Ignoring filesystem layers must preserve metadata integrity and size guards.
+  for (const mode of ["digest-mismatch", "metadata-limit"]) {
+    const rejected = String.raw`
+import hashlib, io, json, pathlib, sys, tarfile
+root = pathlib.Path(sys.argv[1])
+identity = json.loads((root / "identity.json").read_text())
+with tarfile.open(root / "image.tar") as source, tarfile.open(root / "rejected.tar", "w") as target:
+    for member in source:
+        data = source.extractfile(member).read()
+        if sys.argv[2] == "digest-mismatch" and member.name.endswith(identity["config"].removeprefix("sha256:")):
+            data += b" "
+        member.size = len(data)
+        target.addfile(member, io.BytesIO(data))
+    if sys.argv[2] == "metadata-limit":
+        for index in range(34):
+            data = json.dumps({"index": index, "padding": "x" * (1024 * 1024)}).encode()
+            member = tarfile.TarInfo("blobs/sha256/" + hashlib.sha256(data).hexdigest())
+            member.size = len(data)
+            target.addfile(member, io.BytesIO(data))
+`;
+    await execute("python3", ["-c", rejected, root, mode]);
+    await assert.rejects(
+      execute("python3", [imageIdentityScript, image, "linux/arm64"], {
+        env: {
+          ...process.env,
+          PATH: commandPath(root),
+          IMAGE_FIXTURE_ARCHIVE: "rejected.tar",
+        },
+      }),
+      { code: 1, stderr: "image identity verification failed\n" },
+    );
+  }
+});
 
 test("image identity accepts omitted descriptor platform but rejects a contradiction", async () => {
   const source = String.raw`
@@ -59,8 +170,6 @@ else:
 });
 
 test("broker capability qualification requires the supported successful response", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-capability-"));
-  const socket = join(root, "broker.sock");
   let status = 200;
   let body = '{"durableAdmissionVersion":1}';
   const server = createServer((request, response) => {
@@ -72,8 +181,9 @@ test("broker capability qualification requires the supported successful response
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
   });
+  // Registered after the close hook, so the server closes before its directory goes.
+  const socket = join(await socketDirectory(t, "occ-capability-"), "broker.sock");
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(socket, resolve);
@@ -160,8 +270,7 @@ test("node qualification rejects mixed and unverified architectures", async (t) 
 });
 
 test("deployed identity requires the qualified images on a ready, owned worker Pod", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-deployed-pair-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-deployed-pair-");
   const digest = (letter) => `sha256:${letter.repeat(64)}`;
   const controller = {
     image: `controller@${digest("a")}`,

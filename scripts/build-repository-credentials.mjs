@@ -1,9 +1,18 @@
-import { chmod, cp, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, cp, lstat, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { isBuiltin } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parsers } from "prettier/plugins/babel";
 
+// `--client-only` stages just the Agent runtime's credential client. The runtime
+// image builds it from the client's own sources so unrelated controller changes
+// keep that build stage cached (deploy/runtime/Dockerfile).
+const options = process.argv.slice(2);
+if (options.length > 1 || (options.length === 1 && options[0] !== "--client-only")) {
+  throw new Error("Usage: build-repository-credentials.mjs [--client-only]");
+}
+const clientOnly = options[0] === "--client-only";
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
 const emittedRoot = await realpath(join(repositoryRoot, "apps/controller/dist"));
 const artifactRoot = join(repositoryRoot, ".build/repository-credentials");
@@ -74,6 +83,25 @@ function dependencies(source, path) {
   return specifiers;
 }
 
+async function readModule(path, name) {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = constants;
+  const file = await open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  try {
+    // Bind the canonical, singly linked compiler output to the descriptor we read.
+    // The build still owns the emitted tree; this does not lock a compiler or its inputs.
+    const opened = await file.stat({ bigint: true });
+    if (opened.isFile() && opened.nlink === 1n && (await realpath(path)) === path) {
+      const named = await lstat(path, { bigint: true });
+      if (named.dev === opened.dev && named.ino === opened.ino) {
+        return await file.readFile("utf8");
+      }
+    }
+    throw new Error(`Invalid ${name} runtime module: ${path}`);
+  } finally {
+    await file.close();
+  }
+}
+
 async function closure(name, entrypoints) {
   const files = new Map();
   const pending = entrypoints.map((path) => resolve(emittedRoot, path));
@@ -85,13 +113,11 @@ async function closure(name, entrypoints) {
     if (
       !contained(emittedRoot, path) ||
       (name === "client" && !contained(clientRoot, path) && path !== clientContracts) ||
-      !path.endsWith(".js") ||
-      !(await lstat(path)).isFile() ||
-      (await realpath(path)) !== path
+      !path.endsWith(".js")
     ) {
       throw new Error(`Invalid ${name} runtime module: ${path}`);
     }
-    const source = await readFile(path, "utf8");
+    const source = await readModule(path, name);
     files.set(path, source);
     for (const specifier of dependencies(source, relative(emittedRoot, path))) {
       if (isBuiltin(specifier)) {
@@ -110,17 +136,20 @@ async function closure(name, entrypoints) {
   return files;
 }
 
-// Validate both closures before replacing either artifact. Source-only types and
-// unrelated controller modules stay outside these separate runtimes.
-const service = await closure("service", [
-  "repository-credentials.js",
-  "composition/repository-credentials/check-config.js",
-  "composition/repository-credentials/projected-inputs.js",
-  "composition/repository-credentials/probe.js",
-]);
+// Validate every staged closure before replacing any artifact; `--client-only`
+// validates and stages only the client. Source-only types and unrelated
+// controller modules stay outside these separate runtimes.
+const service = clientOnly
+  ? undefined
+  : await closure("service", [
+      "repository-credentials.js",
+      "composition/repository-credentials/check-config.js",
+      "composition/repository-credentials/projected-inputs.js",
+      "composition/repository-credentials/probe.js",
+    ]);
 const client = await closure(
   "client",
-  ["launch", "operator", "git-helper", "native-git", "router", "hook-dispatch"].map(
+  ["launch", "operator", "git-helper", "native-git", "draft-pr", "router", "hook-dispatch"].map(
     (name) => `drivers/repo/github/credentials/client/${name}.js`,
   ),
 );
@@ -167,5 +196,7 @@ async function stage(name, files) {
   }
 }
 
-await stage("service", service);
+if (service) {
+  await stage("service", service);
+}
 await stage("client", client);

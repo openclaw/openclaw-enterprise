@@ -60,6 +60,25 @@ function ensureAuthenticated(accountResponse: unknown): void {
   }
 }
 
+// A well-formed JSON-RPC envelope can still carry a malformed plugin/list result. Keep it
+// in the discovery failure path instead of reading it as an empty catalog or a plain Error.
+function catalogEntries(listResponse: unknown): readonly PluginCatalogEntry[] {
+  const invalid = () =>
+    new NotImplementedError(
+      "codex-plugin-catalog-discovery",
+      "Codex plugin catalog discovery returned an invalid plugin catalog.",
+    );
+  const response = asRecord(listResponse);
+  if (response === undefined || !Array.isArray(response.marketplaces)) {
+    throw invalid();
+  }
+  try {
+    return codexCatalogEntries(response);
+  } catch {
+    throw invalid();
+  }
+}
+
 export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader {
   private readonly codexExecutable: string;
   private readonly codexHome: string;
@@ -92,7 +111,7 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
       signal,
     );
     ensureAuthenticated(account);
-    return codexCatalogEntries(plugins);
+    return catalogEntries(plugins);
   }
 
   private async requestSequence(
@@ -183,14 +202,17 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
       });
 
       createInterface({ input: child.stdout }).on("line", (line) => {
-        let message: Record<string, unknown>;
+        let message: Record<string, unknown> | undefined;
         try {
-          message = JSON.parse(line) as Record<string, unknown>;
+          message = asRecord(JSON.parse(line));
         } catch {
+          // Invalid JSON and non-object envelopes share the discovery failure below.
+        }
+        if (message === undefined) {
           finish(
             new NotImplementedError(
               "codex-plugin-catalog-discovery",
-              "Codex plugin catalog discovery returned invalid JSON.",
+              "Codex plugin catalog discovery returned an invalid JSON-RPC response.",
             ),
           );
           return;

@@ -1,13 +1,17 @@
+import type { SandboxDriver, SandboxFacet } from "@openclaw-enterprise/contracts";
+
 /**
- * Whether the OpenClaw commit pinned in deploy/runtime/Dockerfile accepts the
- * configuration dedicated native OpenClaw writes: required worker placement
- * (`cloudWorkers.requiredProfile`) and native worker inference
- * (`nodeHost.workerRuns.nativeInferenceConfig`). The images-runtime-startup test
- * "runtime image validates the configuration dedicated native OpenClaw renders"
- * checks this value against the built image, so a pin that changes the answer
- * fails CI until this constant, the docs, and admission change with it.
+ * Whether the OpenClaw commit pinned in deploy/runtime/Dockerfile is qualified for
+ * the complete dedicated native OpenClaw flow: required worker placement
+ * (`cloudWorkers.requiredProfile`), node enrollment, workspace access, and native
+ * model execution from canonical `models.providers` configuration. No test derives
+ * this value: tests/integration/runtime-image-startup.test.mjs only checks that the
+ * image accepts the configuration native OpenClaw renders, and schema acceptance does
+ * not qualify the flow. Flip it by hand, together with the assertion in
+ * tests/conformance/configuration-occ.test.mjs and the native worker notes in
+ * docs/reference/harness-execution.md and deploy/runtime/README.md.
  */
-export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = false;
+export const PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS: boolean = true;
 
 /**
  * Operator declaration in the Installation startup file (`runtime.nativeWorkerSupport`)
@@ -26,4 +30,17 @@ export function nativeWorkerSupportSource(
     return "pinned-runtime";
   }
   return declared;
+}
+
+/**
+ * Whether a Sandbox Driver can provision dedicated native OpenClaw: it provisions the Harness
+ * and has all three containment facets. Installation capabilities, admission and the Kubernetes
+ * Compute Driver share this one check.
+ */
+export function provisionsDedicatedOpenClaw(sandbox: SandboxDriver | undefined): boolean {
+  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
+  return (
+    sandbox?.provisionHarness !== undefined &&
+    requiredFacets.every((facet) => sandbox.facets.includes(facet))
+  );
 }

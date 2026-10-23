@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type {
@@ -15,23 +16,30 @@ import type {
   LoggingLevel,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
+  RevisionHarnessDescriptor,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
 import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
+  HARNESS_WORKSPACE,
+  MANAGED_WORKSPACE,
+  requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
-  workspaceSetupMainAgent,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   PLUGIN_RUNTIME_HELPERS,
 } from "../kubernetes/runtime-entrypoints.ts";
+import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 import {
   PLUGIN_RUNTIME_READY_MARKER,
   PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT,
@@ -39,6 +47,11 @@ import {
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
 } from "../plugin-runtime.ts";
+import {
+  validatePlaintextNativeGateway,
+  validateRoutableNativeListener,
+} from "../native-gateway-transport.ts";
+import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
 
 export interface DockerComputeDriverOptions {
@@ -65,7 +78,7 @@ interface DockerContainerInspect {
   };
 }
 
-interface DockerNetworkInspect {
+interface DockerLabeledResourceInspect {
   readonly Labels?: Readonly<Record<string, string>>;
 }
 
@@ -124,6 +137,7 @@ const HARNESS_VERSION_LABEL = "org.openclaw.enterprise.harness-version";
 const VERSION_LABEL = "org.openclaw.enterprise.version";
 const SOCKET_PATH = "/var/run/docker.sock";
 const REQUEST_TIMEOUT_MS = 10_000;
+const MAX_DOCKER_API_RESPONSE_BYTES = 4 * 1024 * 1024;
 const STARTUP_TIMEOUT_MS = 120_000;
 const GATEWAY_PORT = 8080;
 const AGENT_TRANSPORT_PORT = 18_790;
@@ -136,6 +150,17 @@ function dockerGatewayConfigurationDocument(configuration: OpenClawConfiguration
   readonly configuration: OpenClawConfigurationDocument;
   readonly requiresManagedPassword: boolean;
 } {
+  for (const validate of [
+    validatePlaintextNativeGateway,
+    validateRoutableNativeListener,
+    validateCodexApprovalPolicySetting,
+  ]) {
+    validate(
+      configuration,
+      (setting, requirement) =>
+        new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
+    );
+  }
   const gatewayRecord = asRecord(configuration.gateway);
   if (configuration.gateway !== undefined && gatewayRecord === undefined) {
     throw new ConfigurationFailure("Docker native gateway configuration must be an object.");
@@ -202,6 +227,8 @@ const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
+${startupPhaseHelper("gateway")}
+${gatewayStateMigrationHelper("deploy the Agent again")}
 
 function forwardTermination(child) {
   let terminating = false;
@@ -215,6 +242,16 @@ function forwardTermination(child) {
   process.on("SIGINT", () => forward("SIGINT"));
 }
 
+function startGateway() {
+  const child = spawn(
+    "node",
+    ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
+    { stdio: "inherit" },
+  );
+  forwardTermination(child);
+  child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+}
+
 mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
 mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
 chmodSync("/home/node/.openclaw", 0o700);
@@ -225,13 +262,25 @@ delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
 try {
 if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
-const child = spawn(
-  "node",
-  ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
-  { stdio: "inherit" },
-);
-forwardTermination(child);
-child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+// State on the Agent's state volume outlives runtime image upgrades. Doctor
+// reads the configuration written above; current state adds no await before
+// the spawn. A failure exits: the Driver reports the container that stopped
+// before readiness and nothing restarts it.
+const outdatedDatabases = outdatedAgentDatabases();
+if (outdatedDatabases.length === 0) {
+  startGateway();
+} else {
+  migrateGatewayState(outdatedDatabases).then(
+    (migrated) => {
+      if (migrated) startGateway();
+      else process.exit(1);
+    },
+    (error) => {
+      console.error("Gateway state migration failed: " + (error?.message ?? error));
+      process.exit(1);
+    },
+  );
+}
 } catch (error) {
   if (!holdPluginApproverConfigurationFailure(error)) throw error;
 }
@@ -280,6 +329,50 @@ function validTopology(revision: AgentRevision): boolean {
     (revision.harness.id === "openclaw" && revision.harness.mode === "embedded") ||
     (revision.harness.id === "codex" && revision.harness.mode === "dedicated")
   );
+}
+
+type SettingError = (setting: string, requirement: string) => Error;
+
+// Agent save and provisioning name the setting the caller must fix; preparation names it too,
+// where the message reaches only diagnostics.
+const callerSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+const preparationSettingError: SettingError = (setting, requirement) =>
+  new ConfigurationFailure(configurationSettingMessage(setting, requirement));
+
+// Docker mounts one workspace volume at both paths, for every Harness topology.
+const DOCKER_SETUP_WORKSPACES = [MANAGED_WORKSPACE, HARNESS_WORKSPACE] as const;
+
+/**
+ * The workspace initial files are written to. The roster and workspace path follow the rule
+ * every Compute Driver shares; Docker's initializer also needs native bootstrap, which seeds
+ * the workspace the setup documents complete.
+ */
+function dockerSetupWorkspace(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: SettingError,
+): string {
+  const workspace = requireWorkspaceSetupConfiguration(
+    configuration,
+    DOCKER_SETUP_WORKSPACES,
+    createError,
+  );
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  const main = workspaceSetupMainEntry(configuration);
+  for (const [parent, agent] of [
+    ["agents.defaults", defaults],
+    [main?.setting ?? "agents.entries.main", main?.agent],
+  ] as const) {
+    for (const option of ["skipBootstrap", "skipOptionalBootstrapFiles"]) {
+      if (agent?.[option] === true) {
+        throw createError(
+          `${parent}.${option}`,
+          "must not be true for initial workspace files: Docker Compute writes them after native bootstrap",
+        );
+      }
+    }
+  }
+  return workspace;
 }
 
 function optionalEnvironment(value: string | undefined): string | undefined {
@@ -338,6 +431,15 @@ export class DockerComputeDriver implements ComputeDriver {
   private lifecycle = new ComputeLifecycleDispatcher([]);
   private lifecycleStarted = false;
   private podmanApi = false;
+
+  /**
+   * Every topology runs one gateway container per Agent, so a candidate replaces the active
+   * revision's gateway. Exclusive replacement makes the worker stop predecessors first and stop
+   * a refused candidate, instead of leaving it serving under the predecessor (finding 1800).
+   */
+  requiresStoppedPredecessors(): boolean {
+    return true;
+  }
 
   constructor(options: DockerComputeDriverOptions) {
     required(options.images.gateway, "Docker gateway image");
@@ -414,21 +516,36 @@ export class DockerComputeDriver implements ComputeDriver {
     const name = this.networkName(namespace.id);
     try {
       const existing = await this.network(name);
-      if (existing === undefined) {
-        await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
-        return { ...result, namespaceDeleted: true };
+      if (existing !== undefined) {
+        this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       }
-      this.verifyOwnership(existing.Labels, { namespaceId: namespace.id }, `network ${name}`);
       await this.lifecycle.beforeNamespaceDelete(namespace);
       for (const containerId of await this.containerIdsForNamespace(namespace.id)) {
         await this.removeContainer(containerId);
       }
       await this.removeWorkspaceVolumes({ namespaceId: namespace.id });
-      await this.removeNetwork(name);
+      if (existing !== undefined) {
+        await this.removeNetwork(name);
+      }
       return { ...result, namespaceDeleted: true };
     } catch (error) {
       return { ...result, failure: failure(error) };
     }
+  }
+
+  validateGatewaySettings(configuration: Readonly<OpenClawConfigurationDocument>): void {
+    validatePlaintextNativeGateway(configuration);
+    validateRoutableNativeListener(configuration);
+    validateCodexApprovalPolicySetting(configuration);
+  }
+
+  // Agent create and update apply preparation's workspace rule, with its message. (OCC
+  // provisioning and deployment refuse Docker's Harness authentication first.)
+  validateWorkspaceSetup(
+    _harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    dockerSetupWorkspace(configuration, callerSettingError);
   }
 
   validateHarnessAuth(): never {
@@ -437,10 +554,17 @@ export class DockerComputeDriver implements ComputeDriver {
     );
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     if (revision.harnessAuth !== undefined) {
       this.validateHarnessAuth();
     }
@@ -534,28 +658,14 @@ export class DockerComputeDriver implements ComputeDriver {
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
       return { ...result, ready: gateway.ready };
     } catch (error) {
-      const failures = [error];
-      for (const name of [gatewayCreated, agentCreated]) {
-        if (name === undefined) {
-          continue;
-        }
-        try {
-          await this.removeContainer(name);
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (launchPrepared) {
-        try {
-          await this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true });
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Docker workload preparation and cleanup failed.");
-      }
-      throw error;
+      throw await failureAfterCleanup(error, "Docker workload preparation and cleanup failed.", [
+        ...[gatewayCreated, agentCreated]
+          .filter((name): name is string => name !== undefined)
+          .map((name) => () => this.removeContainer(name)),
+        ...(launchPrepared
+          ? [() => this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true })]
+          : []),
+      ]);
     }
   }
 
@@ -682,25 +792,7 @@ export class DockerComputeDriver implements ComputeDriver {
   }
 
   private workspaceDirectory(revision: Readonly<AgentRevision>): string {
-    const agents = asRecord(revision.configuration.agents);
-    const defaults = asRecord(agents?.defaults);
-    const main = workspaceSetupMainAgent(revision.configuration);
-    if (main === undefined) {
-      throw new ConfigurationFailure("Workspace setup requires only the native main Agent.");
-    }
-    const workspace = main?.workspace ?? defaults?.workspace ?? "/home/node/.openclaw/workspace";
-    if (
-      (workspace !== "/home/node/.openclaw/workspace" && workspace !== "/home/node/workspace") ||
-      defaults?.skipBootstrap === true ||
-      defaults?.skipOptionalBootstrapFiles === true ||
-      main?.skipBootstrap === true ||
-      main?.skipOptionalBootstrapFiles === true
-    ) {
-      throw new ConfigurationFailure(
-        "Workspace setup requires native bootstrap in exact-Agent managed storage.",
-      );
-    }
-    return workspace;
+    return dockerSetupWorkspace(revision.configuration, preparationSettingError);
   }
 
   private async initializeWorkspace(
@@ -714,9 +806,7 @@ export class DockerComputeDriver implements ComputeDriver {
     const ownership = this.gatewayOwnership(revision);
     const mounts = this.workspaceMounts(ownership);
     for (const mount of new Map(mounts.map((mount) => [mount.Source, mount])).values()) {
-      let volume = await this.inspect<{ Labels?: Readonly<Record<string, string>> }>(
-        `/volumes/${encodeURIComponent(mount.Source)}`,
-      );
+      let volume = await this.volume(mount.Source);
       if (volume === undefined) {
         if (setup.completed) {
           throw new ConfigurationFailure("Initialized workspace storage is missing.");
@@ -854,19 +944,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         continue;
       }
       // Reinspect immediately before deletion rather than trusting the list response.
-      let current: { Labels?: Readonly<Record<string, string>> };
-      try {
-        current = (await this.request(
-          "GET",
-          `/volumes/${encodeURIComponent(volume.Name)}`,
-          undefined,
-          [200],
-        )) as typeof current;
-      } catch (error) {
-        if (statusCode(error) === 404) {
-          continue;
-        }
-        throw error;
+      const current = await this.volume(volume.Name);
+      if (current === undefined) {
+        continue;
       }
       this.verifyOwnership(current.Labels, ownership, `volume ${volume.Name}`);
       if (current.Labels?.[ROLE_LABEL] !== "workspace") {
@@ -1248,16 +1328,20 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     await this.request("GET", `/images/${encodeURIComponent(ref)}/json`, undefined, [200]);
   }
 
-  private async network(name: string): Promise<DockerNetworkInspect | undefined> {
-    return this.inspect<DockerNetworkInspect>(`/networks/${encodeURIComponent(name)}`);
+  private async network(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/networks/${encodeURIComponent(name)}`);
   }
 
   private async removeNetwork(name: string): Promise<void> {
-    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204]);
+    await this.request("DELETE", `/networks/${encodeURIComponent(name)}`, undefined, [204, 404]);
   }
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {
     return this.inspect<DockerContainerInspect>(`/containers/${encodeURIComponent(name)}/json`);
+  }
+
+  private async volume(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/volumes/${encodeURIComponent(name)}`);
   }
 
   private async inspect<T>(path: string): Promise<T | undefined> {
@@ -1362,9 +1446,25 @@ ${WORKSPACE_SETUP_RUNTIME}`,
             },
             (response) => {
               const chunks: Buffer[] = [];
-              response.on("data", (chunk: Buffer | string) =>
-                chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
-              );
+              let responseBytes = 0;
+              response.once("error", reject);
+              const contentLength = response.headers["content-length"];
+              if (
+                typeof contentLength === "string" &&
+                Number(contentLength) > MAX_DOCKER_API_RESPONSE_BYTES
+              ) {
+                response.destroy(new Error("Docker API response is too large."));
+                return;
+              }
+              response.on("data", (chunk: Buffer | string) => {
+                const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                responseBytes += buffer.length;
+                if (responseBytes > MAX_DOCKER_API_RESPONSE_BYTES) {
+                  response.destroy(new Error("Docker API response is too large."));
+                  return;
+                }
+                chunks.push(buffer);
+              });
               response.on("end", () => {
                 const status = response.statusCode ?? 0;
                 const text = Buffer.concat(chunks).toString("utf8");

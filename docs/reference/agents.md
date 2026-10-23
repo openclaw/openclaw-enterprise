@@ -1,18 +1,18 @@
 # Agents
 
-An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
-identity, revision history, and deployed gateway. Its permissions do not grant
-access to another Namespace's resources.
+An Agent is a named AI workload in a [Namespace](namespaces.md). It has its own
+identity, Agent revision history, and gateway. Its permissions do not grant
+access across Namespaces.
 
-Use a [Preset](presets.md) to copy reusable launch settings into a new Agent draft.
+Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
-To get one running, [deploy your first Agent](../guides/first-agent.md). For an
-existing Agent, see [Compute](../guides/topics/agent-compute.md) for execution
-choices, [Agent Revisions](../guides/topics/agent-revisions.md) for changes, or
-[Troubleshoot](../guides/topics/agent-troubleshoot.md) if a deployment stalls.
+[Deploy your first Agent](../guides/first-agent.md), choose
+[Compute](../guides/topics/agent-compute.md), manage
+[versions](../guides/topics/agent-revisions.md), or
+[troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
-Creating an Agent saves its identity and exact Namespace-owned Configuration
-reference with `active` status and `stopped` desired runtime state. No revision is
+Creation saves identity and exact Namespace-owned Configuration with `active`
+status and `stopped` desired runtime state. No Agent revision is
 created and no workload or model starts until an authorized caller requests
 [deployment](#identity-and-deployment).
 
@@ -20,7 +20,7 @@ created and no workload or model starts until an authorized caller requests
 
 Operations beneath `/namespaces/:namespaceId/agents` return `201` for creation,
 `200` for reads/updates, and `202` for deployment, stop, or deletion. Deployment
-returns the admitted AgentRevision. Stop sets
+returns the saved Agent revision (`AgentRevision`). Stop sets
 `desiredRuntimeState` to `stopped`. Lists require each Agent's exact `read`.
 See [API schemas, envelopes, and permissions](api.md).
 
@@ -46,7 +46,7 @@ for credential permissions and [authorization](authorization.md) for grants.
 
 ### Unreadable saved settings
 
-For unreadable saved settings, Agent and revision list/detail GETs omit them
+For unreadable saved settings, Agent and Agent revision list/detail GETs omit them
 without defaults, keep readable metadata and siblings, and add
 `configurationReadError` with `code: "SAVED_CONFIGURATION_UNREADABLE"` and the
 affected `field`. Authorization and strict mutation/runtime validation are unchanged;
@@ -55,9 +55,9 @@ query failures still fail requests. See the
 
 ## Deployment status
 
-The `deploymentId` is the admitted AgentRevision ID returned by
-`POST /namespaces/:namespaceId/agents/:agentId/deploy`. Its `202` means the
-revision was admitted and queued, not that the workload is ready. Poll it with:
+The `deploymentId` is the saved AgentRevision ID from
+`POST /namespaces/:namespaceId/agents/:agentId/deploy`. A `202` confirms that OCC
+saved and queued the version. It does not confirm workload readiness. Poll with:
 
 ```text
 GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
@@ -65,47 +65,53 @@ GET /namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId
 
 This requires exact AgentRevision `read`, not Agent `operate`.
 Responses include `deploymentId`, `namespaceId`, `agentId`, `status`, nullable
-`error`, plugin `warnings`, and nullable `progress`.
+`error`, plugin `warnings`, nullable `progress`, and nullable `cleanup`.
 
-- `queued`: no live claim, including after lease expiry.
+- `queued`: no live claim; PostgreSQL's clock judges lease expiry.
 - `running`: a live worker claim.
-- `succeeded`: original work activated the revision or found it already active.
+- `succeeded`: original work activated the version or found it already selected.
 - `failed`: terminal failure or completion without activation.
 
 Pending `progress.lastAttempt` contains the latest exact-work result's
-allowlisted `code`, fixed `message`, and `at`, when first recorded; repeated
-deferrals record once ([readiness codes](agents/deployment.md#pending-deployment-progress)). Null means no bound evidence, not proof work never ran. Maintenance and
-cleanup results are excluded. `progress.nextAttemptAt` is the earliest queued
-eligibility, not a promised start; it is null while claimed. Terminal `progress`
+allowlisted `code`, fixed `message`, and `at`; repeated deferrals record once,
+except [refused-candidate stops](agents/deployment.md#pending-deployment-progress).
+Null means no bound evidence. Maintenance and cleanup
+results are excluded. `progress.nextAttemptAt` is the earliest queued
+eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
+Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
+Deployment failure remains terminal. Terminal preparation errors retain
+`error.data.preparation` under schema limits (identities, reasons, scheduling, exits, timestamps),
+excluding raw output and credentials.
+
 Errors have fixed codes, messages, and allowlisted `error.data`.
-`CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
-`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) captured by Compute
-from that revision; missing evidence leaves the cause unspecified. Held runtime
-failures end deployment early: `RUNTIME_AUTHENTICATION_FAILED` (rejected
-credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
-`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
-`RUNTIME_STARTUP_FAILED`; fix and redeploy. A dedicated gateway that refuses its
+`CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
+`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) from that version
+(unknown values read `UNRECOGNIZED`); missing evidence leaves the cause
+unspecified. Held failures end deployment early:
+`RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
+or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
-with a closed code and admitted `pluginId`.
+with a closed code and `pluginId`.
 
-Polling reads persisted state without runtime, provider, or model probes.
-Terminal results survive runtime deletion and controller restart. Later
-deployments have separate records and cannot rewrite earlier results.
+Polling reads only persisted state. Terminal results survive runtime deletion
+and controller restart; later deployments cannot rewrite them.
 
 ### Current runtime diagnostics
 
 A bodyless `POST` to
 `/namespaces/:namespaceId/agents/:agentId/deployments/:deploymentId/diagnostics`
-requests fresh checks for the exact revision. It requires Agent read and operate
-plus AgentRevision read. The response has a revision ID, observation time, and
-at most 32 bounded checks. Kubernetes currently probes Slack configuration,
-authentication, and connectivity without sending. Missing Pods yield `unknown`;
-unavailable evidence yields `503`. The call changes no stored deployment state
-and proves no model response. See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
+requests fresh checks for the specified Agent revision ID. It requires Agent read and operate
+plus AgentRevision read. It returns an Agent revision ID, observation time, and at
+most 32 checks. Kubernetes reports held startup failures and probes Slack
+configuration, authentication, and connectivity without sending. Missing Pods
+yield `unknown`; unavailable evidence yields `503`. The call changes no stored
+state and proves no model response. On OpenShell the `agent` check is always
+`unknown`; use deployment status and [Harness logs](../guides/topics/agent-troubleshoot.md#read-openshell-sandbox-and-supervisor-logs). See the [diagnostics flow](../flows/agent-deployment-diagnostics.md).
 
 ## Backend association
 
@@ -145,29 +151,40 @@ For a service account token, use `"method": "codex_pat"` with its Secret `source
 This requires dedicated Codex.
 
 Personal [Codex OAuth device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
-is **Experimental**. Bind the returned `source` with `"method": "oauth"`.
+is **Experimental**. Bind the returned credential source with
+`{ "method": "credential_source", "sourceId": "cs_…" }`.
 
 For an already issued ChatGPT account credential, use
-`{ "method": "chatgpt_service_account", "serviceAccountId": "sa_123e4567-e89b-42d3-a456-426614174000" }`.
+`{ "method": "codex_pat", "source": { "kind": "service_account", "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000", "id": "sa_123e4567-e89b-42d3-a456-426614174000" } }`.
 This requires dedicated Codex and the account's matching `backendId`. Binding
 an account does not issue its credential or change the model, Harness, or Backend.
+
+**Development upgrade limitation:** migration `0049` rejects retained
+`chatgpt_service_account` bindings in Agent drafts, any historical AgentRevision,
+or provisioning plans, and rolls back without converting them. No API deletes a
+Agent revision or provisioning request on its own: delete each affected Agent, which
+also deletes its Agent revisions and requests, and create it again after the upgrade.
+Changing the binding does not clear historical Agent revisions. For a request that
+never created an Agent, see
+[clear legacy bindings](settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 For dedicated Codex with a Credential Gateway, use
 `{ "method": "credential_source", "sourceId": "cs_…" }`; see
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
+It must also be listed in `credentialSources`.
 
 For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
 credentials in the protected host environment file; OCC neither reads nor
 delivers them and performs no authentication or model probe, so readiness does
 not prove model access. The snapshot records only the method, so host credential
-changes can affect existing revisions. Agent and Configuration authorization,
+changes can affect existing versions. Agent and Configuration authorization,
 topology checks, and process readiness remain required; no credential-source
 permission is needed. Kubernetes and Docker reject this method. See
 [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
-API-key, OAuth, and service account token bindings require the actor's exact Secret `operate`. That includes
+API-key and imported PAT bindings require the actor's exact Secret `operate`. That includes
 the Secret the Agent already uses: every draft update checks it, including one that replaces it. Deployment also
-requires the Agent service principal's exact Secret `operate`. ChatGPT binding
+requires the Agent service principal's exact Secret `operate`. Managed PAT binding
 requires the actor's exact account `read`, including the current account on every draft update. There is no implied account grant for the Agent
 principal. Each consumer of a shared source is authorized independently.
 
@@ -186,7 +203,7 @@ plugin, and a nonempty map replaces the entire desired plugin set.
 
 Create/update validates only structural shape. Catalog membership, native
 identity resolution, and approval-policy support are checked when deployment
-starts the revision; unsupported selections fail that startup without partially
+starts the version; unsupported selections fail that startup without partially
 mutating the Agent. AgentRevision snapshots retain the requested plugin IDs and
 policy. See [Agent plugins](agent-plugins.md) for field semantics
 and the selected-only runtime contract.
@@ -202,7 +219,10 @@ partial map of the four filenames below to strings. Replace the example Configur
 {
   "name": "Support assistant",
   "configurationId": "cfg_12345678-1234-4123-8123-123456789abc",
-  "initialWorkspaceFiles": { "AGENTS.md": "Answer support questions.\n", "USER.md": "" }
+  "initialWorkspaceFiles": {
+    "AGENTS.md": "Answer support questions.\n",
+    "USER.md": ""
+  }
 }
 ```
 
@@ -219,7 +239,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.8` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.
@@ -240,7 +260,10 @@ in an Agent's live workspace:
 
 Authenticate with a session or scoped service API key. Session-authenticated
 writes must pass the [CSRF checks](authentication.md). The Agent must have an
-active revision and a reachable gateway.
+selected version and a reachable gateway.
+
+Embedded OpenClaw sole rosters follow the Gateway-announced default ID.
+Other rosters retain the explicit main target; dedicated deployment requires it.
 
 `PUT` accepts one `content` field:
 
@@ -249,7 +272,8 @@ active revision and a reachable gateway.
 ```
 
 `content` must be well-formed Unicode without NUL characters and fit within
-16 KiB when encoded as UTF-8. The complete request body is limited to 48 KiB.
+16 KiB when encoded as UTF-8. The complete request body is limited to 97 KiB,
+enough for 16 KiB written entirely in six-byte JSON escapes.
 Success returns `200`. A successful `PUT` reports `size` in UTF-8 bytes and
 records the Agent, file name, and outcome in the audit log.
 
@@ -259,7 +283,7 @@ records the Agent, file name, and outcome in the audit log.
 | `404 NOT_FOUND`              | The requested Agent or file was not found.           |
 | `409 AGENT_DELETING`         | The Agent is being deleted.                          |
 | `409 RESOURCE_CONFLICT`      | The Agent is stopping.                               |
-| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 48 KiB.                     |
+| `413 PAYLOAD_TOO_LARGE`      | The request body exceeds 97 KiB.                     |
 | `503 DEPENDENCY_UNAVAILABLE` | Workspace access is unavailable.                     |
 | `503 UNKNOWN_OUTCOME`        | OCC could not confirm the write or its audit record. |
 
@@ -276,7 +300,7 @@ for schemas, and the [execution flow](../flows/workspace-files.md) for implement
 Trusted operators can open the selected Agent gateway's stock native admin UI
 when the Installation enables [Agent native admin UI access](agent-native-admin.md).
 The availability route requires exact Agent `administer`; `read` and `operate`
-are insufficient. The Agent must be desired running, have an active revision,
+are insufficient. The Agent must be desired running, have a selected version,
 and expose a private gateway endpoint through the selected Compute Driver.
 
 A derived per-Agent browser host proxies to the private gateway route using the
@@ -303,10 +327,10 @@ snapshot fields, and activation guarantees.
 
 An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then
-clears `activeRevisionId`; revision history, credentials, and persistent state
+clears `activeRevisionId`; version history, credentials, and persistent state
 remain. Cleanup includes failed candidate resources and interrupted predecessor
 retirement owned by the current Compute. Repeating stop is safe. To resume,
-deploy a new revision; old revisions cannot be restarted. See
+deploy a new version; old versions cannot be restarted. See
 [stop and resume](agents/deployment.md#stop-and-resume).
 
 ## Deletion
@@ -317,17 +341,17 @@ and returns `202`. Reads remain available; updates, deployment, credential
 provisioning, and workspace writes return `409`. Repeated DELETE leaves queued
 or running work unchanged.
 
-The worker reauthorizes the original caller, binds the persisted identity into
-Compute, retires all revisions, and removes runtime credentials. It then
-atomically deletes the Agent, revisions, service principal, its API keys, and
+The worker reauthorizes the caller, binds the saved identity to
+Compute, retires every version, and removes runtime credentials. It
+atomically deletes the Agent, its Agent revisions, service principal, API keys, and
 exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
 and removes owned artifacts, including workspace data. Namespace Configurations
 and Secrets survive. Deletion releases its name;
 [repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
 
-Teardown retries are bounded; after permanent failure or exhaustion, the Agent
-stays `deleting`. After a fix, the initiating caller can repeat DELETE to
-replenish the attempt budget; OCC and the worker recheck permission. Another
+Permanent failure or exhausted attempts leave the Agent `deleting`.
+After a fix, the initiating caller can repeat DELETE to
+reset attempts; OCC and the worker recheck permission. Another
 permitted actor gets `403`, audited with the `initiatingActorId`, until the
 initiator loses permission, then takes over. Prior failure audits remain and
 each retry is audited, as in [Namespace recovery](namespaces.md#failure-semantics-and-limitations).
@@ -348,19 +372,15 @@ This replaces the reference, preserving execution mode, harness binding, and Bac
 Edit the Configuration's native document through its own exact-resource PATCH
 endpoint ([Configuration CRUD](configuration.md#create-read-update-and-delete)). Changing
 the Agent reference or Configuration values does not queue Compute work,
-change the active revision, or mutate earlier revisions. Create and update
-accept no inline configuration document or competing gateway settings. Agents can share a Configuration; each
-deployed Agent still owns its gateway and stable service principal.
+change the selected version, or mutate earlier versions. Create/update
+reject inline configuration and competing gateway settings. Agents can share a Configuration;
+deployed Agents keep separate gateways and stable service principals.
 
 ## Current limitations
 
-The public API has no revision mutation/deletion or explicit rollback endpoint.
+The public API has no Agent revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The optional
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other sandbox execution combinations are
-rejected. Stock OpenShell cannot provide all required workload credentials; check
-its compatibility limits before planning deployment.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 
@@ -375,6 +395,8 @@ its compatibility limits before planning deployment.
   Namespace.
 - `409 RESOURCE_CONFLICT`: Harness authentication is missing, the selected
   account has no issued access token, or its Backend binding or topology is incompatible.
+- `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`: The account has no access token,
+  and the Installation has no ChatGPT Backend to issue one.
 - `409 RESOURCE_CONFLICT`: Another Agent already uses that name in the same
   Namespace, the Namespace cannot accept new Agents, or a stopping Agent cannot
   accept the requested mutation.
@@ -417,6 +439,6 @@ its compatibility limits before planning deployment.
 
 - 2026-09-23: Removed top-level `Agent.serviceAccountId` checks; use `harnessAuth`. (NOT_IN_SPEC)
 
-- 2026-09-01 08:47: Document nullable providerId selection, immutable revision association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
+- 2026-09-01 08:47: Document nullable providerId selection, immutable version association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 
 - [2026-08-28 17:55]: Recast as the current Agent and AgentRevision feature reference; separate procedures and correct Harness and SandboxDriver boundaries. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

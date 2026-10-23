@@ -2,7 +2,8 @@
 {{- fail "metrics.enabled must be a boolean" }}
 {{- end }}
 {{- if .Values.metrics.enabled }}
-{{- if not (regexMatch "^[0-9]+$" (toString .Values.metrics.port)) }}
+{{- /* Sprig int reads a leading zero as octal, while the API uses decimal Number(). */ -}}
+{{- if not (regexMatch "^[1-9][0-9]*$" (toString .Values.metrics.port)) }}
 {{- fail "metrics.port must be an integer" }}
 {{- end }}
 {{- if ne (empty .Values.metrics.scraperNamespaceLabels) (empty .Values.metrics.scraperPodLabels) }}
@@ -30,10 +31,10 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              {{- toYaml $.Values.metrics.scraperNamespaceLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "metrics.scraperNamespaceLabels" "value" $.Values.metrics.scraperNamespaceLabels) | nindent 14 }}
           podSelector:
             matchLabels:
-              {{- toYaml $.Values.metrics.scraperPodLabels | nindent 14 }}
+              {{- include "openclaw.networkPolicy.matchLabels" (dict "name" "metrics.scraperPodLabels" "value" $.Values.metrics.scraperPodLabels) | nindent 14 }}
       ports:
         - protocol: TCP
           port: {{ $port }}

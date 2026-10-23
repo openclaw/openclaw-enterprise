@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -12,6 +11,8 @@ import {
 } from "../../scripts/lib/codex-seccomp-profile.mjs";
 
 import { prepareCodexSeccompProfile } from "../../scripts/lib/codex-seccomp-k3d.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const generatorPath = join(repositoryRoot, "scripts/generate-codex-seccomp.mjs");
@@ -25,11 +26,8 @@ const runtimeDefaultBaseline = Object.freeze({
   ],
 });
 
-async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "codex-seccomp-profile-test-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(root, { recursive: true });
-  return root;
+function fixture(t) {
+  return temporaryDirectory(t, "codex-seccomp-profile-test-");
 }
 
 async function writeJson(path, value) {
@@ -38,7 +36,9 @@ async function writeJson(path, value) {
 }
 
 test("codex seccomp profile derivation preserves RuntimeDefault and adds only reviewed bwrap rules", () => {
-  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, { codexVersion: "0.160.0" });
+  const profile = deriveCodexBwrapProfile(runtimeDefaultBaseline, {
+    codexVersion: "0.163.0-alpha.2",
+  });
   const added = profile.syscalls.slice(runtimeDefaultBaseline.syscalls.length);
 
   assert.deepEqual(profile.architectures, runtimeDefaultBaseline.architectures);
@@ -160,7 +160,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.160.0",
+      "0.163.0-alpha.2",
       "--out",
       profilePath,
       "--provenance-out",
@@ -178,7 +178,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
   assert.deepEqual(profile.syscalls.slice(0, runtimeDefaultBaseline.syscalls.length), [
     ...runtimeDefaultBaseline.syscalls,
   ]);
-  assert.equal(provenance.codexVersion, "0.160.0");
+  assert.equal(provenance.codexVersion, "0.163.0-alpha.2");
   assert.equal(provenance.runtimeDefaultSha256, summary.runtimeDefaultSha256);
   assert.equal(provenance.profileSha256, summary.profileSha256);
   assert.equal(provenance.addedRules, 78);
@@ -191,7 +191,7 @@ test("offline codex seccomp generator writes immutable profile and nonsecret pro
       "--baseline",
       baselinePath,
       "--codex-version",
-      "0.160.0",
+      "0.163.0-alpha.2",
       "--out",
       profilePath,
       "--provenance-out",
@@ -577,7 +577,11 @@ for (const [label, diagnostic] of [
     const control = await missingProfileFixture(t, [missingProfileWaiting], {
       baselineStderr: diagnostic,
     });
-    await assert.rejects(control.run, /./, "a client error must not qualify the baseline denial");
+    await assert.rejects(
+      control.run,
+      { message: "RuntimeDefault denied namespace creation", stderr: diagnostic },
+      "a client error must not qualify the baseline denial",
+    );
     assert.equal(control.installations(), 0);
     await control.assertCleanup();
   });
@@ -632,7 +636,7 @@ async function runGeneratedProbe(args, root, mode) {
   const shellArgs = args.slice(args.indexOf("--") + 2);
   assert.equal(shellArgs[0], "-c");
   assert.equal(shellArgs[2], "codex-sandbox-probe");
-  assert.equal(shellArgs[3], "0.160.0");
+  assert.equal(shellArgs[3], "0.163.0-alpha.2");
   assert.match(shellArgs[4], /^[a-f0-9]{32}$/);
   assert.equal(shellArgs.length, 5);
   assert.equal(
@@ -647,12 +651,11 @@ async function runGeneratedProbe(args, root, mode) {
   assert.equal(syntax.status, 0, syntax.stderr);
   const tools = join(root, "tools");
   await mkdir(tools, { recursive: true });
-  const codex = join(tools, "codex");
-  await writeFile(
-    codex,
-    `#!/bin/sh
-if [ "$1" = --version ]; then
-  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.160.0'; fi
+  await writeCommand(
+    tools,
+    "codex",
+    `if [ "$1" = --version ]; then
+  if [ "$PROBE_MODE" = version ]; then echo 'codex 0.0.0'; else echo 'codex 0.163.0-alpha.2'; fi
   exit 0
 fi
 # Validate the real command's sandbox arguments, independently of its shell layout.
@@ -675,25 +678,22 @@ chmod 600 "$PROBE_ROOT/home/codex-seccomp-outside"
 if [ "$PROBE_MODE" = assertion ]; then echo changed > "$PROBE_ROOT/home/codex-seccomp-outside"; fi
 exit "$result"
 `,
-    { mode: 0o700 },
   );
   // Fail actual shell commands at preparation and cleanup, leaving the probe's
   // trap and stage transitions responsible for reporting the failure.
-  await writeFile(
-    join(tools, "mkdir"),
-    `#!/bin/sh
-if [ "$PROBE_MODE" = prepare ]; then exit 73; fi
+  await writeCommand(
+    tools,
+    "mkdir",
+    `if [ "$PROBE_MODE" = prepare ]; then exit 73; fi
 exec /bin/mkdir "$@"
 `,
-    { mode: 0o700 },
   );
-  await writeFile(
-    join(tools, "rm"),
-    `#!/bin/sh
-if [ "$PROBE_MODE" = cleanup ] && [ -f "$PROBE_ROOT/workspace/codex-seccomp-ok" ]; then exit 74; fi
+  await writeCommand(
+    tools,
+    "rm",
+    `if [ "$PROBE_MODE" = cleanup ] && [ -f "$PROBE_ROOT/workspace/codex-seccomp-ok" ]; then exit 74; fi
 exec /bin/rm "$@"
 `,
-    { mode: 0o700 },
   );
   const command = shellArgs[1]
     .replaceAll("/home/node", join(root, "home"))
@@ -834,10 +834,10 @@ for (const mode of ["exit1", "exit2", "signal", "done_error", "success"]) {
     await writeFile(join(state, "kubeconfig"), "{}\n", { mode: 0o600 });
     // These are inert external commands. The actual preparation entrypoint owns
     // the execFile callback and error propagation; no Kubernetes or Docker runs.
-    await writeFile(
-      join(tools, "kubectl"),
-      `#!${process.execPath}
-const args = process.argv.slice(2);
+    await writeCommand(
+      tools,
+      "kubectl",
+      `const args = process.argv.slice(2);
 const a = args.slice(args.indexOf('--request-timeout') + 2);
 if (a[0] === 'get' && a[1] === 'nodes') {
   process.stdout.write(JSON.stringify({items:[{metadata:{name:'k3d-occ-dev-origin-fixture-server-0'}}]}));
@@ -856,15 +856,16 @@ if (a[0] === 'get' && a[1] === 'nodes') {
   else process.exit(process.env.PROBE_MODE === 'success' ? 0 : process.env.PROBE_MODE === 'exit2' ? 2 : 1);
 }
 `,
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
-    await writeFile(
-      join(tools, "docker"),
-      `#!${process.execPath}
-require('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+    await writeCommand(
+      tools,
+      "docker",
+      `process.getBuiltinModule('node:fs').writeFileSync(process.env.PROBE_REACHED, 'reached');
 process.exit(71);
 `,
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
     const result = spawnSync(
       process.execPath,

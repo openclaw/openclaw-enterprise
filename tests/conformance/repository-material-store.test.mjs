@@ -3,6 +3,7 @@ import test from "node:test";
 import { RepositoryMaterialStore } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-store.ts";
 import { repositoryMaterialSpec } from "../../apps/controller/src/drivers/compute/kubernetes/repository-material.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { repositoryCleanupFailureCode } from "../../apps/controller/src/worker/repository-credentials.ts";
 
 const now = 1800000000000;
 const origin = "https://credentials.example.test";
@@ -137,20 +138,26 @@ test("earliest expiry during first creation prevents the next creation and leave
   assert.equal(fake.objects.size, 0);
 });
 
-test("unexpired material is created and the retained session is reused", async (t) => {
-  t.mock.method(Date, "now", () => now);
+// Creates material for one session that expires a second after `now` and returns
+// the spec that retains it.
+async function retainedSession() {
   const input = binding("project", "session_one", now + 1000);
   const owner = revision([input.repositoryRef], input.deadlineWallMs);
   const fake = fakeCore();
   const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  assert.equal((await store.prepare(owner, repositoryMaterialSpec(owner, [input]))).kind, "ready");
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const result = await store.prepare(owner, repositoryMaterialSpec(owner, [retained]));
+  const first = await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
+  const { repositoryRef, sessionId, deadlineWallMs } = input;
+  const spec = repositoryMaterialSpec(owner, [
+    { kind: "retained", repositoryRef, sessionId, deadlineWallMs },
+  ]);
+  return { input, owner, fake, store, first, spec };
+}
+
+test("unexpired material is created and the retained session is reused", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  const { input, owner, fake, store, first, spec } = await retainedSession();
+  assert.equal(first.kind, "ready");
+  const result = await store.prepare(owner, spec);
   assert.equal(result.kind, "ready");
   assert.equal(result.spec.bindings[0].sessionId, input.sessionId);
   assert.equal(fake.created.length, 1);
@@ -159,18 +166,7 @@ test("unexpired material is created and the retained session is reused", async (
 test("expiry during retained Secret read is not reported as missing material", async (t) => {
   let clock = now;
   t.mock.method(Date, "now", () => clock);
-  const input = binding("project", "session_one", now + 1000);
-  const owner = revision([input.repositoryRef], input.deadlineWallMs);
-  const fake = fakeCore();
-  const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const spec = repositoryMaterialSpec(owner, [retained]);
+  const { input, owner, fake, store, spec } = await retainedSession();
   fake.onRead(() => {
     clock = input.deadlineWallMs;
   });
@@ -184,18 +180,7 @@ test("expiry during retained Secret validation is not reported as missing materi
   let validating = false;
   let observations = 0;
   t.mock.method(Date, "now", () => (validating && ++observations > 1 ? now + 1000 : now));
-  const input = binding("project", "session_one", now + 1000);
-  const owner = revision([input.repositoryRef], input.deadlineWallMs);
-  const fake = fakeCore();
-  const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
-  await store.prepare(owner, repositoryMaterialSpec(owner, [input]));
-  const retained = {
-    kind: "retained",
-    repositoryRef: input.repositoryRef,
-    sessionId: input.sessionId,
-    deadlineWallMs: input.deadlineWallMs,
-  };
-  const spec = repositoryMaterialSpec(owner, [retained]);
+  const { owner, fake, store, spec } = await retainedSession();
   fake.onRead(() => {
     validating = true;
   });
@@ -203,4 +188,30 @@ test("expiry during retained Secret validation is not reported as missing materi
     message: "Repository credential material has expired.",
   });
   assert.equal(fake.created.length, 1);
+});
+
+// The worker logs a stuck repository cleanup by its cause code. A store failure names its
+// operation and an RBAC refusal, not the generic REPOSITORY_CLEANUP_FAILED, and never the
+// Kubernetes response text, which may carry a Secret body (finding 2201).
+test("material cleanup failures carry the stable code the worker logs", async () => {
+  for (const [statusCode, code] of [
+    [403, "REPOSITORY_MATERIAL_LIST_FORBIDDEN"],
+    [503, "REPOSITORY_MATERIAL_LIST_FAILED"],
+  ]) {
+    const fake = fakeCore();
+    fake.core.listNamespacedSecret = async () => {
+      throw Object.assign(new Error("synthetic response with a Secret body"), { statusCode });
+    };
+    const store = new RepositoryMaterialStore("namespace-material-expiry", fake.core, (op) => op());
+    const error = await store.cleanup({ namespaceId: "namespace-material-expiry" }, new Set()).then(
+      () => assert.fail("cleanup must fail"),
+      (failure) => failure,
+    );
+    assert.equal(
+      error.message,
+      "Repository credential material cleanup could not list owned objects.",
+    );
+    assert.equal(error.cause, undefined);
+    assert.equal(repositoryCleanupFailureCode(error), code);
+  }
 });

@@ -1,7 +1,7 @@
 import { request as httpsRequest } from "node:https";
 import type { ClientRequest, IncomingMessage } from "node:http";
-import type { AttemptContext, Clock } from "../../../credentials/backend-contracts.ts";
-import type { ProviderResponse } from "../provider-transport.ts";
+import type { Clock } from "../../../credentials/backend-contracts.ts";
+import type { ProviderAttempt, ProviderResponse } from "../provider-transport.ts";
 import type { ProviderScope } from "./request-options.ts";
 import { providerRequestOptions } from "./request-options.ts";
 import { createProviderResponseBody } from "./response-body.ts";
@@ -12,7 +12,7 @@ interface ProviderRequestDependencies {
   readonly clock: Clock;
   readonly operation: "issue" | "revoke";
   readonly authorization: string;
-  readonly attempt: AttemptContext;
+  readonly attempt: ProviderAttempt;
   readonly onDispatch: () => void;
   readonly assertMaterialCurrent: () => void;
   readonly observeResponse: (response: ProviderResponse) => void;
@@ -119,11 +119,26 @@ export function sendProviderRequest({
       request.on("error", fail);
       request.on("close", settle);
       request.on("response", receiveResponse);
+      const send = () => {
+        if (failed) {
+          return;
+        }
+        try {
+          // TLS may finish long after connect. Recheck the bounds and signing authority before writing.
+          attempt.assertAdmitted();
+          assertMaterialCurrent();
+          request!.end(prepared.body);
+        } catch {
+          fail();
+        }
+      };
       request.once("socket", (socket) => {
         if (socket.connecting) {
           socket.once("connect", observeDispatch);
+          socket.once("secureConnect", send);
         } else {
           observeDispatch();
+          send();
         }
       });
       cancelDeadline = clock.schedule(Math.min(30000, remaining), fail);
@@ -132,7 +147,6 @@ export function sendProviderRequest({
         fail();
         return;
       }
-      request.end(prepared.body);
     } catch {
       fail();
     }

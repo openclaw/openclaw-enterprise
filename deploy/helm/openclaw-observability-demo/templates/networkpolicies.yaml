@@ -6,7 +6,7 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-observability-demo
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
   policyTypes: [Ingress, Egress]
 ---
 apiVersion: networking.k8s.io/v1
@@ -17,13 +17,13 @@ spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-observability-demo
-      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
   policyTypes: [Egress]
   egress:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.dns.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .Values.dns.podLabels | nindent 14 }}
@@ -55,11 +55,11 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.occ.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.occ.namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Values.occ.release }}
+              app.kubernetes.io/instance: {{ .Values.occ.release | quote }}
             matchExpressions:
               - key: app.kubernetes.io/component
                 operator: In
@@ -70,11 +70,11 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.occ.namespace }}
+              kubernetes.io/metadata.name: {{ .Values.occ.namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ .Values.occ.release }}
+              app.kubernetes.io/instance: {{ .Values.occ.release | quote }}
               app.kubernetes.io/component: collector
       ports:
         - { protocol: TCP, port: 8888 }
@@ -117,11 +117,11 @@ spec:
         {{- if eq $component "loki" }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ $.Values.occ.namespace }}
+              kubernetes.io/metadata.name: {{ $.Values.occ.namespace | quote }}
           podSelector:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
-              app.kubernetes.io/instance: {{ $.Values.occ.release }}
+              app.kubernetes.io/instance: {{ $.Values.occ.release | quote }}
               app.kubernetes.io/component: collector
         {{- end }}
       ports:
@@ -144,7 +144,7 @@ spec:
         {{- range .Values.grafana.clients }}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: {{ .namespace }}
+              kubernetes.io/metadata.name: {{ .namespace | quote }}
           podSelector:
             matchLabels:
               {{- toYaml .podLabels | nindent 14 }}

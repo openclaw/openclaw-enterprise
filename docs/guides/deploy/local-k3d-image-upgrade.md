@@ -2,7 +2,7 @@
 
 Upgrade an existing Helm-installed OpenClaw Control Plane (OCC) and Kubernetes
 Compute fleet in the same k3d cluster. This procedure retains PostgreSQL,
-Namespaces, Agents, revision history, Secrets, and Agent workspace and gateway
+Namespaces, Agents, version history, Secrets, and Agent workspace and gateway
 PersistentVolumeClaims (PVCs). Take verified backups first: retaining a volume is
 not a backup, and migrations or runtime changes can make rollback unsafe.
 Complete the [upgrade migration checklist](upgrade-checklist.md) before using
@@ -41,12 +41,14 @@ upgrade or preserve a demo. See the [demo lifecycle](../../testing/kubernetes.md
   [binding the Installation](production-upgrade.md#bind-the-installation-once)
   if its Secret lacks the required annotation.
 - Run the [split-layout check](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
-  If it reports split-layout tenants, do not upgrade: keep the existing release.
+  If it reports split-layout tenants,
+  [adopt them](split-layout-upgrade.md)
+  first or keep the existing release.
   The script's startup preflight also refuses split-layout tenants and stops
   before it scales the API and worker to zero.
 - Meet the [upgrade permissions and concurrency requirements](production-upgrade.md#prepare-the-release).
   For runtime upgrades, review saved drafts and stop other deployments and edits:
-  new revisions use the current drafts. Schedule an interruption window and
+  new versions use the current drafts. Schedule an interruption window and
   capacity for old and new workloads to overlap.
 - For an installation with repository credentials enabled, run the upgrade from
   a native Linux operator environment that uses UID 1000 and the same architecture
@@ -166,8 +168,8 @@ images (`publish: true`), not a no-push preparation or a partially failed run.
 Download its `container-publication-<run-id>-<attempt>` receipt and compare
 both entries' `sourceSha`, `destination`, and `digest` with the run input,
 job summary, and successful exact-source CI. If the receipt has expired, stop until you can recover verifiable publication
-evidence. See [container publication](../../../.github/containers.md#prepare-and-publish)
-for the evidence and [partial publication recovery](../../../.github/containers.md#recover-a-partial-publication).
+evidence. See [container publication](../../release/containers.md#prepare-and-publish)
+for the evidence and [partial publication recovery](../../release/containers.md#recover-a-partial-publication).
 Use one verified source SHA and each full `destination@digest`; do not use
 `latest`, a source tag, or a digest copied from an older example.
 
@@ -286,7 +288,7 @@ before rolling out OCC. Runtime-only also restarts OCC on its existing controlle
 image to load the updated Installation. The script deploys all recorded running
 Agents concurrently; stopped and deleting Agents are left alone. See the
 [production contract](production-upgrade.md#upgrade-agent-runtimes) for
-revision, readiness, and Doctor checks.
+version, readiness, and Doctor checks.
 
 ## Verify and recover
 
@@ -295,8 +297,9 @@ Installation records, and, for runtime upgrades, `deployments.jsonl` and
 `status/`. Confirm the selected controller digest in both API and worker
 Deployment templates and their successful rollouts. For a runtime change,
 confirm both image slots in the live Installation Secret, each running Agent's
-new active revision, and its ready gateway/Agent Pods on the selected digest.
-For controller-only, confirm existing revisions and gateways remain ready.
+new selected version, and its ready gateway/Agent Pods on the selected digest.
+For controller-only, confirm existing versions and gateways are ready again;
+the new worker can restart their Pods once.
 Inspect the live images, rollouts, initialization Job, and OCC access:
 
 ```bash
@@ -333,8 +336,8 @@ If Helm or migration fails, inspect the initialization Job and rollouts, retain
 the evidence and backups, and prefer a forward fix. Helm rollback does not undo
 database migrations. If OCC succeeds but a runtime deployment fails, the fleet
 can be mixed: runtime rollout is **not transactional**. Inspect each dispatch,
-deployment status, and revision before retrying; an uncertain request may have
-already created a revision. Check compatibility before selecting an older image
+deployment status, and version before retrying; an uncertain request may have
+already created a version. Check compatibility before selecting an older image
 or restoring state, and follow [partial-failure recovery](production-upgrade-recovery.md).
-Do not delete the cluster, database volume, Namespaces, Agents, revisions,
+Do not delete the cluster, database volume, Namespaces, Agents, versions,
 Secrets, bootstrap volume, or Agent PVCs to force an upgrade or recovery.

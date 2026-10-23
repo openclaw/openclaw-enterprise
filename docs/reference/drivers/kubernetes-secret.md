@@ -11,20 +11,11 @@ lifecycle. This page owns Kubernetes setup and operator procedures.
 
 The Driver stores values for environment delivery, transient server-side
 hosted plugin discovery, and [credential source](../credential-sources.md)
-registration. **Experimental** Codex OAuth device login keeps private provider
-state in the same backend and uses atomic compare-and-swap to fence concurrent
-completion and cancellation. Once an
-OAuth source is claimed for runtime handoff, ordinary value updates and
-compare-and-swap are rejected, so it can no longer be cancelled, only deleted;
-reconnect creates a new Secret. Hosted existing-Agent discovery uses its bound `codex_pat` Secret
-or a separate Agent-scoped OAuth login;
-Create Agent discovery can use a selected Secret. Curated discovery needs no
-Secret. Values never enter Console responses. The Driver does not issue
-credentials, share Secrets across Namespaces, keep value history, restart
-workloads after an update, roll values back, or broker per-access Secret reads.
-Native OpenClaw
-`SecretRef` handling for `env`, `file`, and `exec` configuration remains the
-gateway's responsibility.
+registration. **Experimental** Codex OAuth device login stores only a private
+Gateway handle and source reference here. Atomic compare-and-swap fences
+concurrent polling and cancellation. Provider tokens remain in the external
+credential service; no runtime handoff seals or consumes this Secret. See
+[Codex OAuth storage](kubernetes-compute/codex-oauth-storage.md).
 
 Single-cluster Compute uses the tenant workload namespace, including adopted
 namespaces. The two-cluster profile retains separate control-cluster storage.
@@ -218,7 +209,7 @@ driver stored the new value; it does not restart a gateway, edit an existing
 AgentRevision, or prove that a running process has consumed the value.
 
 For a Harness model API key, update the OCC Secret, explicitly deploy every
-consuming Agent through OCE, wait for each new revision to become active, and
+[consuming Agent](#find-a-secrets-consumers) through OCE, wait for each new revision to become active, and
 verify a model request before revoking the old key upstream. Revision preparation
 reads the current CP source and delivers the admitted fields into the DP runtime
 Secret before starting the Harness. An unchanged Configuration or Secret reference
@@ -235,11 +226,31 @@ for verification and safe upstream revocation.
 There is no value history, automatic rotation, automatic workload restart, or
 value rollback. Updating or deleting an OCC Secret does not remove credentials
 already delivered to a running process environment, and deletion is blocked while
-current Configurations, credential sources, Agent drafts, active revisions, or pending
+current Configurations, credential sources, Agent drafts, selected versions, or pending
 deployments still depend on the Secret. For a compromised credential, stop the affected workloads and revoke
 the credential at the upstream provider; then update the OCC Secret with a
 replacement value and redeploy the intended consumers. Delete the Secret only
 after its reference dependencies are cleared; see [Delete](#delete).
+
+### Find a Secret's consumers
+
+The exact Secret read, `GET /namespaces/:namespaceId/secrets/:secretId` or
+`occ secret get "$SECRET_ID"`, returns `consumers`: the IDs of the Agents,
+Configurations, credential sources, and pending Agent provisioning requests
+that currently reference the Secret. An Agent is listed when its draft, selected
+version, or a pending deployment references the Secret. These are the same
+references that block deletion.
+
+```bash
+./bin/occ secret get "$SECRET_ID" -o json | jq -r '.consumers.agents[]'
+```
+
+Only resources you may read are named; `unreadable` counts the others without
+naming them, so someone with wider read access must find those. A provisioning
+request is named only for the actor that started it. OCC examines at most 50
+references, ordered by kind and ID; `truncated: true` means more exist. An Agent
+that uses a listed Configuration but has not deployed it is not listed; its next
+deployment reads the current value.
 
 ## Delete
 
@@ -257,7 +268,11 @@ curl --fail-with-body -sS \
 ```
 
 Successful deletion returns HTTP `204`. OCC denies deletion while the Secret is
-referenced by any current Configuration, credential source, Agent draft, active revision, pending deployment, or queued or running Agent provisioning request.
+referenced by any current Configuration, credential source, Agent draft, selected version, pending deployment, or queued or running Agent provisioning request.
+The `409` names the references you may read, as many as fit the message, for
+example `The Secret is still referenced by Agent agt_…; 1 resource you cannot
+read. Remove those references first.` [Find its consumers](#find-a-secrets-consumers)
+for the full list.
 Inactive historical revisions alone do not prevent deletion.
 Namespace removal is also blocked while owned Secrets remain. Agent removal does
 not own or garbage-collect Namespace Secret storage.
@@ -273,6 +288,9 @@ metadata cleanup after OCC verifies the stored backend identity.
   this name already exists in this Namespace", choose another name or update the
   existing Secret. For `NAMESPACE_NOT_READY`, wait until the platform Namespace is
   `ready` and its backing Kubernetes namespace is bound to the exact Namespace ID.
+- **Secret delete returns `409` `RESOURCE_CONFLICT`:** Remove each named
+  reference, then retry. For references you cannot read, ask someone with read
+  access to the Namespace's Agents and Configurations to clear them.
 - **Secret operation returns `403`:** Verify OCC permission for the exact Secret
   or parent Namespace. For binding or Agent assignment, also verify caller
   `operate` on each exact Secret. For deployment, verify both the deploying actor
@@ -281,7 +299,9 @@ metadata cleanup after OCC verifies the stored backend identity.
   grant IAM authority.
 - **Secret operation returns `503`:** Check Kubernetes authentication, TLS,
   tenant namespace readiness, API RoleBinding, and whether the backend object
-  still has exact OCC labels and annotations.
+  still has exact OCC labels and annotations. A message naming a fix instead means the
+  Secret was stored through a previously selected Secret Driver; see the
+  [SecretDriver lifecycle](secret.md#lifecycle).
 - **Configuration update is rejected:** Confirm every binding references a
   Secret in the same Namespace and that the caller has `operate` on every
   selected Secret, including retained bindings when PATCH omits `secretBindings`.

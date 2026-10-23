@@ -10,7 +10,7 @@ Keep private routing enabled. Start with the password profile and
 Configure with an [installation profile](#recommended-generate-profile-configuration)
 or [manual YAML](#advanced-copy-manual-yaml-examples).
 
-Use a clean checkout matching the image revision. Follow
+Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
@@ -19,7 +19,7 @@ and chart selection. Retain this shell and protected files for
 
 Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
 `ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which sets revision-checked
+[published-image procedure](published-images.md), which checks the image source commits and sets
 `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
 chart. Complete it before generating configuration; then skip the build section.
 
@@ -30,7 +30,7 @@ Workstation `docker login` does not authenticate cluster nodes.
 
 ## Build and publish production images
 
-Use the separately approved [publication workflow](../../../.github/containers.md)
+Use the separately approved [publication workflow](../../release/containers.md)
 or build these images for your registry:
 
 | Image      | Source                                                                                                         | Used by                                     |
@@ -54,7 +54,7 @@ startup is unsupported.
 export OCC_IMAGE_REGISTRY="${OCC_IMAGE_REGISTRY:-registry.example.com}"
 export OCC_IMAGE_REPOSITORY="${OCC_IMAGE_REPOSITORY:-$OCC_IMAGE_REGISTRY/your-team/openclaw-enterprise}"
 export OCC_IMAGE_PLATFORM="${OCC_IMAGE_PLATFORM:-linux/amd64}"
-export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584'
+export NODE_BASE_IMAGE='docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0'
 if unset CONTROLLER_IMAGE RUNTIME_IMAGE OCC_IMAGE_METADATA &&
   OCC_IMAGE_TAG="$(git rev-parse HEAD)" &&
   OCC_IMAGE_METADATA="$(mktemp -d)" &&
@@ -83,7 +83,7 @@ else
 fi
 ```
 
-Before installation, [check each digest](../../testing/images.md#check-published-images)
+Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
 them.
 
@@ -116,7 +116,8 @@ Kubernetes older than 1.35 is unsupported; the API and worker emit
 ### Recommended: generate profile configuration
 
 Choose `openclaw` or `codex` from the [profile options](installation-profiles.md#choose-a-profile).
-Generation requires Node.js 24+ on the operator host. Manual YAML does not, but
+Generation requires Node.js 24+ on the operator host (and `pnpm install` with
+native admin). Manual YAML does not, but
 the later Agent transport-provisioning example does; without Node, provision
 transports in the console.
 
@@ -153,9 +154,11 @@ or manual YAML. This keeps `values.yaml`, `installation.yaml`, and
 
 ### Advanced: copy manual YAML examples
 
-Use this branch only when deliberately skipping profiles; it refuses to overwrite
-existing configuration YAML. The manual example selects the curated Codex PluginDriver catalog,
-unlike the `codex` profile's default hosted PAT-backed discovery.
+Without profiles, this branch refuses overwrites and selects curated discovery;
+Codex profiles use hosted discovery.
+
+Hosted discovery requires [paired networking](installation-profiles.md#hosted-discovery-egress);
+the startup Secret alone grants none.
 
 ```bash
 (
@@ -175,7 +178,7 @@ unlike the `codex` profile's default hosted PAT-backed discovery.
 
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
-[Verify installation image selections](../../testing/images.md#verify-installation-image-selections).
+[Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
 ### Shared bootstrap PVC and configuration checks
 
@@ -195,8 +198,17 @@ before running the checks:
 
 - `values.yaml`: set auth URL, admin email, database and cluster CIDRs,
   control-plane node selector, database CA, DNS, API clients, and bootstrap
-  password claim. Keep native admin enabled for the password profile, and gateway
-  routing enabled with the reviewed GatewayClass and Secret names.
+  password claim. Keep `bootstrap.password.mountPath` absolute; the bootstrap Job
+  refuses relative paths. Keep native admin enabled for the password profile, and gateway
+  routing enabled with the reviewed GatewayClass and Secret names. Helm refuses an
+  `auth.baseUrl` that is not an `https` origin (`http` only for `localhost` or
+  `127.0.0.1`), has a path other than `/`, a query, fragment or user info (even
+  bare `?` or `#`), an IPv4 host other than four decimal octets without leading
+  zeros, Unicode spaces or invisible characters (outer ASCII spaces are ignored)
+  or compatibility forms the API's URL parser refuses, such as full-width `？`.
+  IDNA-invalid joiners (U+200C, U+200D) pass Helm but fail the bootstrap Job. With
+  native admin, it must be `https` and its host inside
+  `agentNativeAdmin.sharedCookieDomain`.
 - `installation.yaml`: set cluster name, log level, DNS selectors,
   service-principal token settings, Secret prefixes, runtime storage class,
   immutable runtime image digests, and PluginDriver catalog. Set
@@ -215,6 +227,8 @@ Configure native admin domains through [native admin setup](native-admin.md#step
 For Slack Agents, configure both proxy paths in the
 [Slack guide](../integrations/slack.md#configure-both-slack-proxies). For Codex
 sandboxing, follow [Codex sandbox setup](codex-sandbox.md).
+
+`images.controller` must be an immutable reference `prepare-bootstrap-volume --image` accepts: a letter or digit, then only letters, digits, `.`, `_`, `:`, `/`, and `-`, and a lowercase `sha256` digest.
 
 Run every check below before provisioning the password profile:
 
@@ -262,7 +276,9 @@ without quotes or assignment.
 In both database URLs, replace placeholders and preserve required TLS options. For managed PostgreSQL roots supplied through
 `database.caSecretName`, set `sslmode=verify-full` and `sslrootcert` to the
 mounted CA file in both URLs: `/etc/openclaw/database-ca/ca.pem` with the
-example mount settings, otherwise `<database.caMountPath>/<database.caKey>`. Start query parameters with `?` and
+example mount settings, otherwise `<database.caMountPath>/<database.caKey>`.
+With a CA Secret, Helm requires a path distinct from bootstrap and active
+API/worker mounts. Start query parameters with `?` and
 join further ones with `&`. Generate the auth secret for a
 new Installation; this command refuses to overwrite an existing file:
 
@@ -289,7 +305,7 @@ history, and the repository.
 
 ## Prepare workspace access
 
-Create the controller namespace:
+Create the controller Namespace (`--namespace`: DNS-1123 label, maximum 63 characters):
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace openclaw-system
@@ -297,7 +313,7 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" create namespace op
 
 Complete [Configure private routing](workspace-routing.md#configure-private-routing):
 create `occ-private-gateway-key` and match the Helm and Installation routing
-settings. Rerun validation and rendering above if inputs change. Configure each
+settings. Validate and render changed inputs. Configure each
 Agent's authentication during [Agent deployment](production-agents.md#configure-the-agent-runtime).
 
 ## Provision system Secrets and install
@@ -377,7 +393,8 @@ scripts/prepare-bootstrap-volume --kubeconfig "$KUBECONFIG_FILE" --context "$CON
 
 Replace `--node-selector oce-role=control` with the `controlPlane.nodeSelector`
 labels, one option per label, so preparation and initialization share volume
-topology.
+topology. Helm refuses keys and values that helper refuses; values may be
+empty, as in `--node-selector node-role.kubernetes.io/infra=`.
 
 The helper refuses any nonfresh mounted root except `lost+found`, schedules with
 the supplied node selector before storage binds, reports `Prepared bootstrap
@@ -394,7 +411,7 @@ helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --wait --timeout 5m
 ```
 
-For an explicitly [published chart release](../../../.github/chart-publication.md#pull-and-install)
+For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
 verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
 with `--version "$OCE_VERSION"`.
@@ -456,7 +473,7 @@ including its [model-response check](production-agents.md#verify-production-work
 ## Enable GitHub browser sign-in
 
 Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a revision that has it, or [your own build](#build-and-publish-production-images).
+from a commit that includes it, or [your own build](#build-and-publish-production-images).
 Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 during stopped maintenance, after first installing without GitHub as above.
 
@@ -491,7 +508,8 @@ Activation is one-way: the database refuses older images' sessions and
 4. Run `helm upgrade` with the compatible image. The api Deployment uses
    `Recreate`, so the old Pod stops first; startup enrolls qualifying accounts, logs any it skips,
    and invalidates unbound sessions before serving. After a failure, keep ingress closed.
-5. Through restricted access, verify password recovery, new session admission,
+5. Through [restricted access](auth-maintenance.md#close-ingress-and-use-restricted-access),
+   verify password recovery, new session admission,
    the expected Namespaces and existing Agent detail, and rejected stale sessions.
    Reopen ingress only after these checks, retaining one serving controller.
 

@@ -3,7 +3,7 @@
 A Preset stores reusable Agent launch settings and variables in a Namespace.
 Select it during Agent creation, fill its variables, and edit copied settings before
 saving. Later Preset edits or deletion cannot change the Agent, Configuration, or
-deployed revisions.
+deployed versions.
 See [Create an Agent from a Preset](../guides/topics/agent-presets.md).
 
 The checked-in [standard Codex Preset](../guides/topics/standard-codex-preset.md)
@@ -114,9 +114,9 @@ OpenClaw instead routes `openai/<model>` through `agentRuntime.id: openclaw` and
 `https://api.openai.com/v1` with `openai-responses`.
 
 The standard Codex network proxy enables the `workspace` base profile in
-`limited` mode. Its nine allowed build domains and disabled proxy/socket escape
-options are listed in the [standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
-Cached search uses `tools.web.search.openaiCodex.mode: cached`.
+`limited` mode. Its build domains and disabled escape options are listed in the
+[standard Codex guide](../guides/topics/standard-codex-preset.md#build-network-allowlist).
+The OpenShell SandboxDriver drops it ([details](drivers/openshell-sandbox.md#configuration)).
 
 Omitted fields inherit the selected native runtime's defaults; omission does
 not establish a particular reviewer, network policy, or tool permission. Compute
@@ -223,16 +223,17 @@ Declare variables inside `template.variables`, then refer to them with
 }
 ```
 
-This is a partial template, not a complete deployment configuration. Add the
-native settings and credentials required by your Installation before deploying.
+This partial template needs your Installation's native settings and credentials
+before deployment.
 
-- Names match `[A-Za-z_][A-Za-z0-9_]*`. Types are `string`, `number`, `boolean`, and
-  `password`; numbers must be finite. Optional `description` text labels inputs.
-- Defaults must match the declared type. Omitted inputs use defaults; `false`,
-  `0`, and empty strings override them. Referenced variables without defaults
-  require input. Unknown names and wrong types fail; the `400` message names the
-  template path, such as `Preset variables.model:`, and what that field accepts,
-  not the submitted value.
+- Names match `[A-Za-z_][A-Za-z0-9_]*`; types are `string`, `number`, `boolean`, or
+  `password`. Numbers are finite; optional `description` labels inputs.
+- String controls accept multiple lines. Unedited defaults and restored drafts
+  retain exact line endings, including CRLF; edits use browser LF.
+- Defaults must match their type; omission uses them. Explicit `false`, `0`, and
+  empty strings override defaults. Referenced variables without defaults require
+  input. Unknown names or wrong types fail with `400`, naming the path and accepted
+  shape (e.g. `Preset variables.model:`), without values.
 - Whole-string tokens retain scalar type; embedded tokens require strings.
   `"{{ vars.count }}"` can become a JSON number; `"worker-{{ vars.name }}"` stays a string.
 - `configuration.values` keys, including model catalog keys, can use string
@@ -285,6 +286,8 @@ writes; ordinary Agent and Configuration APIs require complete references.
 
 The template and
 rendered JSON each have a 1 MiB size limit and a maximum depth of 64.
+POST/PATCH bodies allow 6 MiB plus 8 KiB for JSON escapes and the envelope;
+template admission retains the 1 MiB limit.
 
 ## CRUD and permissions
 
@@ -292,13 +295,13 @@ The collection path is `/namespaces/:namespaceId/presets`; an exact Preset adds
 `/:presetId`. Use the [generated API reference](api.md#presets) for full schemas
 and response envelopes.
 
-| Request                                            | Result                  | Required permission                                             |
-| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------- |
-| `POST` collection with `{name, template}`          | `201`, created Preset   | `preset:create` on the Namespace collection.                    |
-| `GET` collection                                   | `200`, readable Presets | Namespace `read`, then `preset:read` checked on each candidate. |
-| `GET` exact Preset                                 | `200`, Preset           | `preset:read` on that Preset.                                   |
-| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset   | `preset:update` on that Preset.                                 |
-| `DELETE` exact Preset                              | `204`                   | `preset:delete` on that Preset.                                 |
+| Request                                            | Result                           | Required permission                                             |
+| -------------------------------------------------- | -------------------------------- | --------------------------------------------------------------- |
+| `POST` collection with `{name, template}`          | `201`, created Preset            | `preset:create` on the Namespace collection.                    |
+| `GET` collection                                   | `200`, readable Preset summaries | Namespace `read`, then `preset:read` checked on each candidate. |
+| `GET` exact Preset                                 | `200`, Preset                    | `preset:read` on that Preset.                                   |
+| `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
+| `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
 An included `template` replaces the whole template, including variable
 definitions; omitted fields stay unchanged. Writes check the template structure,

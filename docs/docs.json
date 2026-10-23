@@ -95,6 +95,10 @@
                     "label": "Harness"
                   },
                   {
+                    "page": "guides/topics/remote-harness",
+                    "label": "Remote Harness"
+                  },
+                  {
                     "page": "guides/topics/workspace-files",
                     "label": "Workspace Files"
                   },
@@ -107,12 +111,24 @@
                     "label": "Console"
                   },
                   {
+                    "page": "guides/console/create-namespace",
+                    "label": "Create a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
                   },
                   {
+                    "page": "guides/console/configuration-plugins-and-files",
+                    "label": "Configuration, Plugins, and Files"
+                  },
+                  {
                     "page": "guides/console/channels-and-credentials",
                     "label": "Channels and Credentials"
+                  },
+                  {
+                    "page": "guides/console/secrets",
+                    "label": "Manage Secrets"
                   },
                   {
                     "page": "guides/console/agent-sharing",
@@ -185,6 +201,18 @@
                     "label": "Credential Sources"
                   },
                   {
+                    "page": "guides/credential-proxy",
+                    "label": "Set Up Credential Proxy"
+                  },
+                  {
+                    "page": "reference/credential-sources/withdrawal",
+                    "label": "Credential Withdrawal"
+                  },
+                  {
+                    "page": "reference/credential-sources/protected-inference",
+                    "label": "Protected Inference"
+                  },
+                  {
                     "page": "guides/topics/audit-log",
                     "label": "Audit Log"
                   }
@@ -228,7 +256,10 @@
             ],
             "hidden": [
               "reference/console/debug-fields",
+              "reference/console/theming",
               "reference/console/agent-sharing",
+              "reference/console/versions-and-channel-drafts",
+              "reference/console/repository-access",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -381,6 +412,18 @@
                       {
                         "page": "reference/repository-credentials/push-ref-guardrail",
                         "label": "Push Guardrail"
+                      },
+                      {
+                        "page": "reference/repository-credentials/prepared-native-git",
+                        "label": "Native Git with a Prepared Credential"
+                      },
+                      {
+                        "page": "reference/repository-credentials/protected-openshell-git",
+                        "label": "Protected Git with OpenShell"
+                      },
+                      {
+                        "page": "reference/public-github-reads",
+                        "label": "Public GitHub Reads"
                       }
                     ]
                   }
@@ -412,7 +455,10 @@
             "hidden": [
               "guides/repository-credentials/standalone-service",
               "guides/repository-credentials/development-token",
-              "reference/repository-credentials/development-token"
+              "reference/repository-credentials/development-token",
+              "reference/repository-credentials/openshell-git",
+              "reference/repository-credentials/openshell-git-refusals",
+              "reference/repository-credentials/openshell-git-restarts"
             ]
           },
           {
@@ -439,6 +485,10 @@
                     "label": "Control Plane Setup"
                   },
                   {
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
+                  },
+                  {
                     "page": "guides/deploy/private-registry-images",
                     "label": "Private Images"
                   },
@@ -447,8 +497,44 @@
                     "label": "Profiles"
                   },
                   {
+                    "page": "guides/deploy/breaking-changes",
+                    "label": "Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-15",
+                    "label": "Breaking Changes Before 2026-10-15"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-archive",
+                    "label": "Earlier Breaking Changes"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-13",
+                    "label": "Breaking Changes Before 2026-10-13"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-12",
+                    "label": "Breaking Changes Before 2026-10-12"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-11",
+                    "label": "Breaking Changes Before 2026-10-11"
+                  },
+                  {
+                    "page": "guides/deploy/breaking-changes-before-2026-10-10",
+                    "label": "Breaking Changes Before 2026-10-10"
+                  },
+                  {
+                    "page": "guides/deploy/split-layout-upgrade",
+                    "label": "Split-Layout Upgrade"
+                  },
+                  {
                     "page": "guides/deploy/upgrade-checklist",
                     "label": "Upgrade Checklist"
+                  },
+                  {
+                    "page": "guides/deploy/upgrade-dispositions",
+                    "label": "Upgrade Dispositions"
                   },
                   {
                     "page": "guides/deploy/upgrade-baseline",
@@ -457,6 +543,10 @@
                   {
                     "page": "guides/deploy/production-upgrade",
                     "label": "Image Upgrades"
+                  },
+                  {
+                    "page": "guides/deploy/production-installation-changes",
+                    "label": "Installation Changes"
                   },
                   {
                     "page": "guides/deploy/production-upgrade-recovery",
@@ -473,6 +563,14 @@
                   {
                     "page": "guides/deploy/oidc-sign-in",
                     "label": "OIDC Sign-in"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-operations",
+                    "label": "OIDC Operations"
+                  },
+                  {
+                    "page": "guides/deploy/oidc-keycloak",
+                    "label": "Keycloak Sign-in"
                   },
                   {
                     "page": "guides/deploy/local-k3d-image-upgrade",
@@ -582,6 +680,10 @@
                   {
                     "page": "guides/deploy/credential-lifecycle",
                     "label": "Credential Rotation"
+                  },
+                  {
+                    "page": "guides/deploy/credential-proxy-upgrade",
+                    "label": "Migrate to Credential Proxy"
                   }
                 ]
               }
@@ -591,7 +693,8 @@
               "guides/deploy/local-operations",
               "flows/installation-profile-rendering",
               "guides/deploy/published-images",
-              "guides/deploy/production-tui"
+              "guides/deploy/production-tui",
+              "reference/settings/oidc"
             ]
           },
           {
@@ -624,6 +727,10 @@
                   {
                     "page": "reference/cheatsheets/environment-variables",
                     "label": "Environment Variables"
+                  },
+                  {
+                    "page": "reference/cheatsheets/github-actions",
+                    "label": "GitHub Actions"
                   }
                 ]
               },
@@ -716,6 +823,10 @@
                     "label": "Driver Development"
                   },
                   {
+                    "page": "contributing/credential-proxy-driver",
+                    "label": "Implement a Credential Proxy Driver"
+                  },
+                  {
                     "group": "Driver Contracts",
                     "pages": [
                       {
@@ -727,12 +838,24 @@
                         "label": "Compute"
                       },
                       {
+                        "page": "reference/drivers/compute-admission",
+                        "label": "Compute Admission"
+                      },
+                      {
                         "page": "reference/drivers/configuration",
                         "label": "Configuration"
                       },
                       {
                         "page": "reference/drivers/credential-gateway",
                         "label": "Credential Gateway"
+                      },
+                      {
+                        "page": "reference/drivers/credential-proxy",
+                        "label": "Credential Proxy"
+                      },
+                      {
+                        "page": "reference/drivers/credential-refresh",
+                        "label": "Credential Refresh"
                       },
                       {
                         "page": "reference/drivers/iam",
@@ -774,8 +897,16 @@
                     "label": "Environment"
                   },
                   {
+                    "page": "contributing/console-ui",
+                    "label": "Console UI"
+                  },
+                  {
                     "page": "contributing/console-storybook",
                     "label": "Console Storybook"
+                  },
+                  {
+                    "page": "contributing/console-storybook-agent-workflows",
+                    "label": "Storybook Agent Workflows"
                   },
                   {
                     "page": "flows/docker-compose-development",
@@ -809,35 +940,26 @@
                         "label": "Module Boundaries"
                       },
                       {
-                        "page": "testing/repository-boundaries",
-                        "label": "Repository Boundaries"
-                      },
-                      {
                         "page": "testing/fixtures-and-scenarios",
                         "label": "Fixtures and Scenarios"
                       },
                       {
                         "page": "testing/ci",
                         "label": "CI"
-                      },
-                      {
-                        "page": "testing/ci-k3d-images",
-                        "label": "k3d Images"
-                      },
-                      {
-                        "page": "testing/first-agent-smoke",
-                        "label": "First Agent Smoke"
-                      },
-                      {
-                        "page": "testing/ci-manual-integration",
-                        "label": "Manual Integration Lanes"
-                      },
-                      {
-                        "page": "testing/metrics",
-                        "label": "Metrics Dashboard"
                       }
                     ]
                   }
+                ]
+              },
+              {
+                "group": "Release",
+                "pages": [
+                  { "page": "release/README", "label": "Overview" },
+                  { "page": "release/configuration", "label": "Configuration" },
+                  { "page": "release/containers", "label": "Containers" },
+                  { "page": "release/chart-publication", "label": "Helm Chart" },
+                  { "page": "release/cli-publication", "label": "OCC CLI" },
+                  { "page": "release/container-promotion", "label": "Docker Hub Promotion" }
                 ]
               },
               {
@@ -875,7 +997,10 @@
               "contributing/rfc-template",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
+              "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
+              "guides/deploy/local-openshell-images",
+              "guides/deploy/protected-egress-development",
               "reference/settings/development",
               "design/resources",
               "design/access",
@@ -887,6 +1012,7 @@
               "flows/production-startup",
               "flows/coordinated-production-upgrade",
               "flows/docker-compose-development/startup",
+              "flows/docker-compose-development/keycloak",
               "flows/docker-compose-development/agent-execution",
               "flows/common-logging",
               "flows/audit-ledger",
@@ -894,8 +1020,11 @@
               "flows/agent-deployment-diagnostics",
               "flows/agent-runtime-logs",
               "flows/platform-console",
+              "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
+              "flows/platform-console/sign-in-return",
               "flows/platform-console/observability-link",
               "flows/configuration-driver",
               "flows/configuration-driver/persistence-and-revisions",
@@ -909,6 +1038,7 @@
               "flows/compute-driver-lifecycle-hooks",
               "flows/openshell-sandbox-provisioning",
               "flows/credential-source-lifecycle",
+              "flows/credential-source-refresh",
               "flows/driver-plugin-loading",
               "flows/agent-plugins",
               "flows/agent-channel-directory",
@@ -925,29 +1055,29 @@
               "flows/container-package-bootstrap",
               "flows/container-publication",
               "flows/cli-publication",
+              "flows/cli-agent-browsing",
               "flows/github-actions-testing/preparation",
               "testing/postgresql",
-              "testing/images",
               "testing/docker",
               "testing/ssh",
               "testing/kubernetes",
-              "testing/production-network-access",
-              "testing/two-cluster-local",
-              "testing/gateway-routing",
-              "testing/production-tui",
               "testing/slack",
-              "testing/service-accounts",
               "testing/plugins",
               "testing/openshell",
-              "testing/openshell-first-agent",
-              "testing/openshell-pre5-local-experiment",
+              "testing/openshell-oauth",
+              "testing/openshell-coverage",
               "flows/agent-repository-credentials",
+              "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
-              "testing/repository-credentials-artifacts",
-              "testing/repository-credentials-platform",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "flows/credential-source-egress",
+              "testing/static-egress",
+              "testing/protected-repository-custody",
+              "reference/sandbox-policies",
+              "guides/topics/agent-sandbox-policy",
+              "flows/agent-sandbox-policy"
             ]
           }
         ]

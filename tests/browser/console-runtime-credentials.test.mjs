@@ -16,6 +16,7 @@ import {
   nonAuthWriteRequests,
   secretOptionLabel,
   selectSecret,
+  waitForEnabled,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
@@ -82,8 +83,10 @@ test("draft Agent offers deployment without a generated-credential step", async 
   const { page, artifacts } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+  // The deploy explanation is in the page's disclosure, beside the draft's next step.
+  await page.getByText("What this page can tell you", { exact: true }).click();
   await page.getByText(/Connection credentials are generated automatically/).waitFor();
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Save authentication source" }).waitFor();
   assert.equal(await page.getByRole("heading", { name: "Channel Secrets" }).count(), 0);
   await expectNoText(page, /Slack app token|Slack bot token/);
@@ -93,7 +96,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     0,
   );
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
 
   // A one-click first deployment still requires this Agent's model Secret grant.
   const originalBindings = [...fixture.policy.bindings];
@@ -109,11 +112,14 @@ test("draft Agent offers deployment without a generated-credential step", async 
   );
   await deploy.click();
   assert.equal((await deniedDeployment).status(), 403);
+  // The API names the Agent's own principal and the grant it lacks; the console shows that.
   await page
     .getByRole("alert")
-    .filter({ hasText: /Deployment denied.*selected Secrets/ })
+    .filter({
+      hasText: `The Agent service principal ${agent.servicePrincipalId} is not authorized to operate`,
+    })
     .waitFor();
-  assert.equal(await deploy.isEnabled(), true);
+  await waitForEnabled(deploy);
   fixture.policy.bindings.splice(0, fixture.policy.bindings.length, ...originalBindings);
 
   // A missing tenant RoleBinding refuses the credential check before admission (D396).
@@ -136,7 +142,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
     .getByRole("alert")
     .filter({ hasText: /cluster denied OCC access.*tenant RoleBindings/ })
     .waitFor();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await page.unroute(deployUrl);
 
   const deployResponse = page.waitForResponse(
@@ -149,8 +155,138 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await page.screenshot({ path: join(artifacts, "runtime-credentials.png"), fullPage: true });
 });
 
-test("active Agent can deploy the current saved draft as a new version", async (t) => {
+// A 503 that refused the deploy before admission created no version, so Deploy names its reason
+// and stays available, as Create Agent does for the same codes. Any other 503 may have created
+// one: it reads as outcome unknown and Deploy stays disabled until a refresh (finding 1638).
+test("Deploy names a 503 refused before admission and keeps Deploy available", async (t) => {
   const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deploy refusals", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deploy refusal Agent",
+    nativeValues("refusal", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const deployUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`;
+  let answer;
+  let deployRequests = 0;
+  await page.route(deployUrl, (route) => {
+    deployRequests += 1;
+    return route.fulfill({
+      status: answer.status,
+      contentType: "application/json",
+      body: JSON.stringify({ error: answer.error, meta: { requestId: `req_${randomUUID()}` } }),
+    });
+  });
+  // A named outage of Deploy's own check reads before the request is a failed read, not a
+  // refusal of the deploy. (The Agent read answers outages with the catch-all text; a named one
+  // here only checks that Deploy never treats a read's answer as a refusal.)
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "The Agent store is unavailable." },
+          meta: { requestId: `req_${randomUUID()}` },
+        }),
+      }),
+    { times: 1 },
+  );
+  await deploy.click();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Service unavailable. The read could not be completed. Try again." })
+    .waitFor();
+  assert.equal(await page.getByText("The Agent store is unavailable.").count(), 0);
+  assert.equal(deployRequests, 0);
+  for (const { status = 503, error, text, available } of [
+    {
+      // Channel credential validation runs before the deploy's transaction.
+      error: {
+        code: "CHANNEL_CREDENTIAL_UNAVAILABLE",
+        message:
+          "Channel credential validation is temporarily unavailable. Retry before deploying.",
+        details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
+      },
+      text: "Channel credential validation is temporarily unavailable. Retry before deploying.",
+      available: true,
+    },
+    {
+      // A Secret driver-ownership refusal, the API's named DEPENDENCY_UNAVAILABLE, rolled the
+      // deploy's transaction back.
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+      },
+      text: "The selected Secret Driver does not own a Secret the Configuration binds.",
+      available: true,
+    },
+    {
+      // The catch-all outage names no reason.
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+      },
+      text: "Outcome unknown.",
+      available: false,
+    },
+    {
+      // The API could not confirm its own commit.
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+      },
+      text: "Outcome unknown.",
+      available: false,
+    },
+    {
+      // A 503 without a code, such as a proxy's, names no refusal whatever it says.
+      error: { message: "Channel credential validation is temporarily unavailable." },
+      text: "Outcome unknown.",
+      available: false,
+    },
+    {
+      // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
+      status: 502,
+      error: { code: "CHANNEL_CREDENTIAL_UNAVAILABLE", message: "Synthetic named outage." },
+      text: "Outcome unknown.",
+      available: false,
+    },
+  ]) {
+    answer = { status, error };
+    const label = JSON.stringify(answer);
+    await waitForEnabled(deploy);
+    await deploy.click();
+    const alert = page.getByRole("alert").filter({ hasText: text });
+    await alert.waitFor();
+    assert.equal(await page.getByText(/Outcome unknown/).count(), available ? 0 : 1, label);
+    assert.equal(await page.getByText("Deploying…", { exact: true }).count(), 0, label);
+    assert.equal(await deploy.isEnabled(), available, label);
+    if (!available) {
+      // An unknown outcome keeps Deploy disabled until the reader refreshes.
+      await page.reload();
+      await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+    }
+  }
+  const revisions = await fixture.request(
+    "GET",
+    `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
+  );
+  assert.equal(revisions.data.length, 0);
+});
+
+test("active Agent can deploy the current saved draft as a new version", async (t) => {
+  // The draft enables Slack, which deployment admits only with an Installation channel runtime.
+  const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent redeployment", { ready: true });
   const agent = await fixture.createAgent(
@@ -198,15 +334,7 @@ test("active Agent can deploy the current saved draft as a new version", async (
   for (const key of ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]) {
     const secret = await fixture.createSecret(namespace.id, key, `test-${key}`);
     secretBindings[key] = envBinding(secret);
-    fixture.policy.bindings.push({
-      id: `binding-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.id}`,
-      roleId: `auth-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   const currentDraft = await fixture.updateConfiguration(
     namespace.id,
@@ -238,14 +366,24 @@ test("active Agent can deploy the current saved draft as a new version", async (
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
   );
   assert.equal(revisions.status, 200);
-  assert.equal(revisions.data.length, 2);
-  assert.equal(revisions.data[0].id, first.revision.id);
-  assert.equal(revisions.data[0].configurationGeneration, 1);
-  assert.deepEqual(revisions.data[0].configuration, first.revision.configuration);
-  assert.equal(revisions.data[1].id, deployed.id);
-  assert.equal(revisions.data[1].configurationGeneration, currentDraft.generation);
+  // Revision summaries list newest first; each saved Configuration is on its exact read.
+  assert.deepEqual(
+    revisions.data.map(({ id, configurationGeneration }) => [id, configurationGeneration]),
+    [
+      [deployed.id, currentDraft.generation],
+      [first.revision.id, 1],
+    ],
+  );
+  const savedConfiguration = async (id) =>
+    (
+      await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/agents/${agent.id}/revisions/${encodeURIComponent(id)}`,
+      )
+    ).data.configuration;
+  assert.deepEqual(await savedConfiguration(first.revision.id), first.revision.configuration);
   assert.equal(
-    revisions.data[1].configuration.plugins.entries.knowledge.config.marker,
+    (await savedConfiguration(deployed.id)).plugins.entries.knowledge.config.marker,
     "current-draft",
   );
 });
@@ -337,7 +475,7 @@ test("revision deployment blocks unavailable reads and does not replay a lost re
   assert.equal(await deploy.count(), 0);
   configurationUnavailable = false;
   await page.reload();
-  await deploy.and(page.locator(":enabled")).waitFor();
+  await waitForEnabled(deploy);
   await deploy.click();
   await page.getByText(/Outcome unknown/).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -443,7 +581,7 @@ test("bound Slack credential fields show Secret references without reading value
   await waitForInputValue(appToken, secretOptionLabel(appSecret));
   assert.equal(await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(), true);
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("Slack credential replacement switches only selected Secret references", async (t) => {
@@ -502,7 +640,7 @@ test("Slack credential replacement switches only selected Secret references", as
     secretOptionLabel(replacementAppSecret),
   );
   await waitForInputValue(page.getByLabel("Slack bot token"), secretOptionLabel(botSecret));
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("partially bound Slack credentials save only the missing token", async (t) => {
@@ -570,7 +708,7 @@ test("partially bound Slack credentials save only the missing token", async (t) 
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
   assert.deepEqual(await secretGrants(fixture, requests, namespace.id, agent), [botSecret.id]);
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
 });
 
 test("missing Slack credential fields require both Secret references before saving", async (t) => {
@@ -639,7 +777,78 @@ test("missing Slack credential fields require both Secret references before savi
     SLACK_APP_TOKEN: envBinding(appSecret),
     SLACK_BOT_TOKEN: envBinding(botSecret),
   });
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+});
+
+test("Credentials shows issued-account denial only while that source is selected", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Issued-account feedback", { ready: true });
+  // Seed an issued account's stored result; listing and source selection still use the real app.
+  const account = await fixture.controller.transact(async (state) => {
+    const created = await state.serviceAccounts.createServiceAccount({
+      id: `sa_${randomUUID()}`,
+      namespaceId: namespace.id,
+      name: "Saved issued account",
+    });
+    return state.serviceAccounts.updateCredential(namespace.id, created.id, {
+      kind: "access_token",
+      secretRef: { name: "issued-account-feedback-fixture", key: "token" },
+    });
+  });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Issued-account Agent",
+    nativeValues("issued-account-feedback", { harnessId: "codex" }),
+    {
+      executionMode: "dedicated",
+      harnessAuth: {
+        method: "codex_pat",
+        source: { kind: "service_account", namespaceId: namespace.id, id: account.id },
+      },
+    },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const accountsPath = `/namespaces/${namespace.id}/service-accounts`;
+  const restriction = {
+    id: "deny-issued-account-namespace-read",
+    namespaceId: namespace.id,
+    resourceKind: "namespace",
+    resourceId: namespace.id,
+    action: "read",
+    effect: "deny",
+  };
+  // Namespace access changes after Console admission. Native IAM must produce the list's 403;
+  // denied ServiceAccount reads alone would instead filter the collection to an empty 200.
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === accountsPath) {
+      fixture.policy.restrictions.push(restriction);
+    }
+  });
+  const deniedList = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === accountsPath,
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  assert.equal((await deniedList).status(), 403);
+  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(restriction), 1);
+  const feedback = page.getByText(/Service accounts unavailable\. Access denied/);
+  const issuedAccount = page.getByLabel("Issued ChatGPT service account", { exact: true });
+  await feedback.waitFor();
+  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.isDisabled(), true);
+
+  // Other methods remain usable without presenting the issued-account permission error.
+  const method = page.getByLabel("Authentication source", { exact: true });
+  for (const source of ["api_key", "codex_pat", "runtime"]) {
+    await method.selectOption(source);
+    assert.equal(await feedback.isVisible(), false);
+  }
+  await method.selectOption("service_account");
+  assert.equal(await feedback.isVisible(), true);
+  assert.equal(await issuedAccount.inputValue(), account.id);
+  assert.equal(await issuedAccount.isDisabled(), true);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
 });
 
 test("operator-managed console binding saves and deploys without a managed credential gate", async (t) => {

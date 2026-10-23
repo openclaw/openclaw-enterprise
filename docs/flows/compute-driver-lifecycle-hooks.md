@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-09-27 20:59
-last_updated_session: authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4
+updated: 2026-10-09 23:11
+last_updated_session: authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221
 ---
 
 # Compute Driver Lifecycle Hooks Flow
@@ -15,12 +15,12 @@ stops when Compute returns its existing lifecycle observation to OCC or the inde
 
 ## Entry Points
 
-- Trigger: OCC reconciliation or an independently claimed Namespace/AgentRevision lifecycle job.
+- Trigger: OCC reconciliation or an independently claimed Namespace or Agent revision lifecycle job.
 - Source: `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,
   `packages/occ/src/index.ts:OpenClawController.selectDriver`, and
   `apps/controller/src/worker.ts:ControllerWorker`.
 - Assumptions: one server-owned Installation, exact selected Driver identities, established IAM
-  authorization, an immutable Namespace or AgentRevision, and an unchanged concrete ComputeDriver.
+  authorization, a Namespace or saved Agent version, and an unchanged concrete ComputeDriver.
 
 ## Flow
 
@@ -34,8 +34,8 @@ graph TD
   subgraph Lifecycle["Compute-owned lifecycle"]
     C --> D{"Lifecycle operation"}
     D -->|ensure Namespace| E["Prepare tenant infrastructure and run namespace hooks"]
-    D -->|prepare revision| F["Prepare or stage revision resources"]
-    D -->|retire revision| G["Revoke workload access before stopping"]
+    D -->|prepare version| F["Prepare or stage version resources"]
+    D -->|retire version| G["Revoke workload access before stopping"]
     D -->|delete Namespace| H["Revoke workloads and namespace before deletion"]
     E -->|success| I["Report ready"]
     F -->|ready| J["Return readiness for worker activation"]
@@ -58,7 +58,7 @@ non-Compute lifecycle owners once before the first operation. The selected IAM
 Driver remains stable and loads current policy for every authorization decision.
 
 Trusted startup enforces the
-[production revision-stage contract](../reference/drivers/compute.md#production-revision-stages).
+[production version-stage contract](../reference/drivers/compute.md#production-revision-stages).
 The worker invokes each stage only when the Harness lifecycle requires it and
 fails closed if a required stage or owner is unavailable.
 
@@ -76,6 +76,12 @@ signal; direct Compute calls receive a nonaborted fallback.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.ensureNamespace`
 
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validatePeer` checks peer
+Pod-label keys and values during Driver construction, before any Namespace API
+request. Invalid selectors stop configuration loading instead of creating a tenant
+that later fails NetworkPolicy admission. Empty values, qualified keys, and valid
+length boundaries remain unchanged.
+
 Both [Kubernetes](../../apps/controller/src/drivers/compute/kubernetes/index.ts) and
 [Docker](../../apps/controller/src/drivers/compute/docker/index.ts) Compute implementations
 prepare tenant infrastructure first, then run `afterNamespacePrepared` before reporting ready.
@@ -90,23 +96,23 @@ Kubernetes `prepareRevision` invokes selected workload hooks for initial embedde
 and for dedicated Codex workload preparation. Before a dedicated Codex workload starts, preparation
 stages the gateway-to-Agent runtime NetworkPolicies, the temporary authentication egress policy,
 and workspace-node enrollment material; the gateway cannot enroll its node or reach the Agent
-app-server until those policies exist. Embedded replacement revisions are different: after staging
+app-server until those policies exist. Embedded replacement versions are different: after staging
 the immutable configuration, Service, and private claim, `prepareRevision` can return ready without
-starting the replacement gateway. After the worker commits the new active revision,
+starting the replacement gateway. After the worker commits the new selected version,
 `KubernetesComputeDriver.activateRevision` invokes `beforeWorkloadStart`, updates the `Recreate`
 gateway Deployment and Service, then checks gateway readiness.
 
 `runtime.nodeSelector` schedules Harness and embedded Pods. Dedicated real Gateways require
 `runtime.gatewayNodeSelector` and run in the logical Namespace's managed control-plane runtime
 namespace. The Pod-level selector also schedules the Gateway's private-state initializer there.
-Compute owns both targets through the same revision lifecycle; teardown selects each resource's
-physical namespace and preserves newer revisions and durable Agent claims.
+Compute owns both targets through the same version lifecycle; teardown selects each resource's
+physical namespace and preserves newer versions and durable Agent claims.
 Dedicated replacement stops earlier Harnesses before preparing the successor.
-The Agent-owned authentication NetworkPolicy selects only the successor revision;
+The Agent-owned authentication NetworkPolicy selects only the successor version;
 superseded reconciliation cannot move that grant back to a predecessor.
 
 SSH stages embedded snapshots without starting the candidate gateway. After the
-worker commits the active revision, `SshComputeDriver.activateRevision` invokes
+worker commits the selected version, `SshComputeDriver.activateRevision` invokes
 `beforeWorkloadStart`, then projects accepted launch placeholders into the
 Agent's systemd unit before restart. Failed activation compensates prepared
 bindings through `beforeWorkloadStop`.
@@ -122,11 +128,21 @@ workload bindings.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.retireRevision`
 
-Workload retirement runs `beforeWorkloadStop` in reverse owner order before stopping the exact
-revision. Namespace deletion is limited to empty tenants and runs
+Workload retirement runs `beforeWorkloadStop` in reverse owner order before stopping the workload
+for this version. Namespace deletion is limited to empty tenants and runs
 `beforeNamespaceDelete` before requesting Kubernetes deletion. A
-failed revocation preserves the owned resource for retry; aborted preparation receives a fresh,
-bounded cleanup signal so cancellation cannot suppress compensation.
+failed revocation preserves the owned resource for retry; aborted preparation receives a new
+cleanup signal that requests cancellation after five seconds. The original cancellation
+cannot prevent this cleanup attempt.
+
+`apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.deleteNamespace`
+
+Docker Namespace deletion also runs `beforeNamespaceDelete` before removing owned
+containers and workspace volumes. If the network has already been removed externally,
+the Driver still runs these cleanup steps; network absence alone does not establish
+Namespace deletion. It verifies any existing network before teardown and removes it
+after the remaining resources. The worker settles deletion only from the resulting
+`namespaceDeleted` observation.
 
 ## Debugging and Verification
 
@@ -158,6 +174,10 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 
 ## Changelog
 
+- 2026-10-09 23:11: Reject invalid Kubernetes peer Pod selectors before Namespace effects in the accompanying validation repair. (authoring-run/b2bd682f-f0c3-4476-8725-2f9174362221 - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
+
+- 2026-10-09 21:59: Trace Docker Namespace teardown after external network removal in the accompanying fix. (authoring-run/d4db043e-4d5b-48b3-96cf-d7e7e94e9bd7 - dc95c2261d4b46cff8aca703e13e43cdd71d153e)
+
 - 2026-09-27 20:59: Align two-cluster authentication policy with exclusive Harness replacement. (authoring-run/594aec20-cebc-431e-8190-8fdbd2a2ceb4 - bbb02cd9bad2c9ae0497d0340271730bdc647b55)
 
 - 2026-09-26 10:36: Document dedicated Codex runtime NetworkPolicy staging before workspace-node enrollment. (authoring-run/2f86d216-c9e9-4160-b47d-ae17e8c58fcd - caf123193961444ad99d6ebddbdbd49f040d1922)
@@ -174,10 +194,10 @@ bounded cleanup signal so cancellation cannot suppress compensation.
 - 2026-08-24 17:12: Documented stable lifecycle-owner selection and current-policy IAM authorization. (01a0352c-debe-73b1-baa6-379855af874f - 4502d7e)
 - 2026-08-24 17:12: Removed IAM policy snapshots and refresh; stable lifecycle owners retain IAM Drivers that load current policy for every authorization decision. (01a0352c-debe-73b1-baa6-379855af874f - 4502d7e) (NOT_IN_SPEC)
 - 2026-08-21 20:53: Linked the canonical production Compute-stage contract while preserving owner snapshots and fail-closed lifecycle execution. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - f6491502262d6190c95d2a910ee46283c30244f9)
-- 2026-08-21 20:12: Clarified that production validates both revision stages during startup before later fail-closed lifecycle execution. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - b651c4ae38310032f8cda47c868a9b282fb12ff3)
-- 2026-08-21 20:05: Scoped the trace to lifecycle owner attachment, typed optional revision stages, and unchanged Harness topology. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - b651c4ae38310032f8cda47c868a9b282fb12ff3)
+- 2026-08-21 20:12: Clarified that production validates both version stages during startup before later fail-closed lifecycle execution. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - b651c4ae38310032f8cda47c868a9b282fb12ff3)
+- 2026-08-21 20:05: Scoped the trace to lifecycle owner attachment, typed optional version stages, and unchanged Harness topology. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - b651c4ae38310032f8cda47c868a9b282fb12ff3)
 - 2026-08-21 19:28: Extended trusted lifecycle composition to production-capable packaged IAM, Compute, and Configuration while preserving staged hooks and Harness ownership. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - a45b01d258c6a6b10db2301cad3303e2fa520f09)
 - 2026-08-21 17:28: Replaced the removed public startup factory with the single asynchronous Installation-and-Drivers loading entry point. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - d17a87541cbebc8e333bd00bd90c42e734d91a80)
 - 2026-08-20 16:05: Consolidated controller-owned validation, selection-ordered callbacks, final environment checks, and reverse cleanup. (01a01dfc-dbec-79e1-9400-356f32af7d11 - 8bbdcb2)
 - 2026-08-20 15:33: Shared immutable snapshots across the workspace and reduced workload launch configuration to opaque environment placeholders. (01a01dfc-dbec-79e1-9400-356f32af7d11 - d1294fc)
-- 2026-08-20 07:37: Documented trusted selected-driver startup, ordered lifecycle dispatch, bounded launch validation, cancellation-safe compensation, and revocation-before-teardown. (01a01dfc-dbec-79e1-9400-356f32af7d11 - 875f7a1b47f3ee3645a432c27aa72da57e300f29)
+- 2026-08-20 07:37: Documented trusted selected-driver startup, ordered lifecycle dispatch, launch validation against allowed values, cancellation-safe compensation, and revocation-before-teardown. (01a01dfc-dbec-79e1-9400-356f32af7d11 - 875f7a1b47f3ee3645a432c27aa72da57e300f29)

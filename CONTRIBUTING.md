@@ -104,45 +104,30 @@ defect, not merely restate mocks.
 Use the [developer skills](docs/testing/developer-skills.md) for test quality,
 proof selection, diff cleanup, and requested independent review.
 
-By default, open new PRs from a topic branch in your own fork against
-`openclaw/openclaw-enterprise`. This is the default for core team members too,
-even with upstream write access. Maintainers may continue using upstream topic
-branches in authorized workflows, and agents follow existing user instructions
-that select that path. Maintainers retain their review, merge, and approved
-bypass permissions. When updating an assigned existing PR, keep its head
-repository and branch.
+Maintainers retain their review, merge, and approved bypass permissions. When
+updating an assigned existing PR, keep its head repository and branch.
 
 Before publishing, verify the authenticated GitHub account with
 `gh api user --jq .login` and confirm it matches the requesting contributor.
-For the default workflow, create or reuse that contributor's fork. Inspect the
-actual fetch and push URLs with `git remote -v`; preserve existing remotes.
-In a new fork checkout, `origin` usually points to the fork and `upstream` to
-`openclaw/openclaw-enterprise`, but remote names do not establish ownership.
-Fetch the intended upstream base before comparing or refreshing a branch.
+Inspect the actual fetch and push URLs with `git remote -v`; preserve existing
+remotes. Remote names do not establish ownership or the intended destination.
+Fetch the intended base before comparing or refreshing a branch.
 
 Before each push, verify the destination repository's push URL, destination ref,
 remote head, and author of any existing PR. Stop on unexpected changes. After replacing
-`FORK_REMOTE`, `CONTRIBUTOR_LOGIN`, and `BRANCH` with the verified values and
+`PUSH_REMOTE`, `BASE_REPOSITORY`, `BASE_BRANCH`, `HEAD_REF`, and `BRANCH` with the verified values and
 writing the PR description to `/tmp/enterprise-pr.md`, publish with explicit
 head and base repositories:
 
 ```sh
-git push FORK_REMOTE HEAD:refs/heads/BRANCH
-gh pr create --repo openclaw/openclaw-enterprise --base main \
-  --head CONTRIBUTOR_LOGIN:BRANCH --title "Describe the change" \
+git push PUSH_REMOTE HEAD:refs/heads/BRANCH
+gh pr create --repo BASE_REPOSITORY --base BASE_BRANCH \
+  --head HEAD_REF --title "Describe the change" \
   --body-file /tmp/enterprise-pr.md
 ```
 
-Use the intended target branch in `--base` when it differs from `main`.
-An explicit `--head` keeps `gh pr create` from choosing where to push the branch.
-
-Leave **Allow edits from maintainers** enabled for fork PRs. The GitHub CLI
-enables it by default; omit `--no-maintainer-edit` and verify
-`maintainer_can_modify` is `true` on the created PR. This lets maintainers commit
-fixes and prepare the branch for merging. If the fork contains Actions
-workflows, GitHub also grants workflow-edit access that can expose fork secrets;
-enable that broader access only when acceptable and record it in the PR. See
-[GitHub's maintainer-edit permissions](https://docs.github.com/en/pull-requests/how-tos/work-with-forks/allowing-changes-to-a-pull-request-branch-created-from-a-fork).
+Keep `HEAD` literal in the `git push` command. `HEAD_REF` identifies the PR's source
+branch. An explicit `--head` keeps `gh pr create` from choosing where to push the branch.
 
 - Keep one coherent change per PR. Stack only when a dependency is real, and
   link the prerequisite PR and intended base.
@@ -153,7 +138,8 @@ enable that broader access only when acceptable and record it in the PR. See
 - Request relevant maintainers' feedback. Resolve substantive findings and
   required checks before merging.
 - Before merging Console UI changes, upload screenshots and a short video of
-  the final UI as native GitHub attachments in the PR's Verification section.
+  the final UI to GitHub (native attachments or a gist) and show them in the
+  PR's Verification section.
   Missing or stale media blocks merging even when CI passes. Follow the
   [Console evidence requirements](AGENTS.md#console-storybook) for capture,
   review, and reporting.
@@ -170,11 +156,13 @@ specific holds; record the reason for the bypass. Do not bypass an unresolved
 finding or claim a missing review succeeded.
 
 An RFC is needed for architectural changes that the team needs to understand,
-not for ordinary bug fixes, small features, or polish. Request human review early,
-but do not wait to write or revise the implementation. Keep the RFC consistent
-with the final code and land them together when ready, either in one PR or as
-linked PRs merged in dependency order. Core team members do not wait for an RFC
-response unless a specific decision or hold requires it.
+not for ordinary bug fixes, small features, or polish. Request human review early.
+For a Driver contract change, submit the proposed contract for human review
+before writing the implementation. Once submitted, implementation and RFC review
+can proceed in parallel unless a specific decision or hold requires waiting.
+Keep the RFC consistent with the final code and land them together when ready,
+either in one PR or as linked PRs merged in dependency order. Core team members
+do not wait for an RFC response unless a specific decision or hold requires it.
 
 Use `node scripts/pr-status.mjs PR_NUMBER` to inspect a PR before the final
 checks. The command is read-only; it does not establish merge readiness. After

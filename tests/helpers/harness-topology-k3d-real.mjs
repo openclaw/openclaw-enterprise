@@ -23,6 +23,7 @@ import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
+  withBoundedTeardown,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -34,6 +35,7 @@ import {
   OTEL_RESOURCE,
 } from "../helpers/logging-otel-observation.mjs";
 import { assertDedicatedSkillSourceLifecycle } from "./dedicated-skill-source-lifecycle.mjs";
+import { installPublicGithubReadFixture } from "./public-github-read-k3d.mjs";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -117,6 +119,16 @@ const {
 });
 
 async function slackApi(method, token, body = {}) {
+  assert.ok(
+    [
+      "auth.test",
+      "conversations.info",
+      "conversations.history",
+      "conversations.replies",
+      "chat.postMessage",
+    ].includes(method),
+    "unsupported Slack proof operation",
+  );
   const writesMessage = method === "chat.postMessage";
   const url = new URL(`https://slack.com/api/${method}`);
   if (!writesMessage) {
@@ -128,6 +140,9 @@ async function slackApi(method, token, body = {}) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       response = await fetch(url, {
+        // The credential file is an explicitly selected Slack token. Send it
+        // only to Slack's API, never to a redirected credential recipient.
+        redirect: "error",
         method: writesMessage ? "POST" : "GET",
         headers: {
           authorization: `Bearer ${token}`,
@@ -252,6 +267,11 @@ async function createScopedController(context, identifier, platformNamespace, ku
     JSON.stringify([
       // Match Helm: Compute reads admitted source keys and persists Gateway
       // projections only inside the namespaces that bind this role.
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
       {
         op: "add",
         path: "/rules/-",
@@ -696,6 +716,35 @@ async function startInClusterControllers(
   workerIsolation.metadata.name = `${workerName}-isolation`;
   workerIsolation.spec.podSelector.matchLabels = workerLabels;
   manifests.items.push(workerIsolation);
+  const channelProxyUrl =
+    apiConfiguration.drivers.compute.configuration.runtime?.channels?.proxyUrl;
+  if (channelProxyUrl !== undefined) {
+    const channelProxy = new URL(channelProxyUrl);
+    assert.equal(
+      isIP(channelProxy.hostname),
+      4,
+      "the API Slack proxy requires an exact IPv4 address",
+    );
+    assert.notEqual(channelProxy.port, "", "the API Slack proxy requires an explicit port");
+    // Admission validates Slack credentials before deployment. Give only the API
+    // this approved proxy route; the worker keeps its existing isolation policy.
+    apiContainer.env.push({ name: "OCC_CHANNEL_DIRECTORY_PROXY_URL", value: channelProxyUrl });
+    manifests.items.push({
+      apiVersion: "networking.k8s.io/v1",
+      kind: "NetworkPolicy",
+      metadata: { name: `${name}-channel-proxy`, namespace: platformNamespace },
+      spec: {
+        podSelector: { matchLabels: labels },
+        policyTypes: ["Egress"],
+        egress: [
+          {
+            to: [{ ipBlock: { cidr: `${channelProxy.hostname}/32` } }],
+            ports: [{ protocol: "TCP", port: Number(channelProxy.port) }],
+          },
+        ],
+      },
+    });
+  }
   await applyManifest(JSON.stringify(manifests), {
     redactions: [databaseUrl, authSecret, workspaceGateway.apiKey],
   });
@@ -857,6 +906,10 @@ function installationConfiguration(authentication, platformNamespace, slack, opt
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-production";
   configuration.drivers.compute.id = "compute-kubernetes-production";
+  if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+    configuration.drivers.compute.configuration.runtime.codexModelBaseUrl =
+      process.env.OCC_TEST_CODEX_OPENAI_BASE_URL;
+  }
   configuration.drivers.plugin = { id: "codex-plugin", configuration: {} };
   // The real Gateway loads its plugins during the first model request.
   configuration.drivers.compute.configuration.resources.gateway.limits.memory = "2Gi";
@@ -1074,7 +1127,18 @@ async function createApiSecret(request, namespaceId, name, value) {
     200,
     `Secret read failed with HTTP ${read.status} (${read.error?.code ?? "unknown"})`,
   );
-  assert.deepEqual(read.data, response.data);
+  // Detail reads include consumers; a newly created, unbound Secret has none.
+  assert.deepEqual(read.data, {
+    ...response.data,
+    consumers: {
+      agents: [],
+      configurations: [],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 0,
+      truncated: false,
+    },
+  });
   return response.data;
 }
 
@@ -1354,7 +1418,42 @@ async function topologyPods(topology) {
   return (await Promise.all(targets.map((target) => resources("pods", target)))).flat();
 }
 
-async function arrangeProductionTopology(context, mode, slack, options = {}) {
+// The topology's own cleanups, each its own registration (finding 1711), so a worker stop that
+// rejects cannot keep the later ones from running. Operations are closures, so resources assigned
+// later are read at cleanup time. They run last-registered first: the forward and worker stop
+// before the pools, the Postgres network and the Namespaces they use go away.
+const productionTopologyCleanupOrder = Object.freeze([
+  "gatewayForward",
+  "worker",
+  "productionApp",
+  "observerPool",
+  "postgresNetwork",
+  "gatewayRuntimeNamespace",
+  "placementNamespace",
+  "temporaryDirectory",
+]);
+
+function registerProductionTopologyCleanups(context, operations) {
+  let stopped;
+  for (const name of [...productionTopologyCleanupOrder].reverse()) {
+    const operation = operations[name];
+    assert.equal(typeof operation, "function", `production topology cleanup ${name}`);
+    // Named for the teardown log: every registration comes from this line. Registered after its
+    // test's teardown, each runs at once and throws to stop the setup; register them all first.
+    try {
+      context.after({ [name]: () => operation() }[name]);
+    } catch (error) {
+      stopped ??= error;
+    }
+  }
+  if (stopped !== undefined) {
+    throw stopped;
+  }
+}
+
+async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
+  // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
+  const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1485,6 +1584,20 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           gatewayTrustedProxyCidrs: workspaceGateway.nativeOptions.gatewayAuth.trustedProxies,
         },
   );
+  const publicGithubRead =
+    options.publicGithubRead !== true
+      ? undefined
+      : await installPublicGithubReadFixture({
+          namespace: platformNamespace,
+          controllerImage,
+          kubectl,
+          applyManifest,
+          waitFor,
+        });
+  if (publicGithubRead !== undefined) {
+    workerConfiguration.drivers.compute.configuration.network.publicGithubRead =
+      publicGithubRead.peer;
+  }
   const apiConfiguration = structuredClone(workerConfiguration);
   if (workspaceGateway !== undefined) {
     apiConfiguration.drivers.configuration.configuration.authentication = { mode: "inCluster" };
@@ -1521,20 +1634,19 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   let gatewayRuntimeNamespace;
   let gatewayPlacement;
   let forwarding;
-  context.after(async () => {
-    try {
-      await forwarding?.stop();
-    } finally {
+  registerProductionTopologyCleanups(context, {
+    gatewayForward: () => forwarding?.stop(),
+    worker: async () => {
       if (worker !== undefined) {
         await worker.stop();
       } else if (workerPool !== undefined) {
         await workerPool.end();
       }
-      if (productionApp !== undefined) {
-        await productionApp.close();
-      }
-      await observerPool.end();
-      await detachPostgres?.();
+    },
+    productionApp: () => productionApp?.close(),
+    observerPool: () => observerPool.end(),
+    postgresNetwork: () => detachPostgres?.(),
+    gatewayRuntimeNamespace: async () => {
       if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
           "delete",
@@ -1545,6 +1657,8 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
+    },
+    placementNamespace: async () => {
       if (placement !== undefined) {
         await kubectl(
           "delete",
@@ -1555,13 +1669,13 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
-      await rm(directory, { recursive: true, force: true });
-    }
+    },
+    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   // Docker may replace published-port connections when another network attaches.
   // Complete that topology change before opening the observer/bootstrap pools;
-  // its registered cleanup runs only after those pools and controllers stop.
+  // its registered cleanup runs only after those pools and the workers stop.
   if (workspaceGateway !== undefined) {
     databaseAddress = await attachPostgresToK3d((cleanup) => {
       detachPostgres = cleanup;
@@ -1962,6 +2076,14 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   // Exercise Preset selection through the same creation APIs as the console. The
   // scoped caller still needs its own Secret grants; the template grants nothing.
   const launchValues = nativeConfiguration(harnessId, slack, nativeOptions);
+  if (publicGithubRead !== undefined) {
+    launchValues.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      mode: "limited",
+      allowLocalBinding: false,
+      domains: { [publicGithubRead.peer.address]: "allow" },
+    };
+  }
   if (gatewayPassword !== undefined) {
     assert.deepEqual(launchValues.gateway.auth.password, {
       source: "env",
@@ -2256,10 +2378,21 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     assert.ok(gatewayVersion.includes(process.env.OCC_TEST_KUBERNETES_OPENCLAW_VERSION));
   }
   context.diagnostic(`${mode}: ${gatewayVersion}`);
+  assert.equal(
+    deployed.data.configuration.agents.defaults.model,
+    modelReference,
+    "the admitted revision must retain its original model reference",
+  );
+  const expectedGatewayModel =
+    mode === "dedicated" &&
+    harnessId === "codex" &&
+    process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined
+      ? `codex/openai-compatible/${providerModel}`
+      : modelReference;
   await assertGatewayEffectiveDefaultModel(
     context,
     { mode, placement, gatewayPlacement, gatewayPod },
-    `${harnessId === "codex" ? "codex" : "openai"}/${providerModel}`,
+    expectedGatewayModel,
   );
 
   if (legacyTransport !== undefined) {
@@ -2326,6 +2459,7 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
     workspaceGateway,
     controllerApiPod,
     workspaceRequest,
+    publicGithubRead,
     approvedClient,
     controllerAccount: controller.account,
     controllerTenantRole: controller.tenantRole,
@@ -2442,6 +2576,7 @@ async function assertUnauthorizedCodexSocket(topology) {
 
 async function assertActualModelTurn(topology) {
   topology.gatewayUrl = await topology.refreshGatewayUrl();
+  const nonce = `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`;
   try {
     if (topology.mode === "dedicated" && topology.harnessId === "openclaw") {
       await assertNativeWorkerTurn(topology);
@@ -2450,9 +2585,18 @@ async function assertActualModelTurn(topology) {
     await assertGatewayModelTurn({
       gatewayUrl: topology.gatewayUrl,
       gatewayPassword: topology.gatewayPassword,
-      nonce: `OCC-K3D-${topology.mode.toUpperCase()}-${randomUUID()}`,
+      nonce,
       secrets: [process.env.OPENAI_API_KEY],
     });
+    if (topology.mode === "dedicated" && process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // A Gateway turn, unlike a direct app-server call, exercises OpenClaw's
+      // model resolver. Native records must retain the endpoint provider and full ID.
+      const rollouts = (await codexRollouts(topology)).filter(({ text }) => text.includes(nonce));
+      assert.ok(rollouts.length > 0, "the real Gateway turn must reach the native Codex thread");
+      for (const rollout of rollouts) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   } catch (error) {
     const projectedSecrets = new Map();
     for (const pod of [topology.gatewayPod, topology.harnessPod].filter(Boolean)) {
@@ -2963,8 +3107,12 @@ function sharedVolumeClaimName(pod) {
 }
 
 function sharedVolumeSubPaths(pod) {
+  // Node identity shares the Harness claim under its own Agent subpath, outside task files.
   return (pod.spec.containers[0].volumeMounts ?? [])
-    .filter(({ name }) => name === sharedWorkspaceVolumeName)
+    .filter(
+      ({ name, mountPath }) =>
+        name === sharedWorkspaceVolumeName && mountPath !== "/home/node/.openclaw-node",
+    )
     .map(({ subPath }) => subPath)
     .sort();
 }
@@ -2993,10 +3141,7 @@ function assertPrivateStateInitContainer(pod) {
         { name: "runtime-temporary", mountPath: "/runtime-temporary" },
         ...(pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway"
           ? [{ name: "openclaw-gateway-state", mountPath: "/gateway-state" }]
-          : [
-              { name: "openclaw-workspace", mountPath: "/harness-workspace-state" },
-              { name: "openclaw-node-state", mountPath: "/workspace-node-state" },
-            ]),
+          : [{ name: "openclaw-workspace", mountPath: "/harness-workspace-state" }]),
       ],
       [],
       [],
@@ -3062,6 +3207,8 @@ const gatewayPrivatePaths = [
   ["state", "/home/node/.openclaw/state"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
   ["media", "/home/node/.openclaw/media"],
+  ["worktrees", "/home/node/.openclaw/worktrees"],
+  ["worktree-sources", "/home/node/.openclaw/worktree-sources"],
 ];
 
 async function assertGatewayPrivateResources(topology) {
@@ -3207,30 +3354,31 @@ async function assertDedicatedSkillSources(topology) {
 }
 
 async function assertGatewayEffectiveDefaultModel(context, topology, expectedModel) {
-  const actualModel = JSON.parse(
-    await execNode(
-      topology.gatewayPlacement,
+  // Read through the shipped CLI instead of a removed plugin SDK export.
+  const model = JSON.parse(
+    await kubectl(
+      "exec",
       topology.gatewayPod.metadata.name,
-      `
-    (async () => {
-      const { loadConfig } = await import("openclaw/plugin-sdk/config-runtime");
-      const model = loadConfig({ pin: false }).agents?.defaults?.model;
-      const primary = typeof model === "string" ? model : model?.primary;
-      if (typeof primary !== "string" || !primary.trim()) {
-        throw new Error("Effective runtime config did not expose agents.defaults.model");
-      }
-      process.stdout.write(JSON.stringify(primary));
-    })().catch(error => {
-      console.error(error);
-      process.exit(1);
-    });
-  `,
+      "--namespace",
+      topology.gatewayPlacement,
+      "--",
+      "node",
+      "/app/openclaw.mjs",
+      "config",
+      "get",
+      "agents.defaults.model",
+      "--json",
     ),
+  );
+  const actualModel = typeof model === "string" ? model : model?.primary;
+  assert.ok(
+    typeof actualModel === "string" && actualModel.trim(),
+    "Effective runtime config did not expose agents.defaults.model",
   );
   assert.equal(
     actualModel,
     expectedModel,
-    `gateway effective default model changed before live model calls: ${actualModel}`,
+    `gateway effective default model does not match its runtime projection: ${actualModel}`,
   );
   context.diagnostic(`${topology.mode}: effective default model ${actualModel}`);
 }
@@ -3698,6 +3846,13 @@ async function assertGatewayPodContinuity(context, topology, privateClaim) {
       rolloutsAfter[0].text.includes(afterNonce),
       "the resumed Codex thread must record the post-restart turn",
     );
+    if (process.env.OCC_TEST_CODEX_OPENAI_BASE_URL !== undefined) {
+      // Resume and subsequent turn construction re-resolve the selection; the
+      // original provider/model tuple must survive both boundaries.
+      for (const rollout of rolloutsAfter) {
+        assertCustomCodexModelSelection(rollout);
+      }
+    }
   }
   context.diagnostic(
     `Gateway transcript, PNG ${artifactId}, and SQLite integrity survived Pod UID ${previousUid} -> ${topology.gatewayPod.metadata.uid}.`,
@@ -3716,8 +3871,20 @@ const gatewayLocalCodexTools = Object.freeze([
   "gateway_exec",
   "gateway_process",
   "terminal",
+  "portal",
   "openclaw",
+  "plugins",
+  "gateway",
 ]);
+
+function assertCustomCodexModelSelection(rollout) {
+  assert.equal(rollout.modelProvider, "openai-compatible");
+  assert.ok(rollout.turnModels.length > 0, "the native thread must record its selected turn model");
+  assert.ok(
+    rollout.turnModels.every((model) => model === providerModel),
+    "native Codex turns must preserve the complete selected model ID without a provider prefix",
+  );
+}
 
 // Every Codex rollout in the Harness, with its thread ID and the dynamic tools it was given.
 async function codexRollouts(topology) {
@@ -3738,11 +3905,14 @@ async function codexRollouts(topology) {
     walk("/home/node/.codex/sessions");
     process.stdout.write(JSON.stringify(files.sort().map((file) => {
       const text = fs.readFileSync(file, "utf8");
-      const meta = JSON.parse(text.split("\\n")[0]).payload;
+      const records = text.split("\\n").filter(Boolean).map((line) => JSON.parse(line));
+      const meta = records[0].payload;
       const names = (meta.dynamic_tools ?? []).flatMap((tool) =>
         tool.type === "namespace" ? tool.tools.map(({ name }) => name) : [tool.name],
       );
-      return { file, threadId: meta.id, dynamicTools: names, text };
+      const turnModels = records.filter((record) => record.type === "turn_context")
+        .map((record) => record.payload.model);
+      return { file, threadId: meta.id, modelProvider: meta.model_provider, turnModels, dynamicTools: names, text };
     })));
   `,
   );
@@ -3870,6 +4040,118 @@ async function requestDedicatedAgentTurn(topology, sessionKey, prompt) {
   );
   assert.equal(response.status, 200, `dedicated Agent model turn failed: ${body}`);
   return JSON.parse(body).choices?.[0]?.message?.content ?? "";
+}
+
+async function assertActualPublicGithubRead(topology) {
+  const status = await gatewayCall(topology, "skills.status", { agentId: "main" });
+  assert.ok(
+    status.skills.some(({ name }) => name === "public-github-read"),
+    "native managed skill discovery did not report the revision's public reader",
+  );
+  // The fresh, unbound Agent must discover the actual endpoint and obtain a
+  // title absent from its prompt using the limited native proxy and Helm Service.
+  const answer = await requestDedicatedAgentTurn(
+    topology,
+    "agent:main:read-public-pull",
+    "Use your credential-free public GitHub reader to read pull request 27 in known public repository example/public-project. " +
+      "Request the single pull's detail, not a list. Return its exact title. Use no credentials or escalated execution.",
+  );
+  assert.ok(
+    answer.includes(topology.publicGithubRead.marker),
+    "the Agent did not return the provider's pull title",
+  );
+}
+
+async function assertDedicatedNativeChildRelay(topology) {
+  const marker = `OCE-NATIVE-CHILD-${randomUUID()}`;
+  const sessionKey = `agent:main:native-child-${randomUUID()}`;
+  await requestDedicatedAgentTurn(
+    topology,
+    sessionKey,
+    `Use native Codex spawn_agent to create exactly one child. Ask it to reply exactly ${marker}. ` +
+      "Wait for that child to finish and return its answer. Do not use OpenClaw sessions_spawn.",
+  );
+  const history = await assertConversation(topology, sessionKey, marker);
+  const assistant = assistantMessageContaining(history, marker);
+  const parentThreadId = assistant.idempotencyKey?.match(/^codex-app-server:([^:]+):/)?.[1];
+  assert.ok(parentThreadId, "the Gateway transcript must identify the native parent thread");
+
+  // A parent can repeat the marker without spawning. Read the native child, not just its summary.
+  const evidence = JSON.parse(
+    await execNode(
+      topology.gatewayPlacement,
+      topology.gatewayPod.metadata.name,
+      `
+      const assert = require("node:assert/strict");
+      const WebSocket = require("ws");
+      const socket = new WebSocket(process.env.APP_SERVER_URL, {
+        headers: { Authorization: "Bearer " + process.env.APP_SERVER_TOKEN },
+        perMessageDeflate: false,
+        handshakeTimeout: 10_000,
+      });
+      const pending = new Map();
+      let nextId = 0;
+      const fail = () => {
+        for (const request of pending.values()) request.reject(new Error("Native child evidence connection closed"));
+        pending.clear();
+      };
+      socket.on("error", fail);
+      socket.on("close", fail);
+      socket.on("message", (data) => {
+        for (const line of data.toString().split("\\n").filter(Boolean)) {
+          const message = JSON.parse(line);
+          const request = pending.get(message.id);
+          if (!request) continue;
+          pending.delete(message.id);
+          if (message.error) request.reject(new Error("Native thread/read failed: " + message.error.code));
+          else request.resolve(message.result);
+        }
+      });
+      const request = (method, params) => new Promise((resolve, reject) => {
+        if (socket.readyState !== WebSocket.OPEN) return reject(new Error("Native child evidence connection is not open"));
+        const id = ++nextId;
+        pending.set(id, { resolve, reject });
+        socket.send(JSON.stringify({ id, method, params }));
+      });
+      const deadline = setTimeout(() => socket.terminate(), 20_000);
+      (async () => {
+        try {
+          await new Promise((resolve, reject) => {
+            socket.once("open", resolve);
+            socket.once("error", () => reject(new Error("Native child evidence connection failed")));
+          });
+          await request("initialize", {
+            clientInfo: { name: "oce-native-child-proof", version: "1.0.0" },
+            capabilities: { experimentalApi: true },
+          });
+          socket.send(JSON.stringify({ method: "initialized", params: {} }));
+          const parent = (await request("thread/read", {
+            threadId: ${JSON.stringify(parentThreadId)}, includeTurns: true,
+          })).thread;
+          const children = new Set(parent.turns.flatMap((turn) => turn.items.flatMap((item) => {
+            if (item.type === "subAgentActivity" && item.kind === "started") return [item.agentThreadId];
+            if (item.type === "collabAgentToolCall" && item.tool === "spawnAgent" && item.status === "completed") return item.receiverThreadIds;
+            return [];
+          })));
+          assert.equal(children.size, 1, "expected one actual native child");
+          const childId = [...children][0];
+          const child = (await request("thread/read", { threadId: childId, includeTurns: true })).thread;
+          assert.equal(child.parentThreadId, parent.id, "child must belong to this Gateway turn");
+          const completed = child.turns.find((turn) => turn.status === "completed" && turn.items.some(
+            (item) => item.type === "agentMessage" && item.text.trim() === ${JSON.stringify(marker)},
+          ));
+          assert.ok(completed, "the child itself must complete with the expected answer");
+          process.stdout.write(JSON.stringify({ parentThreadId: parent.id, childThreadId: child.id }));
+        } finally {
+          clearTimeout(deadline);
+          socket.terminate();
+        }
+      })().catch((error) => { console.error(error.message); process.exitCode = 1; });
+    `,
+    ),
+  );
+  assert.equal(evidence.parentThreadId, parentThreadId);
+  assert.notEqual(evidence.childThreadId, parentThreadId);
 }
 
 async function requestFreshDedicatedHarnessTurn(topology) {
@@ -5585,8 +5867,12 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
 
 export {
   arrangeProductionTopology,
+  productionTopologyCleanupOrder,
+  registerProductionTopologyCleanups,
   assertActualModelTurn,
+  assertActualPublicGithubRead,
   assertDedicatedAgentsInstructionsInFreshSession,
+  assertDedicatedNativeChildRelay,
   assertLegacyModelSecretBindingDenied,
   assertDedicatedToEmbeddedCutover,
   assertDedicatedWorkspaceResources,

@@ -9,9 +9,9 @@ to require a bot identity and identify its workspace, then [`users.list`](https:
 or [`conversations.list`](https://docs.slack.dev/reference/methods/conversations.list/).
 The bot needs `users:read` for people, `channels:read` for public channels, and
 `groups:read` for private channels. Slack returns only resources visible to the
-bot. The Driver scans a bounded number of pages per query and returns a cursor
-when more pages remain. The Console displays the workspace and saves selected
-IDs, never names.
+bot. The Driver scans up to three provider pages for a nonempty search query and
+one page without a query. It returns a cursor when more pages remain. The
+Console displays the workspace and saves selected IDs, never names.
 
 For exact-ID searches and saved IDs, the Driver calls [`users.info`](https://docs.slack.dev/reference/methods/users.info/)
 or [`conversations.info`](https://docs.slack.dev/reference/methods/conversations.info/)
@@ -27,7 +27,8 @@ does not switch to everyone.
 
 An invalid token, missing scope, rate limit, invalid response, or unavailable
 Slack service produces a safe error without returning the token or upstream
-payload. Retry after fixing the token or scopes. Exact IDs can be entered when
+payload. Non-success HTTP responses release their unused response body before
+returning the error. Retry after fixing the token or scopes. Exact IDs can be entered when
 directory browsing is unavailable.
 
 ## Credential validation
@@ -35,7 +36,9 @@ directory browsing is unavailable.
 Before API provisioning or deployment, enabled Slack accounts require
 Secret-backed native environment references. Socket Mode app tokens must start
 with `xapp-`; bot tokens must start with `xoxb-` and pass `auth.test` with a bot
-identity and workspace. HTTP mode skips the app-token check. Disabled Slack
+identity. An explicit Enterprise Grid installation requires an enterprise ID;
+other installations require a workspace ID. User and channel lookup still
+require a workspace ID. HTTP mode skips the app-token check. Disabled Slack
 accounts make no provider call. Validation has an eight-second request budget
 and never opens a Socket Mode connection or sends a message.
 
@@ -63,9 +66,9 @@ The API accepts a DNS proxy URL only when Helm also sets the matching
 Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
 external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
 example IP and port replaced. The value must contain one literal IPv4 address
-and an explicit port, without credentials or a path. The chart passes it to the
-API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API Pod egress only to that
-IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
+other than `0.0.0.0` and an explicit port, without credentials or a path. The
+chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
+Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
 destinations at the proxy. The chart does not grant the worker or Agent Pods this
 egress.
 

@@ -48,6 +48,13 @@ def read_platform(image, platform, selected):
                 if not DIGEST.fullmatch(digest) or member.size > MAX_JSON:
                     continue
                 data = archive.extractfile(member).read()
+                # Small filesystem layers are tar data, not image metadata.
+                # Keep the JSON allowance independent of their cumulative size.
+                try:
+                    if not isinstance(json.loads(data), dict):
+                        continue
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
                 total += len(data)
                 if total > MAX_METADATA:
                     raise ValueError("image metadata exceeded the limit")
