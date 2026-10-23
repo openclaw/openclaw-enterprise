@@ -87,8 +87,9 @@ may not list, and retried the 403 without end.
 **Who is affected.** Installations that switched from the native repository
 broker to protected OpenShell Git or an installed sender, and kept the peer.
 
-**How to tell.** The upgrade check or startup fails with
-`drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; ...`.
+**How to tell.** The upgrade check and API and worker startup logs show
+`DRIVER_CONFIGURATION_INVALID` for
+`/drivers/compute/configuration/network/repositoryCredentials`.
 
 **Steps.** Delete `network.repositoryCredentials` from the Compute
 configuration, keep its other `network` settings, and upgrade again.

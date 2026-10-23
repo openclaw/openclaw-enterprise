@@ -1745,6 +1745,12 @@ test("Git expiry observes the original model in the reduced stock installation, 
     box.resourceVersion = "13";
     let detach;
     let sends = 0;
+    // The gateway's durable request-ID claims (OpenShell 0.1.5 mutation replay): a request ID
+    // it admitted replays its recorded result for the same payload; with no result, or for
+    // another payload, it is refused (FAILED_PRECONDITION). An unseen request runs under its
+    // version precondition: a mismatch is admitted without a result and answers ABORTED.
+    const admitted = new Map();
+    const violations = [];
     let expiry = false;
     let state = "";
     let trace = [];
@@ -1873,8 +1879,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
     };
     store.beginDetach = async (_r, _h, requestId, version) => {
       assert.equal(version, box.resourceVersion);
-      assert.equal(detach, undefined, "one send opportunity");
-      detach = { requestId };
+      assert.equal(detach, undefined, "one request identity");
+      detach = { requestId, resourceVersion: version };
       return true;
     };
     store.confirmDetached = async (_r, _h, id, epoch) => {
@@ -1892,22 +1898,59 @@ test("Git expiry observes the original model in the reduced stock installation, 
         false,
         "even the previous holder is durably fenced before the conditional detach",
       );
-      assert.equal(conditional.requestId, detach.requestId);
-      assert.equal(conditional.expectedResourceVersion, box.resourceVersion);
+      // Every send is the recorded request: same ID, same precondition. (A failed assertion
+      // here would read as a transport failure, so it is collected instead.)
+      if (
+        conditional.requestId !== detach.requestId ||
+        conditional.expectedResourceVersion !== detach.resourceVersion
+      ) {
+        violations.push(conditional);
+      }
       sends++;
       if (fault === "unimplemented detach") {
         throw Object.assign(Error("unsupported withdrawal"), { grpcStatus: 12 });
       }
-      if (fault === "intent without effect") {
-        throw Error("response lost, still attached");
+      const apply = () => {
+        box.spec.providers.pop();
+        box.spec.provider_attachment_epoch = "reduced-epoch";
+        box.resourceVersion = "15";
+      };
+      const claim = admitted.get(conditional.requestId);
+      if (claim) {
+        if (claim.result && claim.version === conditional.expectedResourceVersion) {
+          return claim.result;
+        }
+        if (fault === "first send still applying") {
+          // The first send's admitted work lands while the gateway still holds it unresolved.
+          apply();
+        }
+        throw Object.assign(Error("REQUEST_OUTCOME_UNCERTAIN"), { code: 9 });
       }
-      box.spec.providers.pop();
-      box.spec.provider_attachment_epoch = "reduced-epoch";
-      box.resourceVersion = "15";
+      if (
+        sends === 1 &&
+        (fault === "intent without effect" || fault === "Sandbox moved after intent")
+      ) {
+        // The send never reached the gateway: still attached, nothing admitted.
+        throw Object.assign(Error("connection refused"), { grpcStatus: 14 });
+      }
+      if (fault === "Sandbox moved before send") {
+        box.resourceVersion = "14";
+      }
+      admitted.set(conditional.requestId, { version: conditional.expectedResourceVersion });
+      if (conditional.expectedResourceVersion !== box.resourceVersion) {
+        throw Object.assign(Error("RESOURCE_VERSION_CONFLICT"), { grpcStatus: 10 });
+      }
+      if (fault === "outcome uncertain at gateway" || fault === "first send still applying") {
+        // Admitted, then the call ran out of time before the gateway recorded a result.
+        throw Object.assign(Error("deadline exceeded"), { grpcStatus: 4 });
+      }
+      apply();
+      const result = { receiptId: "detach-receipt", detached: fault !== "no-op" };
+      admitted.get(conditional.requestId).result = result;
       if (fault === "lost reply") {
         throw Error("lost response after committed mutation");
       }
-      return { receiptId: "detach-receipt", detached: fault !== "no-op" };
+      return result;
     };
     await f.reconcile();
     assert.ok(await f.lookup(), "Git works on witnessed installation");
@@ -1933,9 +1976,15 @@ test("Git expiry observes the original model in the reduced stock installation, 
       if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
         assert.equal(sends, 0);
       }
+      assert.deepEqual(violations, []);
       return;
     }
     assert.equal(sends, fault === "version churn" ? 0 : 1);
+    if (fault === "Sandbox moved after intent") {
+      // Another change to the Sandbox lands before the next pass: the recorded request's
+      // precondition can never hold again.
+      box.resourceVersion = "14";
+    }
     if (fault === "pending") {
       assert.deepEqual(trace, ["detach-receipt", "detach-receipt"]);
     }
@@ -1950,7 +1999,17 @@ test("Git expiry observes the original model in the reduced stock installation, 
       assert.deepEqual(trace, ["OBSERVE"], "prove current absence without replay");
     }
     assert.equal(await cleanup(cold), expectedCold);
-    assert.equal(sends, 1, "repeated cold maintenance never resends detach");
+    // A detach that took effect is observed, never sent again. An intent that left the provider
+    // attached is sent again as the same request until it converges (finding 2219): withdrawn,
+    // or the runtime retired when the gateway cannot tell the outcome or the Sandbox moved.
+    const repeated = {
+      "intent without effect": 2,
+      "outcome uncertain at gateway": 3,
+      "first send still applying": 2,
+    };
+    assert.equal(sends, repeated[fault] ?? 1, "a detach that took effect is never sent again");
+    assert.ok(admitted.size <= 1, "the gateway admits at most one request");
+    assert.deepEqual(violations, [], "every send repeats the recorded request");
     assert.equal(f.calls.rotate, 1, "no provider reattachment or renewal");
   }
   for (const [fault, first, cold] of [
@@ -1958,7 +2017,11 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["version churn", "pending"],
     ["lost reply", "pending"],
     ["pending", "withdrawn"],
-    ["intent without effect", "pending", "pending"],
+    ["intent without effect", "pending", "withdrawn"],
+    ["outcome uncertain at gateway", "pending", "retire-runtime"],
+    ["first send still applying", "pending", "withdrawn"],
+    ["Sandbox moved after intent", "pending", "retire-runtime"],
+    ["Sandbox moved before send", "retire-runtime"],
     ["replacement Pod", "retire-runtime"],
     ["Git profile scope changed", "retire-runtime"],
     ["model profile belongs to another workspace", "retire-runtime"],

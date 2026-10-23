@@ -183,8 +183,8 @@ empty, over 32 KiB, or open to group write or other users), `app_key_unparsable`
 public key, certificate or passphrase-protected key) or `app_key_unsupported` (not
 RSA of 2048 to 8192 bits). The log never includes key bytes. The worker restarts until
 the Secret holds a usable key; put one there as in the next section. A key that goes
-bad while the worker runs is read only at the next preparation, which logs
-`PREPARED_GITHUB_MAINTENANCE_FAILED`.
+bad while the worker runs is read at the next preparation, which logs `worker.error`
+with the same code and `reason`; the worker keeps running and retries every 5 seconds.
 
 ## Replace a rejected App key
 

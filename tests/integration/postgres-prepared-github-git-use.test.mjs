@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   admitProtectedVersion,
   disposeBrokerSession,
@@ -715,6 +719,54 @@ test(
     assert.equal(await f.providerStatus(used.value), 401);
     assert.deepEqual(await state(), [{ enabled: false, custody: "revoked", sealed: false }]);
     assert.equal(f.gh.issuesOfTokens.length, issued, "retirement never issues");
+    assert.deepEqual(f.gh.errors, []);
+  },
+);
+
+test(
+  "a worker whose App key goes bad after startup names the refusal in its maintenance report",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (t) => {
+    // A rotated Secret with an unusable key used to log only PREPARED_GITHUB_MAINTENANCE_FAILED
+    // on each pass. The pass now reports the startup refusal's code and fixed reason.
+    const f = await fixture(t);
+    const directory = await temporaryDirectory(t, "pgit-key-");
+    const privateKeyPath = join(directory, "rotated.pem");
+    await writeFile(privateKeyPath, f.gh.privateKey.export({ type: "pkcs8", format: "pem" }), {
+      mode: 0o600,
+    });
+    // The real maintenance loop, started by hand once the key is replaced.
+    let loop;
+    const tokenService = new (class extends TokenService {
+      ownFamilies(families) {
+        return (loop = super.ownFamilies(families));
+      }
+    })();
+    const reports = [];
+    let reported;
+    const firstReport = new Promise((resolve) => (reported = resolve));
+    await f.startOwner({
+      privateKeyPath,
+      tokenService,
+      startWorker: false,
+      report: (code, context) => {
+        reports.push({ code, ...context });
+        reported();
+      },
+    });
+    // A public key cannot sign. The admitted session still needs a token, so the pass reads it.
+    await writeFile(
+      privateKeyPath,
+      createPublicKey(f.gh.privateKey).export({ type: "spki", format: "pem" }),
+    );
+    loop.start();
+    // A pass that finds no source yet retries after 5 s; the test timeout bounds the wait.
+    await firstReport;
+    assert.deepEqual(reports[0], {
+      code: "PREPARED_GITHUB_APP_KEY_INVALID",
+      reason: "app_key_unparsable",
+    });
+    assert.equal(f.gh.issuesOfTokens.length, 0, "an unusable key never reaches the issuer");
     assert.deepEqual(f.gh.errors, []);
   },
 );

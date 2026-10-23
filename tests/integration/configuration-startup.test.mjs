@@ -2213,6 +2213,42 @@ test("a repository OpenShell authority refusal names its own block", () => {
   );
 });
 
+test("a leftover repository broker peer names its field in API and worker startup logs", async (t) => {
+  // Finding 2226: the refusal was a plain Error, so API and worker logged only STARTUP_FAILED
+  // and WORKER_STARTUP_FAILED, and only the upgrade check printed which field to remove.
+  // installation-change-preflight.test.mjs checks the upgrade check's line.
+  const { configuration } = await repositoryInstallation(t);
+  delete configuration.repository;
+  delete configuration.backend;
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const details = [
+    {
+      path: "/drivers/compute/configuration/network/repositoryCredentials",
+      code: "INVALID_VALUE",
+      message:
+        "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
+    },
+  ];
+  const [server, worker] = await settled([
+    boot("apps/controller/src/server.mjs", { ...shared, ...productionServer }),
+    boot("apps/controller/src/worker.mjs", shared),
+  ]);
+  for (const [result, event] of [
+    [server, "startup-error"],
+    [worker, "worker.startup-error"],
+  ]) {
+    assert.equal(result.status, 1, result.stderr);
+    const diagnostic = startupDiagnostic(result.stderr, event);
+    assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
+    assert.deepEqual(diagnostic.details, details);
+  }
+});
+
 test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
   const { gatewayRouting, digest } = await import("../helpers/kubernetes-routed-scenarios.mjs");
   const controllerRequire = createRequire(
