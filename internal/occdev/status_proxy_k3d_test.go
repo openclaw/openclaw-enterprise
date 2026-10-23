@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -101,45 +102,70 @@ func TestDevelopmentInstallationSizesAgentsFromMeasuredUse(t *testing.T) {
 	// a dedicated Codex Gateway was OOM-killed at 2Gi (D200), and a Codex Harness
 	// running lint, tsc and tests together was OOM-killed at 2Gi and reached a
 	// 4Gi limit.
-	state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: "none", DeploymentMode: "k3d", PlatformNamespace: "oce-system", directory: t.TempDir()}
-	if err := writeInstallation(state, "runtime@sha256:abc", nil, "", "", "10.42.0.1/32"); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	type workload struct {
-		Requests map[string]string `yaml:"requests"`
-		Limits   map[string]string `yaml:"limits"`
-	}
-	var installation struct {
-		Drivers struct {
-			Compute struct {
-				Configuration struct {
-					Resources struct {
-						Gateway workload `yaml:"gateway"`
-						Agent   workload `yaml:"agent"`
-					} `yaml:"resources"`
-				} `yaml:"configuration"`
-			} `yaml:"compute"`
-		} `yaml:"drivers"`
-	}
-	if err := yaml.Unmarshal(data, &installation); err != nil {
-		t.Fatal(err)
-	}
-	resources := installation.Drivers.Compute.Configuration.Resources
-	if got := resources.Gateway.Limits["memory"]; got != "3Gi" {
-		t.Fatalf("Gateway memory limit = %q, want 3Gi", got)
-	}
-	if got := resources.Gateway.Requests["memory"]; got != "1792Mi" {
-		t.Fatalf("Gateway memory request = %q, want 1792Mi", got)
-	}
-	if got := resources.Agent.Limits["memory"]; got != "6Gi" {
-		t.Fatalf("Harness memory limit = %q, want 6Gi", got)
-	}
-	if got := resources.Agent.Requests["memory"]; got != "768Mi" {
-		t.Fatalf("Harness memory request = %q, want 768Mi", got)
+	for _, profile := range []struct {
+		sandbox string
+		mode    string
+	}{
+		{"none", "k3d"},
+		{"openshell", "k3d"},
+		{"openshell", "compose"},
+	} {
+		t.Run(profile.sandbox+"/"+profile.mode, func(t *testing.T) {
+			state := &developmentState{Cluster: "occ-dev-test", SandboxDriver: profile.sandbox, DeploymentMode: profile.mode, PlatformNamespace: "oce-system", directory: t.TempDir()}
+			var assets *openShellDevelopmentAssets
+			if profile.sandbox == "openshell" {
+				assets = &openShellDevelopmentAssets{}
+			}
+			if err := writeInstallation(state, "runtime@sha256:abc", assets, "10.43.0.50", "", "10.42.0.1/32"); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(filepath.Join(state.directory, "installation.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			type workload struct {
+				Requests map[string]string `yaml:"requests"`
+				Limits   map[string]string `yaml:"limits"`
+			}
+			var installation struct {
+				Drivers struct {
+					Compute struct {
+						Configuration struct {
+							Resources struct {
+								Gateway workload `yaml:"gateway"`
+								Agent   workload `yaml:"agent"`
+							} `yaml:"resources"`
+						} `yaml:"configuration"`
+					} `yaml:"compute"`
+					Sandbox struct {
+						Configuration struct {
+							Kubernetes struct {
+								AgentResources workload `yaml:"agentResources"`
+							} `yaml:"kubernetes"`
+						} `yaml:"configuration"`
+					} `yaml:"sandbox"`
+				} `yaml:"drivers"`
+			}
+			if err := yaml.Unmarshal(data, &installation); err != nil {
+				t.Fatal(err)
+			}
+			resources := installation.Drivers.Compute.Configuration.Resources
+			if got := resources.Gateway.Limits["memory"]; got != "3Gi" {
+				t.Fatalf("Gateway memory limit = %q, want 3Gi", got)
+			}
+			if got := resources.Gateway.Requests["memory"]; got != "1792Mi" {
+				t.Fatalf("Gateway memory request = %q, want 1792Mi", got)
+			}
+			if got := resources.Agent.Limits["memory"]; got != "6Gi" {
+				t.Fatalf("Harness memory limit = %q, want 6Gi", got)
+			}
+			if got := resources.Agent.Requests["memory"]; got != "768Mi" {
+				t.Fatalf("Harness memory request = %q, want 768Mi", got)
+			}
+			if profile.sandbox == "openshell" && !reflect.DeepEqual(installation.Drivers.Sandbox.Configuration.Kubernetes.AgentResources, resources.Agent) {
+				t.Fatalf("OpenShell Harness budget = %#v, want Compute Harness budget %#v", installation.Drivers.Sandbox.Configuration.Kubernetes.AgentResources, resources.Agent)
+			}
+		})
 	}
 }
 

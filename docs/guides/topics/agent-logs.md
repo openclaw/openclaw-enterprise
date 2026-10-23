@@ -37,21 +37,23 @@ SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:
 The server returns **info** and above (and lines of unknown level) unless you
 select **Include debug**, which starts a new view. The level chips and the
 case-insensitive **Filter** box (message, kind, subsystem and field values)
-narrow only the rows already loaded (up to 5000). To look further back, use
-**Download** or the CLI with `--since`. Gap and withheld rows always stay
+narrow only the rows already loaded (up to 5000). For older output, use
+**Download** or CLI `--since`. Gap and withheld rows always stay
 visible.
 
 ### Download
 
-**Download** saves the last 1000 lines of the selected source, Pod and instance
-as a text file named `<agent>-<revision>-<source>-<pod>.log`, using IDs. The
-file holds the same classified and redacted records as the page, one per line
-(`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`, plus `GAP` and `WITHHELD`
-rows), after a `#` header naming the Agent, revision, Pod and container.
-Only **Include debug** applies to the download. Redaction is best-effort:
-handle the file as sensitive and delete it when done.
+**Download** requests the last 1000 lines. Only **Include debug** affects the export.
+Container filenames use `<agent>-<revision>-<source>-<pod>.log`; **Previous
+instance** adds `-previous` before `.log`.
 
-The HTTP API has the same two reads:
+The `#` header names the Agent and version, plus the Pod and container if available.
+`instance=current` or `instance=previous` is what you requested, not a guarantee that logs exist.
+Records follow the page format (`TIME LEVEL KIND [SUBSYSTEM] MESSAGE key=value`,
+`GAP` or `WITHHELD`), with the same best-effort redaction. Treat the file as
+sensitive; delete it when done.
+
+The HTTP API offers these reads:
 
 ```sh
 GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{revisionId}/runtime
@@ -86,18 +88,18 @@ occ agent logs agt_... --source agent --previous -o json
 occ agent logs agt_... --source sandbox --follow
 ```
 
-Without `--revision`, both prefer a newer revision that has Pods (a deploy in
-progress or failed) and name the revision on stderr. The
-[CLI reference](../../reference/cli.md#runtime-status-and-logs) owns revision
+Without `--revision`, both prefer a newer version that has Pods (a deploy in
+progress or failed) and name the version on stderr. The
+[CLI reference](../../reference/cli.md#runtime-status-and-logs) owns version
 selection, flags, output formats, retries and exit codes.
 
 ## Who can see what
 
-| Read                                                                       | Required grants                                       | Audited                                                   |
-| -------------------------------------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------- |
-| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the version | No, like [diagnostics](../../reference/agents.md)         |
-| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`   | Once per view as `openclaw.agents.runtime_logs.view`      |
-| Log download                                                               | Same as log text                                      | Every download as `openclaw.agents.runtime_logs.download` |
+| Read                                                                       | Required grants                                              | Audited                                                   |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------- |
+| Runtime status: Pods, phase, readiness, restarts, last termination, Events | Agent `operate` and `read`, and `read` on the Agent revision | No, like [diagnostics](../../reference/agents.md)         |
+| Log text                                                                   | Agent `read_logs` or `administer`, and Agent `read`          | Once per view as `openclaw.agents.runtime_logs.view`      |
+| Log download                                                               | Same as log text                                             | Every download as `openclaw.agents.runtime_logs.download` |
 
 Installation administrators hold Agent `administer`, which already reaches Gateway
 log text in the [native admin UI](../../reference/agent-native-admin.md). To
@@ -105,7 +107,7 @@ delegate log reading, bind a Namespace Role with Agent `read_logs` and `read` to
 the exact Agent; it covers every version, including later deployments. Opening
 the Agent in the console also needs Namespace `read` bound to that Namespace
 (otherwise it shows "Namespace unavailable"). Runtime status needs `read`
-bound to each exact version. A `read_logs` Restriction blocks log text even for
+bound to each Agent revision by ID. A `read_logs` Restriction blocks log text even for
 administrators. Without `operate`, the Logs tab has no runtime strip or Pod
 picker; it reads each source's current Pod and says when a source is missing.
 Service principals use the same grants. Every request and follow poll is

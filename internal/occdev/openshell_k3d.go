@@ -52,12 +52,24 @@ func validDevelopmentCodexSeccompResult(mode, profileName string) bool {
 	}
 }
 
-func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result error) {
+func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolicies []any, ceiling []any) (result error) {
 	r := newRunner(opts)
 	if len(opts.ComposeArgs) != 0 {
 		return fmt.Errorf("the Kubernetes-only profile does not accept Compose options")
 	}
+	protectedEgress, err := r.protectedEgressSelection("kubernetes", sandboxDriver)
+	if err != nil {
+		return err
+	}
+	databaseName, err := r.selectedDevelopmentDatabase("kubernetes")
+	if err != nil {
+		return err
+	}
 	if err := r.validateDevelopmentImageSelection(); err != nil {
+		return err
+	}
+	openShellImages, err := r.selectOpenShellImages(sandboxDriver)
+	if err != nil {
 		return err
 	}
 	repositoryInputs, err := r.loadDevelopmentRepositoryInputs(sandboxDriver)
@@ -79,6 +91,10 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 	if apiPort == kubernetesPort {
 		return fmt.Errorf("development API and Kubernetes API ports must differ")
 	}
+	signIn, err := developmentSignIn(r.env)
+	if err != nil {
+		return err
+	}
 	browserPort := 0
 	if sandboxDriver == "none" {
 		browserPort, err = positiveSetting(r, "OCC_DEVELOPMENT_BROWSER_PORT", 8443, 65535)
@@ -89,6 +105,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return fmt.Errorf("browser, development API, and Kubernetes API ports must differ")
 		}
 	}
+	if signIn == developmentSignInKeycloak && (browserPort == developmentKeycloakHostPort || apiPort == developmentKeycloakHostPort || kubernetesPort == developmentKeycloakHostPort) {
+		return fmt.Errorf("port 443 is reserved for Keycloak; browser, development API, and Kubernetes API ports must use other ports")
+	}
 	threshold, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT", 5, 20)
 	if err != nil {
 		return err
@@ -98,21 +117,35 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		return err
 	}
 	state := &developmentState{
-		Version:           3,
-		Repository:        opts.Repository,
-		ComputeDriver:     "kubernetes",
-		SandboxDriver:     sandboxDriver,
-		DeploymentMode:    "k3d",
-		PlatformNamespace: r.setting("OCC_DEVELOPMENT_KUBERNETES_NAMESPACE", "oce-system"),
-		APIPort:           apiPort,
-		BrowserPort:       browserPort,
-		Cluster:           r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])),
-		KeyPath:           opts.KeyOutput,
-		KeyOwned:          opts.KeyOutput == "",
-		directory:         directory,
+		SandboxNetworkPolicies:      networkPolicies,
+		SandboxNetworkPolicyCeiling: ceiling,
+		Version:                     3,
+		ProtectedEgress:             protectedEgress,
+		DatabaseName:                databaseName,
+		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
+		Repository:                  opts.Repository,
+		ComputeDriver:               "kubernetes",
+		SandboxDriver:               sandboxDriver,
+		DeploymentMode:              "k3d",
+		PlatformNamespace:           r.setting("OCC_DEVELOPMENT_KUBERNETES_NAMESPACE", "oce-system"),
+		APIPort:                     apiPort,
+		BrowserPort:                 browserPort,
+		Cluster:                     r.setting("OCC_DEVELOPMENT_KUBERNETES_CLUSTER", "occ-dev-"+strings.ToLower(rand.Text()[:10])),
+		KeyPath:                     opts.KeyOutput,
+		KeyOwned:                    opts.KeyOutput == "",
+		SignIn:                      signIn,
+		directory:                   directory,
 	}
 	if err := validateClusterName(state.Cluster); err != nil {
 		return err
+	}
+	if signIn == developmentSignInKeycloak {
+		if err := checkDevelopmentKeycloakHostPort(fmt.Sprintf("127.0.0.1:%d", developmentKeycloakHostPort)); err != nil {
+			return err
+		}
+		if _, _, err := readDevelopmentKeycloakFixtures(opts.Repository); err != nil {
+			return err
+		}
 	}
 	if !namespaceName.MatchString(state.PlatformNamespace) || len(state.PlatformNamespace) > 63 {
 		return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_NAMESPACE %q: the name must match %s and be at most 63 characters", state.PlatformNamespace, namespaceName)
@@ -131,10 +164,18 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return fmt.Errorf("%s is required on PATH", name)
 		}
 	}
+	if state.ProtectedEgress {
+		if err := r.checkProtectedOpenShellChart(ctx, state, openShellImages); err != nil {
+			return err
+		}
+	}
 	if err := r.selectImageEngine(ctx, r.setting("OCC_DEVELOPMENT_CONTAINER_ENGINE", "auto")); err != nil {
 		return err
 	}
 	if err := r.pinEndpoint(ctx); err != nil {
+		return err
+	}
+	if err := r.validateOpenShellImageRevisions(ctx, openShellImages); err != nil {
 		return err
 	}
 	if err := r.checkLegacyNATTable(ctx); err != nil {
@@ -213,6 +254,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		return err
 	}
 	clusterArgs = append(clusterArgs, resolverArgs...)
+	if signIn == developmentSignInKeycloak {
+		clusterArgs = append(clusterArgs, developmentKeycloakPortArgs()...)
+	}
 	clusterAttempted = true
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
 		clusterCreationFailed = true
@@ -240,14 +284,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 		}
 	}
 
-	var assets *openShellDevelopmentAssets
-	if sandboxDriver == "openshell" {
-		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
-		assets, err = r.prepareOpenShell(ctx, state, timeout)
-		if err != nil {
-			return err
-		}
-	}
 	// Dedicated Harnesses, including OpenShell-owned Codex, require private
 	// Agent Gateway routing for workspace-node enrollment.
 	fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
@@ -282,41 +318,32 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return err
 		}
 	}
-	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
-		return err
-	}
+	var assets *openShellDevelopmentAssets
 	if sandboxDriver == "openshell" {
-		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
-		if err := r.installOpenShellGateway(ctx, state, assets, state.PlatformNamespace, timeout); err != nil {
-			return err
-		}
-	} else {
-		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
-	}
-	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
-	if err != nil {
-		return err
-	}
-	openShellGatewayAddress := ""
-	if sandboxDriver == "openshell" {
-		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, state.PlatformNamespace)
+		// Import the larger platform images first so image garbage collection cannot
+		// evict idle OpenShell images before their workloads are installed.
+		fmt.Fprintln(r.opts.Out, "Preparing pinned OpenShell development assets...")
+		assets, err = r.prepareOpenShell(ctx, state, timeout)
 		if err != nil {
 			return err
 		}
 	}
-	if err := writeInstallation(state, runtimeImage, assets, openShellGatewayAddress, codexSeccompProfile, statusProxySource); err != nil {
-		return err
-	}
-	if routingPodCIDR != "" {
-		if err := configureDevelopmentRouting(state, []string{routingPodCIDR}, developmentRoutingEndpoint{gatewayNamespace: state.PlatformNamespace, hostname: developmentRoutingHostname(state)}); err != nil {
-			return err
-		}
-	}
-	if err := r.installKubernetesControlPlane(ctx, state, controllerImage, postgresImage, routingPodCIDR != "", timeout); err != nil {
+	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
+		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
+		postgresImage: postgresImage, codexSeccompProfile: codexSeccompProfile, routingPodCIDR: routingPodCIDR,
+	}, timeout); err != nil {
 		return err
 	}
 	if routingPodCIDR != "" {
 		if _, err := r.waitDevelopmentRouting(ctx, state.PlatformNamespace, routingPodCIDR, timeout); err != nil {
+			return err
+		}
+	}
+	var keycloakSecrets developmentKeycloakSecrets
+	var keycloakRealm []byte
+	if signIn == developmentSignInKeycloak {
+		keycloakSecrets, keycloakRealm, err = r.installDevelopmentKeycloak(ctx, state, timeout)
+		if err != nil {
 			return err
 		}
 	}
@@ -352,18 +379,79 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string) (result erro
 			return err
 		}
 	}
+	if signIn == developmentSignInKeycloak {
+		// Last, so the namespace and routing checks above ran on the first pass.
+		if err := r.signInDevelopmentKeycloak(ctx, state, keycloakSecrets, keycloakRealm, timeout); err != nil {
+			return err
+		}
+	}
 	if state.BrowserPort != 0 {
 		consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
-		fmt.Fprintf(r.opts.Out, "Browser console: https://%s:%d/console/\nBrowser CA certificate: %s\n", consoleHost, state.BrowserPort, filepath.Join(directory, "browser-ca.crt"))
+		fmt.Fprintf(r.opts.Out, "Browser console: %s/console/\nBrowser CA certificate: %s\n", developmentBrowserOrigin(consoleHost, state.BrowserPort), filepath.Join(directory, "browser-ca.crt"))
 		fmt.Fprintln(r.opts.Out, "Browser CA trust: required before sign-in. See docs/guides/operate/troubleshooting.md#the-local-console-reports-a-certificate-error.")
 	} else {
 		fmt.Fprintf(r.opts.Out, "Console: %s/console/\n", apiURL)
+	}
+	if signIn == developmentSignInKeycloak {
+		fmt.Fprint(r.opts.Out, developmentKeycloakInstructions(state))
 	}
 	if routingPodCIDR == "" {
 		fmt.Fprintln(r.opts.Out, "Note: this profile installs no private gateway routing, so dedicated Agent deployments fail with DEPENDENCY_UNAVAILABLE. See docs/guides/deploy/openshell-credential-sources.md.")
 	}
 	fmt.Fprintf(r.opts.Out, "OpenClaw Enterprise development stack is ready.\nContainer engine: %s\nCompute Driver: Kubernetes\nSandbox Driver: %s\nDeployment: Kubernetes only\nControl plane Kubernetes namespace: %s\nAPI URL: %s\nInstallation ID: %s\nService key file: %s\nAdministrator: admin@development.openclaw.invalid\nAdministrator password file: %s\nKubeconfig: %s\nKubernetes context: k3d-%s\n\nCleanup:\n  env OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=%s OCC_DEVELOPMENT_STATE_DIRECTORY=%s %s dev down\n", r.engine, sandboxDriver, state.PlatformNamespace, apiURL, installation, state.KeyPath, filepath.Join(directory, "initial-admin-password"), filepath.Join(directory, "kubeconfig"), state.Cluster, sandboxDriver, shellQuote(directory), shellQuote(filepath.Join(opts.Repository, "bin", "occ")))
 	return nil
+}
+
+// Install the interdependent platform releases before their final readiness gate.
+// The caller owns cluster rollback, including a partially installed release.
+type developmentPlatformInputs struct {
+	openShell                                    *openShellDevelopmentAssets
+	runtimeImage, controllerImage, postgresImage string
+	codexSeccompProfile, routingPodCIDR          string
+}
+
+func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developmentState, inputs developmentPlatformInputs, timeout time.Duration) error {
+	if err := r.ensureKubernetesNamespace(ctx, state.PlatformNamespace); err != nil {
+		return err
+	}
+	if state.ProtectedEgress {
+		if err := r.prepareDevelopmentEgress(ctx, state); err != nil {
+			return err
+		}
+	}
+	if state.SandboxDriver == "openshell" {
+		fmt.Fprintf(r.opts.Out, "Installing OpenShell Gateway and OCE in Namespace %s...\n", state.PlatformNamespace)
+		if err := r.installOpenShellGateway(ctx, state, inputs.openShell, state.PlatformNamespace, timeout); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
+	}
+	if state.ProtectedEgress {
+		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
+			return err
+		}
+	}
+	statusProxySource, err := r.developmentStatusProxySource(ctx, state)
+	if err != nil {
+		return err
+	}
+	openShellGatewayAddress := ""
+	if state.SandboxDriver == "openshell" {
+		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, state.PlatformNamespace)
+		if err != nil {
+			return err
+		}
+	}
+	if err := writeInstallation(state, inputs.runtimeImage, inputs.openShell, openShellGatewayAddress, inputs.codexSeccompProfile, statusProxySource); err != nil {
+		return err
+	}
+	if inputs.routingPodCIDR != "" {
+		if err := configureDevelopmentRouting(state, []string{inputs.routingPodCIDR}, developmentRoutingEndpoint{gatewayNamespace: state.PlatformNamespace, hostname: developmentRoutingHostname(state)}); err != nil {
+			return err
+		}
+	}
+	return r.installKubernetesControlPlane(ctx, state, inputs.controllerImage, inputs.postgresImage, inputs.routingPodCIDR != "", timeout)
 }
 
 // kubernetesOnlyClusterArgs pins the k3d node and keeps verified local images
@@ -499,6 +587,13 @@ func kubernetesMetadata(name, namespace string, labels map[string]string) map[st
 }
 
 func (r *runner) installKubernetesControlPlane(ctx context.Context, state *developmentState, controllerImage, postgresImage string, routing bool, timeout time.Duration) error {
+	databaseName := state.DatabaseName
+	if databaseName == "" {
+		databaseName = "openclaw_enterprise"
+	}
+	if databaseName != "openclaw_enterprise" && (len(databaseName) > 63 || !developmentDatabaseName.MatchString(databaseName)) {
+		return fmt.Errorf("invalid disposable development database name")
+	}
 	postgresPassword, err := randomDevelopmentSecret()
 	if err != nil {
 		return err
@@ -523,7 +618,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"metadata": kubernetesMetadata("postgres-bootstrap", namespace, labels),
 		"stringData": map[string]string{
 			"password": postgresPassword,
-			"init.sql": fmt.Sprintf("CREATE ROLE occ_migrator LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nCREATE ROLE occ_app LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nGRANT CREATE ON DATABASE openclaw_enterprise TO occ_migrator;\nCREATE SCHEMA occ AUTHORIZATION occ_migrator;\nCREATE SCHEMA drizzle AUTHORIZATION occ_migrator;\nREVOKE CREATE ON SCHEMA public FROM PUBLIC;", migrationPassword, appPassword),
+			"init.sql": fmt.Sprintf("CREATE ROLE occ_migrator LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nCREATE ROLE occ_app LOGIN PASSWORD '%s' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;\nGRANT CREATE ON DATABASE %s TO occ_migrator;\nCREATE SCHEMA occ AUTHORIZATION occ_migrator;\nCREATE SCHEMA drizzle AUTHORIZATION occ_migrator;\nREVOKE CREATE ON SCHEMA public FROM PUBLIC;", migrationPassword, appPassword, databaseName),
 		},
 	}
 	if err := r.writeAndApply(ctx, state, "postgres-bootstrap", secret); err != nil {
@@ -572,9 +667,9 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 				"containers": []any{map[string]any{
 					"name": "postgres", "image": postgresImage, "imagePullPolicy": "Never", "resources": resources,
 					"securityContext": map[string]any{"allowPrivilegeEscalation": false, "capabilities": map[string]any{"drop": []string{"ALL"}}},
-					"env":             []any{map[string]string{"name": "POSTGRES_DB", "value": "openclaw_enterprise"}, map[string]any{"name": "POSTGRES_PASSWORD", "valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": "postgres-bootstrap", "key": "password"}}}},
+					"env":             []any{map[string]string{"name": "POSTGRES_DB", "value": databaseName}, map[string]any{"name": "POSTGRES_PASSWORD", "valueFrom": map[string]any{"secretKeyRef": map[string]string{"name": "postgres-bootstrap", "key": "password"}}}},
 					"volumeMounts":    []any{map[string]any{"name": "data", "mountPath": "/var/lib/postgresql"}, map[string]any{"name": "init", "mountPath": "/docker-entrypoint-initdb.d", "readOnly": true}},
-					"readinessProbe":  map[string]any{"exec": map[string]any{"command": []string{"pg_isready", "-U", "postgres", "-d", "openclaw_enterprise"}}, "initialDelaySeconds": 2, "periodSeconds": 2},
+					"readinessProbe":  map[string]any{"exec": map[string]any{"command": []string{"pg_isready", "-h", "127.0.0.1", "-U", "postgres", "-d", databaseName}}, "initialDelaySeconds": 2, "periodSeconds": 2},
 				}},
 				"volumes": []any{map[string]any{"name": "data", "persistentVolumeClaim": map[string]string{"claimName": "postgres-data"}}, map[string]any{"name": "init", "secret": map[string]any{"secretName": "postgres-bootstrap", "items": []any{map[string]string{"key": "init.sql", "path": "init.sql"}}}}},
 			}},
@@ -619,7 +714,7 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	secrets := map[string]any{
 		"apiVersion": "v1", "kind": "List", "items": []any{
 			map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-installation-startup", namespace, labels), "stringData": map[string]string{"installation.yaml": string(installationData)}},
-			map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-database", namespace, labels), "stringData": map[string]string{"application-url": fmt.Sprintf("postgresql://occ_app:%s@postgres.%s.svc.cluster.local:5432/openclaw_enterprise", appPassword, namespace), "migration-url": fmt.Sprintf("postgresql://occ_migrator:%s@postgres.%s.svc.cluster.local:5432/openclaw_enterprise", migrationPassword, namespace)}},
+			map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-database", namespace, labels), "stringData": map[string]string{"application-url": fmt.Sprintf("postgresql://occ_app:%s@postgres.%s.svc.cluster.local:5432/%s", appPassword, namespace, databaseName), "migration-url": fmt.Sprintf("postgresql://occ_migrator:%s@postgres.%s.svc.cluster.local:5432/%s", migrationPassword, namespace, databaseName)}},
 			map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-auth", namespace, labels), "stringData": map[string]string{"secret": authSecret}},
 		},
 	}
@@ -630,11 +725,15 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"images":       map[string]string{"controller": controllerImage},
 		"installation": map[string]string{"name": "Kubernetes development"},
 		"auth":         map[string]string{"baseUrl": fmt.Sprintf("http://127.0.0.1:%d", state.APIPort)},
-		"bootstrap":    map[string]any{"adminEmail": "admin@development.openclaw.invalid", "password": map[string]string{"claimName": "bootstrap-password"}},
+		"bootstrap":    map[string]any{"adminEmail": developmentAdministratorEmail, "password": map[string]string{"claimName": "bootstrap-password"}},
 		"database":     map[string]any{"cidrs": []string{string(postgresIP) + "/32"}},
 		"cluster":      map[string]any{"cidrs": []string{string(clusterIP) + "/32"}, "port": clusterPort},
 		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 		"resources":    resources,
+	}
+	if state.ProtectedEgress {
+		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
+		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -645,26 +744,30 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		if err := r.writeAndApply(ctx, state, "gateway-api-key", gatewaySecret); err != nil {
 			return err
 		}
-		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
-		if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
-			return err
-		}
-		cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
-		if err != nil {
-			return err
-		}
-		key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
-		if err != nil {
-			return err
-		}
-		browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
-		if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
-			return err
-		}
-		values["auth"] = map[string]string{"baseUrl": fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)}
-		// OpenShell-owned Harnesses do not serve the native admin UI.
-		if state.SandboxDriver == "none" {
-			values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
+		// Private Agent routing does not imply a published HTTPS Console. The
+		// OpenShell profile signs in through the loopback HTTP API instead.
+		if state.BrowserPort != 0 {
+			consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
+			if err := writeDevelopmentTLS(state.directory, "browser", "OCC development browser CA", []string{consoleHost, "*." + agentDomain}); err != nil {
+				return err
+			}
+			cert, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.crt"))
+			if err != nil {
+				return err
+			}
+			key, err := os.ReadFile(filepath.Join(state.directory, "browser-tls.key"))
+			if err != nil {
+				return err
+			}
+			browserSecret := map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": kubernetesMetadata("occ-development-browser-tls", namespace, labels), "stringData": map[string]string{"tls.crt": string(cert), "tls.key": string(key)}}
+			if err := r.writeAndApply(ctx, state, "browser-tls", browserSecret); err != nil {
+				return err
+			}
+			values["auth"] = map[string]string{"baseUrl": developmentBrowserOrigin(consoleHost, state.BrowserPort)}
+			// OpenShell-owned Harnesses do not serve the native admin UI.
+			if state.SandboxDriver == "none" {
+				values["agentNativeAdmin"] = map[string]any{"enabled": true, "domain": agentDomain, "sharedCookieDomain": cookieDomain}
+			}
 		}
 		values["gatewayRouting"] = map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
 		if hostname := developmentRoutingHostname(state); hostname != "" {
@@ -679,10 +782,33 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := exclusiveWrite(valuesPath, valuesData, 0600); err != nil {
 		return err
 	}
-	if err := r.run(ctx, "helm", "upgrade", "--install", "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-"+state.Cluster, "-f", valuesPath, "--wait", "--timeout", timeout.String()); err != nil {
+	// The protected Gateway needs the API's authority to become ready. Keep
+	// the worker from claiming bootstrap work until its access and Gateway are
+	// in place. Override only this release, not the saved steady-state values.
+	install := []string{"--install"}
+	if state.ProtectedEgress {
+		install = append(install, "--set", "worker.replicaCount=0")
+	}
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, install...); err != nil {
 		return err
 	}
-	return r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout)
+	if err := r.installDevelopmentAPIProxy(ctx, state, controllerImage, timeout); err != nil {
+		return err
+	}
+	if !state.ProtectedEgress {
+		return nil
+	}
+	if err := r.waitProtectedOpenShell(ctx, state, timeout); err != nil {
+		return fmt.Errorf("wait for protected OpenShell Gateway rollout before starting worker: %w", err)
+	}
+	return r.helmUpgrade(ctx, state, valuesPath, timeout, "--set", "worker.replicaCount=1")
+}
+
+// helmUpgrade installs or upgrades the chart from one complete values file.
+func (r *runner) helmUpgrade(ctx context.Context, state *developmentState, valuesPath string, timeout time.Duration, options ...string) error {
+	args := append([]string{"upgrade"}, options...)
+	args = append(args, "openclaw-enterprise", "deploy/helm/openclaw-enterprise", "--namespace", state.PlatformNamespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-"+state.Cluster, "-f", valuesPath, "--wait", "--timeout", timeout.String())
+	return r.run(ctx, "helm", args...)
 }
 
 // applyDevelopmentRestartEgress keeps the control plane connected after

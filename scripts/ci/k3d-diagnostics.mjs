@@ -11,6 +11,7 @@ import {
   redactLogLine,
   redactOutputLine,
 } from "./failure-redaction.mjs";
+import { compareEventTimes } from "./kubernetes-event-time.mjs";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -38,24 +39,65 @@ export async function k3dHostMetrics(directory) {
 const CREDENTIAL_LINE =
   /token|password|secret|credential|authorization|bearer|private.?key|https?:\/\/[^\s/]+@/i;
 
+export function redactCredentialLine(line) {
+  return CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line;
+}
+
 function safeText(value) {
   if (typeof value !== "string") {
     return value;
   }
-  return value
-    .split("\n")
-    .map((line) => (CREDENTIAL_LINE.test(line) ? "[redacted credential-bearing line]" : line))
-    .join("\n")
-    .slice(-8_000);
+  return value.split("\n").map(redactCredentialLine).join("\n").slice(-8_000);
 }
 
-// A k3d agent container prints a kubectl retry against localhost:8080 every
-// few seconds, so a plain tail of its log holds nothing else (finding 15). The
-// excerpt drops those retries, keeps the start of each node's log, its first
-// and last error and warning lines, and its end, and stays under about 40 KB
-// per node.
-const KUBECTL_RETRY =
-  /couldn't get current server API group list: Get \\?"http:\/\/localhost:8080\/|The connection to the server localhost:8080 was refused/;
+// k3d's node entrypoint starts K3s in the background and retries `kubectl
+// uncordon` every 3 seconds until it succeeds, so a plain tail of a node whose
+// K3s never came up holds nothing else (findings 15 and 1174). The retries go to
+// localhost:8080 until K3s writes its kubeconfig, then to its API port. If K3s
+// exits, the loop keeps the container running and k3d waits for K3s forever;
+// only the switch to "connection refused" on the API port dates the exit. The
+// excerpt drops the retries, notes each target and outcome with its first and
+// last time, keeps the start of each node's log, its first and last error and
+// warning lines, and its end, and stays under about 40 KB per node.
+
+// kubectl's own klog error line; K3s's logrus lines never match it.
+const KUBECTL_DISCOVERY_RETRY =
+  /^\S+ E\d{4} [\d:.]+\s+\d+ memcache\.go:\d+\] .*couldn't get current server API group list: (.*)$/;
+const KUBECTL_REFUSED_RETRY = /^\S+ The connection to the server (\S+) was refused/;
+const KUBECTL_SERVER_RETRY =
+  /^\S+ (?:Error from server \((\w+)\): |error: You must be logged in to the server \((\w+)\)|Unable to connect to the server: (.*)$)/;
+const KUBECTL_RETRY_KINDS = 12;
+
+function retryOutcome(detail) {
+  if (/connection refused/.test(detail)) {
+    return "connection refused";
+  }
+  if (/unable to handle the request/.test(detail)) {
+    return "ServiceUnavailable";
+  }
+  return detail.split(": ").at(-1).slice(0, 80);
+}
+
+// The target and outcome of one kubectl retry line, or undefined for any other line.
+function kubectlRetry(line) {
+  const discovery = KUBECTL_DISCOVERY_RETRY.exec(line);
+  if (discovery) {
+    // The error ends at err="..."'s first unescaped quote; a logger field may follow.
+    const detail = discovery[1].replace(/(?<!\\)".*$/u, "");
+    const server = /Get \\?"https?:\/\/([^/\\"]+)/.exec(detail)?.[1];
+    return `${server ?? "the API server"} (${retryOutcome(detail)})`;
+  }
+  const refused = KUBECTL_REFUSED_RETRY.exec(line);
+  if (refused) {
+    return `${refused[1]} (connection refused)`;
+  }
+  const answered = KUBECTL_SERVER_RETRY.exec(line);
+  if (answered) {
+    return `the API server (${answered[1] ?? answered[2] ?? retryOutcome(answered[3])})`;
+  }
+  return undefined;
+}
+
 // docker logs --timestamps stamps every line; anything else is a fragment.
 const DOCKER_TIMESTAMP = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/;
 // logrus level=error/warning/fatal, or a klog E/W/F header after the timestamp.
@@ -85,6 +127,11 @@ function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = fals
   return fromEnd ? taken.reverse() : taken;
 }
 
+// Canonical UTC keys contain ASCII digits and punctuation, independent of locale.
+function compareTimestamps(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 // Docker returns a container's stdout and stderr separately; --timestamps lets
 // the excerpt restore their order. Unstamped fragments (an output cap can cut a
 // stream mid-line) are dropped unread, and a redacted line keeps only its
@@ -106,7 +153,12 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
         continue;
       }
       entries.push({
-        at: Date.parse(stamp),
+        // Docker timestamps are UTC. Canonical decimal fractions preserve precision
+        // and compare equal when their only difference is trailing zeroes.
+        at: stamp.replace(
+          /(?:\.(\d+))?Z$/u,
+          (_match, fraction = "") => `.${fraction.replace(/0+$/u, "")}`,
+        ),
         stream,
         index: entries.length,
         // Test the whole line for credentials before truncating it.
@@ -116,17 +168,18 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
       });
     }
   }
-  entries.sort((a, b) => a.at - b.at || a.stream - b.stream || a.index - b.index);
+  entries.sort((a, b) => compareTimestamps(a.at, b.at) || a.stream - b.stream || a.index - b.index);
   const kept = [];
   const problems = new Set();
-  let retries = 0;
-  let firstRetry;
-  let lastRetry;
-  for (const { line, redacted, stamp } of entries) {
-    if (KUBECTL_RETRY.test(line)) {
-      retries += 1;
-      firstRetry ??= stamp;
-      lastRetry = stamp;
+  const retries = new Map();
+  for (const { at, line, redacted, stamp } of entries) {
+    const retry = kubectlRetry(line);
+    if (retry !== undefined) {
+      const seen = retries.get(retry) ?? { count: 0, first: stamp };
+      seen.count += 1;
+      seen.last = stamp;
+      seen.lastAt = at;
+      retries.set(retry, seen);
       continue;
     }
     if (PROBLEM_LINE.test(line)) {
@@ -137,9 +190,20 @@ export function nodeLogExcerpt(stdout = "", stderr = "", note) {
   const notes = [
     ...(note ? [`[diagnostics: ${note}]`] : []),
     ...(fragments > 0 ? [`[diagnostics dropped ${fragments} unstamped line fragments]`] : []),
-    ...(retries > 0
+    // The latest kinds date the end of the log, so a long list keeps those, in
+    // the order they first appeared.
+    ...[...retries]
+      .map((entry, order) => ({ entry, order }))
+      .sort((a, b) => compareTimestamps(b.entry[1].lastAt, a.entry[1].lastAt))
+      .slice(0, KUBECTL_RETRY_KINDS)
+      .sort((a, b) => a.order - b.order)
+      .map(
+        ({ entry: [target, { count, first, last }] }) =>
+          `[diagnostics omitted ${count} kubectl retry lines against ${target}, ${first} to ${last}]`,
+      ),
+    ...(retries.size > KUBECTL_RETRY_KINDS
       ? [
-          `[diagnostics omitted ${retries} kubectl retry lines against localhost:8080, ${firstRetry} to ${lastRetry}]`,
+          `[diagnostics omitted ${retries.size - KUBECTL_RETRY_KINDS} earlier kinds of kubectl retry lines]`,
         ]
       : []),
   ];
@@ -182,7 +246,25 @@ function conditions(values = []) {
   }));
 }
 
-export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }) {
+// k3d colors its log even into a pipe.
+// eslint-disable-next-line no-control-regex
+export const ANSI_COLOR = /\u001b\[[0-9;]*m/gu;
+
+// k3d's own progress lines name the step a create stopped in ("Starting node",
+// "Starting helpers"), without color codes and with credential lines redacted.
+function k3dOutputExcerpt({ stdout = "", stderr = "" } = {}) {
+  const text = [stderr, stdout].join("\n").replace(ANSI_COLOR, "").trim();
+  return text === "" ? undefined : safeText(text);
+}
+
+export async function captureK3dDiagnostics({
+  execFile,
+  cluster,
+  lane,
+  statePath,
+  failure,
+  k3dOutput,
+}) {
   const kubectl = process.env.OCC_KUBECTL_BIN ?? "kubectl";
   const docker = process.env.OCC_DOCKER_BIN ?? "docker";
   const scope = ["--kubeconfig", cluster.kubeconfig, "--context", cluster.context];
@@ -210,6 +292,17 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
       return { status: error.timedOut ? "timed-out" : "unavailable" };
     }
   }
+  const containerState = (name) =>
+    observe(docker, ["inspect", "--format", "{{json .State}}", name], ({ stdout }) => {
+      const state = JSON.parse(stdout);
+      return {
+        status: state.Status,
+        running: state.Running,
+        oomKilled: state.OOMKilled,
+        exitCode: state.ExitCode,
+        error: safeText(state.Error),
+      };
+    });
   const [host, nodes, pods, events, containers] = await Promise.all([
     k3dHostMetrics(cluster.directory),
     observe(kubectl, [...scope, "get", "nodes", "-o", "json"], ({ stdout }) =>
@@ -263,20 +356,10 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
     Promise.all(
       cluster.nodes.map(async (name) => ({
         name,
-        state: await observe(
-          docker,
-          ["inspect", "--format", "{{json .State}}", name],
-          ({ stdout }) => {
-            const state = JSON.parse(stdout);
-            return {
-              status: state.Status,
-              running: state.Running,
-              oomKilled: state.OOMKilled,
-              exitCode: state.ExitCode,
-              error: safeText(state.Error),
-            };
-          },
-        ),
+        state: await containerState(name),
+        // A running node whose K3s has exited still lists the entrypoint's
+        // kubectl retry loop here (finding 1174).
+        processes: await observe(docker, ["top", name], ({ stdout }) => safeText(stdout)),
         logs: await observe(
           docker,
           ["logs", "--tail=20000", "--timestamps", name],
@@ -291,11 +374,13 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
       })),
     ),
   ]);
+  const k3dCreateOutput = k3dOutputExcerpt(k3dOutput);
   const report = {
     capturedAt: new Date().toISOString(),
     lane,
     cluster: cluster.name,
     ...(failure ? { failure } : {}),
+    ...(k3dCreateOutput ? { k3dCreateOutput } : {}),
     nodeImage: cluster.nodeImage,
     host,
     nodes,
@@ -363,6 +448,11 @@ function podStatus(type, pod) {
   };
 }
 
+// Projected events carry lastTimestamp, else eventTime, as lastTimestamp (eventStatus).
+function compareEventTimestamps(left, right) {
+  return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
+}
+
 // Projects raw watch streams into bounded Agent namespace activity: Pod status
 // transitions for Compute-managed Pods and the Kubernetes events of the
 // namespaces that ran them. Pod specs, environments and credential-bearing
@@ -397,9 +487,7 @@ export function projectAgentNamespaceActivity(eventsText, podsText) {
       namespace,
     });
   }
-  const orderedEvents = [...events.values()].sort((left, right) =>
-    String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-  );
+  const orderedEvents = [...events.values()].sort(compareEventTimestamps);
   return {
     namespaces: [...namespaces].sort(),
     pods: pods.slice(-MAX_ACTIVITY_RECORDS),
@@ -512,9 +600,7 @@ export function projectContainerLog(value, secrets = []) {
             const status = eventStatus(event);
             return { ...status, message: text(status.message, 512) };
           })
-          .sort((left, right) =>
-            String(left.lastTimestamp ?? "").localeCompare(String(right.lastTimestamp ?? "")),
-          )
+          .sort(compareEventTimestamps)
           .slice(-MAX_ACTIVITY_RECORDS),
       })),
     omittedLines: count(value.omittedLines) + lines.length - kept.length,

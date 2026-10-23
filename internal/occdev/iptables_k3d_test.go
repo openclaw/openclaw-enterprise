@@ -276,7 +276,7 @@ func TestK3dStartupChecksLegacyNATTableBeforeClusterCreation(t *testing.T) {
 		"node":    "",
 		"git":     "",
 	})
-	err := upK3d(context.Background(), Options{Repository: root}, "none")
+	err := upK3d(context.Background(), Options{Repository: root}, "none", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "has not loaded the legacy iptables modules") {
 		t.Fatalf("expected the legacy iptables error, got %v", err)
 	}

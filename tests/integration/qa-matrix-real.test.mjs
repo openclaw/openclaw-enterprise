@@ -13,7 +13,7 @@ test(
   {
     skip: selected
       ? false
-      : "Set OCC_TEST_QA_MATRIX=1; see docs/testing/qa-matrix.md for authorized credentials.",
+      : "Set OCC_TEST_QA_MATRIX=1; see docs/testing/ci.md#qa-matrix for authorized credentials.",
     timeout: 14_400_000,
   },
   async (context) => {
@@ -54,7 +54,18 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
-    for (const installation of selection.installations) {
+    if (selection.sandboxPolicy) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "shared Driver configuration and real network enforcement",
+        () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    for (const installation of selection.installations.filter((value) =>
+      selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
+    )) {
       await context.test(
         `${installation} OCC + Kubernetes compute / Sandbox none`,
         { timeout: 7_000_000 },
@@ -68,6 +79,9 @@ test(
                 repositoryInputs: selection.repository,
               }),
           );
+          const cells = selection.cells.filter(
+            (cell) => cell.installation === installation && cell.scenarios.length > 0,
+          );
           let browser;
           let repositoryReady;
           if (f && selection.browser) {
@@ -75,7 +89,10 @@ test(
               installationContext,
               installation,
               "authenticated console login",
-              () => createQaBrowser(f),
+              () =>
+                createQaBrowser(f, {
+                  themed: cells.some((cell) => cell.scenarios.includes("model-ui")),
+                }),
             );
           }
           if (f && selection.repository) {
@@ -89,9 +106,7 @@ test(
               },
             );
           }
-          for (const selectedCell of selection.cells.filter(
-            (value) => value.installation === installation && value.scenarios.length > 0,
-          )) {
+          for (const selectedCell of cells) {
             const { preset, cell } = selectedCell;
             await installationContext.test(
               `Standard ${preset}`,
@@ -143,6 +158,18 @@ test(
                   });
                 }
                 const scenarios = [
+                  [
+                    "console-secrets",
+                    async (agent, step) => {
+                      await step(
+                        "console Secret lifecycle and Agent Configuration references",
+                        async () => {
+                          assert.ok(browser, "blocked by browser setup failure");
+                          await browser.verifySecrets(agent);
+                        },
+                      );
+                    },
+                  ],
                   [
                     "model-ui",
                     async (agent, step) => {
@@ -211,10 +238,10 @@ test(
                     },
                   ],
                   [
-                    "git-full",
+                    "git-write",
                     async (agent, step) => {
                       await step(
-                        "native repository clone/edit/commit/push/PR and disposal",
+                        "native repository clone/edit/commit/push to the granted branch and disposal",
                         async () => {
                           assert.ok(repositoryReady, "blocked by repository setup failure");
                           await verifyQaRepository(f, agent);
@@ -247,13 +274,13 @@ test(
                       },
                     ],
                     [
-                      "git-read",
+                      "git-push-denied",
                       async (agent, step) => {
                         await step(
-                          "read-only repository push rejected and session disposed",
+                          "push outside the granted branch rejected and session disposed",
                           async () => {
                             assert.ok(repositoryReady, "blocked by repository setup failure");
-                            await verifyQaRepository(f, agent, "git-read");
+                            await verifyQaRepository(f, agent, "git-push-denied");
                           },
                         );
                       },

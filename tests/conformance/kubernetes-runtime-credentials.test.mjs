@@ -1,8 +1,19 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
-import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { Linter } from "eslint";
+import globals from "globals";
+import { GATEWAY_RUNTIME_ENTRYPOINT as DOCKER_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/docker/index.ts";
+import {
+  REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+  REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+} from "../../apps/controller/src/drivers/compute/kubernetes/repository-material-init.ts";
+import * as runtimeEntrypoints from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { WORKSPACE_SETUP_RUNTIME } from "../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   createKubernetesComputeDriver,
@@ -16,6 +27,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
+const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
 const namespace = Object.freeze({
   id: "ns_runtime_00000000-0000-4000-8000-000000000001",
   name: "Runtime credential tenant",
@@ -75,7 +87,10 @@ function credentialFixture({
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const configured = options(runtime ? {} : { runtime: undefined });
+  const configured = options();
+  if (!runtime) {
+    delete configured.runtime;
+  }
   if (twoCluster) {
     delete configured.network.gatewayClients;
     configured.gatewayRouting = {
@@ -391,7 +406,16 @@ test("concurrent legacy password delivery accepts only an identical owned source
         "gateway-password": original.data["gateway-password"],
       });
     } else {
-      await assert.rejects(delivery());
+      const refusal = {
+        different: ResourceConflictError,
+        foreign: {
+          message: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+        },
+        disappeared: { message: "HTTP 409", statusCode: 409 },
+        unavailable: { message: "HTTP 503", statusCode: 503 },
+      }[outcome];
+      assert.ok(refusal, `${outcome}: name its refusal`);
+      await assert.rejects(delivery(), refusal, outcome);
     }
     assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
   }
@@ -860,6 +884,8 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
   const cases = [
     {},
     { CODEX_LOGIN_MODE: "unknown" },
+    // Retired with the managed ChatGPT login (finding 1295).
+    { CODEX_LOGIN_MODE: "chatgpt_service_account", CODEX_ACCESS_TOKEN: "fixture-token" },
     { CODEX_LOGIN_MODE: "codex_pat" },
     { CODEX_LOGIN_MODE: "codex_pat", CODEX_ACCESS_TOKEN: " " },
     {
@@ -892,6 +918,148 @@ test("Codex startup rejects missing, blank, conflicting, and unsupported authent
     );
     assert.equal(child.stdout, "");
     assert.doesNotMatch(child.stderr, /fixture-key|fixture-token/);
+  }
+});
+
+// The generated modules run with `node -e`, so an undeclared name fails only when its branch
+// runs: the probe's dead chatgpt_service_account branch named an undefined workspaceId (finding 1295).
+test("generated runtime modules reference only declared names", () => {
+  const linter = new Linter();
+  const programs = {
+    ...Object.fromEntries(
+      Object.entries(runtimeEntrypoints).filter(([name]) => name.endsWith("_ENTRYPOINT")),
+    ),
+    REPOSITORY_MATERIAL_INIT_ENTRYPOINT,
+    REPOSITORY_NATIVE_GIT_INIT_ENTRYPOINT,
+    WORKSPACE_SETUP_RUNTIME,
+    DOCKER_GATEWAY_RUNTIME_ENTRYPOINT,
+  };
+  for (const [name, source] of Object.entries(programs)) {
+    // nodeProgramArguments runs each as a script (vm.runInThisContext), not a CommonJS module.
+    const messages = linter.verify(source, {
+      languageOptions: { ecmaVersion: "latest", sourceType: "script", globals: globals.node },
+      rules: { "no-undef": "error" },
+    });
+    assert.deepEqual(
+      messages.map(({ line, message }) => `${line}: ${message}`),
+      [],
+      name,
+    );
+  }
+});
+
+// Only the external Codex CLI is substituted: it records each call and answers the probe READY.
+const codexCallRecorder = `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const input = args.includes("login") ? fs.readFileSync(0, "utf8") : undefined;
+fs.appendFileSync(process.env.CODEX_HOME + "/../calls", JSON.stringify({ args, input }) + "\\n");
+if (args.includes("exec")) {
+  const events = [
+    { type: "turn.started" },
+    { type: "item.completed", item: { type: "agent_message", text: "READY" } },
+    { type: "turn.completed" },
+  ];
+  process.stdout.write(events.map((event) => JSON.stringify(event)).join("\\n") + "\\n");
+}
+`;
+
+test("Codex startup logs in, probes and starts the app server in each login mode", (t) => {
+  const login = {
+    api_key: {
+      env: { OPENAI_API_KEY: "fixture-key" },
+      flag: "--with-api-key",
+      input: "fixture-key",
+    },
+    codex_pat: {
+      env: { CODEX_ACCESS_TOKEN: "at-fixture" },
+      flag: "--with-access-token",
+      input: "at-fixture",
+    },
+    chatgptAuthTokens: {
+      env: {
+        CODEX_ACCESS_TOKEN: "fixture-external-access-placeholder",
+        OCE_CODEX_CHATGPT_ACCOUNT: JSON.stringify({
+          accountId: "fixture-account",
+          planType: "team",
+        }),
+      },
+    },
+  };
+  for (const [mode, { env, flag, input }] of Object.entries(login)) {
+    const directory = mkdtempSync(join(tmpdir(), "oce-codex-login-mode-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const codexHome = join(directory, "codex");
+    mkdirSync(join(directory, "bin"));
+    mkdirSync(codexHome);
+    writeFileSync(join(directory, "bin", "codex"), codexCallRecorder, { mode: 0o755 });
+    const child = spawnSync(
+      process.execPath,
+      ["-e", ...nodeProgramArguments(AGENT_RUNTIME_ENTRYPOINT)],
+      {
+        env: {
+          ...env,
+          PATH: `${join(directory, "bin")}:${dirname(process.execPath)}`,
+          HOME: directory,
+          TMPDIR: directory,
+          CODEX_HOME: codexHome,
+          CODEX_LOGIN_MODE: mode,
+          OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+          OPENCLAW_HARNESS_MODEL: "codex/gpt-5",
+          APP_SERVER_TOKEN: "fixture-transport-token",
+          APP_SERVER_PORT: "4500",
+        },
+        encoding: "utf8",
+        timeout: 20000,
+      },
+    );
+    assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
+    assert.match(child.stderr, /"event":"codex\.model_probe".*"code":"READY"/, mode);
+    const calls = readFileSync(join(directory, "calls"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.deepEqual(
+      calls.map(({ args }) =>
+        ["login", "exec", "app-server"].find((command) => args.includes(command)),
+      ),
+      [...(flag === undefined ? [] : ["login"]), "exec", "app-server"],
+      mode,
+    );
+    if (flag !== undefined) {
+      assert.deepEqual(calls[0], {
+        args: ["-c", "cli_auth_credentials_store=file", "login", flag],
+        input,
+      });
+    }
+    if (mode === "chatgptAuthTokens") {
+      // OpenShell owns the real grant; the launcher writes only its injection
+      // placeholder and account metadata, without a native refresh credential.
+      const auth = JSON.parse(readFileSync(join(codexHome, "auth.json"), "utf8"));
+      assert.equal(auth.auth_mode, "chatgptAuthTokens");
+      assert.equal(auth.OPENAI_API_KEY, null);
+      assert.equal(auth.tokens.access_token, env.CODEX_ACCESS_TOKEN);
+      assert.equal(auth.tokens.refresh_token, "");
+      assert.equal(auth.tokens.account_id, "fixture-account");
+      assert.doesNotMatch(JSON.stringify(auth), /fixture-transport-token/);
+    }
+    const probe = calls.find(({ args }) => args.includes("exec")).args;
+    assert.equal(probe[probe.indexOf("--model") + 1], "gpt-5");
+    assert.deepEqual(
+      probe.slice(probe.indexOf("--model") + 2),
+      [
+        "-c",
+        "cli_auth_credentials_store=file",
+        "-c",
+        'web_search="disabled"',
+        "-c",
+        "project_doc_max_bytes=0",
+        "-c",
+        "check_for_update_on_startup=false",
+        "Reply only READY. Do not use tools.",
+      ],
+      mode,
+    );
   }
 });
 

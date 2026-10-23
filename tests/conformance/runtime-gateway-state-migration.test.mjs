@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
@@ -13,6 +12,7 @@ import {
   OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION,
   gatewayStateMigrationHelper,
 } from "../../apps/controller/src/drivers/compute/runtime-startup.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Exercise the state migration step the Kubernetes and Docker Gateway programs
 // share, against real SQLite files. Only Doctor is replaced: the runtime image
@@ -22,8 +22,7 @@ const nodeRequire = createRequire(import.meta.url);
 const CURRENT = OPENCLAW_AGENT_DATABASE_SCHEMA_VERSION;
 
 async function stateDirectory(t, databases = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-gateway-state-migration-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-gateway-state-migration-");
   for (const [agentId, version] of Object.entries(databases)) {
     const agentDirectory = join(directory, "agents", agentId, "agent");
     await mkdir(agentDirectory, { recursive: true });

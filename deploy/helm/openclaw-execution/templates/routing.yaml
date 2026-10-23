@@ -1,3 +1,15 @@
+{{- /* Preserve native null/empty maps, but reject values the Kubernetes string-map decoder refuses. */ -}}
+{{- define "openclaw-execution.matchLabels" -}}
+{{- if and (not (kindIs "invalid" .value)) (not (kindIs "map" .value)) -}}
+{{- fail (printf "%s must be a Kubernetes matchLabels map" .name) -}}
+{{- end -}}
+{{- range $key, $value := .value -}}
+{{- if and (not (kindIs "invalid" $value)) (not (kindIs "string" $value)) -}}
+{{- fail (printf "%s label values must be strings" $.name) -}}
+{{- end -}}
+{{- end -}}
+{{- toYaml .value -}}
+{{- end -}}
 {{- $r := .Values.routing }}
 {{- if or (not $r.hostname) (not $r.gatewayClassName) (not $r.tlsSecretName) (not $r.controlPlaneCidrs) }}
 {{- fail "routing requires hostname, GatewayClass, TLS Secret, and observed control-plane source CIDRs" }}
@@ -9,6 +21,10 @@
 {{- /* Compute validateDnsHostname refuses the same harness routing hostname at startup. */ -}}
 {{- if or (gt (len $r.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $r.hostname)) }}
 {{- fail "routing.hostname must be a DNS hostname without a port or path" }}
+{{- end }}
+{{- /* A numeric or 0x last label is an address unless the host is four decimal octets from 0 to 255 with no leading zeros. A hex label that is not last stays. */ -}}
+{{- if and (regexMatch "(^|\\.)(?:0x[0-9a-f]*|[0-9]+)$" $r.hostname) (not (regexMatch "^(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(?:\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}$" $r.hostname)) }}
+{{- fail "routing.hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers." }}
 {{- end }}
 {{- /* Compute validateGatewayName refuses the same harness Gateway name at startup: Envoy Gateway copies it into a label value. */ -}}
 {{- if or (gt (len (toString $r.gatewayName)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" (toString $r.gatewayName))) }}
@@ -102,7 +118,7 @@ spec:
               kubernetes.io/metadata.name: {{ .Values.dns.namespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml .Values.dns.podLabels | nindent 14 }}
+              {{- include "openclaw-execution.matchLabels" (dict "name" "dns.podLabels" "value" .Values.dns.podLabels) | nindent 14 }}
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
@@ -125,6 +141,6 @@ spec:
               kubernetes.io/metadata.name: {{ $r.envoyNamespace | quote }}
           podSelector:
             matchLabels:
-              {{- toYaml $r.envoyGatewayPodLabels | nindent 14 }}
+              {{- include "openclaw-execution.matchLabels" (dict "name" "routing.envoyGatewayPodLabels" "value" $r.envoyGatewayPodLabels) | nindent 14 }}
       ports:
         - { protocol: TCP, port: 18000 }

@@ -12,7 +12,7 @@ on your own machine, start with [Local Setup](../quickstart.md).
 2. [Install the control plane](../deploy/production-installation.md) and make an
    authenticated API request. Helm readiness alone does not verify API access.
 3. [Deploy a production Agent](../deploy/production-agents.md) and verify the
-   selected runtime. An active revision alone does not prove a model can answer;
+   selected runtime. A selected version alone does not prove a model can answer;
    use the [model response verification](model-verification.md) for trusted-proxy gateways.
 4. [Prepare the production handoff](../deploy/production-handoff.md) to record
    who responds to failures and who owns credentials and access.

@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-09
-last_updated_session: q33-force-delete
+updated: 2026-10-14
+last_updated_session: issue-2411
 ---
 
 # Service Account Driver Credential Delivery Flow
@@ -20,7 +20,7 @@ with the projected access token.
 - Trigger: `POST /namespaces/:namespaceId/service-accounts`, then
   `POST /namespaces/:namespaceId/service-accounts/:serviceAccountId/credentials`,
   Agent association, and deployment.
-- Sources: `apps/controller/src/server.mjs:start`,
+- Sources: `apps/controller/src/api-startup.mjs:startApi`,
   `apps/controller/src/drivers/service-account/chatgpt.ts:ChatGPTServiceAccountDriver`,
   `packages/occ/src/index.ts:OpenClawController`.
 - Requires PostgreSQL, a ready Namespace, exact OCC permissions, the selected
@@ -44,7 +44,7 @@ graph TD
     G --> H["Issue token and store account Secret"]
     H --> I["Persist credential ID and Secret reference"]
     I --> J["Save nullable Agent backendId"]
-    J --> K["Validate binding and freeze revision"]
+    J --> K["Validate binding and freeze Agent revision"]
   end
   subgraph Worker["Worker and Compute"]
     D --> L["Reauthorize deployment actor"]
@@ -60,11 +60,11 @@ graph TD
 
 ### 1. Compose the Backend and its ServiceAccount Driver
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 `loadInstallationConfiguration` validates the singular `backend` array and
 requires each ChatGPT Backend to declare the selected `service_account` member
-Driver. `server.mjs:start` then reads the mounted `apiKeyPath`, constructs
+Driver. `api-startup.mjs:startApi` then reads the mounted `apiKeyPath`, constructs
 `Backend<ChatGPTClient>`, and injects it into the bundled
 `ChatGPTServiceAccountDriver` factory. That client and admin key stay on the API
 side. The worker receives only nonsecret Backend definitions so it can reject
@@ -86,13 +86,16 @@ replies needed to confirm already-absent resources. Before rejecting another
 HTTP status or a response declared larger than its 4 MiB allowance, it cancels
 the unused body. That releases transport capacity before the next operation;
 a cancellation failure does not replace the sanitized Backend error.
+Successful and structured 404 response bodies are read incrementally. A
+chunked body is cancelled as soon as received bytes cross the same 4 MiB
+allowance, before parsing or retaining the overflowing chunk.
 
 Account creation and credential issuance are separate operations. Creating the
 account does not issue a token, and later issuance or deletion requires that
 exact binding to match the current configured Backend and member Driver.
 
 Before deletion, OCC locks the Namespace and account, then checks Agent drafts,
-active revisions, queued or claimed revision work, and queued or running Agent
+selected versions, queued or claimed Agent revision work, and queued or running Agent
 provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
 before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
 check with draft changes and deployment admission; the PostgreSQL reference
@@ -116,11 +119,18 @@ account-owned control-plane Secret. The private Backend binding retains workspac
 metadata. The private credential ID, internal
 credential reference, and audit changes commit together;
 confirmed failures compensate created provider and Kubernetes resources.
+The Secret also records the provider credential ID. A crash or an unknown
+COMMIT that failed runs no compensation, so before issuing, and when deleting an
+account with no recorded credential, the Driver reads the Secret through
+`KubernetesComputeDriver.findServiceAccountCredential`, revokes the credential it
+records, and deletes it only while it still records that credential.
 With no ServiceAccount Driver selected (no ChatGPT Backend), issuance answers
 `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix after the grant and
 account lookup; a selected Driver that fails stays `503`.
 
-### 4. Save Agent Backend intent and admit the revision
+<span id="4-save-agent-backend-intent-and-admit-the-revision" class="anchor-alias"></span>
+
+### 4. Save Agent Backend intent and admit the Agent revision
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
 
@@ -137,7 +147,7 @@ the exact nonnull Backend, selected member Driver, workspace, account, recorded
 credential issuance, and dedicated Codex execution. An account without an issued
 credential cannot deploy; without a ChatGPT Backend that refusal is
 `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`. Admission freezes the account identity, exact credential
-reference, private Backend binding, and Agent `backendId` in the revision.
+reference, private Backend binding, and Agent `backendId` in the Agent revision.
 Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
 through an OCC Secret; native account references are not model-auth selectors.
 
@@ -154,7 +164,7 @@ and credential values stay private.
 
 `KubernetesComputeDriver.prepareRevision` uses its internal `prepareHarnessAuth`
 rendering step and `CODEX_LOGIN_MODE=codex_pat`, then delivers the account token
-into a revision-owned data-plane Secret for dedicated Codex. Embedded execution
+into a data-plane Secret for that Agent revision. Only dedicated Codex receives it. Embedded execution
 is rejected for managed access tokens. The Gateway receives no model credential.
 The trusted worker reads the CP source and manages the DP projection; workload
 ServiceAccounts receive no Secret API permission. Workspace ownership remains
@@ -181,13 +191,15 @@ Refresh, rotation, and automated reconciliation remain deferred.
   controller lifecycle coverage and native HTTPS response-release regressions.
   The latter call the actual Backend with built-in fetch, a single-connection
   pool and a loopback TLS server. They prove recovery after rejected 429, 503 and
-  oversized declared responses, not live provider accounts or model execution.
+  oversized declared responses. The same suite checks that an oversized
+  chunked body is cancelled at its byte limit. These cases do not prove live
+  provider accounts or model execution.
 - Run `node --test tests/integration/service-account-driver-real.test.mjs`
   with `OCC_TEST_CHATGPT_SERVICE_ACCOUNT_REAL=1`, a protected admin-key file,
   `OCC_TEST_CHATGPT_WORKSPACE_ID`, disposable Kubernetes/PostgreSQL, and real
   digest-pinned OpenClaw/Codex images; do not use `OPENAI_API_KEY`.
 - Verify the provider account, private credential ID, exact-account Secret,
-  revision-scoped Codex-only projection, and genuine model response. For ownership,
+  Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
   and [security model](../reference/security.md).
 
@@ -206,6 +218,9 @@ Refresh, rotation, and automated reconciliation remain deferred.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 05:30: Issuance and account deletion reclaim the token Secret and provider credential of an issuance that never committed. (fix-1397, finding 1397)
+- 2026-10-14 18:44: Cancel oversized chunked ChatGPT Admin API responses while reading, before complete buffering. (issue-2411 - 1dae0cc9b76f034f5ca8e1ff500c9b545aa44501)
 
 - 2026-10-09 18:30: `DELETE ...?force=true` removes an account whose issued token no ChatGPT Backend can revoke, deletes its token Secret, and audits the token as unrevoked; with a Backend configured, force is ignored. (q33-force-delete, finding 835)
 - 2026-10-08 17:45: Deleting an account that holds an issued access token, with no ChatGPT Backend, answers `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix instead of a generic `503`. (fix-816-819)

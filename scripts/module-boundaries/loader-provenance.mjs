@@ -4,6 +4,7 @@ import ts from "typescript-compiler-api";
 
 const known = (value, resolution = {}) => Object.freeze({ status: "known", value, ...resolution });
 const unknown = (reason) => Object.freeze({ status: "unknown", reason });
+const isConcretePath = (result) => result.status === "known" && !result.mode;
 export function unwrap(node) {
   while (
     node &&
@@ -198,7 +199,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         const target = value(node.arguments[0], seen);
         let anchor;
         try {
-          if (target.value?.startsWith("file:")) {
+          if (/^file:/i.test(target.value)) {
             anchor = fileURLToPath(target.value);
           } else if (target.value && isAbsolute(target.value)) {
             anchor = target.value;
@@ -390,7 +391,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
       const left = value(node.left, seen);
       const right = value(node.right, seen);
-      return left.status === "known" && right.status === "known" && !left.mode && !right.mode
+      return isConcretePath(left) && isConcretePath(right)
         ? known(left.value + right.value)
         : unknown("Concatenation has an unknown or unresolved path operand.");
     }
@@ -398,7 +399,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
       let text = node.head.text;
       for (const span of node.templateSpans) {
         const item = value(span.expression, seen);
-        if (item.status !== "known" || item.mode) {
+        if (!isConcretePath(item)) {
           return unknown("Template has an unknown or unresolved path substitution.");
         }
         text += item.value + span.literal.text;
@@ -417,7 +418,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           : known(pathToFileURL(path).href);
       }
       const base = value(node.expression, seen);
-      if (base.value?.startsWith("file:") && ["href", "pathname"].includes(node.name.text)) {
+      if (/^file:/i.test(base.value) && ["href", "pathname"].includes(node.name.text)) {
         try {
           return known(node.name.text === "href" ? base.value : new URL(base.value).pathname);
         } catch {
@@ -428,7 +429,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
     if (ts.isNewExpression(node) && isURL(node.expression, seen)) {
       const target = value(node.arguments?.[0], seen);
       const base = value(node.arguments?.[1], seen);
-      if (target.status === "known" && base.status === "known" && !target.mode && !base.mode) {
+      if (isConcretePath(target) && isConcretePath(base)) {
         try {
           return known(new URL(target.value, base.value).href);
         } catch {
@@ -458,7 +459,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
           ? loader.name
           : undefined;
       try {
-        if (name === "fileURLToPath" && first.value.startsWith("file:")) {
+        if (name === "fileURLToPath" && /^file:/i.test(first.value)) {
           return known(fileURLToPath(first.value));
         }
         if (name === "pathToFileURL" && isAbsolute(first.value)) {
@@ -469,7 +470,7 @@ export function createLoaderAnalysis({ checker, path, commonjs, assigned, source
         }
         if (["join", "resolve"].includes(name) && isAbsolute(first.value)) {
           const parts = node.arguments.map((argument) => value(argument, seen));
-          if (parts.every((part) => part.status === "known" && !part.mode)) {
+          if (parts.every(isConcretePath)) {
             return known((name === "join" ? join : resolve)(...parts.map((part) => part.value)));
           }
         }

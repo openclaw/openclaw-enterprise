@@ -8,11 +8,20 @@ export function bindPlatformUnitOfWork(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformUnitOfWork {
   return Object.freeze({
+    preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
+    egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
+      "find",
+      "insert",
+      "save",
+      "authorize",
+    ]),
+    sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
       "getInstallation",
       "createInstallation",
       "holdPrincipalAccount",
+      "holdAuthenticationSession",
     ]),
     namespaces: bindRepository(repositories.namespaces, lifetime, [
       "findNamespace",
@@ -39,6 +48,7 @@ export function bindPlatformUnitOfWork(
     presets: bindRepository(repositories.presets, lifetime, [
       "findPreset",
       "listPresets",
+      "listPresetSummaries",
       "createPreset",
       "lockPreset",
       "updatePreset",
@@ -54,6 +64,10 @@ export function bindPlatformUnitOfWork(
       "hasReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "lockCredentialSource",
@@ -61,6 +75,10 @@ export function bindPlatformUnitOfWork(
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
       "replaceCredentialSourceSecrets",
+      "recordEgressInstallation",
+      "saveCredentialPolicyReduction",
+      "rejectEgressMaterial",
+      "admitEgressSource",
       "deleteCredentialSource",
       "hasReferences",
       "findBlockingReference",
@@ -93,9 +111,11 @@ export function bindPlatformUnitOfWork(
       "listAgentsForBrowsing",
       "findAgent",
       "listAgents",
+      "listAgentReferences",
       "createAgent",
       "lockAgent",
       "updateConfiguration",
+      "setSandboxPolicyEditing",
       "compareAndSetActiveRevision",
       "compareAndClearActiveRevision",
       "transitionAgentDesiredRuntimeState",
@@ -106,6 +126,8 @@ export function bindPlatformUnitOfWork(
       "listRevisionsForBrowsing",
       "findRevision",
       "listRevisions",
+      "listRevisionMetadata",
+      "pageRevisionSummaries",
       "createRevision",
     ]),
     iamPolicy: bindRepository(repositories.iamPolicy, lifetime, [
@@ -123,6 +145,13 @@ export function bindPlatformUnitOfWork(
       "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+      "recordStandingExecution",
+      "approveStanding",
+      "revokeStanding",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",
@@ -149,6 +178,7 @@ export function bindPlatformUnitOfWork(
       "settleEffect",
       "cancel",
       "cancelByAgent",
+      "settleAbandonedEffect",
       "retryByWorkId",
       "releaseConfiguration",
     ]),

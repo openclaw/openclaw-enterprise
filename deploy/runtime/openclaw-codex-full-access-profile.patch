@@ -1,0 +1,138 @@
+diff --git a/extensions/codex/src/app-server/client.ts b/extensions/codex/src/app-server/client.ts
+index 2fe7ff9..7da4951 100644
+--- a/extensions/codex/src/app-server/client.ts
++++ b/extensions/codex/src/app-server/client.ts
+@@ -424,4 +424,26 @@ export class CodexAppServerClient {
+       );
+     }
++    const verifyProviderPermission = (result: T): T => {
++      // Codex can accept an explicit permission profile but return a more restrictive
++      // sandbox. Honor that decision; do not expose the thread to code that starts a turn.
++      if (
++        (method === "thread/start" ||
++          method === "thread/resume" ||
++          method === "thread/fork") &&
++        isJsonObject(params) &&
++        params.permissions === ":danger-full-access" &&
++        !(
++          isJsonObject(result) &&
++          isJsonObject(result.sandbox) &&
++          result.sandbox.type === "dangerFullAccess"
++        )
++      ) {
++        throw new Error(
++          method +
++            ": Codex did not grant the requested :danger-full-access profile",
++        );
++      }
++      return result;
++    };
+     const guard =
+       method === "thread/start" || method === "thread/resume" || method === "thread/fork"
+@@ -529,7 +551,7 @@ export class CodexAppServerClient {
+           }
+         }
+-      })();
++      })().then(verifyProviderPermission);
+     }
+-    return this.requestWithOverloadRetry<T>(method, params, options);
++    return this.requestWithOverloadRetry<T>(method, params, options).then(verifyProviderPermission);
+   }
+
+diff --git a/extensions/codex/src/app-server/config-contracts.ts b/extensions/codex/src/app-server/config-contracts.ts
+index d508157..6f96b22 100644
+--- a/extensions/codex/src/app-server/config-contracts.ts
++++ b/extensions/codex/src/app-server/config-contracts.ts
+@@ -94,4 +94,6 @@ export type CodexAppServerRuntimeOptions = {
+   sandbox: CodexSandboxMode;
+   approvalsReviewer: CodexApprovalsReviewer;
++  /** Selected only by a provider that supplies the outer sandbox boundary. */
++  providerPermissionProfile?: ":danger-full-access";
+   /** Prepared boundary for an explicit session permission mode. */
+   sessionRoot?: string;
+diff --git a/extensions/codex/src/app-server/config-options.ts b/extensions/codex/src/app-server/config-options.ts
+index 6fd626b..1996c16 100644
+--- a/extensions/codex/src/app-server/config-options.ts
++++ b/extensions/codex/src/app-server/config-options.ts
+@@ -314,4 +314,7 @@ export function createCodexAppServerConfig({
+       approvalPolicy: forcedPolicy?.approvalPolicy ?? approvalPolicy,
+       sandbox: resolvedSandbox,
++      ...(env.OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE === ":danger-full-access"
++        ? { providerPermissionProfile: ":danger-full-access" as const }
++        : {}),
+       approvalsReviewer:
+         forcedPolicy?.approvalsReviewer ??
+diff --git a/extensions/codex/src/app-server/thread-requests.ts b/extensions/codex/src/app-server/thread-requests.ts
+index 7d80f60..0c966dc 100644
+--- a/extensions/codex/src/app-server/thread-requests.ts
++++ b/extensions/codex/src/app-server/thread-requests.ts
+@@ -683,9 +683,20 @@ export function resolveCodexThreadApprovalsReviewer(
+
+ export function codexThreadSandboxOrPermissions(
+-  appServer: Pick<CodexAppServerRuntimeOptions, "networkProxy" | "sandbox">,
+-): Pick<CodexThreadStartParams, "sandbox"> {
++  appServer: Pick<
++    CodexAppServerRuntimeOptions,
++    "networkProxy" | "providerPermissionProfile" | "sandbox"
++  >,
++): Pick<CodexThreadStartParams, "permissions" | "sandbox"> {
+   if (appServer.networkProxy) {
+     return {};
+   }
++  // Legacy sandbox can be superseded by managed default_permissions. Only an outer
++  // sandbox provider opts into the explicit profile; native requirements still take precedence.
++  if (
++    appServer.providerPermissionProfile &&
++    appServer.sandbox === "danger-full-access"
++  ) {
++    return { permissions: appServer.providerPermissionProfile };
++  }
+   return { sandbox: appServer.sandbox };
+ }
+diff --git a/extensions/codex/src/app-server/turn-params.ts b/extensions/codex/src/app-server/turn-params.ts
+index 264c1ff..57f154e 100644
+--- a/extensions/codex/src/app-server/turn-params.ts
++++ b/extensions/codex/src/app-server/turn-params.ts
+@@ -114,5 +114,12 @@ export function buildTurnStartParams(
+     collaborationMode.settings.developer_instructions = null;
+   }
+-  const useThreadPermissionProfile = options.appServer.networkProxy && !options.sandboxPolicy;
++  const useThreadPermissionProfile =
++    options.appServer.networkProxy && !options.sandboxPolicy;
++  const providerPermissions =
++    !options.sandboxPolicy &&
++    !options.appServer.networkProxy &&
++    options.appServer.sandbox === "danger-full-access"
++      ? options.appServer.providerPermissionProfile
++      : undefined;
+   const currentSender = params.trigger === "user" ? readCodexCurrentSender(params) : undefined;
+   // Codex emits only changed values and cannot retract omitted fragments from model history.
+@@ -179,15 +186,17 @@ export function buildTurnStartParams(
+     approvalPolicy: options.appServer.approvalPolicy,
+     approvalsReviewer: options.appServer.approvalsReviewer,
+-    ...(useThreadPermissionProfile
+-      ? {}
+-      : {
+-          sandboxPolicy:
+-            options.sandboxPolicy ??
+-            codexSandboxPolicyForTurn(
+-              options.appServer.sandbox,
+-              options.appServer.sessionRoot ?? options.cwd,
+-              options.appServer.start?.args,
+-            ),
+-        }),
++    ...(providerPermissions
++      ? { permissions: providerPermissions }
++      : useThreadPermissionProfile
++        ? {}
++        : {
++            sandboxPolicy:
++              options.sandboxPolicy ??
++              codexSandboxPolicyForTurn(
++                options.appServer.sandbox,
++                options.appServer.sessionRoot ?? options.cwd,
++                options.appServer.start?.args,
++              ),
++          }),
+     ...(modelSelection
+       ? { model: modelSelection.model, personality: CODEX_NATIVE_PERSONALITY_NONE }

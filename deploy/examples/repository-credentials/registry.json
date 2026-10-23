@@ -13,7 +13,9 @@
       "namespaces": [
         {
           "namespaceId": "replace-with-occ-namespace-id",
-          "profiles": ["git-read", "git-write", "git-full"]
+          "profiles": ["git-write"],
+          "transport": "git-only",
+          "pushRefAllowlist": ["refs/heads/agent-work"]
         }
       ]
     }

@@ -4,12 +4,14 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS_ID } from "../../packages/contracts/src/index.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
+import { createOpenShellBackend } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
-async function setup(t) {
+async function setup(t, options = {}) {
   const audit = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink: audit });
-  const fixture = await createConsoleAppFixture(t, { state, backends: [] });
+  const fixture = await createConsoleAppFixture(t, { state, backends: [], ...options });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Workspace setup", { ready: true });
   const configuration = await fixture.createConfiguration(namespace.id);
@@ -94,36 +96,43 @@ test("omitted and empty workspace maps retain native setup while an explicit emp
 
 test("invalid workspace content and stale defaults reject the complete create without an Agent", async (t) => {
   const f = await setup(t);
-  const cases = [
-    [null, 400],
-    [[], 400],
-    [{ "BOOTSTRAP.md": "private-invalid-content" }, 400],
-    [{ "../USER.md": "private-invalid-content" }, 400],
-    [{ "USER.md": null }, 400],
-    [{ "USER.md": 12 }, 400],
-    [{ "USER.md": "private-invalid-content\u0000" }, 400],
-    [{ "USER.md": "private-invalid-content\ud800" }, 400],
-    [{ "SOUL.md": "valid partial", "USER.md": "😀".repeat(4097) }, 400],
+  const privateContent = "private-invalid-content";
+  async function assertRejectedCreate(name, fields, expectedStatus) {
+    const { status, body } = await f.create(name, fields);
+    assert.equal(status, expectedStatus, `${name}: unexpected response status`);
+    assert.equal(
+      JSON.stringify(body).includes(privateContent),
+      false,
+      `${name}: response exposed workspace content`,
+    );
+  }
+  const invalidFiles = [
+    null,
+    [],
+    { "BOOTSTRAP.md": privateContent },
+    { "../USER.md": privateContent },
+    { "USER.md": null },
+    { "USER.md": 12 },
+    { "USER.md": `${privateContent}\u0000` },
+    { "USER.md": `${privateContent}\ud800` },
+    { "SOUL.md": "valid partial", "USER.md": "😀".repeat(4097) },
   ];
-  for (const [index, [files, status]] of cases.entries()) {
-    const result = await f.create(`Invalid ${index}`, { initialWorkspaceFiles: files });
-    assert.equal(result.status, status, `invalid case ${index}: ${JSON.stringify(result.body)}`);
-    assert.equal(JSON.stringify(result.body).includes("private-invalid-content"), false);
+  for (const [index, files] of invalidFiles.entries()) {
+    await assertRejectedCreate(`Invalid ${index}`, { initialWorkspaceFiles: files }, 400);
   }
   for (const [defaultsId, status] of [
     ["0".repeat(64), 409],
     ["A".repeat(64), 400],
     [null, 400],
   ]) {
-    const result = await f.create("Wrong defaults", {
-      initialWorkspaceFiles: { "USER.md": "private-invalid-content" },
-      workspaceDefaultsId: defaultsId,
-    });
-    assert.equal(result.status, status, JSON.stringify(result.body));
-    assert.equal(JSON.stringify(result.body).includes("private-invalid-content"), false);
+    await assertRejectedCreate(
+      "Wrong defaults",
+      { initialWorkspaceFiles: { "USER.md": privateContent }, workspaceDefaultsId: defaultsId },
+      status,
+    );
   }
   assert.deepEqual((await f.request("GET", f.path)).data, []);
-  assert.equal(JSON.stringify(f.audit.events).includes("private-invalid-content"), false);
+  assert.equal(JSON.stringify(f.audit.events).includes(privateContent), false);
 });
 
 test("Agent create accepts four maximum UTF-8 files even when JSON escape expansion exceeds the ordinary body limit", async (t) => {
@@ -229,7 +238,7 @@ test("Agent save and deployment refuse initial workspace files the Configuration
     harnessAuth: { method: "api_key", source: key.ref },
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
-  f.grantAgentSecretOperate(created.data, key.ref);
+  await f.grantAgentSecretOperate(created.data, key.ref, { listed: false });
   await f.updateConfiguration(
     f.namespace.id,
     valid.id,
@@ -245,4 +254,179 @@ test("Agent save and deployment refuse initial workspace files the Configuration
   assert.equal(deployed.body.error.message, workspace);
   assert.deepEqual((await f.request("GET", `${agentPath}/revisions`)).data, []);
   assert.equal((await f.staged(created.data.id)).completed, false);
+});
+
+test("Agent save accepts initial workspace files for a main roster entry in any letter case", async (t) => {
+  // Finding 1144: OpenClaw normalizes Agent ids case-insensitively, as the roster rules do.
+  const f = await setup(t);
+  const model = {
+    model: "openai/gpt-4.1",
+    models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+  };
+  for (const [key, status] of [
+    ["Main", 201],
+    ["MAIN", 201],
+    ["helper", 400],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: { kind: "agent", values: { agents: { defaults: model, entries: { [key]: {} } } } },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const result = await f.create(`Roster ${key}`, {
+      configurationId: stored.data.id,
+      initialWorkspaceFiles: { "USER.md": "roster-case" },
+    });
+    assert.equal(result.status, status, `${key}: ${JSON.stringify(result.body)}`);
+  }
+  // A workspace refusal names the entry as written.
+  const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: {
+      kind: "agent",
+      values: { agents: { defaults: model, entries: { Main: { workspace: "/srv/elsewhere" } } } },
+    },
+  });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  const refused = await f.create("Roster workspace", {
+    configurationId: stored.data.id,
+    initialWorkspaceFiles: { "USER.md": "roster-case" },
+  });
+  assert.equal(refused.status, 400, JSON.stringify(refused.body));
+  assert.equal(
+    refused.body.error.message,
+    "Configuration setting agents.entries.Main.workspace must be /home/node/.openclaw/workspace, or unset, for initial workspace files.",
+  );
+});
+
+test("Agent save refuses initial workspace files in a Sandbox with a 409 that names the Sandbox", async (t) => {
+  // A provider without an initializer must remain unsupported even when its configuration
+  // hook moves the workspace. Report the missing capability, not a caller path error.
+  const sandboxDriver = {
+    id: "workspace-setup-sandbox",
+    capability: "sandbox",
+    implementation: "openshell",
+    facets: ["networking", "filesystem", "process"],
+    async provisionHarness() {
+      assert.fail("Agent save must not provision a Harness");
+    },
+    async cleanup() {},
+    // OpenShell's own rewrite: the workspace moves to the Sandbox data mount.
+    configureAgent(configuration, harness) {
+      return OpenShellSandboxDriver.prototype.configureAgent.call(
+        { options: { kubernetes: { sandboxDataMount: { mountPath: "/sandbox/data" } } } },
+        configuration,
+        harness,
+      );
+    },
+  };
+  const f = await setup(t, { sandboxDriver });
+  const message =
+    "The selected Compute Driver cannot deliver initial workspace files to a Harness in the selected Sandbox. Use an Agent without initialWorkspaceFiles.";
+  for (const [runtime, model] of [
+    ["openclaw", "openai/gpt-4.1"],
+    ["codex", "codex/gpt-5.1"],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: {
+        kind: "agent",
+        values: {
+          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        },
+      },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const refused = await f.create(`Sandboxed ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: { "USER.md": "sandboxed-setup" },
+    });
+    assert.equal(refused.status, 409, `${runtime}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.message, message);
+    // Without initial workspace files the same Agent saves.
+    const plain = await f.create(`Plain ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(plain.status, 201, `${runtime}: ${JSON.stringify(plain.body)}`);
+    assert.equal(await f.staged(plain.data.id), undefined);
+  }
+  assert.equal(
+    (await f.request("GET", f.path)).data.filter(({ name }) => name.startsWith("Sandboxed")).length,
+    0,
+  );
+});
+
+test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+  const definition = {
+    id: "workspace-openshell",
+    type: "openshell",
+    configuration: { endpoint: "http://127.0.0.1:9", insecureTransport: "network-policy" },
+    drivers: {
+      sandbox: "workspace-openshell-sandbox",
+      credential_gateway: "workspace-openshell-credentials",
+    },
+  };
+  const backend = createOpenShellBackend(definition);
+  t.after(() => backend.client.close());
+  const sandboxDriver = new OpenShellSandboxDriver(
+    {
+      gateway: { workspaceMode: "operator" },
+      kubernetes: {
+        runtimeClassName: "openshell-sandbox",
+        serviceAccount: { mode: "gatewayConfigured" },
+        sandboxDataMount: {
+          subPath: "workspace",
+          mountPath: "/sandbox/enterprise",
+          readOnly: false,
+        },
+      },
+      policy: {
+        process: { runAsUser: "1000", runAsGroup: "1000" },
+        networkPolicies: [
+          {
+            name: "model-egress",
+            endpoints: [{ host: "api.openai.com", ports: [443] }],
+            binaries: [{ path: "/usr/local/bin/node" }],
+          },
+        ],
+      },
+    },
+    { id: "workspace-openshell-sandbox", backend },
+  );
+  const f = await setup(t, {
+    sandboxDriver,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+  });
+  for (const [runtime, model] of [
+    ["openclaw", "openai/gpt-4.1"],
+    ["codex", "codex/gpt-5.1"],
+  ]) {
+    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+      body: {
+        kind: "agent",
+        values: {
+          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+        },
+      },
+    });
+    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const files = { "USER.md": `private-${runtime}-workspace-content` };
+    // Real API admission composes Compute with OpenShell's workspace projection and validator.
+    // No Sandbox is provisioned: the private payload remains staged for deployment.
+    const created = await f.create(`OpenShell ${runtime}`, {
+      configurationId: stored.data.id,
+      executionMode: "dedicated",
+      initialWorkspaceFiles: files,
+    });
+    assert.equal(created.status, 201, `${runtime}: ${JSON.stringify(created.body)}`);
+    assert.equal(created.data.desiredRuntimeState, "stopped");
+    assert.deepEqual((await f.staged(created.data.id)).files, files);
+    assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+  }
 });
