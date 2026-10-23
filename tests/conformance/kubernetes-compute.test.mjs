@@ -5756,6 +5756,33 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
           error.setting === "gateway.auth.trustedProxy.requiredHeaders",
       );
     }
+    // The operator HTTPRoute strips these headers, so requiring one on a routed Agent
+    // would refuse OCC's own access for good; without routing the operator's proxy decides.
+    for (const header of ["authorization", "Cookie", "forwarded", "x-forwarded-for"]) {
+      const validate = () =>
+        driver.validateAgentProvisioning({
+          executionMode: "dedicated",
+          configuration: {
+            gateway: {
+              auth: {
+                ...auth,
+                trustedProxy: { ...auth.trustedProxy, requiredHeaders: [header, "x-real-ip"] },
+              },
+            },
+          },
+        });
+      if (configure === routedOptions) {
+        assert.throws(
+          validate,
+          (error) =>
+            error instanceof ComputeGatewaySettingError &&
+            error.setting === "gateway.auth.trustedProxy.requiredHeaders" &&
+            error.message.includes("route removes"),
+        );
+      } else {
+        assert.doesNotThrow(validate);
+      }
+    }
 
     // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
     // A human allowlist must not silently inherit the pilot's admin device grant.

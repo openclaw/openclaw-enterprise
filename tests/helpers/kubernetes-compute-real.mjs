@@ -505,7 +505,11 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
                       requiredHeaders: [
                         ...(snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ??
                           []),
-                        "x-openclaw-scopes",
+                        ...((
+                          snapshot.configuration.gateway?.auth?.trustedProxy?.requiredHeaders ?? []
+                        ).some((header) => header.toLowerCase() === "x-openclaw-scopes")
+                          ? []
+                          : ["x-openclaw-scopes"]),
                       ],
                     }
                   : {}),

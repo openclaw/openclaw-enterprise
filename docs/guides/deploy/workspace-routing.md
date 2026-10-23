@@ -182,8 +182,8 @@ environment SecretRef
 Do not use a plaintext password. See [Kubernetes gateway credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials)
 and [verify a model response](../operate/model-verification.md).
 
-Do not require `x-forwarded-for` in native `requiredHeaders`: the route removes
-it. Envoy authenticates the service key, removes it, overwrites the native
+Compute refuses native `requiredHeaders` naming `x-forwarded-for` or another header
+the route removes. Envoy authenticates the service key, removes it, overwrites the native
 identity header, and sets `X-Real-IP` from its direct OCC connection. That
 fallback works when OCC and Envoy share a Pod CIDR. Do not fabricate an address
 or allow direct workload access to work around an attribution failure.

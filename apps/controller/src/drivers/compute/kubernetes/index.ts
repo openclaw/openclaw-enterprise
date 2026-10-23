@@ -1206,6 +1206,13 @@ const TRUSTED_PROXY_HEADER = "x-occ-identity";
 // APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
 // operator.admin included (finding 2183).
 const TRUSTED_PROXY_SCOPES_HEADER = "x-openclaw-scopes";
+// Request headers every Gateway HTTPRoute removes before the Gateway sees a request.
+const ROUTE_REMOVED_REQUEST_HEADERS: ReadonlySet<string> = new Set([
+  "authorization",
+  "cookie",
+  "forwarded",
+  "x-forwarded-for",
+]);
 // Native Gateway scope enum at the supported OpenClaw runtime pin.
 const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
   "operator.admin",
@@ -13244,6 +13251,19 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       throw new GatewaySettingFailure(
         "gateway.auth.trustedProxy.requiredHeaders",
         "must be an array of nonblank, trimmed header names when set",
+      );
+    }
+    if (
+      this.options.gatewayRouting !== undefined &&
+      Array.isArray(requiredHeaders) &&
+      requiredHeaders.some((header) =>
+        ROUTE_REMOVED_REQUEST_HEADERS.has((header as string).toLowerCase()),
+      )
+    ) {
+      // The operator HTTPRoute strips these, so requiring one would refuse OCC's own access.
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        `must not require a header the Gateway route removes (${[...ROUTE_REMOVED_REQUEST_HEADERS].join(", ")})`,
       );
     }
     // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:

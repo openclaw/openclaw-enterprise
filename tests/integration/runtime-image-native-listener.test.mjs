@@ -253,6 +253,53 @@ test(
   },
 );
 
+// The probe stands in for the proxy on the Gateway's network: one HTTP call to the
+// admin-only run kill, or one WebSocket connect as an operator without a device.
+const trustedProxyProbe = String.raw`
+import WebSocket from "/app/node_modules/ws/index.js";
+const [address, encoded] = process.argv.slice(2);
+const proxyHeaders = ({ identity, scopes }) => ({
+  "x-real-ip": "192.0.2.10",
+  "x-occ-identity": identity,
+  ...(scopes === undefined ? {} : { "x-openclaw-scopes": scopes }),
+});
+async function http(request) {
+  const response = await fetch("http://" + address + ":8080/sessions/probe-session/kill", {
+    method: "POST",
+    headers: proxyHeaders(request),
+    signal: AbortSignal.timeout(10000),
+  });
+  return { status: response.status, body: await response.text() };
+}
+function ws(request) {
+  return new Promise((resolve) => {
+    const socket = new WebSocket("ws://" + address + ":8080", { headers: proxyHeaders(request) });
+    const timer = setTimeout(() => { socket.terminate(); resolve({ status: "timeout" }); }, 15000);
+    const done = (value) => { clearTimeout(timer); socket.close(); resolve(value); };
+    socket.on("unexpected-response", (_request, response) => done({ status: "handshake-refused", http: response.statusCode }));
+    socket.on("error", (error) => done({ status: "error", body: error.message }));
+    socket.on("close", (code, reason) => done({ status: "closed", code, body: String(reason) }));
+    socket.on("message", (data) => {
+      const message = JSON.parse(String(data));
+      if (message.type === "event" && message.event === "connect.challenge") {
+        socket.send(JSON.stringify({ type: "req", id: "connect", method: "connect", params: {
+          minProtocol: 4, maxProtocol: 4,
+          client: { id: "gateway-client", version: "1.0.0", platform: "linux", mode: "backend" },
+          caps: [], commands: [], role: "operator", scopes: [],
+        } }));
+      } else if (message.type === "res" && message.id === "connect") {
+        done(message.ok
+          ? { status: "hello", scopes: message.payload?.auth?.scopes, deviceToken: message.payload?.auth?.deviceToken }
+          : { status: "connect-error", body: JSON.stringify(message.error) });
+      }
+    });
+  });
+}
+const requests = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+const outcomes = await Promise.all(requests.map((request) => (request.kind === "ws" ? ws(request) : http(request))));
+console.log(JSON.stringify(outcomes));
+`;
+
 // Native HTTP APIs ignore identityScopes: a trusted-proxy request without
 // x-openclaw-scopes receives the pinned Gateway's default operator scopes, admin
 // included. Compute therefore requires the header once a human is admitted, and the
@@ -276,6 +323,8 @@ test(
     assert.ok(subnet);
     const directory = await mkdtemp(join(tmpdir(), "oce-native-scopes-"));
     t.after(() => rm(directory, { recursive: true, force: true }));
+    const probePath = join(directory, "probe.mjs");
+    await writeFile(probePath, trustedProxyProbe, { mode: 0o644 });
     const humanAuth = {
       mode: "trusted-proxy",
       trustedProxy: {
@@ -287,31 +336,60 @@ test(
         "oidc:member-01": ["operator.read"],
       },
     };
-    // Run kills stay admin-only upstream: 404 means the scope check passed for a
-    // session that does not exist, 403 names the missing scope, 401 is refused admission.
+    // HTTP: run kills stay admin-only upstream, so 404 means the scope check passed for a
+    // session that does not exist, 403 names the missing scope and 401 is refused admission.
+    // WebSocket: a refused proxy identity falls back to device authentication, which this
+    // device-less operator connect cannot satisfy; "hello" carries the granted scopes.
     const scopeCases = [
       [
         "human admitted",
         humanAuth,
         undefined,
         [
-          ["oidc:member-01", undefined, 401, /Unauthorized/],
-          ["oidc:member-01", "operator.read", 403, /missing scope: operator\.admin/],
-          ["occ-workspace-files", undefined, 401, /Unauthorized/],
-          ["occ-workspace-files", "operator.admin", 404, /Session not found/],
+          [{ identity: "oidc:member-01" }, { status: 401, body: /Unauthorized/ }],
+          [
+            { identity: "oidc:member-01", scopes: "operator.read" },
+            { status: 403, body: /missing scope: operator\.admin/ },
+          ],
+          [{ identity: "occ-workspace-files" }, { status: 401, body: /Unauthorized/ }],
+          [
+            { identity: "occ-workspace-files", scopes: "operator.admin" },
+            { status: 404, body: /Session not found/ },
+          ],
+          [
+            { kind: "ws", identity: "occ-workspace-files" },
+            { status: "connect-error", body: /DEVICE_IDENTITY_REQUIRED/ },
+          ],
+          [
+            { kind: "ws", identity: "occ-workspace-files", scopes: "operator.admin" },
+            { status: "hello", scopes: ["operator.admin"] },
+          ],
+          [
+            { kind: "ws", identity: "oidc:member-01", scopes: "operator.read" },
+            { status: "hello", scopes: ["operator.read"] },
+          ],
         ],
       ],
       [
         "human admitted without the rendered requirement",
         humanAuth,
         (configuration) => {
-          // The upstream default the requirement exists for: a read-only human
-          // acts as owner when the proxy omits the header.
+          // The upstream default the requirement exists for: a read-only human acts as
+          // owner on HTTP when the proxy omits the header, while WebSocket connects honour
+          // identityScopes. Should an OpenClaw pin bump close this, drop this case and
+          // reconsider the requirement rather than adjust the expectation.
           delete configuration.gateway.auth.trustedProxy.requiredHeaders;
         },
         [
-          ["oidc:member-01", undefined, 404, /Session not found/],
-          ["oidc:member-01", "operator.read", 403, /missing scope: operator\.admin/],
+          [{ identity: "oidc:member-01" }, { status: 404, body: /Session not found/ }],
+          [
+            { identity: "oidc:member-01", scopes: "operator.read" },
+            { status: 403, body: /missing scope: operator\.admin/ },
+          ],
+          [
+            { kind: "ws", identity: "oidc:member-01" },
+            { status: "hello", scopes: ["operator.read"] },
+          ],
         ],
       ],
       [
@@ -319,9 +397,19 @@ test(
         undefined,
         undefined,
         [
-          ["occ-workspace-files", undefined, 404, /Session not found/],
-          ["occ-workspace-files", "operator.admin", 404, /Session not found/],
-          ["oidc:member-01", "operator.admin", 401, /Unauthorized/],
+          [{ identity: "occ-workspace-files" }, { status: 404, body: /Session not found/ }],
+          [
+            { identity: "occ-workspace-files", scopes: "operator.admin" },
+            { status: 404, body: /Session not found/ },
+          ],
+          [
+            { identity: "oidc:member-01", scopes: "operator.admin" },
+            { status: 401, body: /Unauthorized/ },
+          ],
+          [
+            { kind: "ws", identity: "occ-workspace-files" },
+            { status: "hello", scopes: ["operator.admin"] },
+          ],
         ],
       ],
     ];
@@ -375,19 +463,29 @@ test(
         "--pull=never",
         "--network",
         network,
+        "--volume",
+        `${probePath}:/probe.mjs:ro`,
         "--entrypoint",
         "node",
         image,
-        "-e",
-        `const requests=${JSON.stringify(requests.map(([identity, scopes]) => ({ identity, scopes })))};
-Promise.all(requests.map(async ({identity,scopes})=>{const r=await fetch("http://${address}:8080/sessions/probe-session/kill",{method:"POST",headers:{"x-real-ip":"192.0.2.10","x-occ-identity":identity,...(scopes===undefined?{}:{"x-openclaw-scopes":scopes})},signal:AbortSignal.timeout(10000)});return {status:r.status,body:await r.text()};})).then(v=>console.log(JSON.stringify(v)));`,
+        "/probe.mjs",
+        address,
+        Buffer.from(JSON.stringify(requests.map(([request]) => request))).toString("base64url"),
       ]);
       const outcomes = JSON.parse(remote.stdout.trim());
-      for (const [position, [identity, scopes, status, body]] of requests.entries()) {
+      for (const [position, [request, expected]] of requests.entries()) {
         const outcome = outcomes[position];
-        const request = `${label}: ${identity} with ${scopes === undefined ? "no scope header" : `x-openclaw-scopes=${scopes}`}`;
-        assert.equal(outcome.status, status, `${request}: ${outcome.body}`);
-        assert.match(outcome.body, body, request);
+        const description = `${label}: ${request.kind ?? "http"} ${request.identity} with ${
+          request.scopes === undefined ? "no scope header" : `x-openclaw-scopes=${request.scopes}`
+        }: ${JSON.stringify(outcome)}`;
+        assert.equal(outcome.status, expected.status, description);
+        if (expected.body !== undefined) {
+          assert.match(outcome.body, expected.body, description);
+        }
+        if (expected.scopes !== undefined) {
+          assert.deepEqual(outcome.scopes, expected.scopes, description);
+          assert.equal(outcome.deviceToken, undefined, description);
+        }
       }
       await assertNoModelRequests(containerName);
       t.diagnostic(`${label}: ${outcomes.map(({ status }) => status).join(",")} modelCalls=0`);
