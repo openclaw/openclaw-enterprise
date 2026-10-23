@@ -331,13 +331,28 @@ test(
   },
 );
 
-for (const mode of ["Git only", "created", "lost provider reply", "mismatched provider 201"]) {
+for (const mode of [
+  "Git only",
+  "created",
+  "created in GitHub's spelling",
+  "lost provider reply",
+  "mismatched provider 201",
+]) {
   test("prepared draft pull: " + mode, { ...requiresPostgres, timeout: 45000 }, async (t) => {
     const draftPull = mode !== "Git only";
+    const settles = mode.startsWith("created");
+    // The registry lowercases the repository; GitHub answers with its own spelling (finding 2236).
+    const spelled = mode === "created in GitHub's spelling";
+    const spell = (url) =>
+      url.replace(/(?<=^https:\/\/github\.com\/)[^/]+\/[^/]+/, (name) => name.toUpperCase());
     const f = await fixture(t, {
       draftPull,
       draftResponse:
-        mode === "mismatched provider 201" ? (body) => ({ ...body, base: body.head }) : undefined,
+        mode === "mismatched provider 201"
+          ? (body) => ({ ...body, base: body.head })
+          : spelled
+            ? (body) => ({ ...body, html_url: spell(body.html_url) })
+            : undefined,
       openBroker: (input) => startBroker(t, input),
     });
     const b = f.broker;
@@ -345,7 +360,7 @@ for (const mode of ["Git only", "created", "lost provider reply", "mismatched pr
     const head = b.pushRef.slice("refs/heads/".length);
     const base = "main";
     const title = "Scoped review";
-    const body = mode === "created" ? "Check: tests passed" : "";
+    const body = settles ? "Check: tests passed" : "";
     const operationId = randomUUID();
     const packet = { title, head, base, body, draft: true };
     const headers = {
@@ -379,7 +394,7 @@ for (const mode of ["Git only", "created", "lost provider reply", "mismatched pr
     assert.equal(observed().length, 0);
     assert.equal(f.gh.issuesOfTokens.length, 1);
 
-    if (mode === "created") {
+    if (settles) {
       // Exercise the shipping client and real computed manifest through an obligatory CONNECT.
       // The TLS broker listens on a random port unreachable at the client's selected port 443.
       const { root } = await createNativeClientMaterial(
@@ -439,7 +454,9 @@ for (const mode of ["Git only", "created", "lost provider reply", "mismatched pr
       assert.equal(receipt.head.ref, head);
       assert.equal(receipt.base.ref, base);
       assert.equal(receipt.draft, true);
-      assert.equal(receipt.url, "https://github.com/" + b.repository + "/pull/" + receipt.number);
+      const url = "https://github.com/" + b.repository + "/pull/" + receipt.number;
+      assert.equal(receipt.url, spelled ? spell(url) : url);
+      assert.equal(spelled, receipt.url !== url);
       assert.ok(
         !output.stdout.includes("must-not-escape"),
         "upstream nested credentials must never be returned",
