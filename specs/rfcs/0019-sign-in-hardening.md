@@ -9,7 +9,7 @@ status_note: "Retroactive record of changes landed on main from 2026-09-28 throu
 
 - **ID:** RFC-0019
 - **Created:** 2026-10-01
-- **Last updated:** 2026-10-15
+- **Last updated:** 2026-10-23
 - **RFC PR:** [#856](https://github.com/openclaw/openclaw-enterprise/pull/856)
 
 <a id="problem-and-decision"></a>
@@ -28,14 +28,19 @@ A browser we recognize gives Emma a separate allowance. For the designated recov
 can still check the password on a new laptop if there is room in the queue. Someone can occupy
 both slots and all sixteen waiting places. The person trying to recover has no guaranteed place.
 
-**Decision requested.** Keep that distinction, or change whose password we will check after ten
-failures. Refusing ordinary attempts limits guessing but lets someone who knows Emma's email
-keep her out. Pacing and checking every attempt instead would allow roughly 25 guesses a minute
-per email, about 36,000 a day. We merged the pieces between September 28 and October 1; no human
-has yet reviewed the policy as a whole. Please record the decision in
-[#856](https://github.com/openclaw/openclaw-enterprise/pull/856), including what Emma can do if
-the refusal continues and whether recovery needs a guaranteed place. Merging this record as
-`Proposed` leaves those decisions open.
+**Proposed amendment to RFC-0007.** Keep the refusal for ordinary accounts and the paced
+password check for reserved accounts. This limits guessing at the cost of a renewable lockout.
+Pacing and checking every password instead would allow roughly 25 guesses a minute per email,
+about 36,000 a day.
+
+An authentication maintainer should decide two cases before accepting the amendment:
+
+1. **Ordinary account, repeated lockout.** If a stranger spends each new window and Emma has
+   neither a recognized browser nor another sign-in method, can the controller continue to
+   refuse her correct password? If that outcome is unacceptable, specify how she regains access.
+2. **Recovery account, full queue.** May the controller return `429` to the designated recovery
+   user on a new browser when that email's queue is full, or must the installation provide an
+   independent way to regain access under contention?
 
 This record replaces only [RFC-0007's sign-in admission section](0007-human-federated-sign-in/index.md#sign-in-admission).
 [RFC-0007](0007-human-federated-sign-in/index.md) still defines GitHub sign-in, browser receipts and session keys; [RFC-0001](0001-oidc-sign-in.md)
@@ -195,17 +200,15 @@ organization or team check can refuse before account lookup, with `MEMBERSHIP_RE
 
 ## What the authentication maintainer still needs to settle
 
-Start with Emma's renewable lockout and the lack of a guaranteed recovery slot. Then record
-which of these defaults to keep and which need a follow-up change.
+The two admission decisions above govern this amendment. The following choices remain open for
+separate review if a maintainer wants to change the surrounding policy:
 
-1. Default passwords to `all` or, when an external provider is configured, to `recovery-only`?
-2. Warn when no trusted proxy is configured, or refuse installation?
-3. Keep ninety-day, three-entry cookies and recognition after re-enabling an account?
-4. Add a controller-wide limit on concurrent password hashing outside the slow lane?
-5. Cache proof reads to preserve browser allowances under pressure, or keep the bounded fallback?
-6. Require an administrator unlock mechanism or durable budgets before adding a controller?
-7. Keep automatic session refusal on use after provider reconfiguration and restart, or require
-   a separate operator action?
+- Which sign-in methods an installation permits by default when an external provider is configured,
+  and whether reconfiguring that provider should invalidate sessions on use.
+- When to require trusted proxy configuration, controller-wide hashing limits or durable budgets
+  as installations grow beyond one controller.
+- How long a browser remains recognized, whether recognition survives account re-enablement,
+  and whether to cache proof reads when the account store is under pressure.
 
 Source baseline: `main` at `521549dff`, reviewed through `07590c64e`; relevant controller and
 State files compared with `00bbc7cd9` on October 15. The original record cites the implementation
