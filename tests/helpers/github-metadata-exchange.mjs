@@ -75,3 +75,14 @@ export async function dispatchMetadata(
   }
   return protectedResponse;
 }
+
+/** Runs one maintenance pass on every owner at once over the same durable family. Exactly one
+ * owner claims the due family and commits; returns the other owners' results, sorted. A loser
+ * finds no due family, so its pass reports only its own retirement step: `idle`, or `retired`
+ * when it ran after the winner's commit moved the superseded token into retirement custody. */
+export async function raceMaintenance(owners, signal) {
+  const results = await Promise.all(owners.map((owner) => owner.maintain(signal)));
+  const committed = results.filter((result) => result === "committed");
+  assert.equal(committed.length, 1, `exactly one owner must commit: ${results.join(", ")}`);
+  return results.filter((result) => result !== "committed").sort();
+}

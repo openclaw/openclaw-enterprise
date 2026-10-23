@@ -6,7 +6,11 @@ import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { setTimeout as delay } from "node:timers/promises";
-import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
+import {
+  captureMetadata,
+  dispatchMetadata,
+  raceMaintenance,
+} from "../helpers/github-metadata-exchange.mjs";
 import { postgresEgressSendReceipts } from "../../packages/occ/src/state/egress-send-receipts.ts";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
@@ -53,9 +57,10 @@ test(
     // Two workers race over a real family. Only the durable claim holder reaches the issuer.
     const competitor = createOwner();
     await competitor.connect(f.pool);
-    const results = await Promise.all([lifecycle.maintain(signal), competitor.maintain(signal)]);
+    // The family is cold, so the loser has nothing to retire.
+    const losers = await raceMaintenance([lifecycle, competitor], signal);
     await competitor.close();
-    assert.deepEqual(results.sort(), ["committed", "idle"]);
+    assert.deepEqual(losers, ["idle"]);
     const old = await lifecycle.readWarm(source, readWindow());
     assert.equal(old.ownerEpoch, 1);
     assert.deepEqual(gh.issuesOfTokens[0].permissions, { metadata: "read" });
