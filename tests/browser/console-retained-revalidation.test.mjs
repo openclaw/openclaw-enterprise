@@ -1822,13 +1822,21 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
   await page.goto(`${fixture.origin}/console/agents`, { waitUntil: "commit" });
   await script.requested;
   const status = page.locator("#app > p.startup[role='status']");
-  await status.waitFor({ state: "attached" });
+  // The entry script can be requested before the stylesheet that defines the startup animation.
+  await page.waitForFunction(() =>
+    [...globalThis.document.styleSheets].some((sheet) =>
+      sheet.href?.endsWith("/console/console.css"),
+    ),
+  );
   // Read the status's look at fixed times into its animation, independent of host load. A fresh
   // copy starts its own animation, which a loaded host may already have finished on the original.
   const shown = await status.evaluate((node) => {
     const copy = node.cloneNode(true);
     node.after(copy);
     const [animation] = copy.getAnimations();
+    if (!animation) {
+      throw new Error("The loaded Console stylesheet did not animate the startup status");
+    }
     animation.pause();
     const looks = [0, 300, 399, 600].map((time) => {
       animation.currentTime = time;
