@@ -10,7 +10,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after, before } from "node:test";
+import test, { before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -33,6 +33,7 @@ import {
 import { validateSelectedBackendDrivers } from "../../packages/occ/src/index.ts";
 import { spawnSync } from "node:child_process";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
+import { fileCompileCache } from "../helpers/compile-cache.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   createCredentialProxyInstallationConfiguration as credentialProxyInstallation,
@@ -59,11 +60,7 @@ function startupDiagnostic(stderr, event) {
 // The startup cases boot the real API and worker processes with an allowlisted environment,
 // which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
 // a temporary one owned by this file, so each boot after the first reuses compiled code.
-const compileCache =
-  process.env.NODE_COMPILE_CACHE || (await mkdtemp(join(tmpdir(), "configuration-startup-cache-")));
-if (compileCache !== process.env.NODE_COMPILE_CACHE) {
-  after(() => rm(compileCache, { recursive: true, force: true }));
-}
+const compileCache = await fileCompileCache("configuration-startup");
 
 // The production listener and sign-in settings of the API boots that reach session auth.
 const productionServer = {
