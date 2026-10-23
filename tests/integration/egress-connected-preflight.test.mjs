@@ -409,39 +409,41 @@ test("connected failed-turn observation rejects partial text without a completed
   }
 });
 
-test("installed cleanup records an unsettled prepared source without retrying or observing custody", async () => {
-  const cleanup = async (code) => {
-    const records = [];
-    let removes = 0;
-    const removed = await deleteInstalledResource({
-      remove: async () => {
-        removes += 1;
-        return {
-          status: 409,
-          body: { meta: { requestId: "req_cleanup" }, error: { code, message: "retry later" } },
-        };
-      },
-      record: async (details) => records.push(details),
-      // Never reached: only a 500 INTERNAL_ERROR may observe custody and retry.
-      prepared: {
-        databaseUrl: "postgresql://127.0.0.1:1/unreachable",
-        namespaceId: "ns",
-        sourceId: "src",
-      },
-    });
-    return { removed, removes, records };
-  };
-  // Since #3251 an unsettled prepared source answers this code; retry waits up to the token lifetime.
-  for (const [code, reason] of [
-    ["CREDENTIAL_TOKEN_UNSETTLED", "CREDENTIAL_TOKEN_UNSETTLED"],
-    ["SOME_FUTURE_CODE", "unclassified-response"],
-  ]) {
-    assert.deepEqual(await cleanup(code), {
+// docs/reference/credential-sources.md: an unsettled prepared source may stay deleting until its
+// token lifetime ends. Cleanup must name that outcome and must not wait it out.
+test("installed cleanup names an unsettled prepared source and does not wait out the token lifetime", async () => {
+  const records = [];
+  let removes = 0;
+  const removed = await deleteInstalledResource({
+    remove: async () => {
+      removes += 1;
+      return {
+        status: 409,
+        body: {
+          meta: { requestId: "req_cleanup" },
+          error: { code: "CREDENTIAL_TOKEN_UNSETTLED", message: "retry later" },
+        },
+      };
+    },
+    record: async (details) => records.push(details),
+    // Never reached: only a 500 INTERNAL_ERROR may observe custody and retry.
+    prepared: {
+      databaseUrl: "postgresql://127.0.0.1:1/unreachable",
+      namespaceId: "ns",
+      sourceId: "src",
+    },
+  });
+  assert.deepEqual(
+    { removed, removes, records },
+    {
       removed: false,
       removes: 1,
-      records: [{ observation: "delete-started-result-not-yet-known" }, { status: 409, reason }],
-    });
-  }
+      records: [
+        { observation: "delete-started-result-not-yet-known" },
+        { status: 409, reason: "CREDENTIAL_TOKEN_UNSETTLED" },
+      ],
+    },
+  );
 });
 
 test("connected adversarial wire carries split and nested-JSON material without raw reflection", () => {
