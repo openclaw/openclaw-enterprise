@@ -21,11 +21,13 @@ import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
 import {
   chartListeners,
   InstallationFieldError,
+  type InstallationFieldDetail,
   requireChartListener,
 } from "./installation-fields.ts";
 import { assertConfigurationSchema, requireConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -56,7 +58,9 @@ import {
   DependencyUnavailableError,
   validateBackendDefinitions,
   type BundledPresetVersion,
+  type CredentialProxyCapacity,
   type NativeWorkerSupport,
+  resolveCredentialProxyCapacity,
   type OpenClawController,
   DriverConfigurationRegistry,
   type PostgresPlatformState,
@@ -135,6 +139,8 @@ export interface InstallationStartupConfiguration {
   readonly observability?: { readonly url: string };
   /** Declares a runtime image built with native worker support; see configuration reference. */
   readonly runtime?: { readonly nativeWorkerSupport: NativeWorkerSupport };
+  /** `drivers.credential_proxy.requestCapacity`, resolved; absent without a Credential Proxy. */
+  readonly credentialProxyCapacity?: CredentialProxyCapacity;
   readonly backend: readonly BackendDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
@@ -311,6 +317,34 @@ interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
     configuration: ConfigurationRecord,
     selection: OpenShellSandboxDriverSelection,
   ) => SandboxDriver;
+}
+
+/**
+ * Validate `drivers.credential_proxy.requestCapacity`, the request registry's in-memory bounds
+ * per API process, and fill omitted bounds. Each fault names its field, never its value.
+ */
+function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCapacity {
+  const path = "drivers.credential_proxy.requestCapacity";
+  const pointer = (field?: string) =>
+    `/${path.replaceAll(".", "/")}${field === undefined ? "" : `/${field}`}`;
+  const value = asRecord(input);
+  if (!value) {
+    throw new InstallationFieldError([
+      { path: pointer(), code: "INVALID_TYPE", message: `${path} must be one object.` },
+    ]);
+  }
+  const resolved = resolveCredentialProxyCapacity(value, path);
+  if (resolved.faults) {
+    const [first, ...rest] = resolved.faults;
+    throw new InstallationFieldError(
+      [first, ...rest].map((fault) => ({
+        path: pointer(fault.field),
+        code: fault.code,
+        message: fault.message,
+      })) as [InstallationFieldDetail, ...InstallationFieldDetail[]],
+    );
+  }
+  return resolved.capacity;
 }
 
 function runtimeConfiguration(
@@ -666,12 +700,15 @@ export async function loadInstallationConfiguration(options: {
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
+  let credentialProxyCapacity: CredentialProxyCapacity | undefined;
   let preparedGitHubKeyPath: string | undefined;
   let preparedGitHubOrigin: string | undefined;
   let preparedGitHubCa: Buffer | undefined;
   if (drivers.credential_proxy !== undefined) {
     const selection = object(drivers.credential_proxy, "drivers.credential_proxy");
-    closed(selection, ["id", "configuration"], "drivers.credential_proxy");
+    closed(selection, ["id", "configuration", "requestCapacity"], "drivers.credential_proxy");
+    // OCC's request registry, not the Driver, owns these bounds: they apply to any Driver.
+    credentialProxyCapacity = credentialProxyCapacityConfiguration(selection.requestCapacity ?? {});
     const egress = object(selection.configuration, "drivers.credential_proxy.configuration");
     if (sandboxSelection?.package !== undefined) {
       const id = nonempty(selection.id, "drivers.credential_proxy.id");
@@ -977,6 +1014,7 @@ export async function loadInstallationConfiguration(options: {
     logging,
     ...(observability === undefined ? {} : { observability }),
     ...(runtime === undefined ? {} : { runtime }),
+    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
     backend: backends,
     ...(repoSelection === undefined ? {} : { repository: repoSelection }),
     drivers: Object.freeze({

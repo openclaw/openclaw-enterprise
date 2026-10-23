@@ -287,6 +287,9 @@ export async function composeProduction(
       ...(installation.runtime === undefined
         ? {}
         : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
+      ...(installation.credentialProxyCapacity === undefined
+        ? {}
+        : { credentialProxyCapacity: installation.credentialProxyCapacity }),
     });
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);

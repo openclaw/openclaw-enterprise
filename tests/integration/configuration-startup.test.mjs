@@ -2188,6 +2188,157 @@ test("an authority block names each refused field and never its value", async (t
   }
 });
 
+test("Credential Proxy request capacity keeps today's bounds and refuses each bad field by name", async (t) => {
+  const field = "/drivers/credential_proxy/requestCapacity";
+  const sentinel = 7_919;
+  const withCapacity = async (requestCapacity, mode = "development") => {
+    const configuration = credentialProxyInstallation();
+    if (requestCapacity !== undefined) {
+      configuration.drivers.credential_proxy.requestCapacity = requestCapacity;
+    }
+    return loadInstallationConfiguration({
+      mode,
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+  };
+  const today = {
+    operations: 1024,
+    authenticatingOperations: 256,
+    sandboxOperations: 256,
+    requestIds: 8192,
+    sandboxRequestIds: 2048,
+  };
+  assert.deepEqual((await withCapacity()).installation.credentialProxyCapacity, today);
+  assert.deepEqual((await withCapacity({})).installation.credentialProxyCapacity, today);
+  // An omitted share is a quarter of its configured pool, at least 1; a set share is kept.
+  assert.deepEqual(
+    (await withCapacity({ operations: 64, requestIds: 4096, sandboxRequestIds: 4096 })).installation
+      .credentialProxyCapacity,
+    {
+      operations: 64,
+      authenticatingOperations: 16,
+      sandboxOperations: 16,
+      requestIds: 4096,
+      sandboxRequestIds: 4096,
+    },
+  );
+  assert.deepEqual(
+    (await withCapacity({ operations: 3, requestIds: 1, sandboxOperations: 3 })).installation
+      .credentialProxyCapacity,
+    {
+      operations: 3,
+      authenticatingOperations: 1,
+      sandboxOperations: 3,
+      requestIds: 1,
+      sandboxRequestIds: 1,
+    },
+  );
+  assert.deepEqual(
+    (
+      await withCapacity({
+        operations: 8192,
+        authenticatingOperations: 8192,
+        sandboxOperations: 8192,
+        requestIds: 131_072,
+        sandboxRequestIds: 131_072,
+      })
+    ).installation.credentialProxyCapacity.sandboxRequestIds,
+    131_072,
+    "the documented maximum is accepted",
+  );
+  const cases = [
+    [[], [[field, "INVALID_TYPE"]]],
+    [7, [[field, "INVALID_TYPE"]]],
+    // An unknown key is reported at the block: the key itself could be anything.
+    [{ [`x${sentinel}/~`]: 1 }, [[field, "UNKNOWN_FIELD"]]],
+    [{ operations: "1024" }, [[`${field}/operations`, "INVALID_TYPE"]]],
+    [{ sandboxOperations: 2.5 }, [[`${field}/sandboxOperations`, "INVALID_TYPE"]]],
+    [{ requestIds: null }, [[`${field}/requestIds`, "INVALID_TYPE"]]],
+    [{ operations: 0 }, [[`${field}/operations`, "INVALID_RANGE"]]],
+    [{ authenticatingOperations: -1 }, [[`${field}/authenticatingOperations`, "INVALID_RANGE"]]],
+    [{ operations: 8193 }, [[`${field}/operations`, "INVALID_RANGE"]]],
+    [{ requestIds: 131_073 }, [[`${field}/requestIds`, "INVALID_RANGE"]]],
+    [{ sandboxRequestIds: 131_073 }, [[`${field}/sandboxRequestIds`, "INVALID_RANGE"]]],
+    // Each share is bounded by its pool, configured or default.
+    [{ sandboxOperations: 1025 }, [[`${field}/sandboxOperations`, "INVALID_RANGE"]]],
+    [
+      { operations: 64, authenticatingOperations: 65 },
+      [[`${field}/authenticatingOperations`, "INVALID_RANGE"]],
+    ],
+    [
+      { requestIds: 4096, sandboxRequestIds: 4097 },
+      [[`${field}/sandboxRequestIds`, "INVALID_RANGE"]],
+    ],
+    // Every fault is reported at once.
+    [
+      { [`${sentinel}`]: true, operations: 0, sandboxRequestIds: "all", requestIds: sentinel * 99 },
+      [
+        [field, "UNKNOWN_FIELD"],
+        [`${field}/operations`, "INVALID_RANGE"],
+        [`${field}/requestIds`, "INVALID_RANGE"],
+        [`${field}/sandboxRequestIds`, "INVALID_TYPE"],
+      ],
+    ],
+  ];
+  for (const [requestCapacity, expected] of cases) {
+    await assert.rejects(withCapacity(requestCapacity, "production"), (error) => {
+      // What the startup log and the upgrade check print, after the log filter.
+      const failure = formatStartupConfigurationFailure(error);
+      const prefix = "DRIVER_CONFIGURATION_INVALID: ";
+      assert.ok(failure?.startsWith(prefix), String(error));
+      assert.deepEqual(
+        JSON.parse(failure.slice(prefix.length)).map((detail) => [detail.path, detail.code]),
+        expected,
+        failure,
+      );
+      for (const value of [String(sentinel), String(sentinel * 99), "1024", "8193", "4097"]) {
+        assert.ok(!failure.includes(value), failure);
+      }
+      return true;
+    });
+  }
+  // The startup file loader already refuses any unsafe integer in the Installation.
+  await assert.rejects(
+    withCapacity({ requestIds: 2 ** 53 }, "production"),
+    /requestCapacity\.requestIds must be a safe integer/,
+  );
+  // API, worker and the chart's upgrade check refuse the same field before any other work.
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.credential_proxy.requestCapacity = { requestIds: 0 };
+  const environment = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const expected = [
+    {
+      path: `${field}/requestIds`,
+      code: "INVALID_RANGE",
+      message: "drivers.credential_proxy.requestCapacity.requestIds must be from 1 to 131072.",
+    },
+  ];
+  await settled(
+    [
+      ["apps/controller/src/server.mjs", "startup-error"],
+      ["apps/controller/src/worker.mjs", "worker.startup-error"],
+      ["deploy/helm/openclaw-enterprise/files/check-installation.mjs", null],
+    ].map(async ([script, event]) => {
+      const result = await boot(script, { ...environment, ...productionServer });
+      assert.equal(result.status, 1, result.stderr);
+      const diagnostic =
+        event === null
+          ? {
+              code: "DRIVER_CONFIGURATION_INVALID",
+              details: JSON.parse(result.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]),
+            }
+          : startupDiagnostic(result.stderr, event);
+      assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
+      assert.deepEqual(diagnostic.details, expected);
+    }),
+  );
+});
+
 test("a repository OpenShell authority refusal names its own block", () => {
   // The Installation and the repository transport share the validator, not the field path.
   const authority = credentialProxyInstallation().drivers.credential_proxy.configuration.authority;

@@ -258,6 +258,9 @@ export async function composePostgresDevelopment(
       ...(drivers?.installation.runtime === undefined
         ? {}
         : { nativeWorkerSupport: drivers.installation.runtime.nativeWorkerSupport }),
+      ...(drivers?.installation.credentialProxyCapacity === undefined
+        ? {}
+        : { credentialProxyCapacity: drivers.installation.credentialProxyCapacity }),
     });
     controller.registerDriver(iamDriver);
     controller.selectDriver("iam", driverId);
