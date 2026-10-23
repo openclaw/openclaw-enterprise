@@ -396,8 +396,8 @@ test("Notices and the sign-in alert", async (t) => {
 const AGENT_REFUSAL =
   "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
 
-const SECRET_ACCESS_UNCONFIRMED =
-  /^Authentication source saved, but this Agent's Secret access could not be confirmed\. /;
+const SECRET_ACCESS_REFUSED =
+  /^Authentication source saved, but the request to grant this Agent access to the selected Secret was refused\. /;
 
 test("Authentication source save outcomes", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -511,19 +511,19 @@ test("Authentication source save outcomes", async (t) => {
 
   // A saved source whose Secret grant was refused is a warning, also when the tab is rebuilt.
   await t.test(
-    "an authentication source saved with its Secret access unconfirmed stays a warning alert",
+    "an authentication source saved with its Secret grant refused stays a warning alert",
     async (t) => {
       const { namespace, page, save, feedback } = await authenticationSourcePage(t, "auth-grant");
       await page.route(`${fixture.origin}/namespaces/${namespace.id}/iam/**`, forbidden);
       await save.click();
-      const warning = page.getByRole("alert").filter({ hasText: SECRET_ACCESS_UNCONFIRMED });
+      const warning = page.getByRole("alert").filter({ hasText: SECRET_ACCESS_REFUSED });
       await warning.waitFor();
       const state = await lineState(feedback);
       assert.deepEqual(
-        { ...state, text: SECRET_ACCESS_UNCONFIRMED.test(state.text) },
+        { ...state, text: SECRET_ACCESS_REFUSED.test(state.text) },
         { className: "status", tone: "warning", role: "alert", text: true },
       );
-      assertPaint(await statusPaint(warning), "warning", "unconfirmed Secret access");
+      assertPaint(await statusPaint(warning), "warning", "refused Secret grant");
       assert.equal((await refusalView(warning)).focused, true, "the warning has focus");
 
       await page.getByRole("tab", { name: "Configuration", exact: true }).click();
@@ -531,7 +531,7 @@ test("Authentication source save outcomes", async (t) => {
       // The rebuilt tab repeats the shared grant warning (finding 2259).
       const kept = page.getByRole("alert").filter({
         hasText:
-          "Authentication source saved, but this Agent's Secret access could not be confirmed. Select Retry credential access; if it is refused, ask an Installation administrator.",
+          "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.",
       });
       await kept.waitFor();
       assert.deepEqual(await statusTone(kept), {

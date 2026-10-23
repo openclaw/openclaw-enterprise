@@ -2564,8 +2564,8 @@ test("Credentials retries denied and interrupted grants without repeating the au
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
-  // The session knows this actor administers the Installation before the denial below, so its
-  // refused grant offers Retry, not a member's referral to an administrator (finding 2259).
+  // The session knows this actor administers the Installation before the denial below, so it
+  // sends the grant request; a member's session sends none (finding 2259).
   assert.equal((await probe).status(), 200);
   // Native IAM denies the actor's grant authority while the Agent update remains authorized.
   fixture.policy.restrictions.push({
@@ -2579,7 +2579,9 @@ test("Credentials retries denied and interrupted grants without repeating the au
   await selectSecret(page, "Service account token Secret", replacement);
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
-    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .getByText(
+      /Authentication source saved, but the request to grant this Agent access to the selected Secret was refused/,
+    )
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);

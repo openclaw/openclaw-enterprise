@@ -73,13 +73,14 @@ the console. Use the operator workflow for those Agents.
 
 **Save authentication source** saves the Agent binding for a future deployment.
 For API keys and Service Accounts tokens, it also grants the Agent access to
-that exact Secret. Granting needs Installation `administer`: when a member saves
-the source, the binding saves and the console asks an Installation administrator
+that exact Secret. Granting needs Installation `administer`. When a member saves
+the source, the binding saves, but the member's session sends no grant, so it
+does not verify the Agent's access. The console asks an Installation administrator
 to open the Agent's Credentials and select **Save authentication source**, which
 grants it. The administrator's tab does not show whether the grant is missing.
-The member cannot read IAM, so the warning also appears when the grant already
-exists; **Reload authentication source** clears it. If an administrator's grant
-fails, use **Retry credential access**.
+If the grant was already in place, **Reload authentication source** clears the
+warning. If a grant request is refused or its outcome is lost, the console says
+so and offers **Retry credential access**.
 The retry checks the saved binding and does not resave it. If the
 binding changed, or the save outcome is unknown, use **Reload authentication source** first.
 Deployment authorization failures remain visible beside **Deploy new version**;

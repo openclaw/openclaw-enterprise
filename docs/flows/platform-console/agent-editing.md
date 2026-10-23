@@ -231,8 +231,8 @@ ServiceAccount PATs and runtime authentication skip this grant.
 Grant failure preserves saved authentication and freezes controls.
 `apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
 Slack Secret path does. A session known not to administer the Installation sends
-no grant: the warning names the Installation administrator and offers no retry.
-An administrator's refused or unconfirmed grant offers
+no grant: the warning says access was not verified, names the Installation
+administrator, and offers no retry. A refused or unconfirmed grant request offers
 **Retry credential access**, which checks that the Agent still has the same service principal and
 authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires

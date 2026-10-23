@@ -2465,9 +2465,9 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
 
 // The shared grant wording for the harness authentication source (findings 1920, 2259).
 const HARNESS_GRANT_REFUSED =
-  "Authentication source saved, but this Agent cannot use the selected Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
-const HARNESS_GRANT_UNCONFIRMED =
-  "Authentication source saved, but this Agent's Secret access could not be confirmed. Select Retry credential access; if it is refused, ask an Installation administrator.";
+  "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.";
+const HARNESS_GRANT_UNVERIFIED =
+  "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
 
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2514,13 +2514,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   requests.length = 0;
   await selectSecret(page, "API key Secret", replacementSecret);
   await page.getByRole("button", { name: "Save authentication source" }).click();
-  // An Installation administrator's refused grant stays unconfirmed with Retry, not a member's
-  // refusal that sends them to an administrator (finding 2259).
+  // The grant request itself was refused: the warning says so, names who grants it, and keeps
+  // Retry for when the reader's access is restored (finding 2259).
   await page
-    .getByText(
-      `${HARNESS_GRANT_UNCONFIRMED} Access denied. You do not have permission for this operation. Request ID: req_00000000-0000-4000-8000-000000000633`,
-      { exact: true },
-    )
+    .getByText(`${HARNESS_GRANT_REFUSED} Request ID: req_00000000-0000-4000-8000-000000000633`, {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
   await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
@@ -2537,6 +2536,29 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
       body.resourceId,
     ]),
     [[agent.servicePrincipalId, replacementSecret.id]],
+  );
+
+  // Retry rereads the Agent before any grant request. Native IAM now refuses that read: the
+  // warning is about the read, not a grant refusal, and Retry stays for when the read works.
+  fixture.policy.restrictions.push({
+    id: "deny-agent-read-on-retry",
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read",
+    effect: "deny",
+  });
+  requests.length = 0;
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page
+    .getByText(
+      /^Authentication source saved, but this Agent could not be read before retrying its credential access\. .+ Select Retry credential access once the Agent can be read\.$/,
+    )
+    .waitFor();
+  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
+  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-agent-read-on-retry"),
+    1,
   );
 
   // A retry after this denial must not grant the Secret to a different service principal.
@@ -2565,8 +2587,9 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
 });
 
 // Granting the Agent its authentication Secret writes IAM policy, which needs Installation
-// administration. A member's save is a known partial save: it names who finishes the grant and
-// how, and offers no Retry the API would refuse. The administrator's named step grants it.
+// administration. A member's save sends no IAM request, so it says this session did not verify
+// the Agent's access, whether or not an administrator already granted it. It names who finishes
+// the grant and how, and offers no Retry the API would refuse. The named step grants it.
 test("Agent credentials name the administrator step for a member's harness Secret grant", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2576,52 +2599,67 @@ test("Agent credentials name the administrator step for a member's harness Secre
     "Member harness Secret",
     "hidden-member-harness",
   );
-  const agent = await fixture.createAgent(
+  const ungranted = await fixture.createAgent(
     namespace.id,
     "Member Harness Agent",
     nativeValues("member-harness"),
   );
-  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
-  const { page } = await newPage(t, fixture);
-  const requests = apiRequests(page, fixture.origin);
-  const probe = page.waitForResponse(`${fixture.origin}/observability`);
-  await login(page, fixture, url, writer.credentials);
-  await page.getByRole("heading", { name: "Member Harness Agent" }).waitFor();
-  // The session's Installation read already found this account is no administrator.
-  assert.equal((await probe).status(), 403);
-  await selectSecret(page, "API key Secret", replacementSecret);
-  await page.getByRole("button", { name: "Save authentication source" }).click();
-  const warning = page.getByRole("alert").filter({ hasText: HARNESS_GRANT_REFUSED });
-  await warning.waitFor();
-  assert.equal(await warning.textContent(), HARNESS_GRANT_REFUSED);
-  assert.deepEqual(await statusTone(warning), {
-    className: "status",
-    tone: "warning",
-    role: "alert",
-  });
-  // The Agent saved its new source; no IAM request went out that the API would refuse and audit.
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
-  assert.deepEqual(saved.data.harnessAuth, { method: "api_key", source: replacementSecret.ref });
-  assert.deepEqual(
-    requests.filter(({ path }) => path.includes("/iam/")),
-    [],
+  // An administrator already granted this Agent the Secret the member is about to select.
+  const granted = await fixture.createAgent(
+    namespace.id,
+    "Member Granted Agent",
+    nativeValues("member-granted"),
   );
-  // No dead Retry: only Reload remains, and Deploy waits for the grant.
-  assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
-  assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
-  await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  // The rebuilt tab keeps the same words and still offers no Retry.
-  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
-  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_REFUSED }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+  await fixture.grantAgentSecretOperate(granted, replacementSecret.ref);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+
+  for (const agent of [ungranted, granted]) {
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const probe = page.waitForResponse(`${fixture.origin}/observability`);
+    await login(page, fixture, url, writer.credentials);
+    await page.getByRole("heading", { name: agent.name }).waitFor();
+    // The session's Installation read already found this account is no administrator.
+    assert.equal((await probe).status(), 403);
+    await selectSecret(page, "API key Secret", replacementSecret);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    const warning = page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED });
+    await warning.waitFor();
+    assert.equal(await warning.textContent(), HARNESS_GRANT_UNVERIFIED);
+    assert.deepEqual(await statusTone(warning), {
+      className: "status",
+      tone: "warning",
+      role: "alert",
+    });
+    // The Agent saved its new source; no IAM request went out that the API would refuse and
+    // audit.
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(saved.data.harnessAuth, { method: "api_key", source: replacementSecret.ref });
+    assert.deepEqual(
+      requests.filter(({ path }) => path.includes("/iam/")),
+      [],
+    );
+    // No dead Retry: only Reload remains, and Deploy waits until the access is confirmed.
+    assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
+    await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    // The rebuilt tab keeps the same words and still offers no Retry.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+  }
 
   // The administrator the warning names takes the named step: saving the unchanged source
   // grants the Agent its Secret.
   const { page: adminPage } = await newPage(t, fixture);
-  await login(adminPage, fixture, url);
+  await login(
+    adminPage,
+    fixture,
+    detailUrl(fixture, namespace.id, ungranted.id, "draft", "credentials"),
+  );
   await adminPage.getByRole("heading", { name: "Member Harness Agent" }).waitFor();
   await waitForInputValue(
     adminPage.getByLabel("API key Secret", { exact: true }),
@@ -2632,9 +2670,9 @@ test("Agent credentials name the administrator step for a member's harness Secre
   const grants = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.deepEqual(
     grants.data
-      .filter(({ resourceId }) => resourceId === replacementSecret.id)
-      .map(({ subjectId, resourceKind }) => [subjectId, resourceKind]),
-    [[agent.servicePrincipalId, "secret"]],
+      .filter(({ subjectId }) => subjectId === ungranted.servicePrincipalId)
+      .map(({ resourceKind, resourceId }) => [resourceKind, resourceId]),
+    [["secret", replacementSecret.id]],
   );
 });
 

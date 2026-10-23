@@ -3631,7 +3631,8 @@ export async function renderAgentDetail(
           : binding && "source" in binding && binding.source.kind === "secret"
             ? binding.source
             : null;
-      // The shared grant wording (finding 1920), for the saved source's credential kind.
+      // The shared grant wording (finding 1920), for the saved source's credential kind. A
+      // refused grant request keeps Retry: it works once the reader's access is restored.
       const grantText = (problem: SecretGrantProblem) =>
         grantWarning(
           problem,
@@ -3640,7 +3641,8 @@ export async function renderAgentDetail(
               ? "credential_source"
               : "secret",
           ),
-        );
+        ) +
+        (problem === "refused" ? " Select Retry credential access once you have that access." : "");
       const originalFields = retained?.originalFields ?? auth.capture();
       const bindingFields = ({
         method,
@@ -3679,8 +3681,8 @@ export async function renderAgentDetail(
       });
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
-        // A refused grant needs an Installation administrator; a Retry here would be refused too.
-        save.hidden = grantProblem === "refused";
+        // This session sent no grant because it cannot make one, so a Retry would be refused too.
+        save.hidden = grantProblem === "unverified";
         auth.setDisabled(true);
         setStatusTone(feedback, "warning");
         feedback.textContent = grantProblem
@@ -3715,6 +3717,8 @@ export async function renderAgentDetail(
         data.setAuthenticationPending(true);
         say(savedAuthentication ? "Checking Secret access…" : "Saving authentication…");
         let mutationStarted = false;
+        // Set once the grant request starts: a retry first rereads the Agent.
+        let grantRequested = false;
         try {
           const current = await readAgent();
           if (!context.isCurrent()) {
@@ -3777,9 +3781,11 @@ export async function renderAgentDetail(
           const credential = grantedCredential(harnessAuth);
           if (credential && context.installationAdmin === false) {
             // Granting writes IAM policy, which needs Installation administration. The session
-            // already knows this member lacks it, so it sends no grant that would be refused and
-            // names who grants it, as Create Agent does (findings 2109, 2259).
-            grantProblem = "refused";
+            // already knows this member lacks it, so it sends no grant that would be refused, and
+            // no IAM read either. Nothing verified the Agent's access, which an administrator may
+            // already have granted. It names who grants it, as Create Agent does (findings 2109,
+            // 2259).
+            grantProblem = "unverified";
             if (context.isCurrent()) {
               say(grantText(grantProblem), "warning");
             }
@@ -3791,6 +3797,7 @@ export async function renderAgentDetail(
                 ? "Authentication saved. Checking credential source access…"
                 : "Authentication saved. Checking Secret access…",
             );
+            grantRequested = true;
             await ensureCredentialOperateBinding(context, current, credential);
           }
           if (context.isCurrent()) {
@@ -3808,19 +3815,27 @@ export async function renderAgentDetail(
           if (requestFailure(error).status === 401) {
             context.onExpired();
           } else if (savedAuthentication) {
-            // The shared classifier: a refusal (403) is known and names who grants it, with no
-            // Retry that would be refused again. An Installation administrator keeps Retry, and
-            // any other failure stays unconfirmed with Retry (findings 1920, 2259).
             const { status, requestId } = requestFailure(error);
-            const problem = grantProblemFor(status) ?? "unconfirmed";
-            grantProblem =
-              problem === "refused" && context.installationAdmin === true ? "unconfirmed" : problem;
-            say(
-              grantText(grantProblem) +
-                (grantProblem === "refused" ? "" : ` ${message(error)}`) +
-                (requestId ? ` Request ID: ${requestId}` : ""),
-              "warning",
-            );
+            const requestNote = requestId ? ` Request ID: ${requestId}` : "";
+            if (!grantRequested) {
+              // A retry rereads the Agent before any grant request: its failure is about that
+              // read, not the grant, and Retry stays for when the Agent reads again.
+              say(
+                `Authentication source saved, but this Agent could not be read before retrying its credential access. ${message(error)}${requestNote} Select Retry credential access once the Agent can be read.`,
+                "warning",
+              );
+            } else {
+              // The shared classifier: a refused grant request (403) names who grants it and
+              // keeps Retry; a lost answer or a server error stays unconfirmed (findings 1920,
+              // 2259).
+              grantProblem = grantProblemFor(status) ?? "unconfirmed";
+              say(
+                grantText(grantProblem) +
+                  (grantProblem === "refused" ? "" : ` ${message(error)}`) +
+                  requestNote,
+                "warning",
+              );
+            }
           } else {
             const fields = responseFields(error);
             outcomeUnknown =
@@ -3840,7 +3855,7 @@ export async function renderAgentDetail(
             save.textContent = savedAuthentication
               ? "Retry credential access"
               : "Save authentication source";
-            save.hidden = savedAuthentication !== null && grantProblem === "refused";
+            save.hidden = savedAuthentication !== null && grantProblem === "unverified";
             pending = false;
             reload.disabled = false;
             save.disabled = outcomeUnknown || updateDenied;
