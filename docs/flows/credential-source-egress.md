@@ -268,6 +268,7 @@ operation fence. Confirmation grants no request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
+`release` drops closed routes whose Sandbox is gone; refusal stays.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 Creation requires the exact live owner. Deletion retains custody but prevents live
