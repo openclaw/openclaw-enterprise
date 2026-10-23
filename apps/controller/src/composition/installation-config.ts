@@ -1033,6 +1033,22 @@ export async function loadInstallationConfiguration(options: {
         "Production Kubernetes workloads require the explicitly configured Codex runtime.",
       );
     }
+    // Kubernetes Compute runs the Harness itself, so production Agents need their projected
+    // ServicePrincipal credentials. A Sandbox Driver may instead use its own infrastructure
+    // identity (plan 0044), so only Sandbox-backed installs may disable it (finding 1753).
+    if (
+      sandbox === undefined &&
+      kubernetes.servicePrincipalCredentials.mode !== "projectedServiceAccountToken"
+    ) {
+      throw new InstallationFieldError([
+        {
+          path: "/drivers/compute/configuration/servicePrincipalCredentials/mode",
+          code: "INVALID_VALUE",
+          message:
+            "drivers.compute.configuration.servicePrincipalCredentials.mode must be projectedServiceAccountToken in production unless a Sandbox Driver is selected.",
+        },
+      ]);
+    }
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),

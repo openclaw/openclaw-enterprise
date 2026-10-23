@@ -2359,6 +2359,66 @@ test("a repository OpenShell authority refusal names its own block", () => {
   );
 });
 
+test("production Kubernetes Compute refuses disabled ServicePrincipal credentials unless a Sandbox is selected", async (t) => {
+  // Finding 1753: #1400 dropped this production guard for every install, not only
+  // Sandbox-backed ones, so a hand-written Installation could run Agents without it.
+  const disabled = (configuration) => {
+    configuration.drivers.compute.configuration.servicePrincipalCredentials = {
+      mode: "disabled",
+    };
+    return configuration;
+  };
+  const details = [
+    {
+      path: "/drivers/compute/configuration/servicePrincipalCredentials/mode",
+      code: "INVALID_VALUE",
+      message:
+        "drivers.compute.configuration.servicePrincipalCredentials.mode must be projectedServiceAccountToken in production unless a Sandbox Driver is selected.",
+    },
+  ];
+  const load = async (mode, configuration) =>
+    loadInstallationConfiguration({
+      mode,
+      environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+    });
+  await assert.rejects(load("production", disabled(installation())), (error) => {
+    assert.equal(
+      formatStartupConfigurationFailure(error),
+      `DRIVER_CONFIGURATION_INVALID: ${JSON.stringify(details)}`,
+    );
+    return true;
+  });
+  // Development, projected credentials, and a Sandbox-backed production install still load.
+  for (const [mode, configuration] of [
+    ["development", disabled(installation())],
+    ["production", installation()],
+    ["production", disabled(credentialProxyInstallation())],
+  ]) {
+    const loaded = await load(mode, configuration);
+    assert.equal(loaded.installation.occ.cluster, "production-west");
+  }
+  // API and worker startup logs carry the same field refusal.
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, disabled(installation())),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const [server, worker] = await settled([
+    boot("apps/controller/src/server.mjs", { ...shared, ...productionServer }),
+    boot("apps/controller/src/worker.mjs", shared),
+  ]);
+  for (const [result, event] of [
+    [server, "startup-error"],
+    [worker, "worker.startup-error"],
+  ]) {
+    assert.equal(result.status, 1, result.stderr);
+    const diagnostic = startupDiagnostic(result.stderr, event);
+    assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
+    assert.deepEqual(diagnostic.details, details);
+  }
+});
+
 test("a leftover repository broker peer names its field in API and worker startup logs", async (t) => {
   // Finding 2226: the refusal was a plain Error, so API and worker logged only STARTUP_FAILED
   // and WORKER_STARTUP_FAILED, and only the upgrade check printed which field to remove.
