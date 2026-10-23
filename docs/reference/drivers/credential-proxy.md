@@ -196,11 +196,12 @@ its bounds in memory, per API process:
 | Request IDs, per Sandbox                                      | 2048 (a quarter of the table) | Same                                              |
 
 The ID bounds allow about 270 protected requests per second per API process, and
-about 68 per Sandbox, so one Sandbox cannot use the whole table. A request refused
-by the installation or route checks reserves no ID. Once policy or Secret work can
-start, its ID stays reserved for the whole window, even if the request is refused.
+about 68 per Sandbox. One Sandbox cannot use the whole table, but four busy Sandboxes
+can. A request refused before policy work reserves no ID. Once policy or Secret work
+can start, its ID stays reserved for the whole window, even if the request is refused.
 Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
-OpenShell authority also admits at most 1024 pending exchange openings.
+OpenShell authority also admits at most 1024 pending exchange openings and 1024
+accepted exchanges.
 
 ## Troubleshooting
 

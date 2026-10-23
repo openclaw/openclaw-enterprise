@@ -88,8 +88,9 @@ export const STREAM_LEASE_CEILING_MS = 15 * 60_000;
 export const STREAM_LEASE_RECHECK_MS = 15_000;
 const maximumStreamBodyBytes = 4 * 1024 * 1024;
 /**
- * Installation-wide bound on remembered request IDs. Each ID is held until its UUIDv7
- * creation time plus 30 s, so this also bounds the protected request rate (about 270/s).
+ * Bound on remembered request IDs across all Sandboxes of this process. Each ID is held
+ * until its UUIDv7 creation time plus 30 s, so this also bounds the protected request
+ * rate (about 270/s).
  */
 export const REPLAY_TABLE_CAPACITY = 8192;
 /**
@@ -345,7 +346,8 @@ export class CredentialProxy implements CredentialProxyExchange {
       return refuse(matches.length > 1 ? "ambiguous_route" : "unsupported_operation");
     }
     const { route, provider, operation } = matches[0]!;
-    if (deadline > createdAt + route.deadlineMs) {
+    // The lookup may outlast the deadline, and with it the replay horizon a key would keep.
+    if (deadline > createdAt + route.deadlineMs || this.ports.now() >= deadline) {
       return { kind: "refused", error: { kind: "deadline_exceeded" } };
     }
     // Reserve after the side-effect-free installation and route refusals, before capture,

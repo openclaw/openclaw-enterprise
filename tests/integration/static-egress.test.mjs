@@ -1708,10 +1708,12 @@ test("a request ID stays reserved once policy or Secret work can start", async (
   let checks = 0;
   let lookups = 0;
   let gate;
+  let entered;
   const s = f.sandboxes((ports) => ({
     ...ports,
     async installation(peer) {
       lookups += 1;
+      entered?.resolve();
       await gate?.promise;
       return ports.installation(peer);
     },
@@ -1739,7 +1741,17 @@ test("a request ID stays reserved once policy or Secret work can start", async (
   gate.resolve();
   const decisions = (await both).map((decision) => decision.kind);
   assert.deepEqual(decisions.toSorted(), ["ready", "refused"]);
+  assert.equal(lookups, 4, "both duplicates passed the early check");
   assert.equal(f.reads, 2);
+  // A lookup that outlasts the deadline reserves nothing and starts no policy work.
+  gate = Promise.withResolvers();
+  entered = Promise.withResolvers();
+  const late = s.resolve("a");
+  await entered.promise;
+  f.advance(30_000);
+  gate.resolve();
+  assert.deepEqual(await late, { kind: "refused", error: { kind: "deadline_exceeded" } });
+  assert.equal(checks, 3);
 });
 
 test("cancelled and denied exchanges retain capacity until receipt work settles", async (t) => {
