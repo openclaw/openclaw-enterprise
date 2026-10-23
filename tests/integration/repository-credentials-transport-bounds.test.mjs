@@ -872,6 +872,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       // Chunked framing lets the producer decide its length while it runs.
       const client = startUpload(fixture, { "transfer-encoding": "chunked" });
       const producer = writePayload(client.outgoing, () => upstreamRequest !== undefined);
+      await eventually(() => upstreamRequest !== undefined);
       const pausedBytes = await producer.stalled;
       t.diagnostic(`Upload producer stalled at ${pausedBytes} bytes before upstream resumed.`);
       assert.equal(receivedBytes, 0);
