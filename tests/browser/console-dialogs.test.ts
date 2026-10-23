@@ -94,6 +94,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   const cases = [
     {
       name: "stop",
+      actions: ["Cancel", "Stop Agent"],
       async open() {
         await page.goto(detail(agent.id));
         const region = page.getByRole("region", { name: "Stop Agent", exact: true });
@@ -105,6 +106,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     },
     {
       name: "delete",
+      actions: ["Cancel", "Permanently delete Agent"],
       async open() {
         await page.goto(detail(agent.id));
         const opener = page.getByRole("button", { name: "Delete Agent", exact: true });
@@ -114,7 +116,9 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
       },
     },
     {
+      // Plugins has no confirming row: its Done button sits in the header.
       name: "plugins",
+      actions: [],
       async open() {
         await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
         const opener = page.getByRole("button", { name: "Configure plugins", exact: true });
@@ -125,6 +129,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     },
     {
       name: "slack",
+      actions: ["Cancel", "Save configuration"],
       async open() {
         await page.goto(detail(slackAgent.id, "channels"));
         const opener = page.getByRole("button", { name: "Edit Slack", exact: true });
@@ -135,6 +140,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     },
     {
       name: "secret",
+      actions: ["Cancel", "Create Secret"],
       async open() {
         await page.goto(
           new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin).href,
@@ -150,18 +156,15 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   const seen = new Map<string, Awaited<ReturnType<typeof openDialog>>>();
   for (const viewport of consoleViewports) {
     await page.setViewportSize(viewport);
-    for (const { name, open } of cases) {
+    for (const { name, actions, open } of cases) {
       const opener = await open();
       const state = await openDialog(page);
       await page.screenshot({ path: join(artifacts, `dialog-${name}-${viewport.width}.png`) });
       seen.set(`${name} ${viewport.width}`, state);
       assert.equal(state.focusInside, true, `${name}: focus moves into the dialog`);
-      // Every confirming dialog shares one action row, Cancel first (finding 1942: Delete kept
-      // the page's form-actions row).
-      if (name !== "plugins") {
-        assert.equal(state.actions.length, 2, `${name}: ${JSON.stringify(state.actions)}`);
-        assert.equal(state.actions[0], "Cancel", `${name}: Cancel comes first`);
-      }
+      // Every confirming dialog shares one action row: Cancel first, its confirming action last
+      // (finding 1942: Delete kept the page's form-actions row).
+      assert.deepEqual(state.actions, actions, `${name}: its .dialog-actions row`);
       // Escape keeps today's rule (it closes an idle dialog), and focus returns to the opener.
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !globalThis.document.querySelector("dialog:modal"));
