@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Options selects the checkout and output destinations for a development command.
@@ -67,7 +69,7 @@ func (r *runner) output(ctx context.Context, name string, args ...string) ([]byt
 	data, err := cmd.Output()
 	// Never include subprocess output here: bootstrap/config output can contain credentials.
 	if err != nil {
-		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), err)
+		return nil, fmt.Errorf("%s %s failed: %w", name, strings.Join(args, " "), errors.Join(ctx.Err(), err))
 	}
 	return bytes.TrimSpace(data), nil
 }
@@ -76,20 +78,50 @@ func (r *runner) run(ctx context.Context, name string, args ...string) error {
 	cmd.Stdout = r.opts.Out
 	cmd.Stderr = r.opts.Err
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("%s failed: %w", name, err)
+		return fmt.Errorf("%s failed: %w", name, errors.Join(ctx.Err(), err))
 	}
 	return nil
 }
 func (r *runner) compose(ctx context.Context, state *developmentState, args ...string) error {
+	ctx, cancel, err := r.composeContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer cancel()
 	return r.run(ctx, r.engine, append(state.composeCommand(), args...)...)
 }
 func (r *runner) composeOutput(ctx context.Context, state *developmentState, args ...string) ([]byte, error) {
+	ctx, cancel, err := r.composeContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
 	return r.output(ctx, r.engine, append(state.composeCommand(), args...)...)
 }
 
-// selectEngine selects a container engine for the Compose commands the
-// Kubernetes profile drives through Go; its provider preference must match
-// composeProvider so occ dev up and occ dev down agree.
+func (r *runner) composeContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	seconds, err := positiveSetting(r, "OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS", 300, 86400)
+	if err != nil {
+		return nil, nil, err
+	}
+	bounded, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
+	return bounded, cancel, nil
+}
+
+func (r *runner) composeServiceID(ctx context.Context, state *developmentState, service string) ([]byte, error) {
+	id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
+		"--filter", "label=com.docker.compose.project="+state.ComposeProject,
+		"--filter", "label=com.docker.compose.service="+service)
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.Fields(string(id))) > 1 {
+		return nil, fmt.Errorf("multiple containers found for %s", service)
+	}
+	return id, nil
+}
+
+// selectEngine selects a container engine and Compose provider for startup.
 func (r *runner) selectEngine(ctx context.Context, requested string) error {
 	return r.selectContainerEngine(ctx, requested, true, composeProvider)
 }
@@ -227,6 +259,20 @@ func (r *runner) pinEndpoint(ctx context.Context) error {
 		return fmt.Errorf("local Kubernetes development requires a unix container-engine socket")
 	}
 	r.useEndpoint(endpoint)
+	if r.engine == "podman" {
+		data, err := r.output(ctx, "podman", "info", "--format", "json")
+		if err != nil {
+			return fmt.Errorf("Podman API socket is not reachable; start the selected Podman socket service: %w", err)
+		}
+		socket, _, err := parsePodmanInfoSocket(data)
+		if err != nil || unixEndpoint(socket) == "" {
+			return fmt.Errorf("Podman API did not report an absolute engine-host socket path")
+		}
+		// API clients use the host-reachable endpoint; bind mounts are resolved
+		// on the engine host, which can differ for a Podman machine.
+		r.env["DOCKER_SOCK"] = strings.TrimPrefix(unixEndpoint(socket), "unix://")
+		r.env["OCC_CONTAINER_ENGINE_SOCKET"] = r.env["DOCKER_SOCK"]
+	}
 	return nil
 }
 

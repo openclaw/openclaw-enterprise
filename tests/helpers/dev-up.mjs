@@ -535,6 +535,18 @@ function lifecycleCommand(fake, invocation, io) {
     } else if (["volume", "network", "image"].includes(args[0]) && args[1] === "inspect") {
       exit(1);
     } else if (
+      args[0] === "ps" &&
+      args.some((arg) => arg.startsWith("label=com.docker.compose.service="))
+    ) {
+      if (state.compose) {
+        output(
+          args
+            .find((arg) => arg.startsWith("label=com.docker.compose.service="))
+            .split("=")
+            .at(-1) + "-container-id",
+        );
+      }
+    } else if (
       args[0] === "ps" ||
       (["volume", "network"].includes(args[0]) && args[1] === "ls") ||
       args[0] === "build" ||
@@ -818,7 +830,14 @@ async function createFixture(t, options = {}) {
     await chmod(destination, 0o755);
   }
   // Real dev commands discover the disposable source root before selecting its CLI.
-  for (const source of ["go.mod", "compose.yaml", "compose.podman.yaml"]) {
+  for (const source of [
+    "go.mod",
+    "compose.yaml",
+    "compose.podman.yaml",
+    "compose.postgres.yaml",
+    "compose.kubernetes.yaml",
+    "compose.native-admin.yaml",
+  ]) {
     await symlink(join(repository, source), join(fixtureRepository, source));
   }
 
