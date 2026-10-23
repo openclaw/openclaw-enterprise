@@ -6,18 +6,18 @@ import { defaultAgentModel } from "../../apps/controller/src/console/agents/star
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { changeSignal, followContainer } from "./docker-follow.mjs";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { runDockerCommand } from "./runtime-image-startup.mjs";
 import { createHarnessConfiguration } from "./harness-configuration.mjs";
 import { createModelProbeCertificates } from "./runtime-model-probe-certificates.mjs";
 import { modelProbeDiagnostic } from "./runtime-model-probe-observation.mjs";
-import {
-  GATEWAY_READINESS_ENTRYPOINT,
-  GATEWAY_RUNTIME_ENTRYPOINT,
-} from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { jsonLines } from "./json-lines.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
+import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 
@@ -28,8 +28,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 // substituted: a sidecar in the runtime image owns the network namespace,
 // answers the Responses API as api.openai.com (mapped to loopback, trusted
 // through a private CA), and observes the wrapper from outside. Like the
-// kubelet, the test also runs the real readiness program inside the Gateway
-// container every two seconds, so it shares the Gateway's CPU quota.
+// kubelet, the sidecar also polls the real HTTP readiness endpoint.
 
 export const execute = promisify(execFile);
 export const docker = process.env.OCC_DOCKER_BIN ?? "docker";
@@ -43,42 +42,40 @@ export const constrainedGatewayCpuLimit = "0.5";
 export const productionGatewayMemoryLimit = "2g";
 export const probeApiKey = "sk-openclaw-runtime-probe-synthetic";
 
+// Failures carry the exit code, signal, timeout and redacted output tails (finding 2184).
 export async function runDocker(args, options = {}) {
-  return execute(docker, args, {
+  return runDockerCommand(docker, args, {
     timeout: 60_000 * imageSmokeTimeoutMultiplier,
     maxBuffer: 4_000_000,
     ...options,
   });
 }
 
-export function jsonLines(output) {
-  return output
-    .split(/\r?\n/)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    })
-    .filter((entry) => entry !== null && typeof entry === "object");
-}
-
 async function waitForLog(containerName, pattern) {
   const deadline = Date.now() + 20_000 * imageSmokeTimeoutMultiplier;
-  while (Date.now() < deadline) {
-    const { stdout } = await runDocker(["logs", containerName]);
-    if (pattern.test(stdout)) {
-      return;
+  const logs = followContainer(undefined, containerName, { docker, exit: false });
+  try {
+    for (;;) {
+      const seen = logs.changes.version;
+      const { stdout, following } = logs.read();
+      if (pattern.test(stdout)) {
+        return;
+      }
+      if (!following) {
+        throw new Error(`${containerName} stopped before ${pattern} appeared in its logs.`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.`);
+      }
+      await logs.changes.wait(seen, deadline - Date.now());
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+  } finally {
+    await logs.stop();
   }
-  throw new Error(`Timed out waiting for ${pattern} in ${containerName} logs.`);
 }
 
 async function createProbeMaterial(t, configuration) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-runtime-model-probe-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-runtime-model-probe-");
   const file = (name) => join(directory, name);
   // Sign a leaf with a private CA, as a provider certificate would be.
   await createModelProbeCertificates({
@@ -94,7 +91,6 @@ async function createProbeMaterial(t, configuration) {
     file("endpoint.mjs"),
     await readFile(new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url)),
   );
-  await writeFile(file("readiness.cjs"), GATEWAY_READINESS_ENTRYPOINT);
   await writeFile(file("openclaw.json"), JSON.stringify(configuration));
   await chmod(directory, 0o755);
   for (const name of [
@@ -104,7 +100,6 @@ async function createProbeMaterial(t, configuration) {
     "hosts",
     "resolv.conf",
     "endpoint.mjs",
-    "readiness.cjs",
     "openclaw.json",
   ]) {
     await chmod(file(name), 0o644);
@@ -184,24 +179,17 @@ export async function runEmbeddedGatewayProbe(
   t,
   { mode, delayMs = 0, cpus, memory, until, limitMs, stress, afterStop },
 ) {
+  const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
   const material = await createProbeMaterial(t, gateway.configuration);
   const suffix = randomBytes(6).toString("hex");
   const sidecar = `oce-runtime-model-probe-endpoint-${suffix}`;
   const containerName = `oce-runtime-model-probe-gateway-${suffix}`;
-  let stopReadiness = false;
   t.after(async () => {
-    stopReadiness = true;
     await runDocker(["rm", "-f", containerName]).catch(() => {});
     await runDocker(["rm", "-f", sidecar]).catch(() => {});
     await afterStop?.();
   });
-  const readinessEnvironment = Object.fromEntries(
-    gateway.environment.map((entry) => [
-      entry.slice(0, entry.indexOf("=")),
-      entry.slice(entry.indexOf("=") + 1),
-    ]),
-  );
   await runDocker([
     "run",
     "--name",
@@ -230,8 +218,6 @@ export async function runEmbeddedGatewayProbe(
     "PROBE_OBSERVE_NATIVE_PORT=8080",
     "-e",
     "PROBE_OBSERVE_STATUS_PORT=18791",
-    "-e",
-    `PROBE_OBSERVE_READINESS_ENV=${JSON.stringify(readinessEnvironment)}`,
     "--entrypoint",
     "node",
     image,
@@ -281,61 +267,64 @@ export async function runEmbeddedGatewayProbe(
   const startedAt = containerTime(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
   );
-  // The kubelet's exec readiness probe (periodSeconds 2) runs in the container.
-  const kubeletReadiness = (async () => {
-    while (!stopReadiness) {
-      await runDocker(["exec", containerName, "node", "-e", GATEWAY_READINESS_ENTRYPOINT], {
-        timeout: 10_000 * imageSmokeTimeoutMultiplier,
-      }).catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 2_000));
-    }
-  })();
+  // Both containers' logs and the Gateway's exit stream in; each check reads
+  // what arrived, and the loop sleeps until the next write.
+  const changes = changeSignal();
+  const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
+  const gatewayLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
-    const [endpoint, wrapper, state] = await Promise.all([
-      runDocker(["logs", sidecar]),
-      runDocker(["logs", containerName]),
-      runDocker(["inspect", containerName, "--format", "{{.State.Running}} {{.State.ExitCode}}"]),
-    ]);
-    const [running, exitCode] = state.stdout.trim().split(/\s+/);
+    const endpoint = endpointLogs.read();
+    const wrapper = gatewayLogs.read();
     const output = `${wrapper.stdout}\n${wrapper.stderr}`;
     return {
-      events: jsonLines(endpoint.stdout).map((event) => ({ ...event, ms: event.at - startedAt })),
+      events: jsonLines(endpoint.stdout, { lenient: true }).map((event) => ({
+        ...event,
+        ms: event.at - startedAt,
+      })),
       output,
-      phases: jsonLines(output).filter(({ event }) => event === "runtime.startup_phase"),
-      probe: jsonLines(output).find(({ event }) => event === "openclaw.model_probe"),
-      probeStage: jsonLines(output)
+      phases: jsonLines(output, { lenient: true }).filter(
+        ({ event }) => event === "runtime.startup_phase",
+      ),
+      probe: jsonLines(output, { lenient: true }).find(
+        ({ event }) => event === "openclaw.model_probe",
+      ),
+      probeStage: jsonLines(output, { lenient: true })
         .filter(({ event }) => event === "openclaw.model_probe_stage")
         .at(-1)?.stage,
-      running: running === "true",
-      exitCode: Number(exitCode),
+      running: wrapper.running,
+      exitCode: wrapper.exitCode,
     };
   };
   const deadline = Date.now() + limitMs * imageSmokeTimeoutMultiplier;
-  try {
-    for (;;) {
-      const snapshot = await collect();
-      if (until(snapshot, containerName)) {
-        return { containerName, snapshot };
-      }
-      if (!snapshot.running) {
-        const error = new assert.AssertionError({
-          message: "The Gateway wrapper exited before settlement.",
-        });
-        error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "wrapper-exited");
-        throw error;
-      }
-      if (Date.now() > deadline) {
-        const error = new assert.AssertionError({
-          message: "The embedded Gateway exceeded its settlement guard.",
-        });
-        error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
-        throw error;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+  for (;;) {
+    const checkedAt = Date.now();
+    const seen = changes.version;
+    const snapshot = await collect();
+    if (until(snapshot, containerName)) {
+      return { containerName, snapshot, setupMs: startedAt - scenarioStartedAt };
     }
-  } finally {
-    stopReadiness = true;
-    await kubeletReadiness;
+    if (!snapshot.running) {
+      const error = new assert.AssertionError({
+        message: "The Gateway wrapper exited before settlement.",
+      });
+      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "wrapper-exited");
+      throw error;
+    }
+    if (Date.now() > deadline) {
+      const error = new assert.AssertionError({
+        message: "The embedded Gateway exceeded its settlement guard.",
+      });
+      error.openclawCiDiagnostic = modelProbeDiagnostic(snapshot, stress, "outer-timeout");
+      throw error;
+    }
+    // Check again on the next write or exit (at least 5 s apart without one,
+    // at most every 250 ms with them).
+    await changes.wait(seen, Math.min(5_000, deadline + 1 - Date.now()));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, checkedAt + 250 - Date.now())));
   }
 }
 

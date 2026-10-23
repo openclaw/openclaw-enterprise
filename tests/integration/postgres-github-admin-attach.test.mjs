@@ -3,28 +3,19 @@ import test from "node:test";
 import {
   assertConsoleSignIn,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitForLockWaiter } from "../helpers/postgres-lock-waits.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "attach-recovery@example.test";
 const password = "attach-member-password";
-const authSecret = "attach-admin-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "attach-client-id",
-  "occ-github-login/client-secret": "attach-client-secret",
-};
 const adminSubject = "9100001";
 const secondSubject = "9100002";
 
@@ -35,22 +26,26 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    const github = await startFakeGitHub(t);
+    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "attach-recovery@example.test",
+        password,
+        secrets: {
+          "occ-auth/secret": "attach-admin-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "attach-client-id",
+          "occ-github-login/client-secret": "attach-client-secret",
+        },
+      },
+    );
     const address = clientAddresses();
     // Password onboarding on the default install: a second administrator and a reader.
     const {
       admin,
       roles,
       accounts: { second, member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: {
         second: { email: "attach-second@example.test", role: "admin" },
@@ -58,11 +53,7 @@ test(
       },
     });
     let adminHeaders;
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id));
     const attach = (headers, userId, subject, expectedVersion) =>
       app.inject({
         method: "POST",
@@ -426,19 +417,12 @@ test(
             attach(adminHeaders, member.id, racedSubject, before[0].version),
             attach(secondHeaders, third.id, racedSubject, before[1].version),
           ]);
-          const deadline = performance.now() + 10_000;
-          for (;;) {
-            const { rows } = await pool.query(
-              `SELECT count(*)::int AS count FROM pg_stat_activity
-               WHERE $1 = ANY(pg_blocking_pids(pid)) AND query LIKE 'INSERT INTO occ.account %'`,
-              [blockerPid],
-            );
-            if (rows[0].count === 2) {
-              break;
-            }
-            assert.ok(performance.now() < deadline, "both attaches reach the identity insert");
-            await new Promise((resolve) => setTimeout(resolve, 20));
-          }
+          // Only the two attaches run this INSERT, so at least two waiters means both.
+          await waitForLockWaiter(pool, blockerPid, "both attaches to reach the identity insert", {
+            count: 2,
+            queryLike: "INSERT INTO occ.account %",
+            timeoutMs: 10_000,
+          });
         } finally {
           await blocker.query("ROLLBACK");
           blocker.release();

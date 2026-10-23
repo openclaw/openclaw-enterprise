@@ -20,7 +20,7 @@ For caller permissions and file operations, see the
 | Helm chart                | Shared Gateway, ClusterIP EnvoyProxy, SecurityPolicy, certificates and optional CA issuers, API/worker credential mounts, and controller/Envoy NetworkPolicies. |
 | Kubernetes Compute Driver | Tenant attachment labels, Agent HTTPRoutes and node-route SecurityPolicies, gateway Services, and tenant NetworkPolicies through worker reconciliation.         |
 | OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                                  |
-| OCC worker                | Native node enrollment through Compute, using the mounted service key and revision-owned enrollment Secrets.                                                    |
+| OCC worker                | Compute enrolls native nodes with the mounted service key and that Agent revision's enrollment Secrets.                                                         |
 
 The proxy Pods inherit `controlPlane.nodeSelector` from Helm values, keeping
 credential verification on the trusted OCC pool. Install the separately managed
@@ -50,29 +50,29 @@ serviceName = occ-gateway-<first 12 hex characters of SHA-256(gatewayNamespace/g
 hostname    = <serviceName>.<envoyNamespace>.svc
 ```
 
-The chart sets Envoy's Service name to this value. Standard Linux Pod DNS search
-resolves it without a separate DNS record or a fixed `cluster.local` suffix.
-An explicit hostname must match in Helm and Compute and resolve to the Envoy
-Service. The listener certificate uses that same hostname.
+Helm sets that Envoy Service name. Linux Pod DNS search resolves it without
+separate records or a fixed `cluster.local` suffix. Custom hostnames must match
+Helm/Compute and resolve to Envoy. The chart requests DNS SANs, not IP SANs;
+use a certificate-covered DNS name.
 
 `getGatewayEndpoint(revision)` computes the URL without a Kubernetes lookup;
 it does not check whether the gateway is ready. When preparing and activating a
-revision, Compute creates or updates an HTTPRoute attached to the shared
+version, Compute creates or updates an HTTPRoute attached to the shared
 Gateway's `https` listener. The route matches the exact hostname and forwards
 to the Agent Service in the same namespace. The exact Agent path rewrites to
-`/`; a bounded prefix rule preserves suffixes for native UI traffic. See the
+`/`; a prefix rule for that Agent path preserves native UI suffixes. See the
 [Kubernetes route rules](drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 TLS ends at Envoy. From there, plaintext HTTP and WebSocket traffic to the
 gateway is restricted by NetworkPolicy.
 
-The route and Service stay stable when a revision is activated or a gateway Pod
-is replaced. Retiring an older revision preserves the newer gateway's route;
+The route and Service stay stable when a version is activated or a gateway Pod
+is replaced. Retiring an older version preserves the newer gateway's route;
 final gateway cleanup removes it. Compute repairs the route while reconciling
-a revision. There is no separate periodic repair.
+a version. There is no separate periodic repair.
 
 ### Native node endpoint
 
-Runtime-enabled dedicated revisions also receive an exact `/node` route and an
+Runtime-enabled dedicated versions also receive an exact `/node` route and an
 exact `/node/__openclaw__/worker` route under the same Agent URL, hostname and
 `https` listener, plus `/node/__openclaw__/worker-bundle/v1/` and
 `/node/__openclaw__/worker-transfer/v1/` prefix routes. All use the same backend
@@ -93,11 +93,30 @@ node credentials as an operator fail at the native Gateway. Worker callbacks
 authenticate their first WebSocket frame with the Gateway-minted, session-bound
 worker admission credential; the Harness never receives the OCC service key.
 
+Dedicated Codex also receives a POST-only
+`/node/__openclaw__/native-hook/` prefix, rewritten to
+`/__openclaw__/native-hook/`. It preserves the Authorization header while
+removing the administrative identity headers listed above. OpenClaw authenticates
+each callback with its per-relay capability and generation; this route does not
+grant node or operator access. Compute derives the callback URL from this Agent's
+private endpoint and refuses a caller-selected override.
+
+The Gateway delivers each hook capability through its authenticated Codex
+app-server connection. The Harness stores it under `.oce-native-hooks` in its
+HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
+and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
+version's runtime PVC subpath). Each Codex start replaces it with an empty private
+directory. It is not an isolation boundary against compromised Harness code running as
+the same user. Gateway checks bind each
+capability to this Agent's live provider/relay and exact generation; it grants
+neither another Agent's callbacks nor node or operator access. Native hooks use the installation's public CA bundle
+(the node's CA) with normal HTTPS certificate verification.
+
 Preparation creates or repairs these resources under the serving Gateway's
-revision. Preparing a replacement preserves that ownership until activation
+version. Preparing a replacement preserves that ownership until activation
 replaces the Deployment.
-Stop and retirement remove the exact revision's node route before
-its policy, checking ownership and deletion UIDs; newer revisions remain.
+Stop and retirement remove that Agent revision's node route before
+its policy, checking ownership and deletion UIDs; newer versions remain.
 The Compute enrollment path also admits Harness egress to this installation's
 Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
 use the enrolled node. Dedicated Gateway does not mount the Harness workspace
@@ -105,7 +124,7 @@ or generated-image directories; sessions stay in Gateway private storage.
 Native runtime and Envoy integration verification remain incomplete. See the
 [enrollment trace](../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
 Real Envoy node-authentication verification is described in
-[routing tests](../testing/gateway-routing.md).
+[routing tests](../testing/kubernetes.md#private-gateway-routing).
 
 ## Service key and native identity
 
@@ -178,25 +197,34 @@ Listener renewal under the existing CA does not require changing OCC trust.
 
 Helm's `gatewayRouting` settings configure shared infrastructure:
 
-| Setting                        | Default or requirement                                                         |
-| ------------------------------ | ------------------------------------------------------------------------------ |
-| `enabled`                      | `false`; enable to render routing resources and API mounts.                    |
-| `gatewayClassName`             | Required existing Envoy GatewayClass.                                          |
-| `gatewayName`                  | `<release>-agent-gateways`.                                                    |
-| `envoyNamespace`               | `envoy-gateway-system`.                                                        |
-| `hostname`                     | Empty derives the Service DNS hostname.                                        |
-| `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                             |
-| `issuerRef.name`               | Empty creates the private CA and issuers.                                      |
-| `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                    |
-| `caSecretName` / `caSecretKey` | Empty; optional public trust bundle with an explicit issuer.                   |
-| `tlsSecretName`                | `<gatewayName>-tls`, truncated to 63 characters with trailing hyphens removed. |
-| `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                            |
-| `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                        |
-| `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.   |
+| Setting                        | Default or requirement                                                                                                                                    |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                      | `false`; enable to render routing resources and API mounts.                                                                                               |
+| `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
+| `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
+| `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |
+| `hostname`                     | Empty derives Service DNS; custom lowercase DNS hostnames fit 253 characters total, 63 per label, without a port or path. Shorthand IPv4 is refused.      |
+| `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                                                                                                        |
+| `issuerRef.name`               | Empty creates the private CA and issuers.                                                                                                                 |
+| `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                                                                                               |
+| `caSecretName` / `caSecretKey` | Empty; optional public trust bundle with an explicit issuer.                                                                                              |
+| `tlsSecretName`                | `<gatewayName>-tls`, truncated to 63 characters with trailing hyphens removed.                                                                            |
+| `tenantGatewayPort`            | `8080`; must equal Compute's `network.gatewayPort`.                                                                                                       |
+| `envoyHttpsTargetPort`         | `10443`; NetworkPolicy port for the Envoy listener Pod.                                                                                                   |
+| `envoyGatewayPodLabels`        | Chart defaults select the Envoy Gateway controller for control-plane egress.                                                                              |
+
+Routing ports must be decimal integers from `1` to `65535`, without leading
+zeros. With the sandbox enabled, `tenantGatewayPort` stops at `65534`, because
+the sandbox backend takes the next port. It is never `18791`, the private
+runtime status port, nor `18790` with the sandbox. The sandbox listener must
+also be at least `1024` and differ from
+`envoyHttpsTargetPort`. Helm refuses fractional YAML numbers before rendering
+Gateway and NetworkPolicy resources.
 
 The Installation's `drivers.compute.configuration.gatewayRouting` separately
 requires `gatewayName`, `gatewayNamespace`, and `envoyNamespace`; `hostname` is
-optional. `endpointPort` defaults to `443`. Set it only when the external load
+optional. Both namespaces must be DNS labels of at most 63 characters.
+`endpointPort` defaults to `443`. Set it only when the external load
 balancer exposes the Gateway listener on another port; Helm does not configure
 that external mapping. `envoyHttpsTargetPort` defaults to `10443` and must match Helm's value,
 so the Harness egress rule permits the listener's actual Pod port.
@@ -258,17 +286,19 @@ OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
 continues to use the original WSS endpoint. Native-host requests are
 intercepted before the normal API not-found path, resolved to the exact Agent
-represented by the host, and checked against the current active revision before
+represented by the host, and checked against the selected version before
 the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Public preview routing
 
 Optional `gatewayRouting.sandbox` in Kubernetes Compute adds a stable per-Agent
 HTTPS origin for dedicated execution under the operator's preview domain.
+Sandbox DNS suffixes refuse numeric or `0x` final labels, including canonical IPv4.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
 The sandbox backend port is `network.gatewayPort + 1`, so the main port must be
-below 65535. The selected runtime must support the dedicated sandbox listener.
+below 65535. Neither port may be TCP/18791. The selected runtime must support
+the dedicated sandbox listener.
 
 The Agent's `-sandbox` HTTPRoute attaches only to the shared Gateway's separate
 `sandbox` listener. It accepts GET and HEAD and forwards to the sandbox port,
@@ -278,9 +308,9 @@ public shell and renderer assets without granting the OCC administrative identit
 The runtime owns shell CSP, resource allowlisting and iframe isolation; private
 HTML content still arrives through the authenticated native UI.
 
-Sandbox routes and policies follow serving revision ownership. Replacing a Pod
-keeps the origin stable; stopping or deleting its serving revision removes the
-route before its policy. Retiring an older revision preserves newer resources.
+The serving Agent revision owns Sandbox routes and policies. Replacing a Pod
+keeps the origin stable; stopping or deleting its serving version removes the
+route before its policy. Retiring an older version preserves newer resources.
 An Agent-owned ingress policy and the Envoy egress policy admit the additional
 backend port only when configured. Agent deployment reconciles preview ingress
 even when the tenant namespace already exists. Helm requires explicit ingress peers on the separate listener,

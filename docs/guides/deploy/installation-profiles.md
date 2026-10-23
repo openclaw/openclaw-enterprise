@@ -91,7 +91,15 @@ then rerender with `repository.enabled: true`.
 
 Create a JSON file outside the repository or under an ignored local output
 directory. The renderer rejects any field it does not consume: unsupported
-fields fail preflight.
+fields fail preflight. `controlPlane.releaseName` must satisfy Helm's lowercase
+release-name syntax and be at most 53 characters. Image references in
+`controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`
+must use literal `sha256` and 64 lowercase hexadecimal characters. Invalid digest
+casing fails preflight without emitting deployable files. All three must also be
+references Kubernetes can pull, as the chart and Compute check: only the registry
+host and tag may use uppercase, and an IPv6 registry host is allowed. `controlPlane.adminEmail`
+must be an administrator email the bootstrap Job accepts after trim and lowercase:
+one `@` and a dotted domain.
 
 ```json
 {
@@ -128,19 +136,23 @@ fields fail preflight.
 }
 ```
 
-For the `codex` profile, merge the reviewed Codex seccomp profile and model
-discovery egress into the base input:
+`controlPlane.gatewayClassName`, `controlPlane.gatewayApiKeySecretName` and
+`controlPlane.databaseCa.secretName` must be Kubernetes resource names of at
+most 253 characters: the existing GatewayClass that Envoy Gateway serves, the
+Secret that holds the `occ` key, and the database CA Secret.
+
+For the `codex` profile, add the reviewed Codex seccomp profile to the base input:
 
 ```json
 {
   "runtime": {
-    "codexSeccompProfile": "openclaw/codex-0.160.0-<profile-sha256>.json"
-  },
-  "codex": {
-    "modelDiscoveryCidrs": ["198.51.100.20/32"]
+    "codexSeccompProfile": "openclaw/codex-0.163.0-alpha.2-<profile-sha256>.json"
   }
 }
 ```
+
+The `codex` profile also accepts `runtime.codexModelBaseUrl` for `api_key` Agents;
+preflight applies [Compute's endpoint rule](../../reference/drivers/kubernetes-compute.md#configuration).
 
 To have OCE issue managed ChatGPT service-account runtime credentials, add the
 optional managed ServiceAccount binding. Do this only after you qualify the
@@ -159,14 +171,42 @@ ChatGPT Backend admin credential path:
 }
 ```
 
-Managed issuance is separate from the default `codex_pat` path. The rendered
-Backend and ServiceAccount Driver wiring does not prove that live
-service-account creation works.
+`adminSecretName` must be a lowercase DNS-subdomain Kubernetes resource name
+of at most 253 characters. `adminSecretKey` accepts letters, digits, `-`, `_`
+and `.`, up to 253 characters, but it cannot be `.` or start with `..`; omit it
+to keep the `admin-key` default.
+
+`workspaceId` must be a UUID the controller accepts at startup: version digit
+1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
+a nil UUID, is a preflight error. Managed issuance is separate from the default
+`codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
+prove that live service-account creation works. Optional `credentialTtlSeconds`
+must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
+to use 2592000.
+
+`controlPlane.loggingCollector.enabled` turns on the
+[log Collector](../observability.md#kubernetes-and-helm), which needs an
+`exporter`: a `/32` `cidr` or paired `namespaceLabels` and `podLabels`, and an
+optional `port` (default 443).
 
 To show Installation administrators an external **Observability** console link,
 set `controlPlane.observabilityUrl`. The renderer writes it as
 [`observability.url`](../../reference/configuration.md#installation-startup-configuration)
-and rejects URLs the controller would reject at startup.
+and rejects URLs the controller would reject at startup, including any `@` before the host and a tab, newline, or a backslash before the query.
+
+### Hosted discovery egress
+
+With hosted `codex-plugin`, omitted `codex.modelDiscoveryCidrs` resolves
+`auth.openai.com` and `chatgpt.com` from the renderer host into Helm
+`api.modelDiscoveryCidrs`. This grants only release API Pods TCP 443 to those
+IPv4 `/32` hosts.
+
+Supplied lists stay unchanged without DNS queries; `[]` requires an external
+HTTPS policy for both hosts. DNS failure leaves both YAML files absent.
+
+Verify API Pod DNS/NAT destinations and **Load plugins** with an authorized PAT.
+Rerender and upgrade Helm after address changes; this initial snapshot does not
+refresh itself.
 
 ### External sign-in and trusted proxies
 
@@ -201,11 +241,31 @@ as behind a source-preserving NLB, needs none.
 }
 ```
 
+Client-ID and client-secret Secret keys must differ; an omitted key counts as
+the chart default (`client-id` or `client-secret`).
+As the chart requires, each credential Secret is dedicated: a sign-in
+`secretName` (default `occ-github-login`, `occ-google-login` or `occ-oidc-login`),
+`gatewayApiKeySecretName`, `databaseCa.secretName` (which may equal
+`repository.publicCaSecretName`), the ChatGPT admin Secret (with
+`codex.managedServiceAccounts`) and each repository Secret must differ from
+one another, from the chart's `occ-installation-startup`, `occ-database` and
+`occ-auth` Secrets, from the Gateway TLS (`<release>-agent-gateways-tls` for
+short release names) and root CA (`occ-gateway-<hash>-root`) Secrets the chart
+generates, and, with `controlPlane.loggingCollector.enabled`, from
+`occ-otel-collector-config` and `occ-otel-collector-exporter`.
+
 `github`, `google` and `oidc` also accept `secretName`, `clientIdKey`, `clientSecretKey`
 and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
+`origin`, and `x-api-key`; use a header that carries plain client addresses, such as
+`x-forwarded-for` or `x-real-ip`.
+Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
+characters, such as `example.com`, and its last label must start with a letter.
+Preflight refuses `example.123` and any longer name, which the chart and the API
+also refuse.
 
 If you opt in to repositories, add the broker inputs:
 
@@ -226,12 +286,19 @@ If you opt in to repositories, add the broker inputs:
 }
 ```
 
+The repository registry ConfigMap and all four repository Secret names must be
+Kubernetes DNS-subdomain resource names of at most 253 characters. Invalid names
+fail preflight before deployable files are written.
+
 `serviceName` is optional. When omitted, the renderer leaves it out of
 `values.yaml`: a new installation gets the chart's `git` Service, and a Helm
 upgrade fails until you set it. When upgrading an installation whose broker
 Service has another name, set `serviceName` to that current name so TLS and
 active repository sessions keep working, then switch it deliberately after
-sessions drain.
+sessions drain. A set name must be a DNS-1035 label of at most 63 characters:
+a lowercase letter, then lowercase letters, digits, or hyphens, ending in a
+letter or digit. Preflight refuses any other spelling, which the chart also
+refuses.
 
 ## Render files
 
@@ -275,10 +342,26 @@ Skip both configuration-generation branches and continue at the
 The runbook covers Secret creation, Helm installation, bootstrap key retrieval,
 and authenticated API verification.
 
+If `controlPlane.databaseCa` supplies a CA Secret, omit `mountPath` to use
+`/etc/openclaw/database-ca`, or choose a path distinct from the other active
+database-client mounts. Preflight rejects collisions with platform mounts and,
+when enabled, repository credentials or managed ChatGPT account mounts before
+writing deployment files. See the [rendering flow](../../flows/installation-profile-rendering.md#4-build-helm-values).
+
+`controlPlane.nodeSelector`, `runtime.nodeSelector` and `runtime.gatewayNodeSelector`
+require Kubernetes label keys and label values that are empty or a label name of
+at most 63 characters, matching Helm, bootstrap-volume preparation and Pod
+admission.
+Preflight rejects invalid placement labels before writing deployment files.
+
 If rendering fails or either YAML file is absent, stop and fix the input. Do not
 copy manual examples into the same output directory. Rerender successfully so
 `values.yaml`, `installation.yaml`, and `controlPlane.installationChecksum` stay
 paired.
+
+`runtime.transportSecretPrefix` must form a DNS-safe Kubernetes Secret name after
+`-` and 12 hex characters are appended, with at most 253 characters in total.
+Preflight refuses a prefix that the controller would reject at startup.
 
 ## Required environment checks
 
@@ -306,6 +389,7 @@ the install as ready:
   `runtimeProxyUrl` and `directoryProxyUrl` inputs.
 - For Codex hosted plugin discovery and runtime authentication, a
   same-Namespace `codex_pat` token Secret or a PAT entered during Agent creation.
+  See [discovery egress](#hosted-discovery-egress).
 - For optional OCE-managed ChatGPT service-account runtime credentials, the
   admin Secret, workspace authority, and app connections described in
   [Configure the ChatGPT Backend](../integrations/chatgpt.md). Treat managed

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // RuntimeLogPage is one page of sanitized runtime log records. Records keep the
@@ -163,6 +164,44 @@ func (client *Client) DeleteConfiguration(namespaceID, configurationID string) e
 	)
 }
 
+// ListServiceAccounts lists the ServiceAccounts in a Namespace that the caller can read.
+func (client *Client) ListServiceAccounts(namespaceID string) (any, error) {
+	return client.get("namespaces", namespaceID, "service-accounts")
+}
+
+// DeleteServiceAccount deletes an unreferenced ServiceAccount. It returns nil after a
+// complete deletion. With force, an account whose issued access token no ChatGPT Backend can
+// revoke is deleted anyway, and the returned data reports the unrevoked token.
+func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string, force bool) (any, error) {
+	segments := []string{"namespaces", namespaceID, "service-accounts", serviceAccountID}
+	if !force {
+		return nil, client.sendEmpty(http.MethodDelete, segments)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodDelete,
+		segments,
+		url.Values{"force": {"true"}},
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	switch status {
+	case http.StatusNoContent:
+		if len(responseBody) != 0 {
+			return nil, fmt.Errorf("OCC returned an invalid empty response (HTTP %d)", status)
+		}
+		return nil, nil
+	case http.StatusOK:
+		return decodeResponseData(status, responseBody)
+	default:
+		if status >= http.StatusOK && status < http.StatusMultipleChoices {
+			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
+		}
+		return nil, client.apiError(status, header, responseBody)
+	}
+}
+
 // CreateSecret creates a Secret in a Namespace and returns metadata only.
 func (client *Client) CreateSecret(namespaceID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "secrets"}, body)
@@ -235,6 +274,15 @@ func (client *Client) UpdateCredentialSource(
 	)
 }
 
+// RotateCredentialSource forces a refresh-type source to mint a new token.
+func (client *Client) RotateCredentialSource(namespaceID, sourceID string) (any, error) {
+	return client.send(
+		http.MethodPost,
+		[]string{"namespaces", namespaceID, "credential-sources", sourceID, "rotate"},
+		nil,
+	)
+}
+
 // WithdrawAgentCredentialSource revokes a credential source from an Agent's active revision.
 func (client *Client) WithdrawAgentCredentialSource(namespaceID, agentID, sourceID string) (any, error) {
 	return client.send(
@@ -279,9 +327,21 @@ func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
 }
 
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
+}
+
 // UpdateAgent updates an Agent from a JSON document.
 func (client *Client) UpdateAgent(namespaceID, agentID string, body jsontext.Value) (any, error) {
 	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID}, body)
+}
+
+// GetAgentHarnessStatus reads the Sandbox record of a running Agent's active dedicated Harness.
+func (client *Client) GetAgentHarnessStatus(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "harness-status")
 }
 
 // GetAgentRuntimeCredentials fetches runtime credential metadata for an Agent.
@@ -307,9 +367,75 @@ func (client *Client) DeployAgent(namespaceID, agentID string) (any, error) {
 	)
 }
 
-// ListAgentRevisions lists the readable immutable revisions of an Agent.
-func (client *Client) ListAgentRevisions(namespaceID, agentID string) (any, error) {
-	return client.get("namespaces", namespaceID, "agents", agentID, "revisions")
+// AgentRevisionPage is one page of readable revision summaries, newest first.
+// NextCursor is empty on the last page.
+type AgentRevisionPage struct {
+	Revisions  []any
+	NextCursor string
+}
+
+// ListAgentRevisions reads one page of an Agent's readable revision summaries,
+// newest first. A zero limit uses OCC's default; an empty cursor starts at the
+// newest revision. Read an exact revision for its saved settings.
+func (client *Client) ListAgentRevisions(namespaceID, agentID string, limit int, cursor string) (*AgentRevisionPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", strconv.Itoa(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	status, header, responseBody, err := client.executeQuery(
+		http.MethodGet,
+		[]string{"namespaces", namespaceID, "agents", agentID, "revisions"},
+		query,
+		nil,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK {
+		return nil, client.apiError(status, header, responseBody)
+	}
+	var envelope struct {
+		Data []any `json:"data"`
+		Meta struct {
+			NextCursor *string `json:"nextCursor"`
+		} `json:"meta"`
+	}
+	if err := json.Unmarshal(responseBody, &envelope); err != nil || envelope.Data == nil {
+		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
+	}
+	page := &AgentRevisionPage{Revisions: envelope.Data}
+	if envelope.Meta.NextCursor != nil {
+		page.NextCursor = *envelope.Meta.NextCursor
+	}
+	return page, nil
+}
+
+// LatestAgentRevision returns the newest revision summary the caller can read,
+// or nil when there is none. A cursor reflects a read check in its issuing request;
+// a later page may be empty if access changes. The loop also supports older servers.
+func (client *Client) LatestAgentRevision(namespaceID, agentID string) (any, error) {
+	cursor := ""
+	for {
+		page, err := client.ListAgentRevisions(namespaceID, agentID, 100, cursor)
+		if err != nil {
+			return nil, err
+		}
+		if len(page.Revisions) > 0 {
+			return page.Revisions[0], nil
+		}
+		if page.NextCursor == "" || page.NextCursor == cursor {
+			return nil, nil
+		}
+		cursor = page.NextCursor
+	}
+}
+
+// GetAgentRevision reads the immutable settings and number of an exact revision.
+func (client *Client) GetAgentRevision(namespaceID, agentID, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID)
 }
 
 // GetAgentDeployment fetches durable deployment status for one Agent revision.
@@ -381,4 +507,29 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		[]string{"namespaces", namespaceID, "agents", agentID},
 		nil,
 	)
+}
+
+// GetAgentSandboxPolicy reads desired policy and confirmed application evidence.
+func (client *Client) GetAgentSandboxPolicy(namespaceID, agentID, facet string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet)
+}
+
+// UpdateAgentSandboxPolicy saves an expected-version replacement without applying it.
+func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPut, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet}, body)
+}
+
+// ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+}
+
+// TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
+func (client *Client) TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing(namespaceID, agentID, facet string, enabled bool) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "editing"}, map[string]any{"enabled": enabled})
+}
+
+// GetAgentSandboxRecommendations reads bounded provider suggestions, independently of logs.
+func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, facet, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", facet, "recommendations")
 }

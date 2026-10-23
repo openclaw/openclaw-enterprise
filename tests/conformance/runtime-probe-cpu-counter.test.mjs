@@ -66,75 +66,58 @@ function probe(pressure, throttling, options = {}) {
   return { code, cpuWaitMs: events[0].cpuWaitMs };
 }
 
-test("missing final PSI does not subtract an unrelated throttling total", () => {
-  assert.deepEqual(probe([1_000_000, null], [31_000_000, 32_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
+const TIMEOUT = "MODEL_PROBE_TIMEOUT";
+const STARVED = "MODEL_PROBE_CPU_STARVED";
 
-test("new PSI does not replace the original throttling baseline", () => {
-  assert.deepEqual(probe([null, 1_000_000], [31_000_000, 32_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: 1_000,
+// run: [PSI totals, throttling totals, expected code, expected cpuWaitMs]; each
+// totals pair is the reading before and after the probe.
+for (const { name, run } of [
+  {
+    name: "missing final PSI does not subtract an unrelated throttling total",
+    run: [[1_000_000, null], [31_000_000, 32_000_000], TIMEOUT, null],
+  },
+  {
+    name: "new PSI does not replace the original throttling baseline",
+    run: [[null, 1_000_000], [31_000_000, 32_000_000], TIMEOUT, 1_000],
+  },
+  {
+    name: "a high same-counter PSI delta retains the starvation classification",
+    run: [[1_000_000, 31_000_000], [0, 0], STARVED, 30_000],
+  },
+  {
+    name: "a low same-counter PSI delta retains the timeout classification",
+    run: [[1_000_000, 3_000_000], [1_000_000, 31_000_000], TIMEOUT, 2_000],
+  },
+  {
+    name: "unavailable PSI still allows a stable throttling delta",
+    run: [[null, null], [1_000_000, 31_000_000], STARVED, 30_000],
+  },
+  {
+    name: "missing initial counters leave wait unavailable",
+    run: [[null, 31_000_000], [null, 31_000_000], TIMEOUT, null],
+  },
+  {
+    name: "a reset counter leaves wait unavailable",
+    run: [[31_000_000, 1_000_000], [31_000_000, 61_000_000], TIMEOUT, null],
+  },
+  {
+    name: "missing final throttling leaves wait unavailable",
+    run: [[null, null], [1_000_000, null], TIMEOUT, null],
+  },
+  {
+    name: "a reset throttling counter leaves wait unavailable",
+    run: [[null, null], [31_000_000, 1_000_000], TIMEOUT, null],
+  },
+  {
+    name: "a nonfinite final counter cannot classify a probe as CPU-starved",
+    run: [[1_000_000, "9".repeat(400)], [0, 0], TIMEOUT, null],
+  },
+]) {
+  test(name, () => {
+    const [pressure, throttling, code, cpuWaitMs] = run;
+    assert.deepEqual(probe(pressure, throttling), { code, cpuWaitMs });
   });
-});
-
-test("a high same-counter PSI delta retains the starvation classification", () => {
-  assert.deepEqual(probe([1_000_000, 31_000_000], [0, 0]), {
-    code: "MODEL_PROBE_CPU_STARVED",
-    cpuWaitMs: 30_000,
-  });
-});
-
-test("a low same-counter PSI delta retains the timeout classification", () => {
-  assert.deepEqual(probe([1_000_000, 3_000_000], [1_000_000, 31_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: 2_000,
-  });
-});
-
-test("unavailable PSI still allows a stable throttling delta", () => {
-  assert.deepEqual(probe([null, null], [1_000_000, 31_000_000]), {
-    code: "MODEL_PROBE_CPU_STARVED",
-    cpuWaitMs: 30_000,
-  });
-});
-
-test("missing initial counters leave wait unavailable", () => {
-  assert.deepEqual(probe([null, 31_000_000], [null, 31_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
-
-test("a reset counter leaves wait unavailable", () => {
-  assert.deepEqual(probe([31_000_000, 1_000_000], [31_000_000, 61_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
-
-test("missing final throttling leaves wait unavailable", () => {
-  assert.deepEqual(probe([null, null], [1_000_000, null]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
-
-test("a reset throttling counter leaves wait unavailable", () => {
-  assert.deepEqual(probe([null, null], [31_000_000, 1_000_000]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
-
-test("a nonfinite final counter cannot classify a probe as CPU-starved", () => {
-  assert.deepEqual(probe([1_000_000, "9".repeat(400)], [0, 0]), {
-    code: "MODEL_PROBE_TIMEOUT",
-    cpuWaitMs: null,
-  });
-});
+}
 
 test("counter observation preserves ready and non-cap failure results", () => {
   for (const code of [

@@ -1,3 +1,4 @@
+import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -17,6 +18,7 @@ import {
   PluginDriverIdentitySchema,
   PluginToolDefaultsSchema,
   PluginToolPolicySchema,
+  PRESET_JSON_MAX_BYTES,
   SecretResponse,
   type AgentRuntimeLogsQuery,
   type AuditEvent,
@@ -35,6 +37,7 @@ import {
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
+  type CredentialSourceReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -62,8 +65,6 @@ import {
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import SerializerSelector from "@fastify/fast-json-stringify-compiler";
-import ajvFormats from "ajv-formats";
 import Fastify, {
   LogController,
   type FastifyBaseLogger,
@@ -73,17 +74,25 @@ import Fastify, {
   type FastifySchema,
   type HTTPMethods,
   type InjectOptions,
+  type RouteGenericInterface,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AdmittedCaller } from "./admission/admission-verifier.ts";
 import {
+  DEVELOPMENT_BROWSER_ORIGIN_RULE,
+  isDevelopmentBrowserOrigin,
+} from "./auth/configuration.ts";
+import {
   OCC_SERVICE_KEY_HEADER,
+  SERVICE_KEY_NAME_MAX_LENGTH,
+  ServiceKeyNameRefused,
   type ClientAddressConfiguration,
   type ControllerAuth,
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -95,25 +104,29 @@ import type { NativeAdminAccessConfig } from "./gateway/native-admin.ts";
 import { createAgentHandlers } from "./http/agents.ts";
 import { configurationHandlers } from "./http/configurations.ts";
 import { credentialSourceHandlers } from "./http/credential-sources.ts";
+import { jsonPointer, type ErrorDetail } from "./http/error-details.ts";
 import {
   canonicalFailure,
   cappedPath,
   dependencyUnavailable,
+  dependencyUnavailableLogFields,
   failure,
   isAuthorizationDenied,
   isDependencyUnavailable,
-  jsonPointer,
   RequestFailure,
   requestFailure,
   responseHeaders,
   unstorableTextFailure,
-  type ErrorDetail,
 } from "./http/errors.ts";
 import { iamHandlers } from "./http/iam.ts";
+import { MAX_JSON_BODY_DEPTH, tooDeepFailure, tooDeepJsonPath } from "./http/json-depth.ts";
 import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
+  nativeAdminReturnSchema,
+  limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -126,17 +139,29 @@ import {
   runtimeLogQuery,
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
+import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
+import {
+  cachedRequestValidators,
+  cachedResponseSerializers,
+  defaultPrecompiledRouteCompilers,
+  formatsPlugin,
+} from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
 
+export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
+
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
   readonly installationId?: string;
+  /** Exact browser origin for a loopback-owned development endpoint. */
+  readonly browserOrigin?: string;
   readonly trustedCidrs?: readonly string[];
 }
 
 export interface ControllerAppOptions {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
   readonly createController?: (installation: Installation) => OpenClawController;
@@ -196,7 +221,8 @@ interface RequiredPermission {
     | "provisioning_work"
     | "missing_runtime_credentials"
     | "authenticated_plugin_discovery"
-    | "read_logs_alternative";
+    | "read_logs_alternative"
+    | "bound_credential_source";
 }
 
 interface DocumentedFastifySchema extends FastifySchema {
@@ -215,8 +241,16 @@ const resourceHandlers: ResourceHandlers = {
 const DEFAULT_BODY_LIMIT = 64 * 1024;
 // Four 16 KiB documents can expand sixfold in JSON, plus the ordinary create fields.
 const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
-const WORKSPACE_FILE_BODY_LIMIT = 48 * 1024;
+// A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
+const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
+// The bundled Kubernetes Configuration Driver stores values up to 1 MiB of JSON (its ConfigMap
+// cap). A Configuration write must admit that plus the envelope (`kind` and up to 64 Secret
+// bindings, each a 253-character name and a reference: under 32 KiB), all written with
+// six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
+// 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
+const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;
 // Path parameters such as IAM Role and AccessBinding IDs hold up to 200 characters (code
 // points). The router compares a parameter's decoded UTF-16 length, so 200 characters need
 // at most 400 units; its default of 100 refused contract-valid IDs before any handler ran.
@@ -241,65 +275,6 @@ const RESOURCE_ID = Object.fromEntries(
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
 
-function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
-  return ajvFormats.default(ajv);
-}
-
-// Fastify compiles one response serializer per route and status code, and rebuilds its
-// serializer factory for every route in a plugin that added shared schemas; each
-// fast-json-stringify build then re-validates every shared schema. That was about 1,100
-// builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
-// chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
-// the serializer options, so build each distinct combination once.
-function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
-  const buildSerializerCompiler = SerializerSelector();
-  const sharedSchemaIds = new WeakMap<object, number>();
-  // Never pruned. That is safe only while every serializer is built at route registration,
-  // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
-  // with a schema assembled at request time) would grow this Map without bound; such a
-  // route must set its own serializerCompiler.
-  const serializers = new Map<string, SerializerSelector.Serializer>();
-  let nextSharedSchemaId = 0;
-  const sharedSchemaId = (schema: object) => {
-    let id = sharedSchemaIds.get(schema);
-    if (id === undefined) {
-      id = nextSharedSchemaId++;
-      sharedSchemaIds.set(schema, id);
-    }
-    return id;
-  };
-  return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(externalSchemas, options);
-    const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
-    // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
-    // schema that is not a plain object compiles uncached instead.
-    if (sharedSchemas.some(([, schema]) => typeof schema !== "object" || schema === null)) {
-      return compile;
-    }
-    // Fastify passes the same stored schema objects each time; identity names the set.
-    const shared = sharedSchemas
-      .map(([id, schema]) => `${id}=${sharedSchemaId(schema as object)}`)
-      .join(",");
-    const prefix = `${JSON.stringify(options ?? {})}|${shared}|`;
-    // Route schemas are fixed at registration. A schema JSON cannot express (a cycle or a
-    // BigInt keyword) compiles uncached rather than failing registration here.
-    return (route) => {
-      let key: string;
-      try {
-        key = prefix + JSON.stringify(route.schema);
-      } catch {
-        return compile(route);
-      }
-      let serializer = serializers.get(key);
-      if (serializer === undefined) {
-        serializer = compile(route);
-        serializers.set(key, serializer);
-      }
-      return serializer;
-    };
-  };
-}
-
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
   if (parts.length !== 4) {
@@ -307,7 +282,8 @@ function ipv4(value: string): number | undefined {
   }
   let result = 0;
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) {
+    // Same no-leading-zero rule as production trusted proxies and Compute: "010" is not 10.
+    if (!/^(?:0|[1-9][0-9]{0,2})$/.test(part)) {
       return undefined;
     }
     const octet = Number(part);
@@ -325,7 +301,13 @@ function cidrContains(cidr: string, address: string): boolean {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const prefix = Number(prefixText);
-  if (!/^\d+$/.test(prefixText) || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) {
+  // "08" is not prefix 8. Production parseCidr refuses that spelling, and so does Compute.
+  if (
+    !/^(?:0|[1-9][0-9]{0,2})$/.test(prefixText) ||
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32
+  ) {
     throw new Error("Development trusted CIDRs must use IPv4 CIDR notation.");
   }
   const networkValue = ipv4(network);
@@ -363,6 +345,16 @@ function validateTrustedDevelopmentCidrs(development: DevelopmentAdmission): voi
   }
 }
 
+function developmentBrowserOrigin(development: DevelopmentAdmission): URL | undefined {
+  if (development.browserOrigin === undefined) {
+    return undefined;
+  }
+  if (!development.enabled || !isDevelopmentBrowserOrigin(development.browserOrigin)) {
+    throw new Error(`The development browser origin must be ${DEVELOPMENT_BROWSER_ORIGIN_RULE}.`);
+  }
+  return new URL(development.browserOrigin);
+}
+
 function validAuthorizationEvidence(value: unknown): value is AuthorizationEvidence {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -380,10 +372,9 @@ function validAuthorizationEvidence(value: unknown): value is AuthorizationEvide
 }
 
 function validateConfiguration(value: unknown, depth = 0, path = ""): void {
-  if (depth > 24) {
-    throw failure(400, "INVALID_REQUEST", "The supplied configuration is invalid.", [
-      { path: cappedPath(path), code: "TOO_DEEP" },
-    ]);
+  // The JSON body parser already refuses deeper bodies; this keeps the rule for any other input.
+  if (depth > MAX_JSON_BODY_DEPTH) {
+    throw tooDeepFailure(path);
   }
   if (value === null || typeof value !== "object") {
     return;
@@ -402,6 +393,16 @@ function validateConfiguration(value: unknown, depth = 0, path = ""): void {
     }
     validateConfiguration(entry, depth + 1, `${path}/${jsonPointer(key)}`);
   }
+}
+
+/** Operations whose grant check runs before their body is read (see authorizeBeforeBody). */
+function authorizesBeforeBody(operation: OccApiRoute): boolean {
+  return (
+    operation.operationId === "createPreset" ||
+    operation.operationId === "updatePreset" ||
+    operation.operationId === "createConfiguration" ||
+    operation.operationId === "updateConfiguration"
+  );
 }
 
 function operationTarget(
@@ -466,6 +467,7 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createAgent" ||
+      operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -497,6 +499,30 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (
+    [
+      "getAgentSandboxPolicy",
+      "getAgentSandboxRecommendations",
+      "updateAgentSandboxPolicy",
+      "applyAgentSandboxPolicy",
+    ].includes(operation.operationId)
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: operation.iamAction === "read" ? "read" : "update",
+        resourceKind: "sandbox_policy",
+        scope: "requested",
+      },
+    ];
+  }
+  if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "administer", resourceKind: "installation", scope: "installation" },
+    ];
+  }
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
@@ -564,6 +590,24 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
 
   if (operation.operationId === "createSecret") {
     return [{ ...permission, scope: "namespace" }];
+  }
+
+  if (
+    operation.operationId === "createCredentialSource" ||
+    operation.operationId === "updateCredentialSource"
+  ) {
+    // Mirrors OCC readCredentialSourceSecrets: operate on each Secret whose value the
+    // gateway receives (an update re-sends the current references when it names none).
+    const create = operation.operationId === "createCredentialSource";
+    return [
+      { ...permission, scope: create ? "namespace" : "requested" },
+      {
+        action: "operate",
+        resourceKind: "secret",
+        scope: create ? "request_body" : "requested",
+        condition: "bound_secret",
+      },
+    ];
   }
 
   if (operation.operationId === "lookupChannelDirectory") {
@@ -730,6 +774,21 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
         scope: "requested",
         condition: "bound_secret",
       },
+      // Mirrors OCC authorizeHarnessAuthSource and authorizeAgentCredentialSources. Agent
+      // provisioning refuses credential sources, so it needs no such grant.
+      ...(operation.operationId === "provisionAgent"
+        ? []
+        : [
+            {
+              action: "operate" as const,
+              resourceKind: "credential_source" as const,
+              scope:
+                operation.operationId === "createAgent"
+                  ? ("request_body" as const)
+                  : ("requested" as const),
+              condition: "bound_credential_source" as const,
+            },
+          ]),
     ];
   }
 
@@ -874,8 +933,9 @@ function permissionDescription(
     service_account: "ServiceAccount",
     secret: "Secret",
     agent: "Agent",
-    agent_revision: "AgentRevision",
+    agent_revision: "Agent revision",
     credential_source: "CredentialSource",
+    sandbox_policy: "SandboxPolicy",
   };
 
   const description = permissions
@@ -909,7 +969,22 @@ function permissionDescription(
         if (operation?.operationId === "updateConfiguration") {
           return `Requires ${action} permission on each ${name} bound by the resulting Configuration.`;
         }
+        if (operation?.operationId === "createCredentialSource") {
+          return `Requires ${action} permission on each ${name} named in the request body secrets.`;
+        }
+        if (operation?.operationId === "updateCredentialSource") {
+          return `Requires ${action} permission on each ${name} the source references after the update, including its current references when the request omits secrets.`;
+        }
         return `Requires ${action} permission on each bound ${name} when Secret bindings are present or selected.`;
+      }
+      if (condition === "bound_credential_source") {
+        if (operation?.operationId === "createAgent") {
+          return `Requires ${action} permission on each ${name} listed in credentialSources or named by a credential-source harnessAuth.`;
+        }
+        if (operation?.operationId === "updateAgent") {
+          return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth, before and after the update.`;
+        }
+        return `Requires ${action} permission on each ${name} the Agent lists or names in harnessAuth.`;
       }
       if (condition === "missing_runtime_credentials") {
         return `Requires ${action} permission on the Agent when the selected Compute Driver must generate missing runtime credentials for its first deployment.`;
@@ -937,7 +1012,7 @@ function permissionDescription(
     .join(" ");
 
   if (operation?.operationId === "deployAgent") {
-    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret.`;
+    return `${description} Deployment also requires the owning Agent service principal to have operate permission on each bound Secret and on each ${names.credential_source} the Agent lists.`;
   }
   return description;
 }
@@ -965,6 +1040,7 @@ function clientInstallation(
 
 export function createFastifyApp(options: ControllerAppOptions): FastifyInstance {
   const development = Object.freeze({ ...options.development });
+  const browserOrigin = developmentBrowserOrigin(development);
   if (
     options.controller &&
     development.installationId !== undefined &&
@@ -975,6 +1051,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
   const bodyLimit = options.maxBodyBytes ?? DEFAULT_BODY_LIMIT;
+  const precompiledRouteCompilers = defaultPrecompiledRouteCompilers();
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1) {
     throw new Error("The controller request-body limit must be a positive integer.");
   }
@@ -1053,7 +1130,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     },
     ajv: {
       // `verbose` attaches each failure's schema and value, so contract errors can tell which
-      // shape of a discriminated union a request chose (http/errors.ts). Neither is logged or
+      // shape of a discriminated union a request chose (http/error-details.ts). Neither is logged or
       // returned: problems name only paths and the schema's accepted values, and http/errors.ts
       // drops both from the error once its problems are built. An onError hook runs before
       // that, so none may log `error.validation`.
@@ -1065,7 +1142,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       plugins: [formatsPlugin],
     },
-    schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
+    schemaController: {
+      compilersFactory: {
+        buildValidator: cachedRequestValidators(precompiledRouteCompilers),
+        buildSerializer: cachedResponseSerializers(precompiledRouteCompilers),
+      },
+    },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   // Shutdown (app.close) drains admitted requests, but Node and Fastify close only the
@@ -1090,6 +1172,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
   });
 
   app.removeContentTypeParser("text/plain");
+  // Refuse a body nested deeper than any document the API stores before it is parsed: parsing
+  // allocates every level, and schema validation recurses through them (a 6 MB body of nested
+  // arrays cost about 300 MB of heap, then overflowed the stack into a 500).
+  const parseJson = app.getDefaultJsonParser(
+    app.initialConfig.onProtoPoisoning ?? "error",
+    app.initialConfig.onConstructorPoisoning ?? "error",
+  );
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const tooDeep = tooDeepJsonPath(body as string);
+    if (tooDeep !== undefined) {
+      done(tooDeepFailure(tooDeep), undefined);
+      return;
+    }
+    parseJson(request, body as string, done);
+  });
   app.addSchema(JsonValue);
   app.addSchema(PluginDriverIdentitySchema);
   app.addSchema(PluginApproversSchema);
@@ -1219,8 +1316,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
               restrictionIds: authorizationEvidence.restrictionIds,
             },
           };
+    // A request admitted by a service key names that key (its non-secret ID), so an
+    // administrator can tell which of a ServicePrincipal's keys acted. `serviceKeyId` stays
+    // the key a key-management event acts on.
+    const admitted = admissions.get(request);
+    const actorKeyDetails =
+      admitted?.method === "api_key" && admitted.serviceKeyId !== undefined
+        ? { actorServiceKeyId: admitted.serviceKeyId }
+        : undefined;
     const details =
-      result?.details === undefined ? evidenceDetails : { ...evidenceDetails, ...result.details };
+      result?.details === undefined && actorKeyDetails === undefined
+        ? evidenceDetails
+        : { ...evidenceDetails, ...result?.details, ...actorKeyDetails };
     return factory.create({
       installationId,
       ...(resource.namespaceId === undefined ? {} : { namespaceId: resource.namespaceId }),
@@ -1439,6 +1546,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     if (
       !decision ||
       typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
       decision.driverId !== selected.id ||
       !validAuthorizationEvidence(decision.evidence)
     ) {
@@ -1449,6 +1557,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(403, "FORBIDDEN", "The exact platform operation was not authorized.");
     }
     return { selected, target, decision };
+  }
+
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
   }
 
   async function denial(
@@ -1531,6 +1664,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
+    ...sandboxPolicyHandlers,
     ...createAgentHandlers({
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
@@ -1576,6 +1710,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     });
   });
 
+  // A proxy that adds forwarded headers, with api.trustedProxy unset or not covering it,
+  // makes every API call fail with 403 while sign-in still works. Tell the operator why, at
+  // most once a minute; the record names the cause only, never an address.
+  let forwardedRefusalWarnedAt: number | undefined;
+  function warnForwardedRefusal(): void {
+    const now = performance.now();
+    if (forwardedRefusalWarnedAt !== undefined && now - forwardedRefusalWarnedAt < 60_000) {
+      return;
+    }
+    forwardedRefusalWarnedAt = now;
+    options.logger?.warn({
+      event: "authentication.forwarded-refused-warning",
+      code:
+        options.trustedProxies === undefined
+          ? "TRUSTED_PROXY_NOT_CONFIGURED"
+          : "TRUSTED_PROXY_PEER_UNTRUSTED",
+    });
+  }
+
   async function admit(request: FastifyRequest, operation: OccApiRoute): Promise<void> {
     if (
       request.headers[OCC_SERVICE_KEY_HEADER] !== undefined &&
@@ -1589,7 +1742,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.query as Record<string, unknown>).length > 0 &&
       operation.operationId !== "listRepositoryOptions" &&
       operation.operationId !== "listAgentRepositoryOptions" &&
-      operation.operationId !== "getAgentDeploymentRuntimeLogs"
+      operation.operationId !== "getAgentDeploymentRuntimeLogs" &&
+      operation.operationId !== "deleteServiceAccount" &&
+      operation.operationId !== "listAgentRevisions"
     ) {
       throw failure(
         400,
@@ -1615,10 +1770,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     const host = request.headers.host;
     let hostname: string;
+    let requestHost: string;
     try {
-      hostname = new URL(`http://${host ?? "127.0.0.1"}`).hostname;
+      const parsed = new URL(`http://${host ?? "127.0.0.1"}`);
+      hostname = parsed.hostname;
+      requestHost = parsed.host;
     } catch {
       hostname = "";
+      requestHost = "";
     }
     const remoteAddress = request.raw.socket.remoteAddress ?? "127.0.0.1";
     const origin = request.headers.origin;
@@ -1632,6 +1791,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     } else if (Array.isArray(origin)) {
       originAllowed = false;
     }
+    const browserEndpointAllowed =
+      browserOrigin !== undefined &&
+      requestHost === browserOrigin.host &&
+      (origin === undefined || origin === browserOrigin.origin);
     // Forwarded headers are never used for admission. They are tolerated only from a
     // configured trusted proxy, which adds them to every request it relays.
     const forwarded =
@@ -1639,11 +1802,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       Object.keys(request.headers).some(
         (name) => name === "forwarded" || name === "x-real-ip" || name.startsWith("x-forwarded-"),
       );
+    if (forwarded && !development.enabled) {
+      warnForwardedRefusal();
+    }
     if (
       forwarded ||
       (development.enabled &&
-        (!LOOPBACK_HOSTNAMES.has(hostname) ||
-          !originAllowed ||
+        (((!LOOPBACK_HOSTNAMES.has(hostname) || !originAllowed) && !browserEndpointAllowed) ||
           !trustedDevelopmentAddress(development, remoteAddress)))
     ) {
       throw failure(
@@ -1651,7 +1816,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         "FORBIDDEN",
         development.enabled
           ? "Development admission is restricted to direct loopback requests."
-          : "Production admission requires a direct request.",
+          : "Production admission requires a direct request or forwarded headers from a configured trusted proxy.",
       );
     }
 
@@ -1770,6 +1935,41 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     }
   }
 
+  /**
+   * Preset and Configuration writes accept bodies of about 6 MiB (PRESET_BODY_LIMIT,
+   * CONFIGURATION_BODY_LIMIT), far above the general limit. Their grant check needs only the
+   * path and the caller, so it runs here, in onRequest, before the body is read: a caller
+   * without the grant gets the same 403 or 404 and audit row as when the check ran in the
+   * handler, and the controller never buffers the body. The handler repeats the check in its
+   * transaction, with the Secret binding checks that need the body.
+   */
+  async function authorizeBeforeBody(request: FastifyRequest, operation: OccApiRoute) {
+    const context = contexts.get(request);
+    if (!context) {
+      throw dependencyUnavailable();
+    }
+    if (!controller) {
+      throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
+    }
+    const params = request.params as Record<string, string>;
+    if (
+      operation.operationId === "createConfiguration" ||
+      operation.operationId === "updateConfiguration"
+    ) {
+      await controller.authorizeConfigurationWrite(
+        context.actorId,
+        params.namespaceId as string,
+        operation.operationId === "updateConfiguration" ? params.configurationId : undefined,
+      );
+      return;
+    }
+    await controller.authorizePresetWrite(
+      context.actorId,
+      params.namespaceId as string,
+      operation.operationId === "updatePreset" ? params.presetId : undefined,
+    );
+  }
+
   async function perform(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -1858,6 +2058,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
 
+    if (operation.operationId === "discoverInstallationConfigurations") {
+      const configurations = await controller.discoverConfigurations(context.actorId, {
+        scope: "installation",
+      });
+      reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(
@@ -1936,6 +2144,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: await controller.getNamespace(context.actorId, namespaceId),
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
       return;
     }
 
@@ -2027,9 +2247,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2043,9 +2263,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2073,9 +2293,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2092,9 +2312,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         {
           pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
       );
       reply.header("cache-control", "no-store");
@@ -2129,7 +2349,25 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
-        mutationEvent: (resource, details, authorization) => {
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
+        mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
             request,
@@ -2137,7 +2375,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             "mutation",
             context,
             undefined,
-            undefined,
+            failure === undefined
+              ? undefined
+              : { outcome: "failure", reasonCode: failure.reasonCode },
             undefined,
             authorization,
           );
@@ -2152,6 +2392,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
+      return;
     }
 
     if (
@@ -2399,12 +2656,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2434,9 +2692,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
@@ -2490,6 +2748,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const bodyErrors = {
       413: { description: "Payload Too Large", ...error },
       415: { description: "Unsupported Media Type", ...error },
+    };
+    // Refuse request text that cannot be stored unchanged, as on OCC API routes.
+    const refuseUnstorableText = (request: FastifyRequest, body: unknown = request.body) => {
+      const unstorable =
+        unstorableTextFailure("params", request.params) ?? unstorableTextFailure("body", body);
+      if (unstorable !== undefined) {
+        throw unstorable;
+      }
     };
     const accountBody = (
       createAuthAccountOperation.schema as {
@@ -2546,7 +2812,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                   properties: {
                     servicePrincipalId: { type: "string", minLength: 1, maxLength: 200 },
                     namespaceId: { type: "string", pattern: RESOURCE_ID.namespaceId.source },
-                    name: { type: "string", minLength: 1, maxLength: 32, pattern: "\\S" },
+                    name: {
+                      type: "string",
+                      minLength: 1,
+                      maxLength: SERVICE_KEY_NAME_MAX_LENGTH,
+                      pattern: "\\S",
+                    },
                     expiresIn: {
                       type: "integer",
                       minimum: 86400,
@@ -2587,6 +2858,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         } as DocumentedFastifySchema,
         onRequest: async (request) => admit(request, operation),
+        preValidation: async (request) => refuseUnstorableText(request),
         preHandler: async (request) => resolveIdentity(request, operation),
         handler: async (request, reply) => {
           const context = contexts.get(request);
@@ -2609,13 +2881,15 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             operation,
             context,
           );
-          const audit = (key: { id: string; servicePrincipalId: string }) => {
+          // Names the key acted on by ID and its non-secret name; never the credential.
+          const audit = (key: { id: string; servicePrincipalId: string; name: string }) => {
             const base = event(operation, request, target, "mutation", context, decision.evidence);
             return {
               ...base,
               details: {
                 ...base.details,
                 serviceKeyId: key.id,
+                serviceKeyName: key.name,
                 servicePrincipalId: key.servicePrincipalId,
               },
             };
@@ -2708,10 +2982,20 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 ...(body.expiresIn === undefined ? {} : { expiresIn: body.expiresIn }),
               });
               await options.auditSink.append(audit(key));
-            } catch {
+            } catch (error) {
               // Never return an unaudited credential; remove it if audit persistence fails.
               if (key) {
                 await options.auth.revokeServiceKey(key).catch(() => {});
+              }
+              // The schema admitted this name, so a refusal is a contract mismatch, not an
+              // outage: answer as the schema does for a name over its bound.
+              if (error instanceof ServiceKeyNameRefused) {
+                throw failure(
+                  400,
+                  "INVALID_REQUEST",
+                  `The request does not match the operation contract: body /name is too long (expected at most ${SERVICE_KEY_NAME_MAX_LENGTH} characters).`,
+                  [{ path: "/name", code: "TOO_LONG" }],
+                );
               }
               throw dependencyUnavailable();
             }
@@ -3017,13 +3301,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, accountReadOperation),
-        preValidation: async (request) => resolveIdentity(request, accountReadOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, accountReadOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3153,7 +3441,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             },
           },
           onRequest: async (request) => admit(request, operation),
-          preValidation: async (request) => resolveIdentity(request, operation),
+          preValidation: async (request) => {
+            refuseUnstorableText(request);
+            await resolveIdentity(request, operation);
+          },
         },
         async (request, reply) => {
           const context = contexts.get(request);
@@ -3308,7 +3599,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, recoveryReplaceOperation),
-        preValidation: async (request) => resolveIdentity(request, recoveryReplaceOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, recoveryReplaceOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3414,13 +3708,17 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                 created: { type: "boolean" },
               },
             }),
+            400: { description: "Bad Request", ...error },
             403: { description: "Forbidden", ...error },
             404: { description: "Not Found", ...error },
             409: { description: "Conflict", ...error },
           },
         },
         onRequest: async (request) => admit(request, enrolOperation),
-        preValidation: async (request) => resolveIdentity(request, enrolOperation),
+        preValidation: async (request) => {
+          refuseUnstorableText(request);
+          await resolveIdentity(request, enrolOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3444,7 +3742,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           operationId: "signInEmail",
           summary: "Sign in with email and password",
           description:
-            "Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.",
+            "Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.",
           tags: ["Authentication"],
           security: [],
           body: {
@@ -3562,7 +3860,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
           },
         },
         onRequest: async (request) => admit(request, createAuthAccountOperation),
-        preValidation: async (request) => resolveIdentity(request, createAuthAccountOperation),
+        preValidation: async (request) => {
+          // Passwords are hashed before persistence; their existing schema and hashing
+          // rules remain authoritative. Validate every other submitted field unchanged.
+          const body = request.body;
+          refuseUnstorableText(
+            request,
+            typeof body === "object" && body !== null && !Array.isArray(body)
+              ? { ...body, password: undefined }
+              : body,
+          );
+          await resolveIdentity(request, createAuthAccountOperation);
+        },
       },
       async (request, reply) => {
         const context = contexts.get(request);
@@ -3662,8 +3971,10 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
                       "INVALID_REQUEST",
                       "The request does not match the operation contract.",
                     )
-                  : new DependencyUnavailableError(
-                      error instanceof Error ? error.message : "Auth account provisioning failed.",
+                  : Object.assign(
+                      new DependencyUnavailableError("Auth account provisioning failed."),
+                      // The API log names the cause's class and code, never its message.
+                      { cause: error },
                     );
         }
         const account = prepared;
@@ -3688,6 +3999,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      nativeAdminReturnOperation.path,
+      {
+        schema: nativeAdminReturnSchema,
+        // Bound session admission per direct peer. Proxies share this more generous budget;
+        // the resolver separately limits expensive lookups by authenticated principal.
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, nativeAdminReturnOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      },
+      nativeAdmin.resolveReturn,
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -3714,11 +4040,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
-            : {}),
+            : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
+              ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
+              : operation.operationId === "createConfiguration" ||
+                  operation.operationId === "updateConfiguration"
+                ? { bodyLimit: options.maxBodyBytes ?? CONFIGURATION_BODY_LIMIT }
+                : {}),
         schema,
-        onRequest: async (request) => admit(request, operation),
+        onRequest: async (request) => {
+          await admit(request, operation);
+          if (authorizesBeforeBody(operation)) {
+            await resolveIdentity(request, operation);
+            await authorizeBeforeBody(request, operation);
+          }
+        },
         preValidation: async (request) => {
           const hasRequestBody =
             request.body !== undefined ||
@@ -3738,7 +4077,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             throw unstorable;
           }
         },
-        preHandler: async (request) => resolveIdentity(request, operation),
+        ...(authorizesBeforeBody(operation)
+          ? {}
+          : { preHandler: async (request: FastifyRequest) => resolveIdentity(request, operation) }),
         handler: async (request, reply) => perform(request, reply, operation),
       });
     }
@@ -3757,9 +4098,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(
+      pathname,
+      request.headers["accept-encoding"],
+      options.consoleTheme,
+    );
+    if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
+      reply.header("cache-control", "no-store");
+    }
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
@@ -3870,9 +4225,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        host: "auth.openai.com",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
+      });
+    }
+    if (
+      mapped.status === 503 &&
+      mapped.code === "DEPENDENCY_UNAVAILABLE" &&
+      error instanceof Error &&
+      isDependencyUnavailable(error)
+    ) {
+      // The response keeps its text (the caller learns nothing more); the operator finds the
+      // cause here by request ID. Reading the error must never change the response.
+      let fields: ReturnType<typeof dependencyUnavailableLogFields> = {};
+      try {
+        fields = dependencyUnavailableLogFields(error);
+      } catch {
+        // An error whose fields cannot be read is logged without them.
+      }
+      app.log.warn({
+        event: "http.dependency_unavailable",
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? "unmatched",
+        ...fields,
       });
     }
     if (mapped.code === "INTERNAL_ERROR") {

@@ -1,42 +1,30 @@
 import assert from "node:assert/strict";
 import { execFile, fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { createServer as httpsServer } from "node:https";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 
 const execute = promisify(execFile);
 
 test("real peer-status HTTPS transport authenticates its revision and verifies server trust", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-peer-status-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const certificate = join(directory, "certificate.pem");
-  const privateKey = join(directory, "key.pem");
-  await execute("openssl", [
-    "req",
-    "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-days",
-    "1",
-    "-subj",
-    "/CN=localhost",
-    "-addext",
-    "subjectAltName=DNS:localhost,IP:127.0.0.1",
-    "-keyout",
-    privateKey,
-    "-out",
-    certificate,
-  ]);
+  const directory = await temporaryDirectory(t, "oce-peer-status-");
+  const { keyPath: privateKey, certPath: certificate } = await selfSigned(directory);
 
-  const port = await availablePort();
+  // The generated status server binds this port on all interfaces. Hold it there until the
+  // server answers on it, so no other socket takes it first.
+  const reservation = await reservePort({ host: "0.0.0.0" });
+  t.after(reservation.release);
+  const { port } = reservation;
   const environment = {
     PATH: process.env.PATH,
     OPENCLAW_PLUGIN_STATUS_PORT: String(port),
@@ -51,9 +39,28 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
     serverFile,
     `${PLUGIN_RUNTIME_HELPERS}\nstartPluginRuntimeStatusServer();\npublishPluginRuntimeStatus({phase:"ready",successfulPluginIds:["plugin-one"],failures:[]});\nprocess.send("ready");`,
   );
-  const child = fork(serverFile, { env: environment, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  const child = fork(serverFile, {
+    env: environment,
+    execArgv: [...process.execArgv, ...reservedPortArgs(reservation)],
+    stdio: ["ignore", "ignore", "pipe", "ipc"],
+  });
   t.after(() => child.kill("SIGTERM"));
   await once(child, "message");
+  // "ready" follows listen() before the bind completes. A 401 can only come from the status
+  // server (the reservation resets connections), so it is bound and the hold can end.
+  await waitFor(
+    "the status server to answer on its port",
+    () =>
+      fetch(`http://127.0.0.1:${port}/openclaw/plugin-runtime/remote-status`).then(
+        async (response) => {
+          await response.body?.cancel();
+          return response.status === 401 || undefined;
+        },
+        () => undefined,
+      ),
+    10_000,
+  );
+  await reservation.release();
 
   // TLS termination forwards the untouched Authorization header to the actual
   // generated Harness status server. No fixture implements its authentication.
@@ -84,10 +91,7 @@ test("real peer-status HTTPS transport authenticates its revision and verifies s
       incoming.pipe(upstream);
     },
   );
-  proxy.listen(0, "127.0.0.1");
-  await once(proxy, "listening");
-  t.after(() => new Promise((resolve) => proxy.close(resolve)));
-  const url = `https://127.0.0.1:${proxy.address().port}/status`;
+  const url = `https://127.0.0.1:${await listen(t, proxy)}/status`;
   const clientFile = join(directory, "client.cjs");
   await writeFile(
     clientFile,

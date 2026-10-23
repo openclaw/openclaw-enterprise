@@ -23,7 +23,9 @@ export class AuthorizationDeniedError extends Error {
     super(message);
     this.name = "AuthorizationDeniedError";
     if (evidence !== undefined) {
-      this.evidence = evidence;
+      if (evidence !== undefined) {
+        this.evidence = evidence;
+      }
     }
     if (authorization !== undefined) {
       this.authorization = Object.freeze({
@@ -90,9 +92,113 @@ export class DeletionRetryOwnedError extends AuthorizationDeniedError {
  * remaining distinguishable from explicit denials for HTTP and audit handling.
  */
 export class DependencyUnavailableError extends AuthorizationDeniedError {
-  constructor(message = "A required platform dependency is unavailable.") {
+  /** Fixed Driver-owned request diagnostics; never copy supplier text or request values here. */
+  readonly requestDiagnostic?: {
+    readonly method: string;
+    readonly grpcStatus: number;
+    readonly validationCategory: "POLICY_SAFETY" | "POLICY_MIDDLEWARE_VALIDATION" | "UNKNOWN";
+  };
+
+  constructor(
+    message = "A required platform dependency is unavailable.",
+    requestDiagnostic?: NonNullable<DependencyUnavailableError["requestDiagnostic"]>,
+  ) {
     super(message);
     this.name = "DependencyUnavailableError";
+    if (requestDiagnostic !== undefined) {
+      this.requestDiagnostic = Object.freeze({ ...requestDiagnostic });
+    }
+  }
+}
+
+/**
+ * Persisted platform state that its reader cannot decode, such as an invalid row. It fails closed
+ * like any unavailable dependency, but unlike an outage it does not recover by itself, so a caller
+ * that waits out outages must not wait on it forever.
+ */
+export class PersistedStateInvalidError extends DependencyUnavailableError {}
+
+/**
+ * A Secret the selected Secret Driver cannot serve, typically one stored through a driver the
+ * Installation no longer selects. Each subclass is raised only after the caller's grant and the
+ * Secret lookup, so it reveals nothing a 403 or 404 hides, and carries a fixed message naming
+ * the fix for its own path. HTTP returns that message; every other 503 keeps the generic text.
+ */
+export abstract class SecretDriverOwnershipError extends DependencyUnavailableError {}
+
+/**
+ * A Configuration Secret binding the selected Secret Driver cannot serve. Only a Configuration
+ * write can replace the binding, so the fixed message says so.
+ */
+export class SecretBindingDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+    );
+    this.name = "SecretBindingDriverError";
+  }
+}
+
+/**
+ * An Agent's requested or bound Harness authentication Secret the selected Secret Driver cannot
+ * serve. The Agent's `harnessAuth` must name another Secret.
+ */
+export class HarnessAuthSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own the Harness authentication Secret. Bind a Secret stored through the selected driver: set harnessAuth to another Secret, or create a new Secret with the key and bind that.",
+    );
+    this.name = "HarnessAuthSecretDriverError";
+  }
+}
+
+/**
+ * A Secret an Agent provisioning request or its accepted work uses that the selected Secret
+ * Driver cannot serve. Accepted work keeps its inputs, so only a new request can replace it.
+ */
+export class ProvisioningSecretDriverError extends SecretDriverOwnershipError {
+  constructor() {
+    super(
+      "The selected Secret Driver does not own a Secret this Agent provisioning uses. Use only Secrets stored through the selected driver: save replacement Secrets and submit a new provisioning request with them.",
+    );
+    this.name = "ProvisioningSecretDriverError";
+  }
+}
+
+const SECRET_STORAGE_DRIVER_MESSAGES = Object.freeze({
+  update:
+    "The selected Secret Driver does not own this Secret, so its value cannot be updated. Create a new Secret with the value through the selected driver and bind it in place of this one.",
+  delete:
+    "The selected Secret Driver does not own this Secret, so its stored value cannot be deleted. Delete it once the Installation again selects the Secret Driver that stored it.",
+});
+
+/**
+ * An exact Secret update or delete the selected Secret Driver cannot perform: OCC never writes or
+ * removes a value through a driver that does not own it.
+ */
+export class SecretStorageDriverError extends SecretDriverOwnershipError {
+  readonly operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES;
+
+  constructor(operation: keyof typeof SECRET_STORAGE_DRIVER_MESSAGES) {
+    super(SECRET_STORAGE_DRIVER_MESSAGES[operation]);
+    this.name = "SecretStorageDriverError";
+    this.operation = operation;
+  }
+}
+
+/**
+ * A credential source registered through a Credential Gateway Driver the Installation no longer
+ * selects. OCC never binds, deploys, updates or deletes a source through a driver that did not
+ * register it. Raised only after the caller's grant and the source lookup, so it reveals nothing
+ * a 403 or 404 hides; one fixed message names the fix on every path. An Installation with no
+ * Credential Gateway, or a selected one that is unusable, is not this error.
+ */
+export class CredentialSourceDriverError extends DependencyUnavailableError {
+  constructor() {
+    super(
+      "The selected Credential Gateway Driver did not register this credential source. Bind a replacement registered through the selected driver instead. To update or delete this source, an administrator must first re-select the driver that registered it.",
+    );
+    this.name = "CredentialSourceDriverError";
   }
 }
 
@@ -189,9 +295,23 @@ export class ConfigurationHarnessError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's `harnessAuth` names a credential source its `credentialSources` list does not
+ * hold. OCC raises it only after every source authorization, and the rule depends only on
+ * the request and the Agent the caller may already update, so HTTP reports it as an invalid
+ * request instead of hiding it as a scope miss.
+ */
+export class AgentCredentialSourceBindingError extends ScopeViolationError {
+  constructor() {
+    super("The Harness credential source must be listed in the Agent's credentialSources.");
+    this.name = "AgentCredentialSourceBindingError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
- * (including credential-source Harness authentication in Agent provisioning), or
+ * (including missing, runtime or credential-source Harness authentication in Agent
+ * provisioning), or
  * any of those, an Agent's Harness authentication, a credential source, or plugin discovery
  * naming a Secret in another Namespace. Messages are static, so HTTP reports them as an
  * invalid request instead of hiding them as a scope miss; Secret existence is still checked
@@ -231,8 +351,105 @@ function configurationFieldMessage(path: string, message: (path: string) => stri
   );
 }
 
-const modelCredentialMessage = (path: string): string =>
-  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+/**
+ * Builds a message that names the Configuration setting `<parent>.<key>`. A submitted key can
+ * hold any character: control, format, line and paragraph separator characters show as ?, a
+ * key that is not a plain ID is quoted, and a long key shortens the path to fit the
+ * 256-character cap.
+ */
+function keyedSettingMessage(
+  parent: string,
+  key: string,
+  message: (path: string) => string,
+): string {
+  return configurationFieldMessage(keyedSettingPath(parent, key), message);
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
+  const shown = shownKey(key);
+  return /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
+}
+
+// Control, format, line and paragraph separator characters and lone surrogates show as ?.
+const shownKey = (key: string): string => key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
+
+/**
+ * A submitted key a message names, such as a header name, in double quotes: characters
+ * keyedSettingPath hides show as ?, and a key longer than `limit` code points is cut with …,
+ * so the message keeps its cap (`limit` is at least 1). Use it only for keys that are not secrets.
+ */
+export function quotedSettingKey(key: string, limit: number): string {
+  const characters = Array.from(shownKey(key));
+  return JSON.stringify(
+    characters.length <= limit
+      ? characters.join("")
+      : `${characters.slice(0, limit - 1).join("")}…`,
+  );
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
+}
+
+/** Builds a message that names the Configuration setting `agents.entries.<key>`. */
+export function agentEntryMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("agents.entries", key, message);
+}
+
+/** Builds a message that names the Configuration setting `models.providers.<key>`. */
+export function modelProviderMessage(key: string, message: (path: string) => string): string {
+  return keyedSettingMessage("models.providers", key, message);
+}
+
+const MEBIBYTE = 1024 * 1024;
+
+const byteSize = (bytes: number): string =>
+  bytes % MEBIBYTE === 0
+    ? `${bytes / MEBIBYTE} MiB`
+    : bytes % 1024 === 0
+      ? `${bytes / 1024} KiB`
+      : `${bytes} bytes`;
+
+/**
+ * Configuration values whose stored JSON reaches the Configuration Driver's size limit. The
+ * message names the limit and never the content, so HTTP returns it.
+ */
+export class ConfigurationSizeError extends Error {
+  readonly limitBytes: number;
+
+  /** `limitBytes` is the first refused size: stored JSON must be smaller. */
+  constructor(limitBytes: number) {
+    super(
+      `Configuration values are too large: stored as JSON they must be smaller than ${byteSize(limitBytes)}. Remove or shorten settings, then save again.`,
+    );
+    this.name = "ConfigurationSizeError";
+    this.limitBytes = limitBytes;
+  }
+}
+
+const inlineCredentialMessage =
+  (instead: string) =>
+  (path: string): string =>
+    `Configuration field ${path} holds a credential value inline, where a reference is required. ${instead}`;
+const modelCredentialMessage = inlineCredentialMessage(
+  "Store the key as a Secret and select it as the Agent's model credential instead.",
+);
+const gatewayPasswordMessage = inlineCredentialMessage(
+  "Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+);
 
 /**
  * A literal credential in a known model credential field of Configuration values. The
@@ -241,16 +458,30 @@ const modelCredentialMessage = (path: string): string =>
 export class ModelCredentialValueError extends Error {
   readonly path: string;
 
-  constructor(path: string) {
-    super(configurationFieldMessage(path, modelCredentialMessage));
+  constructor(path: string, message: (path: string) => string = modelCredentialMessage) {
+    super(configurationFieldMessage(path, message));
     this.name = "ModelCredentialValueError";
     this.path = path;
+  }
+}
+
+/** A literal gateway.auth.password in Configuration values, reported like a model credential. */
+export class GatewayPasswordValueError extends ModelCredentialValueError {
+  constructor(path: string) {
+    super(path, gatewayPasswordMessage);
+    this.name = "GatewayPasswordValueError";
   }
 }
 
 const modelProviderSettingMessages = {
   baseUrl: (path: string): string =>
     `Configuration field ${path} must be an absolute http or https URL.`,
+  // An http(s) scheme followed by one or no slash, which the URL parser accepts (finding 1285).
+  baseUrlSlashes: (path: string): string =>
+    `Configuration field ${path} must start with https:// or http:// (the // after the scheme is missing).`,
+  // A host with a numeric or 0x last label, which the URL parser reads as IPv4 (finding 1346).
+  baseUrlNumericHost: (path: string): string =>
+    `Configuration field ${path} must be an absolute http or https URL. A numeric or 0x last label parses as IPv4; use four decimal octets from 0 to 255 without leading zeros.`,
   api: (path: string): string =>
     `Configuration field ${path} must name a model API the runtime supports, such as openai-responses, openai-completions or anthropic-messages.`,
 } as const;
@@ -281,9 +512,103 @@ export class ResourceConflictError extends ScopeViolationError {
  * names what blocks the operation. HTTP returns that message instead of the generic text.
  */
 export class ResourceStateConflictError extends ResourceConflictError {
+  readonly details?: readonly import("@openclaw-enterprise/contracts").ErrorDetail[];
+  constructor(
+    message: string,
+    details?: readonly import("@openclaw-enterprise/contracts").ErrorDetail[],
+  ) {
+    super(message);
+    if (details !== undefined) {
+      this.details = details;
+    }
+    this.name = "ResourceStateConflictError";
+  }
+}
+
+/**
+ * A Sandbox Driver refuses a network policy rule it names, such as a grant beside its
+ * repository route. OCC returns the message; the policy worker fails the application at once.
+ */
+export class SandboxNetworkPolicyConflictError extends ResourceStateConflictError {
   constructor(message: string) {
     super(message);
-    this.name = "ResourceStateConflictError";
+    this.name = "SandboxNetworkPolicyConflictError";
+  }
+}
+
+const PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES = {
+  save: "Protected execution applies to this Agent: the Credential Proxy routes alone govern its egress, so network policy additions are refused; only an empty policy can be saved.",
+  apply:
+    "This Agent's active revision runs under protected execution: the Credential Proxy routes alone govern its egress, so live network policy application is refused.",
+  deploy:
+    "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+} as const;
+
+/**
+ * Finding 2053: a protected execution runs under its exact Credential Proxy egress policy, so
+ * an Agent's network policy additions are refused when saved, applied live or deployed, never
+ * dropped from the protected profile. HTTP returns 409 SANDBOX_POLICY_PROTECTED_EXECUTION.
+ */
+export class ProtectedExecutionNetworkPolicyError extends ResourceStateConflictError {
+  constructor(operation: keyof typeof PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES) {
+    super(PROTECTED_EXECUTION_NETWORK_POLICY_MESSAGES[operation]);
+    this.name = "ProtectedExecutionNetworkPolicyError";
+  }
+}
+
+/**
+ * Finding 2199: the selected Credential Proxy has no qualified enforcement for protected
+ * repository Git delivery (the `git-write` profile), so a revision admitted with it could only
+ * wait at Harness enrollment for the convergence deadline. No retry changes that: deploy
+ * refuses it with 409 REPOSITORY_GIT_SENDER_UNQUALIFIED, and the worker fails a revision
+ * admitted before this check at once with the same code. The message names only the
+ * Installation's capability, never the repository or grant.
+ */
+export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_SENDER_UNQUALIFIED";
+  static readonly description =
+    "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.";
+  readonly code = RepositoryGitSenderUnqualifiedError.code;
+
+  constructor() {
+    super(RepositoryGitSenderUnqualifiedError.description);
+    this.name = "RepositoryGitSenderUnqualifiedError";
+  }
+}
+
+/**
+ * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
+ * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
+ * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
+ * several bindings, could never start. Deploy refuses it with 409
+ * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
+ * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
+ * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
+ * messages under 256 characters.
+ */
+export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
+  static readonly description =
+    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.";
+  readonly code = RepositoryGitProfileUnsupportedError.code;
+
+  constructor() {
+    super(RepositoryGitProfileUnsupportedError.description);
+    this.name = "RepositoryGitProfileUnsupportedError";
+  }
+}
+
+/**
+ * The Configuration moved past the generation the update named. HTTP marks it with an
+ * `/expectedGeneration` detail, so a caller can tell it from other Configuration conflicts,
+ * such as one reserved for provisioning, and reread before saving again.
+ */
+export class ConfigurationGenerationConflictError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The Configuration changed since it was read. Read its current generation before updating it.",
+    );
+    this.name = "ConfigurationGenerationConflictError";
   }
 }
 
@@ -432,6 +757,13 @@ export const NAMESPACE_NAME_CONFLICT =
 export const DELETED_NAMESPACE_NAME_CONFLICT =
   "This name belongs to a deleted Namespace and cannot be reused. Choose a different name.";
 
+/**
+ * A revision admits one installed egress execution (UNIQUE (namespace_id, revision_id)); a
+ * second Sandbox for the same revision is refused alike by the memory and PostgreSQL stores.
+ */
+export const EGRESS_REVISION_INSTALLED_CONFLICT =
+  "Egress revision already has an installed execution.";
+
 export class AgentDeletingError extends ResourceConflictError {
   constructor(message = "The Agent is being deleted.") {
     super(message);
@@ -477,12 +809,31 @@ export class NativeWorkerSupportError extends Error {
   }
 }
 
+export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+
+/**
+ * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
+ * process containment, and the Installation selects none. The Installation's shape refuses
+ * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
+ * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
+ * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
+ * and resumes once a qualifying Driver is selected.
+ */
+export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
+  constructor() {
+    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+    this.name = "DedicatedOpenClawSandboxError";
+  }
+}
+
 /**
  * A platform dependency a Compute Driver, or the Sandbox Driver it calls, reaches while
  * it reconciles a revision. `sandbox_admission` is the Sandbox gateway's per-caller
  * request admission quota, which frees up as completed requests age out.
  */
-export type TransientDependency = "agent_gateway" | "kubernetes_api" | "sandbox_admission";
+export type TransientDependency =
+  "agent_gateway" | "kubernetes_api" | "sandbox_admission" | "sandbox_gateway";
 
 /** Why the dependency failed, from a closed set that carries no provider text. */
 export type TransientDependencyReason = "unreachable" | "timeout" | "unavailable";
@@ -491,13 +842,16 @@ const TRANSIENT_DEPENDENCY_CODES: Readonly<Record<TransientDependency, string>> 
   agent_gateway: "AGENT_GATEWAY_UNAVAILABLE",
   kubernetes_api: "KUBERNETES_API_UNAVAILABLE",
   sandbox_admission: "SANDBOX_ADMISSION_LIMIT_REACHED",
+  sandbox_gateway: "SANDBOX_GATEWAY_UNAVAILABLE",
 });
 
 /**
  * A Compute dependency failed in a way that clears without a change to the
  * revision: the Kubernetes API timed out or answered 429/5xx, the Agent
- * Gateway's route refused or dropped a connection while it converged, or the
- * Sandbox gateway refused new requests at its request admission limit. The
+ * Gateway's route refused or dropped a connection while it converged, the
+ * Sandbox gateway refused new requests at its request admission limit, or the
+ * Sandbox gateway did not answer: a Harness status read through its listener, or
+ * any request of a revision pass while it is down (`SandboxGatewayUnavailableError`). The
  * worker retries it within the deployment's convergence deadline instead of
  * spending the attempt budget, and records `code`, which names the dependency.
  * The message stays in the controller; status shows a fixed text.
@@ -521,14 +875,50 @@ export class TransientDependencyError extends Error {
   }
 }
 
+/**
+ * A Sandbox Driver's provider refused a Namespace step because the controller's own
+ * identity is unauthenticated or lacks a permission there. Retrying cannot help until an
+ * operator fixes that identity or grant, so Compute fails the Namespace step at once.
+ * The message names only the provider's refusal code, never provider text.
+ */
+export class SandboxNamespaceRefusedError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "SandboxNamespaceRefusedError";
+  }
+}
+
+/**
+ * The Kubernetes API answered 403 to a private Secret write, or its readback, that Compute
+ * needs for this revision: an RBAC grant, an admission policy or a ResourceQuota refuses it. Unlike a 429 or
+ * 5xx it does not clear by itself, so the worker fails the deployment at once with `code`
+ * instead of spending its attempt budget (finding 1770). Every other caller still sees an
+ * unavailable dependency. The message is fixed text, and the cause keeps only the HTTP status
+ * and Status reason, never the Secret's name or data.
+ */
+export class KubernetesSecretWriteForbiddenError extends DependencyUnavailableError {
+  readonly code = "KUBERNETES_SECRET_WRITE_FORBIDDEN";
+
+  constructor() {
+    super("The Kubernetes API refused a private Secret write with HTTP 403.");
+    this.name = "KubernetesSecretWriteForbiddenError";
+  }
+}
+
 /** A step of dedicated activation that completes by itself once a workload catches up. */
-export type ActivationPendingCode = "WORKSPACE_NODE_PENDING" | "WORKSPACE_NODE_BINDING_PENDING";
+export type ActivationPendingCode =
+  | "WORKSPACE_NODE_PENDING"
+  | "WORKSPACE_NODE_BINDING_PENDING"
+  | "REPOSITORY_GIT_MATERIAL_PENDING"
+  | "WORKSPACE_NODE_RECONNECT_PENDING";
 
 /**
  * Activation found its workloads ready but is still waiting for one of them:
- * the Gateway has not applied the workspace node it was handed, or the Harness
- * node has not connected to the Gateway. The worker records `code` so status
- * names the wait. The message stays in the controller.
+ * the Gateway has not applied the workspace node it was handed, the Harness
+ * node has not connected to the Gateway, the Sandbox has not installed the
+ * version's first repository Git credential, or the node has not reconnected
+ * after that install reset the Sandbox's connections. The worker records
+ * `code` so status names the wait. The message stays in the controller.
  */
 export class ActivationPendingError extends Error {
   readonly code: ActivationPendingCode;
@@ -542,6 +932,28 @@ export class ActivationPendingError extends Error {
 
 /** An activation step that cannot complete for this revision. */
 export type ActivationFailedCode = "AGENT_GATEWAY_UNAUTHORIZED";
+
+/**
+ * Compute preparation cannot complete for this revision. The worker records a
+ * terminal deployment failure and durable workload retirement in one transaction.
+ * Drivers own initialization and cleanup; status never exposes the error message.
+ */
+export class ComputePreparationFailedError extends Error {
+  readonly code: "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED" | "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT";
+  readonly evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence;
+
+  constructor(
+    code: ComputePreparationFailedError["code"],
+    evidence?: import("@openclaw-enterprise/contracts").ComputePreparationFailureEvidence,
+  ) {
+    super("Harness credential initialization could not complete.");
+    this.name = "ComputePreparationFailedError";
+    this.code = code;
+    if (evidence !== undefined) {
+      this.evidence = evidence;
+    }
+  }
+}
 
 /**
  * Activation found its workloads running but one of them can never complete
@@ -567,12 +979,165 @@ export class ActivationFailedError extends Error {
  * with `code`. The message stays in the controller; status shows a fixed text.
  */
 export class SandboxRevisionUnsupportedError extends Error {
-  readonly code: "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED" | "SANDBOX_HARNESS_UNSUPPORTED";
+  readonly code:
+    | "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED"
+    | "SANDBOX_HARNESS_UNSUPPORTED"
+    | "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED";
 
   constructor(code: SandboxRevisionUnsupportedError["code"], message: string) {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/** The selected Sandbox cannot authenticate the required recipient of repository credentials. */
+export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUnsupportedError {
+  static readonly description =
+    "The selected Sandbox cannot verify the recipient required for repository session delivery. Select a Sandbox with repository access or a Compute-owned Harness.";
+
+  constructor() {
+    super(
+      "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+      SandboxRepositoryRecipientUnverifiedError.description,
+    );
+  }
+}
+
+/**
+ * A Sandbox Driver's private workspace setup refused the revision's workspace (the setup
+ * runner's exit status 2): its files, setup record or runtime defaults disagree, so no retry
+ * can change it. Compute reports it as a held `WORKSPACE_SETUP_REFUSED` runtime failure, which
+ * fails the deployment at once, as for its own init container (finding 1708).
+ */
+export class SandboxWorkspaceSetupRefusedError extends Error {
+  readonly code = "WORKSPACE_SETUP_REFUSED";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
+ * had just found the target: the target went between the two (a failed candidate retired by the
+ * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps
+ * its retry and the worker's exposure sweep logs it apart from a failure (finding 1696).
+ */
+export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
+
+/**
+ * The Sandbox gateway did not answer a request at all: it is down or restarting (gRPC
+ * UNAVAILABLE), so the request says nothing about the revision. It stays a
+ * DependencyUnavailableError, so every caller keeps its behavior (HTTP answers 503, other work
+ * retries within its attempt budget), except a revision pass: like a Kubernetes API that is
+ * converging, the worker waits for the gateway within the deployment's convergence deadline as
+ * `SANDBOX_GATEWAY_UNAVAILABLE` instead of spending the attempt budget (D28, findings 1658 and
+ * 2040). The message stays in the controller.
+ */
+export class SandboxGatewayUnavailableError extends DependencyUnavailableError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxGatewayUnavailableError";
+  }
+}
+
+/**
+ * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
+ * Driver cannot tell a Sandbox that is gone, with its Harness exposure withdrawn and its
+ * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup
+ * answers NOT_FOUND there, like a missing one. The Sandbox may still run, route unauthenticated
+ * traffic and resolve credentials, so the Driver fails closed and the worker fails the deployment
+ * with `code` instead of reporting the revision ready, stopped or removed. A Workspace deleted
+ * out of band presents the same way, since the gateway drops the identity's membership with it.
+ * An operator restores the identity's Workspace role (or the Workspace, through a deploy) and
+ * runs the operation again. The message stays in the controller.
+ *
+ * `transient` is true when the gateway could not authenticate the identity at all
+ * (UNAUTHENTICATED): an expired or not-yet-valid token file and a signing key the gateway has
+ * not refreshed yet mend themselves, so the worker retries within its attempt budget before it
+ * fails with `code` (finding 1694). A role the identity lacks (PERMISSION_DENIED) fails at once.
+ */
+export class SandboxGatewayUnauthorizedError extends Error {
+  readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
+  readonly transient: boolean;
+
+  constructor(message: string, options?: ErrorOptions & { readonly transient?: boolean }) {
+    super(message, options);
+    this.name = "SandboxGatewayUnauthorizedError";
+    this.code = "SANDBOX_GATEWAY_UNAUTHORIZED";
+    this.transient = options?.transient === true;
+  }
+}
+
+/**
+ * A Credential Gateway cannot attach this exact AgentRevision's credential sources: two of them
+ * would place their placeholders in the same Sandbox environment variable. The revision's
+ * source list and each source's config are fixed, so retrying cannot change the outcome; the
+ * worker fails the deployment with `code`. The message stays in the controller; status shows a
+ * fixed text.
+ */
+export class CredentialSourceRevisionError extends Error {
+  readonly code: "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT";
+
+  constructor(code: CredentialSourceRevisionError["code"], message: string) {
+    super(message);
+    this.name = "CredentialSourceRevisionError";
+    this.code = code;
+  }
+}
+
+/**
+ * A Compute Driver cannot withdraw a credential source from this exact AgentRevision: its
+ * configuration cannot identify the revision's Sandbox, or it found an object it does not
+ * own. Retrying cannot change the outcome until an operator corrects the cause, so the worker
+ * fails the withdrawal at once with `code` instead of retrying it for an hour; a replay tries
+ * again. The message stays in the controller.
+ */
+export class CredentialWithdrawalRefusedError extends Error {
+  readonly code:
+    | "CREDENTIAL_WITHDRAWAL_MISCONFIGURED"
+    | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT"
+    | "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT";
+
+  constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
+    super(message);
+    this.name = "CredentialWithdrawalRefusedError";
+    this.code = code;
+  }
+}
+
+/**
+ * Source deletion is refused only because a credential withdrawal attempt or retry series is
+ * still queued or running for an inactive revision that holds the source; nothing else
+ * references it. A fixed message: it names no Agent or revision, which the caller, who holds
+ * only `delete` on the source, may not be allowed to read. A replay cannot help, since the
+ * Agent's active revision no longer holds the source.
+ */
+export class CredentialWithdrawalInProgressError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    );
+    this.name = "CredentialWithdrawalInProgressError";
+  }
+}
+
+/**
+ * Source deletion is refused only because a provider token issued for the source may still be
+ * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
+ * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.
+ */
+export class CredentialTokenUnsettledError extends ResourceStateConflictError {
+  constructor(settlesAt?: Date) {
+    super(
+      "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
+        (settlesAt
+          ? `Retry the deletion after ${settlesAt.toISOString()}, when GitHub's maximum token lifetime has passed.`
+          : "Retry the deletion after GitHub's maximum token lifetime has passed."),
+    );
+    this.name = "CredentialTokenUnsettledError";
   }
 }
 
@@ -634,6 +1199,82 @@ export class CredentialGatewayNotConfiguredError extends Error {
       "This Installation has no Credential Gateway, so credential sources are unavailable. An administrator must select the OpenShell Credential Gateway Driver; see https://docs-enterprise.openclaw.org/reference/credential-sources/",
     );
     this.name = "CredentialGatewayNotConfiguredError";
+  }
+}
+
+/** A Driver rejected nonsecret source configuration before registration. */
+export class CredentialSourceConfigError extends Error {
+  readonly field: string;
+
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CredentialSourceConfigError";
+    this.field = field;
+  }
+}
+
+/**
+ * The selected Credential Gateway's catalog lacks a source type: registration names one it does
+ * not offer, or a configuration change dropped an existing source's type (OpenShell offers
+ * `bearer-token` only with `toolBinaries`). An Installation property, raised only after the
+ * caller's grant and the source lookup, so it reveals nothing a 403 or 404 hides. The fixed
+ * message names the fix.
+ */
+export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictError {
+  constructor() {
+    super(
+      "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
+    );
+    this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
+  issue:
+    "This Installation has no ChatGPT Backend, so it cannot issue service-account credentials. An administrator must configure the ChatGPT Backend and select its ServiceAccount Driver; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  deploy:
+    "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+  delete:
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
+});
+
+/**
+ * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
+ * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
+ * issued access token cannot be deleted unless forced, since nothing can revoke the token. An Installation
+ * property, raised only after the caller's grant and the account lookup, so it reveals nothing
+ * a 403 or 404 hides. The fixed message names the fix.
+ */
+export class ServiceAccountDriverNotConfiguredError extends ResourceConflictError {
+  constructor(operation: "issue" | "deploy" | "delete") {
+    super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
+    this.name = "ServiceAccountDriverNotConfiguredError";
+  }
+}
+
+const SERVICE_ACCOUNT_REFERENCE_URL =
+  "https://docs-enterprise.openclaw.org/reference/service-accounts/";
+
+/**
+ * An account-owned credential Secret left by an earlier issuance whose outcome OCC could not
+ * settle (a lost create reply whose cleanup failed) blocks every retry until an operator deletes
+ * it (finding 935). Raised only after the caller's update grant, the account lookup and the
+ * "no credential yet" check, so it reaches only callers who may issue for this account. It
+ * names the Kubernetes namespace and Secret (never its contents) and the doc's removal step.
+ */
+export class ServiceAccountCredentialSecretExistsError extends ResourceStateConflictError {
+  readonly secretNamespace: string;
+  readonly secretName: string;
+
+  constructor(secretNamespace: string, secretName: string) {
+    const message = (secret: string) =>
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. An operator must delete it, then retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+    const full = message(`${secretNamespace}/${secretName}`);
+    // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
+    super(full.length <= 256 ? full : message(secretName));
+    this.name = "ServiceAccountCredentialSecretExistsError";
+    this.secretNamespace = secretNamespace;
+    this.secretName = secretName;
   }
 }
 

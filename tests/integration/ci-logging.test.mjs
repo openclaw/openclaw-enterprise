@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -8,6 +8,7 @@ import {
   collectorImage,
   fixture,
   prepareLogging,
+  readJsonlPayloads,
 } from "../helpers/ci-logging.mjs";
 
 test("prepareLogging registers an owned Collector backend before starting Docker", async (t) => {
@@ -64,6 +65,100 @@ test("prepareLogging registers an owned Collector backend before starting Docker
   assert.equal((await stat(result.artifacts.directory)).mode & 0o777, 0o700);
   assert.equal((await stat(result.artifacts.outputDirectory)).mode & 0o777, 0o700);
   assert.match(await readFile(result.artifacts.configPath, "utf8"), /path: \/out\/logs[.]jsonl/);
+});
+
+test("prepareLogging pulls the Collector image only when the engine lacks its digest", async (t) => {
+  // `docker pull` asks the registry even for a held digest; the logging-collector lane
+  // pulls the image in prepare, so a stalled registry must not reach the test timeout.
+  const otherDigest = collectorImage.replace(/sha256:[a-f0-9]{64}$/, `sha256:${"b".repeat(64)}`);
+  for (const { name, repoDigests, pulled } of [
+    { name: "held digest", repoDigests: [collectorImage], pulled: false },
+    { name: "other digest", repoDigests: [otherDigest], pulled: true },
+    { name: "missing image", repoDigests: undefined, pulled: true },
+  ]) {
+    await t.test(name, async (t) => {
+      const root = await fixture(t);
+      const calls = [];
+      const execFile = async (command, args) => {
+        calls.push(args);
+        if (args[0] === "image" && args[1] === "inspect") {
+          if (repoDigests === undefined) {
+            throw Object.assign(new Error("inspect failed"), {
+              stderr: `Error response from daemon: No such image: ${collectorImage}`,
+            });
+          }
+          return { stdout: `${JSON.stringify(repoDigests)}\n`, stderr: "" };
+        }
+        return { stdout: "container-id\n", stderr: "" };
+      };
+      await prepareLogging({
+        laneName: "logging-collector",
+        directory: root,
+        env: {
+          OCC_DOCKER_BIN: "docker",
+          OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
+          OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
+        },
+        execFile,
+        registerResource: async (kind, resource) => ({ id: "resource-1", kind, ...resource }),
+        waitForReady: false,
+      });
+      const inspect = calls.findIndex(([command, sub]) => command === "image" && sub === "inspect");
+      const pull = calls.findIndex(([command]) => command === "pull");
+      const run = calls.findIndex(([command]) => command === "run");
+      assert.equal(calls[inspect].at(-1), collectorImage);
+      assert.notEqual(run, -1);
+      assert.ok(inspect < run);
+      if (pulled) {
+        assert.deepEqual(calls[pull], ["pull", collectorImage]);
+        assert.ok(inspect < pull && pull < run);
+      } else {
+        assert.equal(pull, -1);
+      }
+    });
+  }
+});
+
+test("prepareLogging stops when the engine cannot answer the image inspect", async (t) => {
+  // Only a missing image reads as absent; a hung or unreachable engine is not pulled past.
+  for (const { name, failure } of [
+    { name: "inspect timeout", failure: { timedOut: true, stderr: "" } },
+    {
+      name: "engine unreachable",
+      failure: { stderr: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock." },
+    },
+  ]) {
+    await t.test(name, async (t) => {
+      const root = await fixture(t);
+      const calls = [];
+      const execFile = async (command, args) => {
+        calls.push(args);
+        if (args[0] === "image" && args[1] === "inspect") {
+          throw Object.assign(new Error(`${name} at inspect`), failure);
+        }
+        return { stdout: "container-id\n", stderr: "" };
+      };
+      await assert.rejects(
+        prepareLogging({
+          laneName: "logging-collector",
+          directory: root,
+          env: {
+            OCC_DOCKER_BIN: "docker",
+            OCC_TEST_LOGGING_COLLECTOR_IMAGE: collectorImage,
+            OCC_CI_OTEL_BACKEND_BIND_ADDRESS: "127.0.0.1",
+          },
+          execFile,
+          registerResource: async (kind, resource) => ({ id: "resource-1", kind, ...resource }),
+          waitForReady: false,
+        }),
+        new RegExp(`${name} at inspect`),
+      );
+      assert.equal(
+        calls.some(([command]) => command === "pull" || command === "run"),
+        false,
+      );
+    });
+  }
 });
 
 test("prepareLogging installs k3d Collector from the canonical Helm template", async (t) => {
@@ -243,4 +338,20 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
 
   assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
   await assert.rejects(() => stat(directory), { code: "ENOENT" });
+});
+
+// The Collector's file exporter can be read mid-write; a cut line waits for its newline.
+test("readJsonlPayloads ignores an unterminated last line until it is complete", async (t) => {
+  const root = await fixture(t);
+  const path = join(root, "logs.jsonl");
+  assert.deepEqual(await readJsonlPayloads(path), []);
+
+  const first = JSON.stringify({ resourceLogs: [{ id: "first" }] });
+  const second = JSON.stringify({ resourceLogs: [{ id: "second" }] });
+  const cut = second.indexOf("second") + 3;
+  await writeFile(path, `${first}\n${second.slice(0, cut)}`);
+  assert.deepEqual(await readJsonlPayloads(path), [JSON.parse(first)]);
+
+  await appendFile(path, `${second.slice(cut)}\n\n`);
+  assert.deepEqual(await readJsonlPayloads(path), [JSON.parse(first), JSON.parse(second)]);
 });

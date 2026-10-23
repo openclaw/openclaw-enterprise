@@ -1,5 +1,5 @@
 # Vendored from openclaw/openclaw .github/actions/setup-pnpm-store-cache at
-# ee0cf16623068ff535cc20f4a1ce175c8c5b8d25 (MIT), unchanged apart from this comment.
+# ee0cf16623068ff535cc20f4a1ce175c8c5b8d25 (MIT). The cache key uses the resolved pnpm version.
 # Dependabot tracks this directory, so actions/cache/restore below moves with
 # run-ci-lane's actions/cache/save.
 # Referencing it remotely made every job download the whole openclaw/openclaw
@@ -124,20 +124,25 @@ runs:
         node -e "require('node:fs').mkdirSync(process.argv[1], { recursive: true })" "$store_path"
         echo "path=$store_path" >> "$GITHUB_OUTPUT"
 
+    - name: Record pnpm version
+      id: pnpm-version
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ steps.setup-pnpm.outputs.project-dir }}
+      run: |
+        version=$(cd "$PROJECT_DIR" && pnpm --version)
+        printf 'pnpm-version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
     - name: Restore pnpm store cache
       id: pnpm-store-cache
       if: ${{ inputs.cache-mode != 'off' && runner.os != 'Windows' }}
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.pnpm-store.outputs.path }}
-        key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles(inputs.package-manager-file) }}-${{ hashFiles(inputs.lockfile-path) }}
+        # A package.json script edit does not change the store we need. Key by
+        # the pnpm version and lockfile; frozen install still checks the workspace.
+        # The last prefix also restores stores created with the old key format.
+        key: pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ steps.pnpm-version.outputs.pnpm-version }}-${{ hashFiles(inputs.lockfile-path) }}
         restore-keys: |
-          pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ hashFiles(inputs.package-manager-file) }}-
+          pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-${{ steps.pnpm-version.outputs.pnpm-version }}-
           pnpm-store-${{ runner.os }}-${{ runner.arch }}-${{ inputs.node-version }}-
-
-    - name: Record pnpm version
-      id: pnpm-version
-      shell: bash
-      env:
-        PROJECT_DIR: ${{ steps.setup-pnpm.outputs.project-dir }}
-      run: echo "pnpm-version=$(cd "$PROJECT_DIR" && pnpm -v)" >> "$GITHUB_OUTPUT"

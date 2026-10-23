@@ -2,13 +2,16 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import pg from "pg";
-import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
-import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
+import {
+  composePostgresDevelopment,
+  createPostgresControllerAuth,
+} from "../helpers/password-hasher.mjs";
+import { signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
 
 // Storage/admission integration only: the HTTP suite separately proves IAM
 // authorization. These server-only operations model an already authorized key
@@ -171,20 +174,8 @@ test(
       email,
       password,
     });
-    const admin = (method, url, payload) =>
-      app.inject({
-        method,
-        url,
-        headers: authenticatedHeaders(session, { host: "127.0.0.1" }),
-        ...(payload === undefined ? {} : { payload }),
-      });
-    const withKey = (key, method, url, payload) =>
-      app.inject({
-        method,
-        url,
-        headers: { host: "127.0.0.1", "x-api-key": key },
-        ...(payload === undefined ? {} : { payload }),
-      });
+    const admin = (method, url, body) => injectJson(app, method, url, { session, body });
+    const withKey = (key, method, url, body) => injectJson(app, method, url, { key, body });
     const namespaceIds = [];
     for (const name of [
       `sp-team-${randomUUID().slice(0, 8)}`,
@@ -266,6 +257,41 @@ test(
     const read = await withKey(key.key, "GET", `/namespaces/${teamId}`);
     assert.equal(read.statusCode, 200, read.body);
     assert.equal(read.json().data.id, teamId);
+    // A mutation by the key is attributed to its principal and names the key that acted.
+    const configuration = await admin("POST", `/namespaces/${teamId}/configurations`, {
+      kind: "agent",
+      values: {},
+    });
+    assert.equal(configuration.statusCode, 201, configuration.body);
+    const configurationId = configuration.json().data.id;
+    const deleter = await admin("POST", `/namespaces/${teamId}/iam/roles`, {
+      permissions: [{ action: "delete", resourceKind: "configuration" }],
+    });
+    assert.equal(deleter.statusCode, 201, deleter.body);
+    const deleterBinding = await admin("POST", `/namespaces/${teamId}/iam/access-bindings`, {
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: deleter.json().data.id,
+      resourceKind: "configuration",
+      resourceId: configurationId,
+    });
+    assert.equal(deleterBinding.statusCode, 201, deleterBinding.body);
+    const removed = await withKey(
+      key.key,
+      "DELETE",
+      `/namespaces/${teamId}/configurations/${configurationId}`,
+    );
+    assert.equal(removed.statusCode, 204, removed.body);
+    assert.deepEqual(
+      (
+        await observer.query(
+          `SELECT actor_id, details->>'actorServiceKeyId' AS key_id FROM occ.audit_events
+           WHERE action = 'openclaw.configurations.delete' AND resource_id = $1`,
+          [configurationId],
+        )
+      ).rows,
+      [{ actor_id: principal.id, key_id: key.id }],
+    );
     // The documented order (create, bind, then issue) passes the coverage check because the
     // administrator holds every grant now bound to the principal.
     const second = await admin("POST", "/api/auth/service-keys", {
@@ -348,5 +374,35 @@ test(
     const revoked = await admin("DELETE", `/api/auth/service-keys/${key.id}`);
     assert.equal(revoked.statusCode, 200, revoked.body);
     assert.equal((await withKey(key.key, "GET", `/namespaces/${teamId}`)).statusCode, 401);
+
+    // Each of the key's seven refusals above (the read before its binding and the six
+    // out-of-scope requests) names the key; issuance and revocation by the session name the
+    // key acted on and its name, with no acting key. No row holds the credential.
+    const denials = await observer.query(
+      `SELECT actor_id FROM occ.audit_events
+       WHERE kind = 'authorization_denial' AND details->>'actorServiceKeyId' = $1`,
+      [key.id],
+    );
+    assert.equal(denials.rowCount, 7);
+    assert.ok(denials.rows.every((row) => row.actor_id === principal.id));
+    const managed = await observer.query(
+      `SELECT action, details->>'serviceKeyName' AS name, details ? 'actorServiceKeyId' AS keyed
+       FROM occ.audit_events
+       WHERE action LIKE 'openclaw.auth.service-keys.%' AND details->>'serviceKeyId' = $1
+       ORDER BY occurred_at`,
+      [key.id],
+    );
+    assert.deepEqual(managed.rows, [
+      { action: "openclaw.auth.service-keys.create", name: "member-cli", keyed: false },
+      { action: "openclaw.auth.service-keys.revoke", name: "member-cli", keyed: false },
+    ]);
+    assert.equal(
+      (
+        await observer.query("SELECT 1 FROM occ.audit_events WHERE strpos(details::text, $1) > 0", [
+          key.key,
+        ])
+      ).rowCount,
+      0,
+    );
   },
 );

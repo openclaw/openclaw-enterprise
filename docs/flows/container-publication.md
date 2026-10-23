@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-05
-last_updated_session: codex/01a0cf72-6985-7712-ba92-d8cc32470f24
+updated: 2026-10-08
+last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
 ---
 
 # Container publication flow
@@ -65,12 +65,9 @@ permission or protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
-The defaults are `blacksmith-16vcpu-ubuntu-2404` and
-`blacksmith-8vcpu-ubuntu-2404-arm`; `CONTAINER_AMD64_RUNNER` and
-`CONTAINER_ARM64_RUNNER` repository variables can select other provisioned labels.
+See [shared CI settings](../release/configuration.md#build-settings) for native runner defaults and overrides.
 Each job checks its architecture and logs CPU, memory, and available disk.
-Jobs require at least four CPUs and 12 GiB RAM; the reported runner label alone
-is not evidence of allocated capacity.
+The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
 for both native Linux architectures before runtime smoke tests.
 The standard AMD64 override requires 36 GiB free and, only below that, runs
@@ -81,9 +78,8 @@ Each Buildx builder runs at most two steps concurrently. The default Blacksmith
 runners retain BuildKit layers on a sticky disk scoped by image and architecture,
 so builds do not export the large intermediate cache over the network. A custom
 non-Blacksmith runner uses the GitHub Actions cache with the same scope.
-Maintainers can also dispatch `container-check.yml` on a branch for native image
-verification; manual `CI` dispatches call the same workflow so branches can be
-verified before the workflow first lands on main. It has no publication job or
+Maintainers can also dispatch `container-check.yml`, or a manual `CI` run that
+calls it, on a branch for native image verification. It has no publication job or
 package-write permission.
 The build exports
 an OCI directory without registry publication or credentials.
@@ -91,16 +87,18 @@ Before Buildx runs, the workflow derives `SOURCE_DATE_EPOCH` from the exact
 source commit. BuildKit rewrites image and filesystem timestamps to that epoch,
 so wall-clock time does not change the image manifests on a cold-cache rebuild.
 
-`deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive,
-uses its stock Codex 0.160.0 dependency/lockfile selection, and applies the temporary
-OpenClaw read-only-paths compatibility patch and the `connect --ephemeral`
-expired-setup patch. The build verifies both patch hashes and records them in
-runtime provenance. The OpenClaw bridge forwards the bound
-Agent's stock network settings without modifying the Codex binary. Both installs use
+`deploy/runtime/Dockerfile:openclaw-source` verifies the pinned OpenClaw main source archive
+and applies three patches whose hashes it verifies and records in runtime provenance:
+the stock Codex 0.163.0-alpha.2 dependency pin, before extracting frozen installation
+inputs, and the temporary read-only-paths and `connect --ephemeral` expired-setup
+bridge patches. The bridge forwards the bound
+Agent's stock network settings without modifying Codex. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
 plugin's installation. Build tools remain in full Bookworm stages; final images
-use a separately pinned Node 24 Bookworm slim base.
+use a separately pinned Node 24 Bookworm slim base. Both bases apply available
+Debian package updates when their recipe layers build. The Node digest identifies
+the upstream image; it does not freeze Debian package repositories.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so
@@ -156,7 +154,7 @@ run attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
 publish job runs only when the operator selected `publish: true`.
 
-No-push runs end with artifacts. See [operator instructions](../../.github/containers.md)
+No-push runs end with artifacts. See [operator instructions](../release/containers.md)
 for retention and package access.
 
 ### 4. Publish and hand off immutable references
@@ -205,7 +203,7 @@ assumes the protected publication workflows and trusted package administrators
 are the only package writers; their workflow concurrency group does not exclude
 independent GHCR writers. A tag change between the pull and digest lookup could
 make the receipt refer to a different manifest. The operator's
-[single-writer requirement](../../.github/chart-publication.md#choose-one-release-version)
+[single-writer requirement](../release/chart-publication.md#choose-one-release-version)
 owns package-write access and coordination.
 
 ## Debugging and Verification
@@ -213,7 +211,7 @@ owns package-write access and coordination.
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
-- Run the [registry integration](../testing/images.md#container-publication-registry-proof)
+- Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
   to check real Skopeo alias replacement against a disposable local registry.
   This does not prove GHCR access.
 - Run `actionlint .github/workflows/container-publish.yml` for workflow syntax.
@@ -229,14 +227,18 @@ owns package-write access and coordination.
 
 ## Related docs
 
-- [Publication and recovery instructions](../../.github/containers.md)
-- [Chart publication and pull](../../.github/chart-publication.md)
+- [Publication and recovery instructions](../release/containers.md)
+- [Chart publication and pull](../release/chart-publication.md)
 - [Package bootstrap flow](container-package-bootstrap.md)
-- [Image startup checks](../testing/images.md)
+- [Image startup checks](../testing/docker.md#images-and-helm)
 
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
+
+- 2026-10-08 13:36: Pin the shared stock Codex dependency to 0.163.0-alpha.1 before frozen installation and record its dependency patch alongside the existing bridge patches. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - ae695e7f2b0c7bcd2416ed8146baeecb765ae233)
 
 - 2026-10-05 12:10: Update the OpenClaw pin, workspace templates, and Codex sandbox qualification to 0.160.0. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - dd344a97)
 
@@ -293,7 +295,7 @@ owns package-write access and coordination.
 
 - 2026-09-22 03:04: Use manual dispatch without an independent approval or linkage comment (codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b - 149ac0fe)
 
-- 2026-09-22 01:34: Record bounded QEMU smoke timeouts while retaining native deadlines and startup assertions (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 473d9b45ee5aa8d8a081cca7664973fee5bd7e11)
+- 2026-09-22 01:34: Record QEMU smoke test deadlines while retaining native deadlines and startup assertions (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 473d9b45ee5aa8d8a081cca7664973fee5bd7e11)
 
 - 2026-09-22 01:10: Bound disk use by pruning the job-owned build cache and removing each successfully checked image variant (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1e486bffadbe5f5f9f6437bfc8da2e4176ffefd6)
 

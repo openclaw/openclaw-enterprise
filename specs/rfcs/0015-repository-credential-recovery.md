@@ -136,7 +136,7 @@ The original broker commits its exact terminal observation before reporting
 no token, bearer or recoverable provider action is stored. Existing attempts
 without the durable protocol remain fail-closed. Uncaptured, active, uncertain
 and pre-commit outcomes remain unknown. The [current reference](../../docs/reference/repository-credentials.md)
-owns the supported contract and the [test guide](../../docs/testing/repository-credentials-platform.md)
+owns the supported contract and the [test guide](../../docs/testing/repository-credentials.md#verify-agent-admission-and-durable-ownership)
 describes verification and its limits.
 
 ## Persistence choice and tradeoffs

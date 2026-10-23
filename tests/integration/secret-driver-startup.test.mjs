@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -9,7 +10,9 @@ import pg from "pg";
 test("secret-driver-startup constructs the bundled KubernetesSecretDriver from Installation YAML", async (t) => {
   const drivers = await loadInstallationFile(t, installation());
 
-  assert.deepEqual(drivers.installation.drivers.secret, {
+  const { definition, ...selection } = drivers.installation.drivers.secret;
+  assert.equal(definition, KubernetesSecretDriver);
+  assert.deepEqual(selection, {
     id: "secret-kubernetes",
     implementation: "occ/kubernetes-secret",
     configuration: { authentication: { mode: "inCluster" } },
@@ -49,8 +52,16 @@ test("secret-driver-startup requires one bundled SecretDriver selection and vali
     kubeconfigPath: "relative",
     context: "default",
   };
-  await assert.rejects(
-    loadInstallationFile(t, invalid),
-    /Dedicated kubeconfig path must be absolute/,
-  );
+  await assert.rejects(loadInstallationFile(t, invalid), (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [
+      {
+        path: "/authentication/kubeconfigPath",
+        code: "INVALID_FORMAT",
+        message: "Dedicated kubeconfig path must be absolute.",
+      },
+    ]);
+    assert.doesNotMatch(JSON.stringify(error.error.details), /relative/);
+    return true;
+  });
 });

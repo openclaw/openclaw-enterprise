@@ -35,6 +35,32 @@ export function modelProbeDiagnostic(snapshot, stress, reason) {
   };
 }
 
+// One allowlisted measurement per Gateway model probe, kept in the lane result
+// (files[].measurements) on passing runs too, so flake sweeps can read the
+// probe's headroom against its cap. `setupMs` runs from scenario start to
+// container start; `probeDoneMs` from wrapper start; `readyMs` from container start.
+export function recordModelProbeMeasurement(t, probeCase, run) {
+  const { probe = {}, phases = [], events = [] } = run.snapshot;
+  const at = (value) => (Number.isFinite(value) ? Math.round(value) : null);
+  t.diagnostic(
+    `openclaw-ci-measurement ${JSON.stringify({
+      kind: "runtime-model-probe",
+      case: probeCase,
+      code: probe.code ?? null,
+      elapsedMs: at(probe.elapsedMs),
+      capMs: at(probe.capMs),
+      cpuWaitMs: at(probe.cpuWaitMs),
+      setupMs: at(run.setupMs),
+      probeDoneMs: at(phases.find(({ phase }) => phase === "model-probe")?.sinceStartMs),
+      readyMs: at(
+        events.find(
+          (event) => event.event === "observe" && event.key === "ready" && event.value === true,
+        )?.ms,
+      ),
+    })}`,
+  );
+}
+
 // The marker proves the owned Node process reached its busy loop, not merely
 // that a Docker exec request was submitted. Keep no child output or error text.
 export function trackProbeCpuHog(operation, stress) {

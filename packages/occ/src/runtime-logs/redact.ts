@@ -26,6 +26,12 @@ const HEADER_NAMES = "authorization|proxy-authorization|cookie|set-cookie|x-api-
 interface Rule {
   readonly pattern: RegExp;
   readonly replace: (match: string, ...groups: string[]) => string;
+  /**
+   * A cheap necessary condition for the rule to change the text: when it is false the
+   * rule is skipped. It sees the text as the earlier rules left it, and it must never
+   * be false for a text the rule would change.
+   */
+  readonly applies?: (text: string) => boolean;
 }
 
 const mark = (name: string) => `${MARK}${name}]`;
@@ -91,6 +97,34 @@ function redactPathQuery(token: string): string {
   }
 }
 
+// `[A-Za-z0-9+/_-]`, the union of the two long-token rules' alphabets, by char code.
+const LONG_RUN_CHARACTERS = new Uint8Array(128);
+for (const character of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-") {
+  LONG_RUN_CHARACTERS[character.charCodeAt(0)] = 1;
+}
+
+/**
+ * Whether the text holds 40 consecutive `[A-Za-z0-9+/_-]` characters. Each long-token
+ * rule needs 40 consecutive characters of a subset of that alphabet, so without such a
+ * run neither can match. One pass over char codes; most lines have no such run, and
+ * the two regex scans cost several times more.
+ */
+function hasLongRun(text: string): boolean {
+  let run = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 128 && LONG_RUN_CHARACTERS[code] === 1) {
+      run += 1;
+      if (run >= 40) {
+        return true;
+      }
+    } else {
+      run = 0;
+    }
+  }
+  return false;
+}
+
 const RULES: readonly Rule[] = [
   {
     pattern: /-----BEGIN [A-Z0-9 ]{0,64}-----[\s\S]*?(?:-----END [A-Z0-9 ]{0,64}-----|$)/g,
@@ -129,11 +163,14 @@ const RULES: readonly Rule[] = [
     // where `\b` holds before every `eyJ` and `-` is inside the segment alphabet.
     pattern: /(?<![A-Za-z0-9_.-])(?=([A-Za-z0-9_.-]{11,}))\1/g,
     replace: (match) => (match.includes("eyJ") ? maskJwts(match) : match),
+    // The replacement keeps every run without `eyJ`.
+    applies: (text) => text.includes("eyJ"),
   },
   {
     // URL userinfo: `scheme://user:password@host` and `scheme://token@host`.
     pattern: /\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^/\s@"'<>]+@/gi,
     replace: (_match, scheme) => `${scheme}${mark("userinfo")}@`,
+    applies: (text) => text.includes("://"),
   },
   {
     pattern:
@@ -158,6 +195,7 @@ const RULES: readonly Rule[] = [
     // Every query value and fragment of absolute URLs.
     pattern: /\b[a-z][a-z0-9+.-]{0,31}:\/\/[^\s"'<>]+/gi,
     replace: (match) => redactUrl(match),
+    applies: (text) => text.includes("://"),
   },
   {
     // Request paths with a query string, as in `GET /hooks?token=...`. The regex only
@@ -166,6 +204,7 @@ const RULES: readonly Rule[] = [
     // so runs such as `=/=/=/...` stay linear.
     pattern: /(?<![^\s"'])[^\s"']*\?[^\s"']*/g,
     replace: (token) => redactPathQuery(token),
+    applies: (text) => text.includes("?"),
   },
   {
     // `"api_key": "value"` and `"password":value` in embedded JSON.
@@ -199,7 +238,11 @@ const RULES: readonly Rule[] = [
   {
     // Hex and standard base64 runs of 40 or more characters. Slash-separated lowercase
     // paths such as `/api/v1/namespaces/...` are not credential-shaped and stay.
-    pattern: /[A-Za-z0-9+/]{40,}={0,2}/g,
+    // A match always starts a maximal run (a shorter run never matches, and a match
+    // takes the rest of its run), so the lookbehind changes no match; it only stops
+    // the scan from re-reading up to 40 characters at every position inside a run.
+    pattern: /(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{40,}={0,2}/g,
+    applies: hasLongRun,
     replace: (match) =>
       /^[0-9A-Fa-f]+$/.test(match) || (/[0-9+]/.test(match) && /[A-Z]/.test(match))
         ? mark("long-token")
@@ -207,7 +250,9 @@ const RULES: readonly Rule[] = [
   },
   {
     // base64url runs of 40 or more characters that mix upper case, lower case and digits.
-    pattern: /[A-Za-z0-9_-]{40,}/g,
+    // The lookbehind changes no match, as in the rule above.
+    pattern: /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{40,}/g,
+    applies: hasLongRun,
     replace: (match) =>
       /[A-Z]/.test(match) && /[a-z]/.test(match) && /[0-9]/.test(match)
         ? mark("long-token")
@@ -263,6 +308,9 @@ function maskJwts(run: string): string {
 export function redactRuntimeLogText(value: string): string {
   let text = value;
   for (const rule of RULES) {
+    if (rule.applies !== undefined && !rule.applies(text)) {
+      continue;
+    }
     text = text.replace(
       rule.pattern,
       rule.replace as (substring: string, ...args: string[]) => string,
@@ -415,6 +463,14 @@ const MYSQL_CLIENTS: ReadonlySet<string> = new Set([
   "mariadb-dump",
   "mariadb-admin",
 ]);
+// Any client name above. A token's basename is a substring of the line, so a line that
+// contains none of them names no client and its tokens need no basename lookup.
+// Stateless `test`: keep it without the `g` flag.
+const CLIENT_NAME = new RegExp(
+  [...MYSQL_CLIENTS, ...ARGV_CLIENT_CREDENTIALS.keys()]
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|"),
+);
 // Path-shaped values after `-p` (`mkdir -p /work/dir`) are not credentials.
 const PATH_VALUE = /^(?:\/|~\/|\.\.?\/)/;
 
@@ -440,15 +496,18 @@ export function redactArgvCredentials(value: string): string {
       tokens.push(index);
     }
   }
-  const mysql = tokens.some((index) => MYSQL_CLIENTS.has(basename(parts[index]!)));
+  const namesClient = CLIENT_NAME.test(value);
+  const mysql = namesClient && tokens.some((index) => MYSQL_CLIENTS.has(basename(parts[index]!)));
   const clientSecrets = new Set<string>();
   const clientSeparators = new Map<string, string>();
-  for (const index of tokens) {
-    const client = ARGV_CLIENT_CREDENTIALS.get(basename(parts[index]!));
-    if (client !== undefined) {
-      client.secret.forEach((flag) => clientSecrets.add(flag));
-      for (const [flag, separator] of Object.entries(client.userinfo)) {
-        clientSeparators.set(flag, (clientSeparators.get(flag) ?? "") + separator);
+  if (namesClient) {
+    for (const index of tokens) {
+      const client = ARGV_CLIENT_CREDENTIALS.get(basename(parts[index]!));
+      if (client !== undefined) {
+        client.secret.forEach((flag) => clientSecrets.add(flag));
+        for (const [flag, separator] of Object.entries(client.userinfo)) {
+          clientSeparators.set(flag, (clientSeparators.get(flag) ?? "") + separator);
+        }
       }
     }
   }
@@ -457,6 +516,8 @@ export function redactArgvCredentials(value: string): string {
     value.includes(":") ||
     [...(clientSeparators.get(flag) ?? "")].some((separator) => value.includes(separator));
   let vaultLogin = false;
+  // Most lines carry no argv credential; they are returned as they came, not rejoined.
+  let changed = false;
   const masked = mark("argv");
   // Replaces the value starting at token position `at`, extending through a quoted span.
   const maskFrom = (at: number): number => {
@@ -472,6 +533,7 @@ export function redactArgvCredentials(value: string): string {
       }
     }
     parts[tokens[at]!] = masked;
+    changed = true;
     for (let index = tokens[at]! + 1; index <= tokens[end]!; index += 1) {
       parts[index] = "";
     }
@@ -503,6 +565,7 @@ export function redactArgvCredentials(value: string): string {
           (secret || carriesPassword(flag, attached))
         ) {
           parts[tokens[at]!] = `${flag}=${masked}`;
+          changed = true;
         }
         continue;
       }
@@ -529,10 +592,11 @@ export function redactArgvCredentials(value: string): string {
         clientSecrets.has(short)
       ) {
         parts[tokens[at]!] = `${short}${masked}`;
+        changed = true;
       }
     }
   }
-  return parts.join("");
+  return changed ? parts.join("") : value;
 }
 
 // Standard scheduler and kubelet Event shapes that name cluster objects: the node a Pod
@@ -591,16 +655,13 @@ export function maskRuntimeEventText(value: string): string {
   return text;
 }
 
+// C0 controls, DEL and C1 controls: U+0000-U+001F and U+007F-U+009F.
+// eslint-disable-next-line no-control-regex -- matching control characters is the point
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
+
 /** Removes ANSI escape sequences and C0/C1 control characters; tabs become spaces. */
 export function stripRuntimeLogControls(value: string): string {
-  let text = "";
-  for (const character of stripVTControlCharacters(value)) {
-    const code = character.codePointAt(0)!;
-    if (code === 0x09) {
-      text += " ";
-    } else if (code >= 0x20 && (code < 0x7f || code > 0x9f)) {
-      text += character;
-    }
-  }
-  return text;
+  return stripVTControlCharacters(value).replace(CONTROL_CHARACTERS, (character) =>
+    character === "\t" ? " " : "",
+  );
 }

@@ -107,6 +107,19 @@ async function systemctl(...args) {
   return command("systemctl", args);
 }
 
+async function stopOwnedUnit(input, agent) {
+  if (verifyUnit(input, agent) === undefined) {
+    return false;
+  }
+  const unit = unitName(agent.agentId);
+  // disable removes load-path links. Make this owned file discoverable again
+  // for repeated cleanup when its configured directory is outside that path.
+  await systemctl("link", join(input.runtime.systemdUnitDirectory, unit));
+  await systemctl("stop", unit);
+  await systemctl("disable", unit);
+  return true;
+}
+
 async function userOwner(user) {
   const uid = Number((await command("id", ["-u", user])).stdout);
   const gid = Number((await command("id", ["-g", user])).stdout);
@@ -541,22 +554,23 @@ function launchEnvironment(input) {
 }
 
 // Resolve only the native main workspace, within this Agent's durable directories.
+// Like Kubernetes and Docker Compute (workspaceSetupMainEntry), the one roster key may name
+// main in any letter case: OpenClaw normalizes Agent ids.
 function workspaceDirectory(input, agentDir) {
   const agents = input.revision.configuration.agents ?? {};
+  const { entries } = agents;
+  const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  const ids = record(entries) ? Object.keys(entries) : undefined;
+  const main = ids?.length === 1 ? entries[ids[0]] : undefined;
   if (
-    (agents.entries !== undefined &&
-      (typeof agents.entries !== "object" ||
-        agents.entries === null ||
-        Array.isArray(agents.entries) ||
-        Object.keys(agents.entries).some((id) => id !== "main"))) ||
+    (entries !== undefined &&
+      (ids?.length !== 1 || ids[0].trim().toLowerCase() !== "main" || !record(main))) ||
     agents.list !== undefined
   ) {
     throw new ConfigurationFailure("Workspace setup supports only the native main Agent.");
   }
   const configured =
-    agents.entries?.main?.workspace ??
-    agents.defaults?.workspace ??
-    join(agentDir, "state", "workspace");
+    main?.workspace ?? agents.defaults?.workspace ?? join(agentDir, "state", "workspace");
   if (
     typeof configured !== "string" ||
     !isAbsolute(configured) ||
@@ -834,7 +848,7 @@ async function activate(input, agentDir, agent, current) {
     atomicWrite(unitPath, content, 0o644);
   }
   await systemctl("daemon-reload");
-  await systemctl("enable", unit);
+  await systemctl("enable", unitPath);
   if (
     !changed &&
     current?.revisionId === revision.id &&
@@ -895,10 +909,8 @@ async function removeNamespace(input, nsDir) {
     agents.push(agent);
   }
   for (const agent of agents) {
-    if (verifyUnit(input, agent) !== undefined) {
+    if (await stopOwnedUnit(input, agent)) {
       const unit = unitName(agent.agentId);
-      await systemctl("stop", unit);
-      await systemctl("disable", unit);
       fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
     }
   }
@@ -930,10 +942,8 @@ async function removeAgent(input, nsDir) {
   const agent = verifyAgent(input, agentDir);
   await verifyRuntimeIdentity(input, agent);
   verifySnapshots(input, agentDir);
-  if (verifyUnit(input, agent) !== undefined) {
+  if (await stopOwnedUnit(input, agent)) {
     const unit = unitName(agent.agentId);
-    await systemctl("stop", unit);
-    await systemctl("disable", unit);
     fs.unlinkSync(join(input.runtime.systemdUnitDirectory, unit));
   }
   await systemctl("daemon-reload");
@@ -1005,11 +1015,7 @@ async function run(input) {
     }
     if (input.operation === "stop-revision" || input.operation === "retire-revision") {
       if (current?.revisionId === revision.id) {
-        const unit = unitName(revision.agentId);
-        if (verifyUnit(input, agent) !== undefined) {
-          await systemctl("stop", unit);
-          await systemctl("disable", unit);
-        }
+        await stopOwnedUnit(input, agent);
         fs.unlinkSync(join(agentDir, "current"));
         fs.rmSync(join(agentDir, "served.json"), { force: true });
       }

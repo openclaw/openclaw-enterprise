@@ -14,6 +14,8 @@ const computeIncomplete = "Kubernetes Compute startup preflight could not comple
 // controller's own startup refusal uses the same words.
 const nameRefusal = "The stored Installation name breaks the Name rule:";
 const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
+// Names the component (api or worker) whose credentials and grants the Pod checks.
+const componentVariable = "OCC_UPGRADE_PREFLIGHT_COMPONENT";
 
 // Runs inside the controller image. It reads OCC_CONFIG_PATH and the chart's
 // environment, loads Drivers and Preset files, and never opens the database.
@@ -23,14 +25,18 @@ const nameVariable = "OCC_UPGRADE_PREFLIGHT_INSTALLATION_NAME";
 // Other Compute Drivers keep the load-only check.
 const startupCheck = `
 let drivers;
+let formatConfigurationFailure;
 try {
+  ({ formatStartupConfigurationFailure: formatConfigurationFailure } = await import(
+    "/app/apps/controller/src/startup-failure.ts"
+  ));
   const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
     "/app/apps/controller/src/composition/installation-config.ts"
   );
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
   drivers = await loadInstallationConfiguration({ mode: "production", startupConfiguration });
 } catch (error) {
-  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+  process.stderr.write((formatConfigurationFailure?.(error) ?? (error instanceof Error ? error.message : String(error))) + "\\n");
   process.exit(1);
 }
 try {
@@ -39,6 +45,14 @@ try {
   );
   if (drivers?.computeDriver instanceof KubernetesComputeDriver) {
     await drivers.computeDriver.preflight();
+    // Two-cluster profile: the component's tenant grants in the execution cluster,
+    // which a separate openclaw-execution release owns. Older images skip it.
+    if (typeof drivers.computeDriver.verifyExecutionTenantGrants === "function") {
+      await drivers.computeDriver.verifyExecutionTenantGrants(
+        process.env.${componentVariable},
+        { runtimeLogs: process.env.OCC_AGENT_RUNTIME_LOGS_ENABLED !== "false" },
+      );
+    }
     process.stdout.write("kubernetes-compute-preflight-passed\\n");
   }
 } catch (error) {
@@ -185,8 +199,11 @@ function pod([
   // Kubernetes expands $(VAR) and turns $$ into $ in env values; doubling every $
   // makes it deliver the name unchanged.
   container.env = [
-    ...(container.env ?? []).filter((variable) => variable.name !== nameVariable),
+    ...(container.env ?? []).filter(
+      (variable) => variable.name !== nameVariable && variable.name !== componentVariable,
+    ),
     { name: nameVariable, value: JSON.stringify(storedName).replaceAll("$", () => "$$") },
+    { name: componentVariable, value: component },
   ];
   const mounted = new Set((container.volumeMounts ?? []).map((mount) => mount.name));
   const volumes = structuredClone(

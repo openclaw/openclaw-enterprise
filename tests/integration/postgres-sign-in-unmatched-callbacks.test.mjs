@@ -68,9 +68,14 @@ test(
         remoteAddress: "192.0.2.80",
         ...(cookie === undefined ? {} : { headers: { cookie } }),
       });
-    const assertRefused = (response, provider) => {
+    const assertRefused = (response, provider, consoleReason) => {
       assert.equal(response.statusCode, 302, response.body);
-      assert.equal(response.headers.location, `/console/?authError=${provider}`);
+      assert.equal(
+        response.headers.location,
+        consoleReason === undefined
+          ? `/console/?authError=${provider}`
+          : `/console/?authError=${provider}&authReason=${consoleReason}`,
+      );
     };
     const start = async (provider) => {
       const started = await app.inject({
@@ -80,8 +85,10 @@ test(
         headers: { origin },
       });
       assert.equal(started.statusCode, 200, started.body);
+      const { url, attemptId } = started.json().data;
       return {
-        state: new URL(started.json().data.url).searchParams.get("state"),
+        attemptId,
+        state: new URL(url).searchParams.get("state"),
         cookie: cookieHeaderFromSetCookie(started.headers["set-cookie"]),
       };
     };
@@ -115,9 +122,10 @@ test(
     // afterwards: the person refused consent, or the provider reported an outage. A replay
     // of that spent state matches nothing and is counted like junk.
     for (const provider of providers) {
-      for (const [error, reasonCode] of [
-        ["access_denied", "EXTERNAL_IDENTITY_REJECTED"],
-        ["temporarily_unavailable", "PROVIDER_UNAVAILABLE"],
+      // The outage says so in the Console; a refused consent stays generic.
+      for (const [error, reasonCode, consoleReason] of [
+        ["access_denied", "EXTERNAL_IDENTITY_REJECTED", undefined],
+        ["temporarily_unavailable", "PROVIDER_UNAVAILABLE", "provider-unavailable"],
       ]) {
         const countedBefore = await unmatched(provider);
         const auditsBefore = (await auditEvents()).length;
@@ -125,11 +133,13 @@ test(
         assertRefused(
           await callback(provider, `state=${attempt.state}&error=${error}`, attempt.cookie),
           provider,
+          consoleReason,
         );
         const added = (await auditEvents()).slice(auditsBefore);
+        const details = { provider, attemptId: attempt.attemptId };
         assert.deepEqual(
           added.map((event) => [event.kind, event.action, event.reasonCode, event.details]),
-          [["authorization_denial", "authentication.login", reasonCode, { provider }]],
+          [["authorization_denial", "authentication.login", reasonCode, details]],
           `${provider} ${error}`,
         );
         assert.equal(await unmatched(provider), countedBefore, `${provider} ${error}`);

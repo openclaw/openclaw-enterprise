@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -152,8 +152,24 @@ async function runDocker(args, options = {}) {
   });
 }
 
-function imageFailureOutput(error) {
-  return `${error.stdout ?? ""}\n${error.stderr ?? ""}`;
+async function runStartupExpectingFailure(args, options = {}) {
+  let failure;
+  try {
+    // Keep Node out of PID 1 so it can receive the forwarded timeout signal.
+    // A Docker client timeout alone does not establish that the container stopped.
+    await runDocker(["run", "--rm", "--init", "--network", "none", ...args], options);
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.ok(failure, "startup must fail with exit code 1, but Docker exited successfully");
+  const { code, killed, signal } = failure;
+  assert.deepEqual(
+    { code, killed, signal },
+    { code: 1, killed: false, signal: null },
+    "startup requires an unforced Docker CLI exit with code 1",
+  );
+  return `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`;
 }
 
 function assertNoPackagingFailure(output) {
@@ -182,6 +198,24 @@ function assertPersistenceBoundary(output, event) {
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
+function assertStartupFailureCode(output, event, code) {
+  const diagnostic = output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .find((line) => line?.event === event);
+  assert.ok(diagnostic, output);
+  assert.equal(diagnostic.code, code);
+  return diagnostic;
+}
+
 async function productionFixture(t) {
   const fixture = await mkdtemp(join(tmpdir(), "oce-production-image-"));
   await chmod(fixture, 0o755);
@@ -206,13 +240,8 @@ test(
   async (t) => {
     const fixture = await productionFixture(t);
 
-    let failure;
-    try {
-      await runDocker([
-        "run",
-        "--rm",
-        "--network",
-        "none",
+    const output = await runStartupExpectingFailure(
+      [
         "--mount",
         `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
         "-e",
@@ -230,15 +259,61 @@ test(
         "-e",
         "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
         image,
-      ]);
-    } catch (error) {
-      failure = error;
-    }
-
-    assert.ok(failure, "the smoke intentionally stops at the unavailable database boundary");
-    assert.equal(failure.code, 1);
-    const output = imageFailureOutput(failure);
+      ],
+      { timeout: 60_000 * imageSmokeTimeoutMultiplier },
+    );
     assertPersistenceBoundary(output, "startup-error");
+    assertNoPackagingFailure(output);
+  },
+);
+
+test(
+  "production image startup rejects an invalid gateway StorageClass before persistence",
+  imageTestOptions,
+  async (t) => {
+    const fixture = await productionFixture(t);
+    const path = join(fixture, "installation.json");
+    const installation = JSON.parse(await readFile(path, "utf8"));
+    installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+
+    const output = await runStartupExpectingFailure([
+      "--mount",
+      `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+      "-e",
+      "NODE_ENV=production",
+      "-e",
+      "OCC_HOST=10.0.0.5",
+      "-e",
+      "OCC_PORT=3000",
+      "-e",
+      "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+      "-e",
+      "OCC_AUTH_SECRET=openclaw-production-image-smoke-secret",
+      "-e",
+      "OCC_AUTH_BASE_URL=https://occ.example.invalid",
+      "-e",
+      "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+      image,
+    ]);
+    const diagnostic = assertStartupFailureCode(
+      output,
+      "startup-error",
+      "DRIVER_CONFIGURATION_INVALID",
+    );
+    assert.deepEqual(diagnostic.details, [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+    assert.doesNotMatch(output, /Bad_Class/);
+    assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },
 );
@@ -249,33 +324,99 @@ test(
   async (t) => {
     const fixture = await productionFixture(t);
 
-    let failure;
-    try {
-      await runDocker([
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--mount",
-        `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
-        "-e",
-        "NODE_ENV=production",
-        "-e",
-        "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
-        "-e",
-        "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
-        image,
-        "apps/controller/src/worker.mjs",
-      ]);
-    } catch (error) {
-      failure = error;
-    }
-
-    assert.ok(failure, "the worker smoke intentionally stops at the database boundary");
-    assert.equal(failure.code, 1);
-    const output = imageFailureOutput(failure);
+    const output = await runStartupExpectingFailure([
+      "--mount",
+      `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+      "-e",
+      "NODE_ENV=production",
+      "-e",
+      "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+      "-e",
+      "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+      image,
+      "apps/controller/src/worker.mjs",
+    ]);
     assertPersistenceBoundary(output, "worker.startup-error");
     assertNoPackagingFailure(output);
+  },
+);
+
+test(
+  "production image runs the chart's pre-upgrade Installation check",
+  imageTestOptions,
+  async (t) => {
+    // The initialization hook runs this script with the chart's security context before
+    // Helm replaces the API, so a refused Installation leaves the old Pods serving.
+    const script = await readFile(
+      new URL(
+        "../../deploy/helm/openclaw-enterprise/files/check-installation.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const fixture = await productionFixture(t);
+    const check = [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--mount",
+      `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+      "-e",
+      "NODE_ENV=production",
+      "-e",
+      "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+      image,
+      "--input-type=module",
+      "-e",
+      script,
+    ];
+    const passed = await runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier });
+    assert.equal(passed.stdout, "installation-startup-ready\n");
+    assertNoPackagingFailure(passed.stderr);
+
+    const path = join(fixture, "installation.json");
+    const installation = JSON.parse(await readFile(path, "utf8"));
+    const invalidDriver = structuredClone(installation);
+    invalidDriver.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, JSON.stringify(invalidDriver), { mode: 0o644 });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
+        const details = JSON.parse(error.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]);
+        assert.deepEqual(details, [
+          {
+            path: "/runtime/gatewayStorageClassName",
+            code: "INVALID_FORMAT",
+            message:
+              "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+          },
+        ]);
+        assert.doesNotMatch(error.stderr, /Bad_Class/);
+        return true;
+      },
+    );
+    installation.presets = { files: ["presets/missing.json"] };
+    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(
+          error.stderr,
+          "installation-check: API and worker startup would refuse the Installation (PRESET_FILE_INVALID): presets.files: Preset file /tmp/oce-production-image/presets/missing.json is unavailable.\n",
+        );
+        return true;
+      },
+    );
   },
 );
 
@@ -325,6 +466,7 @@ test("production image includes console shell and public assets", imageTestOptio
   const revision = JSON.parse(labels)?.["org.opencontainers.image.revision"] ?? "";
   const probe = String.raw`
     import assert from "node:assert/strict";
+    import { execFileSync } from "node:child_process";
     import { readConsoleAsset } from "./apps/controller/src/console-assets.ts";
 
     const shell = await readConsoleAsset("/console/");
@@ -347,6 +489,15 @@ test("production image includes console shell and public assets", imageTestOptio
     assert.equal(script.statusCode, 200);
     assert.match(script.contentType, /javascript/);
     assert.match(script.body.toString("utf8"), /api\/auth\/session/);
+
+    // Parse the shipped bytes as JavaScript. Browser tests load the module and its imports.
+    const dom = await readConsoleAsset("/console/dom.mjs");
+    assert.equal(dom.statusCode, 200);
+    assert.match(dom.contentType, /javascript/);
+    assert.ok(dom.body.length > 0);
+    execFileSync(process.execPath, ["--no-strip-types", "--check", "--input-type=module"], {
+      input: dom.body,
+    });
 
     const unknown = await readConsoleAsset("/console/index.ts");
     assert.equal(unknown.statusCode, 404);

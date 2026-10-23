@@ -1,0 +1,166 @@
+name: QA Matrix Advisory
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled]
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+  # Every 6 hours, so the local installation rehearsal (skipped on push) runs on main without a label.
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+# Finish every main commit. For an opted-in PR, a new commit replaces the old run.
+# An unrelated label event gets its own group so it cannot cancel that qualification.
+concurrency:
+  group: >-
+    qa-advisory-${{ github.event_name }}-${{
+      github.event_name == 'push' && github.sha ||
+      github.event_name == 'pull_request' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
+      format('pr-{0}', github.event.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The ordinary PR signal is in ci.yml. The label requests extra coverage; it
+  # does not grant trust. PR jobs use the normal pull_request merge commit
+  # and the existing integration-qa-pr environment.
+  eligibility:
+    name: Select advisory QA
+    if: >-
+      (github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'schedule' ||
+         (github.event_name == 'workflow_dispatch' && github.actor != 'dependabot[bot]'))) ||
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' &&
+        (github.event.action != 'labeled' || github.event.label.name == 'full-qa') &&
+        contains(github.event.pull_request.labels.*.name, 'full-qa'))
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Record the commit under test
+        run: echo "Running advisory QA for ${GITHUB_SHA}." >> "$GITHUB_STEP_SUMMARY"
+
+  local-installation:
+    name: QA advisory (local installation)
+    needs: eligibility
+    # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
+    if: github.event_name != 'push'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    env:
+      CI: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Pull Docker Hub images through a mirror
+        run: bash scripts/ci/docker-hub-mirror.sh setup
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: dev-up-k3d
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory-local-installation
+          job-timeout-minutes: 180
+      - name: Show Docker Hub pull endpoints
+        if: ${{ !cancelled() }}
+        run: bash scripts/ci/docker-hub-mirror.sh report
+
+  qa:
+    name: QA advisory (${{ matrix.installation }})
+    needs: eligibility
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    strategy:
+      fail-fast: false
+      matrix:
+        installation: [compose, kubernetes]
+    env:
+      CI: "1"
+      # The Compose launcher otherwise resolves the +v1.35 K3s channel online (update.k3s.io).
+      # Keep in step with defaultK3sImage in scripts/ci/prepare.mjs.
+      OCC_DEVELOPMENT_K3S_IMAGE: docker.io/rancher/k3s:v1.35.9-k3s1@sha256:ec9868c6a38d4e8c1869832fb5fd1eb8473c39794a0b44d2b952e7ba911951bc
+      OCC_TEST_QA_INSTALLATION: ${{ matrix.installation }}
+      OCC_TEST_QA_PRESET: Codex
+      OCC_TEST_QA_SCENARIOS: model-ui,calendar,console-secrets
+      OCC_TEST_QA_CODEX_MODEL: ${{ vars.OCC_TEST_QA_CODEX_MODEL }}
+      OCC_TEST_CODEX_CALENDAR_TOOL_NAME: ${{ vars.OCC_TEST_CODEX_CALENDAR_TOOL_NAME }}
+      OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: ${{ vars.OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT }}
+      OCC_TEST_CODEX_CALENDAR_PROMPT: ${{ vars.OCC_TEST_CODEX_CALENDAR_PROMPT }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24.16.0"
+      - name: Materialize selected QA credentials
+        env:
+          CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+        run: node scripts/ci/qa-matrix-credentials.mjs
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: qa-matrix
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory-${{ matrix.installation }}
+          job-timeout-minutes: 120
+      - name: Summarize selected scenarios
+        if: always()
+        run: node scripts/ci/qa-matrix-summary.mjs
+      - name: Retain QA outcomes
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: qa-advisory-${{ matrix.installation }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qa-matrix-evidence/*.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Remove workflow credential inputs
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/qa-matrix-credentials"
+
+  openshell:
+    name: QA advisory (OpenShell)
+    needs: eligibility
+    # OpenShell requires an enabled Landlock LSM, absent on the Blacksmith kernel.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: integration-qa-pr
+    env:
+      NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_ACCESS_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OCC_TEST_OPENAI_MODEL: ${{ vars.OCC_TEST_OPENAI_MODEL }}
+    steps:
+      - name: Verify Landlock support
+        run: |
+          python3 - <<'PYTHON'
+          import ctypes
+          import os
+          import platform
+
+          assert platform.machine() == "x86_64", "This probe requires the x86_64 runner."
+          # x86_64 __NR_landlock_create_ruleset, LANDLOCK_CREATE_RULESET_VERSION.
+          libc = ctypes.CDLL(None, use_errno=True)
+          abi = libc.syscall(444, 0, 0, 1)
+          if abi < 3:
+              raise SystemExit(f"OpenShell requires Landlock ABI >=3; got {abi}, errno={ctypes.get_errno()}")
+          print(f"Kernel {os.uname().release}: Landlock ABI {abi}")
+          PYTHON
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/run-ci-lane
+        with:
+          lane: openshell
+          profile: full
+          node-version: "24.16.0"
+          artifact-prefix: qa-advisory
+          job-timeout-minutes: 120

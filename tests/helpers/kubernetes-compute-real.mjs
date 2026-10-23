@@ -25,6 +25,7 @@ import {
   retryKubectlRead,
   validateExplicitK3dLoopbackContext,
 } from "../helpers/kubernetes-real.mjs";
+import { kubectlGetJson } from "../helpers/kubernetes-api-read.mjs";
 
 export const execute = promisify(execFile);
 export const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
@@ -62,6 +63,10 @@ export function hash(value, length = 12) {
 }
 
 export async function kubectl(...args) {
+  const answered = await kubectlGetJson({ kubeconfigPath, kubernetesContext }, args);
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute(
     "kubectl",
     ["--kubeconfig", kubeconfigPath, "--context", kubernetesContext, ...args],
@@ -236,7 +241,12 @@ async function privateBootstrapDirectory(context) {
   return directory;
 }
 
-export async function createProvisioningApiFixture(context, computeDriver, authentication) {
+export async function createProvisioningApiFixture(
+  context,
+  computeDriver,
+  authentication,
+  { emit = () => {} } = {},
+) {
   // Exercise real admission with Kubernetes Secrets; fixture credentials never reach Slack.
   const originalFetch = globalThis.fetch;
   context.mock.method(globalThis, "fetch", async (url, init) => {
@@ -338,7 +348,7 @@ export async function createProvisioningApiFixture(context, computeDriver, authe
       pollIntervalMs: 25,
       leaseDurationMs: 30_000,
       maxAttempts: 3,
-      emit: () => {},
+      emit,
     });
     await worker.start();
   }
@@ -424,6 +434,7 @@ export function revision(driver, owner, agentId, number) {
     harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
     harnessAuth: harnessAuthentication.get(owner.id).snapshot,
     compute: { id: driver.id, implementation: driver.implementation },
+    executionAdmission: { version: 2, mode: "unprotected" },
     servicePrincipalId: `service-agent-${agentId}`,
     createdAt: new Date().toISOString(),
   };
@@ -474,8 +485,23 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
       ? undefined
       : {
           ...snapshot.configuration,
+          ...(snapshot.harness.id === "codex" && snapshot.harness.mode === "dedicated"
+            ? {
+                // The paired Harness owns the real filesystem; the Gateway
+                // keeps a writable local key for native chat preparation.
+                agents: {
+                  ...snapshot.configuration.agents,
+                  defaults: {
+                    ...snapshot.configuration.agents?.defaults,
+                    workspace: "/home/node/workspace",
+                  },
+                },
+              }
+            : {}),
           gateway: {
             ...snapshot.configuration.gateway,
+            // Compute renders the all-interfaces listener for an omitted or auto bind.
+            bind: "lan",
             trustedProxies: ["127.0.0.1/32"],
             allowRealIpFallback: true,
             auth: {
@@ -1055,6 +1081,11 @@ export async function createScopedController(context, installationId, platformNa
     "--type=json",
     "--patch",
     JSON.stringify([
+      {
+        op: "add",
+        path: "/rules/-",
+        value: { apiGroups: ["batch"], resources: ["jobs"], verbs: ["get", "create", "delete"] },
+      },
       {
         op: "add",
         path: "/rules/-",

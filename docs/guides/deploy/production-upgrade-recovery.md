@@ -44,23 +44,23 @@ release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
 For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized revision history,
+without replaying it. Inspect the exact Agent's authorized version history,
 deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged active revision alone does not prove rejection, and a filtered
-revision list does not prove absence. If you can identify the accepted revision,
+An unchanged selected version alone does not prove rejection, and a filtered
+version list does not prove absence. If you can identify the accepted version,
 record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
 the helper checks that exact deployment's status on resume. If evidence proves
 the request was not accepted, deploy that Agent once with the ordinary OCC CLI
 and save its successful JSON response under that name. Preserve the `.intent`,
 error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed revision,
+investigate rather than submitting another request. For a known failed version,
 inspect its failure and explicitly deploy an authorized replacement before
 recording that replacement's response; preserve the original response separately.
 Each deployment snapshots current drafts.
 
-For an accepted revision, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
+For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
 Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed revision. Verify the exact Agent and deployment before recording it:
+`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
 
 ```bash
 if test -z "$REVISION_ID"; then
@@ -95,7 +95,7 @@ the previous controller image after the check below.
 
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
-delete Agents, revisions, PVCs, or the bootstrap volume to force recovery.
+delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
 ## Correct an invalid Installation name
 
@@ -142,6 +142,45 @@ the candidate API and worker log
 the preflight), Helm's `--wait` has marked the candidate release `failed`:
 rename as above, follow the Helm failure steps above, then repeat the command
 with `--resume --migration-history-checked`.
+
+## Correct values newer releases refuse
+
+Releases after 2026-10-05 refuse some values that earlier releases accepted.
+Before the maintenance window, render the candidate chart with your live values
+from the candidate checkout:
+
+```bash
+helm template oce deploy/helm/openclaw-enterprise -f /secure/occ/values.yaml > /dev/null
+```
+
+The upgrade command also renders the chart and runs its
+[startup preflight](production-upgrade.md#upgrade-the-control-plane) before it
+stops OCC, so it stops on every row below while the old release keeps serving.
+`helm template` cannot check the last three rows, which the API and worker read
+from the Installation, and a Compose install has no chart. A plain
+`helm upgrade` runs the migration Job before the API and worker fail on those
+rows, and the old release must not then start against the migrated database,
+so correct them first.
+
+The upgrade command does not accept these changes in candidate files. Edit the
+live values or Installation YAML and apply it with the installed release's
+checkout, as in
+[Apply other Installation changes](production-upgrade.md#apply-other-installation-changes),
+so the baseline files match live state. Except where a row says otherwise, each
+correction keeps the behavior the old release already had.
+
+| Refused value                                                                                                                                                                     | Correction                                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth.github.allowedOrgs`, `allowedTeams` or `auth.google.allowedDomains` set while that provider is disabled                                                                     | Remove the list; the old chart ignored it.                                                                                                                                                                      |
+| `""` or `{}` for those allowlists, or `{}` for a provider's `egressCidrs`                                                                                                         | Write `[]` or remove the key.                                                                                                                                                                                   |
+| An IPv4-mapped `api.trustedProxy.cidrs` entry with a prefix from 97 to 128, such as `::ffff:a00:0/104`                                                                            | Write the IPv4 CIDR with the prefix minus 96: `10.0.0.0/8`. A Compose install's API refuses the same entry in `OCC_AUTH_TRUSTED_PROXY_CIDRS` at startup.                                                        |
+| An IPv6 `api.trustedProxy.cidrs` entry that contains `::ffff:0:0/96`, such as `::ffff:0:0/96`, `::ffff:a00:0/64` or `::/64`                                                       | Such an entry trusted forwarded headers from every IPv4 peer. List your proxies' own CIDRs instead; this changes behavior.                                                                                      |
+| A Unicode `auth.baseUrl` host, such as `https://bücher.example.com`, with a punycode `agentNativeAdmin.sharedCookieDomain`                                                        | Write the host in punycode: `https://xn--bcher-kva.example.com`.                                                                                                                                                |
+| An `auth.baseUrl` with a `/.` or `/%2e` path, a short loopback such as `http://127.1`, or U+200B (zero-width space)                                                               | Remove the path and invisible characters; write `127.0.0.1`.                                                                                                                                                    |
+| An `auth.baseUrl` with a path or query, such as `https://example.com/occ`                                                                                                         | Serve OCC at the root of its own origin and set that origin, such as `https://occ.example.com`. This changes behavior: point browsers, CLI and API clients, and your proxy at the new origin.                   |
+| A `presets.files` Preset `name` with leading or trailing Unicode spaces (such as U+00A0), U+2028, U+2029 or C1 control characters                                                 | Correct the `name` in the file, or remove the entry. Startup adds a Preset with the corrected name; delete any saved copy with the old name you no longer need.                                                 |
+| A Backend `id` with a C1 control character (U+0080 to U+009F)                                                                                                                     | Rename the Backend. No Agent can store such an ID, but ServiceAccounts created through that Backend keep it in a binding that cannot change: delete them before the rename and recreate them after the upgrade. |
+| With `requireImmutableDigest: true`, an upper-case `gateway` or `agent` digest in the Installation's `drivers.compute.configuration.images`, such as `@sha256:ABC…` or `@SHA256:` | Write `sha256` and the hex digits in lower case; the digest is the same. Kubernetes could not pull the upper-case spelling.                                                                                     |
 
 ## Roll back across human sign-in
 
