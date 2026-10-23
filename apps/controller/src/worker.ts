@@ -299,10 +299,14 @@ const computeCleanupFailures = new WeakMap<object, readonly unknown[]>();
  * reports both; the operation's own failure decides, so a refusal still fails at once and an
  * outage still waits, and the cleanup failure is kept for the log fields (finding 2268). A
  * primary failure that is not an object cannot carry that record, so its aggregate stays whole
- * and retries as before.
+ * and is classified as before. A Driver can throw one error object again (a memoized client
+ * failure), so a failure without a failed cleanup clears any record it kept.
  */
 function primaryComputeFailure(error: unknown): unknown {
   if (!(error instanceof ComputeCleanupFailedError)) {
+    if (error !== null && typeof error === "object") {
+      computeCleanupFailures.delete(error);
+    }
     return error;
   }
   const primary = error.primary;
@@ -346,21 +350,20 @@ function revisionFailureLogFields(error: unknown): {
   readonly validationCategory?: string;
   readonly cleanupCause?: string;
 } {
-  const fields = primaryFailureLogFields(error);
-  const cleanup = cleanupFailuresOf(error);
-  return cleanup === undefined ? fields : { ...fields, cleanupCause: loggedErrorClass(cleanup[0]) };
+  return { ...primaryFailureLogFields(error), ...computeCleanupLogFields(error) };
 }
 
-function cleanupFailuresOf(error: unknown): readonly unknown[] | undefined {
+/** `cleanupCause` when the Compute cleanup after this failure failed too, else nothing. */
+function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: string } {
   if (error === null || typeof error !== "object") {
-    return undefined;
+    return {};
   }
   // A Sandbox gateway outage reaches the log as the transient failure that wraps it.
   const cause = (error as { readonly cause?: unknown }).cause;
-  return (
+  const cleanup =
     computeCleanupFailures.get(error) ??
-    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined)
-  );
+    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined);
+  return cleanup === undefined ? {} : { cleanupCause: loggedErrorClass(cleanup[0]) };
 }
 
 function primaryFailureLogFields(error: unknown): {
@@ -6034,13 +6037,21 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "permanent", code: error.code },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         if (error instanceof ComputeStopYieldedError) {
           // The Agent stopped after activation and its stop yielded: the next pass repeats it as
           // the stopped Agent's active revision, then retires the earlier ones.
-          await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "pending", code: "AGENT_STOP_YIELDED" },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         await this.finalizeRevision(

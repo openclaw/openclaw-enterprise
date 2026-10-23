@@ -19712,7 +19712,6 @@ test("ordinary network profile selectors remain detached across caller results",
   assert.equal(second.spec.podSelector.matchLabels["openclaw.dev/agent"], revision.agentId);
 });
 
-// Returns how many preparation passes the revision needed to become ready.
 // Finding 2268: when preparation or activation fails after the lifecycle start and the lifecycle
 // cleanup fails too, the operation's own failure stays first, so the worker classifies the
 // deployment by it. Activation used to throw the cleanup failure in its place. A Kubernetes API
@@ -19780,8 +19779,18 @@ test("Kubernetes preparation and activation keep their own failure first when th
   const activated = await failure(driver.activateRevision(successor, successorContext));
   assertCleanupFailure(activated, outage, [/lifecycle hook beforeWorkloadStop failed/]);
   assert.equal(cleanups, 2);
+
+  // An API outage in activation stays transient too.
+  started = false;
+  outage = Object.assign(new Error("Service Unavailable"), { code: 503 });
+  const unavailable = await failure(driver.activateRevision(successor, successorContext));
+  assertCleanupFailure(unavailable, /HTTP 503/, [/lifecycle hook beforeWorkloadStop failed/]);
+  assert.ok(unavailable.primary instanceof TransientDependencyError);
+  assert.equal(unavailable.primary.cause, outage);
+  assert.equal(cleanups, 3);
 });
 
+// Returns how many preparation passes the revision needed to become ready.
 async function prepareUntilReady(driver, revision, context, limit = 4) {
   for (let pass = 1; pass <= limit; pass += 1) {
     if ((await driver.prepareRevision(revision, context)).ready) {

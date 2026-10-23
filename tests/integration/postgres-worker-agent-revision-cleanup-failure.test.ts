@@ -7,12 +7,13 @@ import {
   ActivationPendingError,
   CredentialSourceRevisionError,
   KubernetesSecretWriteForbiddenError,
+  SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { withFailedCleanup } from "../helpers/compute-cleanup-failure.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { completion } from "../helpers/postgres-worker-revision-support.mjs";
+import { completedPasses, completion } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Finding 2268: a Compute Driver whose cleanup fails after a failed preparation or activation
 // reports both failures, its own first. The worker decides by that first failure, as it would
@@ -24,19 +25,36 @@ import { completion } from "../helpers/postgres-worker-revision-support.mjs";
 const { cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
 
-/** The worker's raw events, and the log lines the worker's sanitizing emitter writes for them. */
+type RevisionFixture = Awaited<
+  ReturnType<ReturnType<typeof createWorkerRevisionFixtures>["setup"]>
+>;
+type Admitted = Awaited<ReturnType<RevisionFixture["admitInitialRevision"]>>;
+
+/** The `worker.completed` fields these cases read. */
+interface WorkerEvent {
+  readonly event?: string;
+  readonly workId?: string;
+  readonly revisionId?: string;
+  readonly outcome?: string;
+  readonly code?: string;
+  readonly cause?: string;
+  readonly dependency?: string;
+  readonly cleanupCause?: string;
+}
+
+/** The worker's raw events, and the log lines its sanitizing emitter writes for them. */
 function capturedLogs() {
-  const events = [];
-  const lines = [];
+  const events: WorkerEvent[] = [];
+  const lines: WorkerEvent[] = [];
   const logged = createWorkerLogEmitter(
     createOccLogger({
       component: "occ-worker",
       level: "debug",
       destination: {
-        write(chunk) {
+        write(chunk: string) {
           for (const line of String(chunk).split("\n")) {
             if (line.length > 0) {
-              lines.push(JSON.parse(line));
+              lines.push(JSON.parse(line) as WorkerEvent);
             }
           }
           return true;
@@ -47,31 +65,23 @@ function capturedLogs() {
   return {
     events,
     lines,
-    emit(event) {
-      events.push(event);
+    emit(event: Readonly<Record<string, unknown>>) {
+      events.push(event as WorkerEvent);
       logged(event);
     },
   };
 }
 
-function completedPasses(events, candidate) {
-  return events.filter(
-    (event) => event.event === "worker.completed" && event.workId === candidate.idempotencyKey,
-  );
+function passFields({ outcome, code, cause, dependency, cleanupCause }: WorkerEvent) {
+  return { outcome, code, cause, dependency, cleanupCause };
 }
-
-const outage = () =>
-  new TransientDependencyError(
-    "kubernetes_api",
-    "unavailable",
-    "The Kubernetes API answered HTTP 503.",
-  );
 
 revisionTest(
   "a refusal whose Compute cleanup also failed fails deployment on the first attempt",
-  async (fixture) => {
+  async (fixture: RevisionFixture) => {
     // One deployment per refusal the worker fails at once when it comes alone.
-    const refusals = [
+    type Refusal = { readonly label: string; readonly failure: () => Error; readonly code: string };
+    const refusals: readonly Refusal[] = [
       {
         label: "secret-forbidden",
         failure: () => new KubernetesSecretWriteForbiddenError(),
@@ -110,24 +120,25 @@ revisionTest(
         code: "SANDBOX_HARNESS_UNSUPPORTED",
       },
     ];
-    const cases = new Map();
+    const cases: (Refusal & Admitted & { preparations: number })[] = [];
     for (const refusal of refusals) {
       const admitted = await fixture.admitInitialRevision(`cleanup-refusal-${refusal.label}`);
-      cases.set(admitted.candidate.id, { ...refusal, ...admitted, preparations: 0 });
+      cases.push({ ...refusal, ...admitted, preparations: 0 });
     }
     const logs = capturedLogs();
     await fixture.start(
       {
         ...fixture.compute,
-        async prepareRevision(revision) {
-          const scenario = cases.get(revision.id);
+        async prepareRevision(revision: { readonly id: string }) {
+          const scenario = cases.find(({ candidate }) => candidate.id === revision.id);
+          assert.ok(scenario, "only the admitted cases deploy");
           scenario.preparations += 1;
           throw withFailedCleanup(scenario.failure());
         },
       },
       { emit: logs.emit },
     );
-    for (const scenario of cases.values()) {
+    for (const scenario of cases) {
       const failed = await fixture.work(scenario.candidate, "failed_permanent", 30_000);
       const { rows } = await fixture.workResult(scenario.candidate);
       assert.deepEqual(
@@ -139,19 +150,20 @@ revisionTest(
         { code: scenario.code, attempts: 1, preparations: 1 },
         scenario.label,
       );
-      const passes = completedPasses(logs.events, scenario.candidate);
+      // The log line can follow the committed failure (finding 1607): wait for it.
+      const passes: WorkerEvent[] = await completedPasses(
+        logs.events,
+        scenario.candidate,
+        "permanent",
+      );
       assert.deepEqual(
-        passes.map(({ outcome, code, cause, cleanupCause }) => ({
-          outcome,
-          code,
-          cause,
-          cleanupCause,
-        })),
+        passes.map(passFields),
         [
           {
             outcome: "permanent",
             code: scenario.code,
             cause: scenario.failure().name,
+            dependency: undefined,
             cleanupCause: "Error",
           },
         ],
@@ -166,55 +178,75 @@ revisionTest(
   },
 );
 
-revisionTest(
-  "an outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
-  async (fixture) => {
-    // Seven failed passes, more than the attempt budget (5): each waits as the outage alone does.
-    const { owner, candidate } = await fixture.admitInitialRevision("cleanup-outage");
-    const logs = capturedLogs();
-    let failures = 0;
-    await fixture.start(
-      {
-        ...fixture.compute,
-        async prepareRevision(revision, revisionContext) {
-          if (failures < 7) {
-            failures += 1;
-            throw withFailedCleanup(outage());
-          }
-          return fixture.compute.prepareRevision(revision, revisionContext);
-        },
-      },
-      { emit: logs.emit },
-    );
-    const succeeded = await fixture.work(candidate, "succeeded", 30_000);
-    assert.equal(failures, 7);
-    assert.equal(succeeded.attempt_count, 1);
-    assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
-    assert.deepEqual(
-      completedPasses(logs.events, candidate)
-        .slice(0, 7)
-        .map(({ outcome, code, dependency, cleanupCause }) => ({
-          outcome,
-          code,
-          dependency,
-          cleanupCause,
-        })),
-      Array.from({ length: 7 }, () => ({
-        outcome: "pending",
-        code: "KUBERNETES_API_UNAVAILABLE",
-        dependency: "kubernetes_api",
-        cleanupCause: "Error",
-      })),
-    );
+// A Sandbox gateway outage reaches the worker as its own error class, which the worker wraps as a
+// transient dependency failure; the failed cleanup follows that wrapper into the log.
+for (const outage of [
+  {
+    label: "Kubernetes API",
+    failure: () =>
+      new TransientDependencyError(
+        "kubernetes_api",
+        "unavailable",
+        "The Kubernetes API answered HTTP 503.",
+      ),
+    code: "KUBERNETES_API_UNAVAILABLE",
+    dependency: "kubernetes_api",
   },
-);
+  {
+    label: "Sandbox gateway",
+    failure: () =>
+      new SandboxGatewayUnavailableError("OpenShell CreateSandbox failed with gRPC status 14."),
+    code: "SANDBOX_GATEWAY_UNAVAILABLE",
+    dependency: "sandbox_gateway",
+  },
+]) {
+  revisionTest(
+    `a ${outage.label} outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates`,
+    async (fixture: RevisionFixture) => {
+      // Seven failed passes, more than the attempt budget (5): each waits as the outage alone does.
+      const { owner, candidate } = await fixture.admitInitialRevision(
+        `cleanup-outage-${outage.dependency}`,
+      );
+      const logs = capturedLogs();
+      let failures = 0;
+      await fixture.start(
+        {
+          ...fixture.compute,
+          async prepareRevision(...args: Parameters<typeof fixture.compute.prepareRevision>) {
+            if (failures < 7) {
+              failures += 1;
+              throw withFailedCleanup(outage.failure());
+            }
+            return fixture.compute.prepareRevision(...args);
+          },
+        },
+        { emit: logs.emit },
+      );
+      const succeeded = await fixture.work(candidate, "succeeded", 30_000);
+      assert.equal(failures, 7);
+      assert.equal(succeeded.attempt_count, 1);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
+      const passes: WorkerEvent[] = await completedPasses(logs.events, candidate);
+      assert.deepEqual(
+        passes.slice(0, 7).map(passFields),
+        Array.from({ length: 7 }, () => ({
+          outcome: "pending",
+          code: outage.code,
+          cause: "unavailable",
+          dependency: outage.dependency,
+          cleanupCause: "Error",
+        })),
+      );
+    },
+  );
+}
 
 // Both activation paths: the pass that publishes the active pointer, and a later pass that finds
 // it already published.
 for (const pendingPasses of [0, 1]) {
   revisionTest(
     `an activation refusal whose Compute cleanup also failed fails deployment at once (after ${pendingPasses} pending passes)`,
-    async (fixture) => {
+    async (fixture: RevisionFixture) => {
       const { owner, candidate } = await fixture.admitInitialRevision(
         `cleanup-activation-${pendingPasses}`,
       );
@@ -247,29 +279,21 @@ for (const pendingPasses of [0, 1]) {
         (await fixture.deploymentStatus(owner, candidate)).error?.code,
         "AGENT_GATEWAY_UNAUTHORIZED",
       );
-      const last = await completion(
-        logs.events,
-        "the refused activation's terminal completion",
-        (event) =>
-          event.event === "worker.completed" &&
-          event.workId === candidate.idempotencyKey &&
-          event.outcome === "permanent",
-      );
-      assert.deepEqual(
-        { code: last.code, cause: last.cause, cleanupCause: last.cleanupCause },
-        {
-          code: "AGENT_GATEWAY_UNAUTHORIZED",
-          cause: "ActivationFailedError",
-          cleanupCause: "Error",
-        },
-      );
+      const passes: WorkerEvent[] = await completedPasses(logs.events, candidate, "permanent");
+      assert.deepEqual(passFields(passes.at(-1)!), {
+        outcome: "permanent",
+        code: "AGENT_GATEWAY_UNAUTHORIZED",
+        cause: "ActivationFailedError",
+        dependency: undefined,
+        cleanupCause: "Error",
+      });
     },
   );
 }
 
 revisionTest(
   "a maintenance outage whose Compute cleanup also failed waits on its dependency and keeps the chain",
-  async (fixture) => {
+  async (fixture: RevisionFixture) => {
     // A running revision's maintenance pass keeps its chain on an outage, as for one alone, and
     // names the dependency instead of REVISION_FINALIZATION_INCOMPLETE.
     const { owner, candidate } = await fixture.admitInitialRevision("cleanup-maintenance");
@@ -279,9 +303,15 @@ revisionTest(
       {
         ...fixture.compute,
         maintenanceIntervalMs: 200,
-        async prepareRevision(...args) {
+        async prepareRevision(...args: Parameters<typeof fixture.compute.prepareRevision>) {
           if (failing) {
-            throw withFailedCleanup(outage());
+            throw withFailedCleanup(
+              new TransientDependencyError(
+                "kubernetes_api",
+                "unavailable",
+                "The Kubernetes API answered HTTP 503.",
+              ),
+            );
           }
           return fixture.compute.prepareRevision(...args);
         },
@@ -291,38 +321,31 @@ revisionTest(
     await fixture.work(candidate, "succeeded");
     failing = true;
     const maintenance = `agent_revision:${candidate.id}:maintenance:`;
-    const failed = await completion(
+    const failed: WorkerEvent = await completion(
       logs.events,
       "a maintenance pass that met the outage",
-      (event) =>
+      (event: WorkerEvent) =>
         event.event === "worker.completed" &&
-        event.workId?.startsWith(maintenance) &&
+        event.workId?.startsWith(maintenance) === true &&
         event.outcome !== "success",
     );
-    assert.deepEqual(
-      {
-        outcome: failed.outcome,
-        code: failed.code,
-        dependency: failed.dependency,
-        cleanupCause: failed.cleanupCause,
-      },
-      {
-        outcome: "pending",
-        code: "KUBERNETES_API_UNAVAILABLE",
-        dependency: "kubernetes_api",
-        cleanupCause: "Error",
-      },
-    );
+    assert.deepEqual(passFields(failed), {
+      outcome: "pending",
+      code: "KUBERNETES_API_UNAVAILABLE",
+      cause: "unavailable",
+      dependency: "kubernetes_api",
+      cleanupCause: "Error",
+    });
     failing = false;
     await completion(
       logs.events,
       "a later maintenance pass to succeed",
-      (event, index) =>
+      (event: WorkerEvent, index: number) =>
         index > logs.events.indexOf(failed) &&
         event.event === "worker.completed" &&
-        event.workId?.startsWith(maintenance) &&
+        event.workId?.startsWith(maintenance) === true &&
         event.outcome === "success",
     );
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    assert.equal((await fixture.currentAgent(owner))?.activeRevisionId, candidate.id);
   },
 );

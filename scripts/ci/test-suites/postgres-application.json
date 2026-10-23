@@ -8,7 +8,7 @@
     "tests/integration/postgres-worker-agent-revision.test.mjs",
     "tests/integration/postgres-worker-agent-revision-replacement.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs",
-    "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.mjs",
+    "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
     "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-yielded-redeploy.test.mjs",
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
@@ -128,10 +128,11 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.mjs",
+      "path": "tests/integration/postgres-worker-agent-revision-cleanup-failure.test.ts",
       "expectedTests": [
         "a refusal whose Compute cleanup also failed fails deployment on the first attempt",
-        "an outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "a Kubernetes API outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
+        "a Sandbox gateway outage whose Compute cleanup also failed waits past the attempt budget, then the deployment activates",
         "an activation refusal whose Compute cleanup also failed fails deployment at once (after 0 pending passes)",
         "an activation refusal whose Compute cleanup also failed fails deployment at once (after 1 pending passes)",
         "a maintenance outage whose Compute cleanup also failed waits on its dependency and keeps the chain"
