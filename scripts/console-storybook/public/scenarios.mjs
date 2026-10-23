@@ -904,7 +904,7 @@ export const scenarios = {
       "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
-      "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use Back to Agents and repeat at phone width.",
+      "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
       "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
       "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",
       "Drag across an Agent ID to select text. Releasing the mouse keeps the list visible so the ID can be copied.",
@@ -918,7 +918,7 @@ export const scenarios = {
     description:
       "Open an Agent from row padding or text. Name and version links, row actions, and text selection keep their existing behavior.",
     steps: [
-      "Click padding in Execution mode or Created. The Agent detail opens. Use Back to Agents and confirm focus returns to its name. Repeat at phone width.",
+      "Click padding in Execution mode or Created. The Agent detail opens. Use ← Agents and confirm focus returns to its name. Repeat at phone width.",
       "Press Enter on the focused name to open the same Agent, then return.",
       "Open a current-version or latest-deployment link and confirm its version is selected.",
       "Open Stop or Delete and cancel. The list stays visible. In Row restricted, disabled buttons and their icons do not open the Agent.",
