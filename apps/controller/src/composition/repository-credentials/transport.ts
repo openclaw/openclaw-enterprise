@@ -22,9 +22,13 @@ export function repositoryGitAuthority(drivers: InstallationRuntimeDrivers) {
  * the reconcile retries every second, which logged about 86,000 lines a day (finding 2251). The
  * same cadence as a yielded stop's `worker.completed` line (STOP_YIELD_LOG_INTERVAL_MS).
  */
-export const REPOSITORY_DELIVERY_PENDING_LOG_INTERVAL_MS = 60_000;
+const REPOSITORY_DELIVERY_PENDING_LOG_INTERVAL_MS = 60_000;
 
-/** Which failed reconcile passes log: the first after a delivery, then at most one a minute. */
+/**
+ * Which failed reconcile passes log: the first after the worker starts or after a completed pass,
+ * then at most one a minute. As with a settled yielded stop, a completed pass ends the pending run,
+ * so the next failure logs at once.
+ */
 export class RepositoryDeliveryPendingLog {
   private loggedAt: number | undefined;
   private readonly now: () => number;
@@ -46,7 +50,7 @@ export class RepositoryDeliveryPendingLog {
     return true;
   }
 
-  /** A pass delivered: the next failure starts a new pending run and is logged at once. */
+  /** A pass completed: the next failure starts a new pending run and is logged at once. */
   delivered(): void {
     this.loggedAt = undefined;
   }
@@ -58,6 +62,7 @@ export async function bindRepositoryGitTransport(
   owner: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>,
   pool: PostgresPool,
   emit?: OpenShellGitRuntimeEmit,
+  // Tests pass one with a fake clock.
   pendingLog = new RepositoryDeliveryPendingLog(),
 ): Promise<CredentialProxyBinding | undefined> {
   const { repositoryTransport, repositoryGitDriver } = drivers;

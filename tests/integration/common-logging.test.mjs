@@ -15,7 +15,6 @@ import {
 import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import {
   bindRepositoryGitTransport,
-  REPOSITORY_DELIVERY_PENDING_LOG_INTERVAL_MS,
   RepositoryDeliveryPendingLog,
 } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
 import {
@@ -863,25 +862,11 @@ test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never
 
 test("a delivery that keeps failing logs when it starts pending, then at most once a minute", async (t) => {
   // Finding 2251: the reconcile retries every second, and every failed pass logged a line.
-  const now = { value: 1_000_000 };
-  const log = new RepositoryDeliveryPendingLog(() => now.value);
-  assert.equal(log.failed(), true);
-  now.value += REPOSITORY_DELIVERY_PENDING_LOG_INTERVAL_MS - 1;
-  assert.equal(log.failed(), false);
-  now.value += 1;
-  assert.equal(log.failed(), true);
-  // A delivered pass ends the pending run: the next failure is a change and logs at once.
-  now.value += 1_000;
-  log.delivered();
-  assert.equal(log.failed(), true);
-  now.value += 1_000;
-  assert.equal(log.failed(), false);
-
-  // Through the reconcile loop itself, on its own one-second timer.
+  // The loop runs on its own one-second timer, mocked here, and the log reads a fake clock.
   t.mock.timers.enable({ apis: ["setTimeout"] });
+  const now = { value: 5_000_000 };
   const events = [];
   let refuse = true;
-  now.value = 5_000_000;
   // Let the pass's reconcile settle and schedule the next one.
   const settle = async () => {
     for (let turn = 0; turn < 5; turn += 1) {
@@ -917,7 +902,7 @@ test("a delivery that keeps failing logs when it starts pending, then at most on
     await pass();
     refuse = true;
     await pass();
-    assert.equal(pendingLines(), 3, "a failure after a delivered pass logs at once");
+    assert.equal(pendingLines(), 3, "a failure after a completed pass logs at once");
     await pass();
     assert.equal(pendingLines(), 3);
     assert.deepEqual(events.at(-1), {

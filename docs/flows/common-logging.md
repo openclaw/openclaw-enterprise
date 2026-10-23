@@ -216,9 +216,10 @@ letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
 `occ.fence`. So `worker.openshell-git-expiry` names the OpenShell Git expiry step
 and why it is pending, with `work.outcome` `pending`, `withdrawn` or
 `retire-runtime`, and `worker.repository-delivery-pending` shows that protected Git
-delivery is retrying. The reconcile retries every second, but that line is written on the
-first failed pass after a delivery, then at most once a minute. Its Sandbox Driver ID stays
-local, as do Installation and Configuration IDs.
+delivery is retrying. The reconcile retries every second, but that line is written when
+delivery starts failing (the first failed pass after the worker starts or after a completed
+pass), then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
+Configuration IDs.
 `worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
 ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
