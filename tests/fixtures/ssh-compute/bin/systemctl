@@ -35,7 +35,8 @@ active() {
 loaded() {
   [ -f "$linked" ] || active
 }
-# systemctl's refusal (exit 5) for a unit it cannot load: stop says "not loaded", others "not found".
+# systemctl's refusal (exit 5) for a unit it cannot load: stop says "not loaded", start and
+# restart "not found". enable by name refuses on its own (exit 1).
 unloadable() {
   printf 'Failed to %s %s: Unit %s %s.\n' "$operation" "$unit" "$unit" "$1" >&2
   exit 5
@@ -50,7 +51,10 @@ case "$operation" in
   link) : > "$linked" ;;
   enable)
     if [ "$unit" != "${1:-}" ]; then : > "$linked"; fi
-    loaded || unloadable 'not found'
+    if ! loaded; then
+      printf 'Failed to enable unit: Unit file %s does not exist.\n' "$unit" >&2
+      exit 1
+    fi
     : > "$enabled"
     ;;
   disable) rm -f "$enabled" "$linked" ;;
