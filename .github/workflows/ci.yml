@@ -582,35 +582,41 @@ jobs:
       # GitHub can refuse artifact downloads for minutes at a time ("Egress is
       # over the account limit"), and the action gives up after about 25 s.
       # Every lane has already passed or failed by now, so try again after a
-      # pause rather than report each lane's result as missing.
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      # pause rather than report each lane's result as missing. The retries
+      # run only after a failed download, so they need no mode check.
+      - name: Download CI results
         id: results-download
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         continue-on-error: true
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
           merge-multiple: true
-      - name: Wait before downloading CI results again
-        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download.outcome == 'failure' }}
+      - name: Wait 60 s before CI results download retry 1
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && steps.results-download.outcome == 'failure' }}
         run: |
+          echo "::notice::CI results download failed; retrying in 60 s"
           rm -rf "$RUNNER_TEMP/results"
           sleep 60
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      - name: Download CI results (retry 1)
         id: results-download-retry
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         continue-on-error: true
-        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download.outcome == 'failure' }}
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && steps.results-download.outcome == 'failure' }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
           merge-multiple: true
-      - name: Wait before downloading CI results again
-        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download-retry.outcome == 'failure' }}
+      - name: Wait 240 s before CI results download retry 2
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && steps.results-download-retry.outcome == 'failure' }}
         run: |
+          echo "::notice::CI results download failed; retrying in 240 s"
           rm -rf "$RUNNER_TEMP/results"
-          sleep 120
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') && steps.results-download-retry.outcome == 'failure' }}
+          sleep 240
+      - name: Download CI results (retry 2)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && steps.results-download-retry.outcome == 'failure' }}
         with:
           pattern: ci-results-*
           path: ${{ runner.temp }}/results
