@@ -8,6 +8,13 @@ export function bindPlatformUnitOfWork(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformUnitOfWork {
   return Object.freeze({
+    preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
+    egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
+      "find",
+      "insert",
+      "save",
+      "authorize",
+    ]),
     sandboxPolicies: bindRepository(repositories.sandboxPolicies, lifetime, ["find", "save"]),
     installations: bindRepository(repositories.installations, lifetime, [
       "findInstallation",
@@ -57,6 +64,10 @@ export function bindPlatformUnitOfWork(
       "hasReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "lockCredentialSource",
@@ -64,6 +75,10 @@ export function bindPlatformUnitOfWork(
       "markCredentialSourceDeleting",
       "markCredentialSourceReady",
       "replaceCredentialSourceSecrets",
+      "recordEgressInstallation",
+      "saveCredentialPolicyReduction",
+      "rejectEgressMaterial",
+      "admitEgressSource",
       "deleteCredentialSource",
       "hasReferences",
       "findBlockingReference",
@@ -130,6 +145,13 @@ export function bindPlatformUnitOfWork(
       "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+      "recordStandingExecution",
+      "approveStanding",
+      "revokeStanding",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

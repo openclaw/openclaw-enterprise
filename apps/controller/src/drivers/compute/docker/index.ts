@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type {
@@ -543,10 +544,17 @@ export class DockerComputeDriver implements ComputeDriver {
     );
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     if (revision.harnessAuth !== undefined) {
       this.validateHarnessAuth();
     }

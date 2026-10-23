@@ -9,6 +9,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
 
+import { completeJsonLines } from "../helpers/ci-logging.mjs";
+
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
 );
@@ -173,18 +175,13 @@ async function exportedRecords(out, mapRecord) {
     }
     throw error;
   }
-  return text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => {
-      const payload = JSON.parse(line);
-      return payload.resourceLogs.flatMap((resource) =>
-        resource.scopeLogs.flatMap((scope) =>
-          scope.logRecords.map((record) => mapRecord(resource, record)),
-        ),
-      );
-    });
+  return completeJsonLines(text).flatMap((payload) =>
+    payload.resourceLogs.flatMap((resource) =>
+      resource.scopeLogs.flatMap((scope) =>
+        scope.logRecords.map((record) => mapRecord(resource, record)),
+      ),
+    ),
+  );
 }
 
 // A test that checks what the Collector drops ends its OTLP request with this
@@ -970,8 +967,9 @@ test(
       assert.equal(serialized.includes(internal), false, `${internal} must not leak downstream`);
     }
 
-    // Stop and credential withdrawal work include a per-operation UUID; deletion work has no
-    // suffix. Unsupported shapes must lose correlation fields without losing the event.
+    // Stop work includes a per-operation UUID. Credential withdrawal work ends in its operation
+    // UUID or `activation`, optionally followed by `:recovery:<n>`. Deletion work has no suffix.
+    // Unsupported shapes must lose correlation fields without losing the event.
     const agentId = `agt_${randomUUID()}`;
     const stopWorkId = `agent:${agentId}:reconcile:stopped:${randomUUID()}`;
     const deleteWorkId = `agent:${agentId}:reconcile:deleted`;
@@ -985,11 +983,36 @@ test(
         operation: "agent_revision.credential_withdrawal",
         workId: `${withdrawalWorkId}:${randomUUID()}`,
       },
+      // The attempt a candidate's activation queues has the fixed operation ID `activation`,
+      // and each later attempt series appends `:recovery:<n>` to its request's key.
       {
         operation: "agent_revision.credential_withdrawal",
-        workId: `${withdrawalWorkId}:CANARY_SESSION`,
-        discardWorkId: true,
+        workId: `${withdrawalWorkId}:activation`,
       },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:activation:recovery:1`,
+      },
+      {
+        operation: "agent_revision.credential_withdrawal",
+        workId: `${withdrawalWorkId}:${randomUUID()}:recovery:15`,
+      },
+      ...[
+        `${withdrawalWorkId}:CANARY_SESSION`,
+        `${withdrawalWorkId}:activation_CANARY`,
+        `${withdrawalWorkId}:ACTIVATION`,
+        `${withdrawalWorkId}:recovery:1`,
+        `${withdrawalWorkId}:activation:recovery`,
+        `${withdrawalWorkId}:activation:recovery:0`,
+        `${withdrawalWorkId}:activation:recovery:01`,
+        `${withdrawalWorkId}:activation:recovery:1:recovery:2`,
+        `${withdrawalWorkId}:activation:retry:1`,
+        `${withdrawalWorkId}:${randomUUID()}:recovery:CANARY_SESSION`,
+      ].map((workId) => ({
+        operation: "agent_revision.credential_withdrawal",
+        workId,
+        discardWorkId: true,
+      })),
       {
         operation: "agent_revision.credential_withdrawal",
         workId: withdrawalWorkId,

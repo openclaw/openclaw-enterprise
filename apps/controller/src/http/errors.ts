@@ -15,6 +15,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -33,6 +34,9 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  ProtectedExecutionNetworkPolicyError,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
@@ -203,6 +207,8 @@ const DETAIL_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = Object.fr
   INVALID_VALUE: "has an unsupported value",
   TOO_LONG: "is too long",
   TOO_DEEP: "is nested too deeply",
+  INVALID_RANGE: "has an invalid range",
+  OUTSIDE_CEILING: "exceeds the delegation ceiling",
 });
 
 // A path that lost segments to the cap names an ancestor of the offending field, which may
@@ -215,6 +221,8 @@ const SHORTENED_PATH_PROBLEMS: Readonly<Record<ErrorDetail["code"], string>> = O
   INVALID_VALUE: "contains a field that has an unsupported value",
   TOO_LONG: "contains a field that is too long",
   TOO_DEEP: "contains a field that is nested too deeply",
+  INVALID_RANGE: "contains an invalid range",
+  OUTSIDE_CEILING: "contains a grant exceeding the delegation ceiling",
 });
 
 // The error contract caps messages at 256 characters.
@@ -716,6 +724,10 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
+  if (error instanceof CredentialTokenUnsettledError) {
+    // Names only the retry time; raised only after delete on the source and its lookup.
+    return failure(409, "CREDENTIAL_TOKEN_UNSETTLED", error.message);
+  }
   if (error instanceof CredentialWithdrawalInProgressError) {
     // A fixed message naming the way out; raised only after delete on the source and its lookup.
     return failure(409, "CREDENTIAL_WITHDRAWAL_IN_PROGRESS", error.message);
@@ -818,8 +830,22 @@ export function requestFailure(error: unknown): RequestFailure {
       { path: "/expectedGeneration", code: "INVALID_VALUE" },
     ]);
   }
+  if (error instanceof RepositoryGitProfileUnsupportedError) {
+    // Finding 2204: raised only after the deploy grant, with a fixed message naming the
+    // supported delivery profiles.
+    return failure(409, RepositoryGitProfileUnsupportedError.code, error.message);
+  }
+  if (error instanceof RepositoryGitSenderUnqualifiedError) {
+    // Finding 2199: raised only after the deploy grant, with a fixed message naming the
+    // Installation capability and the supported alternatives.
+    return failure(409, RepositoryGitSenderUnqualifiedError.code, error.message);
+  }
+  if (error instanceof ProtectedExecutionNetworkPolicyError) {
+    // Finding 2053: raised only after the caller's policy or deploy grants, with a fixed message.
+    return failure(409, "SANDBOX_POLICY_PROTECTED_EXECUTION", error.message);
+  }
   if (error instanceof ResourceStateConflictError) {
-    return failure(409, "RESOURCE_CONFLICT", error.message);
+    return failure(409, "RESOURCE_CONFLICT", error.message, error.details);
   }
   if (error instanceof ResourceConflictError) {
     return failure(409, "RESOURCE_CONFLICT", "The requested platform resource already exists.");

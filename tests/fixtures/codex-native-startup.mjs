@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
+import {
+  COMPUTE_RELEASE_PUBLIC_KEY,
+  computeReleasePublicKey,
+  harnessEgressEnrollment,
+  signComputeExecutionRelease,
+} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+import { pluginRuntimeEnvironment } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import {
   existsSync,
   mkdirSync,
@@ -17,6 +24,7 @@ import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/comp
 import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
+const revisionId = "revision-runtime-auth-gate";
 const transportToken = "fixture-transport-token";
 const tokenDigest = createHash("sha256").update(transportToken).digest("hex");
 const providerPlaceholder = "openshell:resolve:env:v7_CODEX_ACCESS_TOKEN";
@@ -68,7 +76,8 @@ export function createCodexStartup(
     native,
     providerPat = false,
     loginMode = providerPat ? "codex_pat" : "api_key",
-    transportToken: tokenMode = "raw",
+    protectedInference,
+    transportToken: tokenMode = protectedInference ? "verifier" : "raw",
     // The retry jitter's Math.random() value, fixed so a retry's delay is exact.
     random = 0,
     // How much later than asked a login retry wait wakes (a throttled or stopped process).
@@ -86,6 +95,25 @@ export function createCodexStartup(
   const loginPauses = [];
   const boundaryErrors = [];
   let statusHandler;
+  let enrollmentHandler;
+  const plan = {
+    id: "fixture-plan",
+    generation: 1,
+    routes: [{ binding: { grant: { kind: "inference" } } }],
+    execution: {
+      installationId: "installation",
+      namespaceId: "namespace",
+      agentId: "agent",
+      servicePrincipalId: "principal",
+      revisionId,
+      executionId: "execution",
+    },
+  };
+  const releaseKey = protectedInference && generateKeyPairSync("ed25519").privateKey;
+  if (protectedInference) {
+    mkdirSync(codexHome);
+  }
+
   let appServerStarts = 0;
   let nativeCalls = 0;
   let clock = 0;
@@ -100,6 +128,8 @@ export function createCodexStartup(
   };
   const sandbox = {
     URL,
+    Buffer,
+    performance,
     Math: Object.create(Math, { random: { value: () => random } }),
     // A login retry waits synchronously; the fake records the wait and advances the clock.
     Atomics: {
@@ -110,7 +140,15 @@ export function createCodexStartup(
       },
     },
     setTimeout(callback, delay) {
-      retryTimers.push({ callback, delay });
+      const timer = { callback, delay };
+      retryTimers.push(timer);
+      return timer;
+    },
+    clearTimeout(timer) {
+      const index = retryTimers.indexOf(timer);
+      if (index !== -1) {
+        retryTimers.splice(index, 1);
+      }
     },
     console: {
       error(message) {
@@ -130,7 +168,24 @@ export function createCodexStartup(
           ? { CODEX_ACCESS_TOKEN: providerPat ? providerPlaceholder : "at-fixture-token" }
           : { OPENAI_API_KEY: "fixture-api-key" }),
         OPENCLAW_HARNESS_MODEL: "codex/gpt-4.1",
-        OPENCLAW_AGENT_REVISION_ID: "revision-runtime-auth-gate",
+        OPENCLAW_AGENT_REVISION_ID: revisionId,
+        ...(protectedInference
+          ? {
+              OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: revisionId,
+              [COMPUTE_RELEASE_PUBLIC_KEY]: computeReleasePublicKey(releaseKey),
+              ...pluginRuntimeEnvironment({
+                kind: "codex",
+                selections: {},
+                providerTools: "none",
+                egressEnrollment:
+                  protectedInference === "missing" ? undefined : harnessEgressEnrollment(plan),
+                modelEndpoint: {
+                  modelProvider: "openai-compatible",
+                  baseUrl: "https://provider.example.test/v1",
+                },
+              }),
+            }
+          : {}),
         OPENCLAW_RUNTIME_STATUS_CONTAINER: "agent",
         OPENCLAW_RUNTIME_STATUS_PORT: "18791",
         OPENCLAW_POD_UID: "pod-runtime-auth-gate",
@@ -163,8 +218,20 @@ export function createCodexStartup(
       if (specifier === "node:http") {
         return {
           createServer(handler) {
-            statusHandler = handler;
-            return { listen() {} };
+            return {
+              listen(port) {
+                if (port === 4500) {
+                  enrollmentHandler = handler;
+                } else {
+                  statusHandler = handler;
+                }
+              },
+              on() {},
+              close(callback) {
+                callback();
+              },
+              closeAllConnections() {},
+            };
           },
         };
       }
@@ -222,6 +289,15 @@ export function createCodexStartup(
                 clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
+                if (protectedInference) {
+                  for (const argument of [
+                    "--ignore-user-config",
+                    "model_providers.openai-compatible.request_max_retries=0",
+                    "model_providers.openai-compatible.stream_max_retries=0",
+                  ]) {
+                    assert.ok(args.includes(argument), argument);
+                  }
+                }
                 // Check the gate while the probe is running, before any app-server spawn.
                 assert.equal(appServerStarts, 0);
                 assert.equal(
@@ -283,6 +359,53 @@ export function createCodexStartup(
     start() {
       vm.runInNewContext(AGENT_RUNTIME_ENTRYPOINT, sandbox);
     },
+    async releaseProtectedExecution() {
+      // Exercise the generated Harness. Even an authenticated peer cannot release it by
+      // echoing the challenge; only the fresh Compute signature may start native login.
+      const exchange = async (method, body, expectedStatus) => {
+        let result;
+        await enrollmentHandler(
+          {
+            method,
+            url: "/openclaw/runtime/egress-enrollment",
+            headers: {
+              authorization: "Bearer " + transportToken,
+              "content-type": "application/json",
+            },
+            async *[Symbol.asyncIterator]() {
+              yield Buffer.from(JSON.stringify(body));
+            },
+          },
+          {
+            writeHead(status) {
+              assert.equal(status, expectedStatus);
+            },
+            on(_event, listener) {
+              this.finished = listener;
+            },
+            end(raw) {
+              result = JSON.parse(raw);
+              this.finished?.();
+            },
+          },
+        );
+        return result;
+      };
+      const challenge = await exchange("GET", undefined, 200);
+      assert.equal((await exchange("POST", challenge, 409)).error, "stale_enrollment");
+      assert.equal(nativeCalls, 0, "no native login or probe before signed release");
+      const release = signComputeExecutionRelease(releaseKey, challenge.startupId, {
+        plan,
+        sandboxId: "sandbox",
+        enforcement: {
+          instanceId: "instance",
+          configurationId: "configuration",
+          peerKeyId: "enrolled-key",
+        },
+      });
+      await exchange("POST", release, 200);
+      await new Promise((resolve) => setImmediate(resolve));
+    },
     retryAfter(milliseconds) {
       clock += milliseconds;
       retryTimers[0].callback();
@@ -309,12 +432,21 @@ export function createCodexStartup(
 
 // Ordinary scenarios log in successfully and run one probe; native scripts retain
 // explicit control over login failures, retries, process results, and timeouts.
-export function checkCodexStartup(t, scenario) {
+export async function checkCodexStartup(t, scenario) {
   const runtime = createCodexStartup(t, {
     ...scenario,
     native: scenario.native ?? [login(), probe(scenario.events, scenario.result)],
   });
+  if (scenario.protectedInference === "missing") {
+    assert.throws(() => runtime.start(), /protected inference profile is invalid/);
+    runtime.assertNativeScriptConsumed();
+    assert.equal(runtime.marker(), undefined);
+    return;
+  }
   runtime.start();
+  if (scenario.protectedInference) {
+    await runtime.releaseProtectedExecution();
+  }
   if (scenario.retryAfterMs !== undefined) {
     assert.equal(runtime.appServerStarts, 0);
     assert.equal(runtime.marker(), undefined);
@@ -433,7 +565,13 @@ function checkStartupDiagnostics(runtime, scenario) {
   // provider, credential or path value can appear in these lines.
   assert.deepEqual(
     phases.map(({ phase, outcome }) => [phase, outcome]),
-    expected.phases,
+    scenario.protectedInference
+      ? [
+          ["egress-enrollment", "ok"],
+          ...expected.phases,
+          ...(expected.code === "READY" ? [["plugin-install", "ok"]] : []),
+        ]
+      : expected.phases,
   );
   // A failed native login, like a failed probe that ran, adds only the closed-list
   // class of Codex's error output (finding 2017).

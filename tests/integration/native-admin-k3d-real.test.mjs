@@ -358,13 +358,20 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
   assert.deepEqual(result.registrations, [], "native admin must not install a ServiceWorker");
 }
 
-async function completeNativeLaunch(nativePage, { nativeOrigin }) {
-  await nativePage.waitForLoadState("domcontentloaded");
-  assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
-  await nativePage.waitForURL((url) => url.origin === nativeOrigin && url.pathname === "/", {
-    timeout: 120_000,
-  });
+async function openNativeAdminConsole(page, nativeOrigin) {
+  const link = page.getByRole("link", { name: "Open admin console", exact: true });
+  const root = new URL("/", nativeOrigin).href;
+  assert.equal(await link.getAttribute("href"), root);
+  const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
   await waitForStockUi(nativePage);
+  // Navigation Timing keeps the loaded document URL when the stock UI replaces "/" with chat.
+  const documentUrl = await nativePage.evaluate(
+    () => performance.getEntriesByType("navigation")[0]?.name,
+  );
+  assert.equal(documentUrl, root, "Open admin console must load the native root document");
+  assert.equal(new URL(nativePage.url()).origin, nativeOrigin);
+  assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
+  return nativePage;
 }
 
 async function openRawEditor(page, nativeOrigin) {
@@ -702,10 +709,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     }
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
-    const popup = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open admin console" }).click();
-    const nativePage = await popup;
-    await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
+    const nativePage = await openNativeAdminConsole(page, status.origin);
     const terminalFrame = await submitChatTurnWithAssistantProof(
       nativePage,
       `sharing-${label}-${randomUUID()}`,
@@ -885,10 +889,7 @@ test(
         "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
       )
       .waitFor();
-    const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open admin console" }).click();
-    const nativePage = await popupPromise;
-    await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
+    const nativePage = await openNativeAdminConsole(page, status.origin);
 
     const deepLink = new URL("/settings/advanced", status.origin);
     const deepLinkResponse = await nativePage.goto(deepLink.href);

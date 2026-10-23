@@ -124,7 +124,8 @@ OCC_MIGRATION_HISTORY_DATABASE_PREFIX=openclaw_migration_test_local \
 
 All three selectors are required. The prefix must start with `openclaw_`, use
 only lowercase letters, digits, and underscores, and contain at most 50
-characters. The test uses `docker exec` and drops only databases it created.
+characters. The test reads the container's administrator password with `docker inspect`,
+connects through the selected port, and drops only databases it created.
 See [migration recovery](../reference/settings/operations.md#migration-history).
 
 ## Azure workload-identity connections
