@@ -248,8 +248,8 @@ changes, overlapping GitHub access from retained providers or failed observation
 can require runtime retirement instead. Git-only removal records one conditional
 detach request. While Git stays attached, the worker sends that same request again;
 a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
-An empty OpenShell profile workspace
-selects the platform profile, not a same-named Workspace profile.
+An empty OpenShell profile workspace selects the platform profile, not a same-named
+Workspace profile.
 
 A failed read closes the route until the same installation verifies, with retry
 backoff from 1 s to 10 s. A failed read before the route's first provider write

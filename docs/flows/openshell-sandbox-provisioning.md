@@ -331,7 +331,7 @@ fences the delivery and commits its reduction intent through
 `packages/occ/src/state/credential-delivery-reductions.ts:CredentialDeliveryReductions`.
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
 conditionally detaches Git. It independently verifies the reduced generation, original
-process and network, retained providers and model attachment. Lost replies are observed,
+process and network, retained providers and model attachment. Applied detaches are observed,
 never resent; an unapplied intent repeats its request. A replacement cannot settle it.
 
 This supports one Git binding with separately authorized model access. Removing the last Git route

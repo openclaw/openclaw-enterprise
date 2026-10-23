@@ -25,6 +25,12 @@ export interface OpenShellGitContinuity {
 const positive = /^[1-9]\d*$/u;
 const unspecified = "PROVIDER_READINESS_REASON_UNSPECIFIED";
 class Unsafe extends Error {}
+/** The gateway client sanitizes some failures into an error with grpcStatus; others retain
+ * gRPC's numeric code. */
+function grpcCode(error: unknown): number {
+  const failure = error as { grpcStatus?: number; code?: number } | null;
+  return Number(failure?.grpcStatus ?? failure?.code);
+}
 function requireIdentity(condition: unknown): asserts condition {
   if (!condition) {
     throw new Unsafe("OpenShell cannot retain this execution after Git expiry.");
@@ -251,10 +257,12 @@ export async function witnessOpenShellGitLaunch(
  * one request ID and the Sandbox version it is conditional on, before the first send.
  * A lost reply is reconciled with a fresh OBSERVE of absence, not attributed to our DETACH.
  * An intent that left the provider attached (a crash before the send, or a send that did not
- * answer) is sent again as the same request (finding 2219). The gateway admits a request ID at
- * most once: it replays a completed detach, refuses one whose outcome it cannot tell
- * (FAILED_PRECONDITION, which retires the runtime), and runs one it never saw under the same
- * version precondition. A Sandbox version that moved since the intent retires the runtime.
+ * answer) is sent again as the same request (finding 2219). Per caller identity and workspace,
+ * the gateway admits a request ID at most once: it replays a completed detach, and runs one it
+ * never saw under the same version precondition. It answers FAILED_PRECONDITION when it holds
+ * the request without a result (possibly still applying), cannot replay it (key rotation, the
+ * original Sandbox gone) or got another payload: only a detach then observed in effect settles
+ * it, else the runtime retires. A Sandbox version that moved since the intent retires it too.
  */
 export async function subtractExpiredOpenShellGit(
   store: Pick<OpenShellGitRouteStore, "beginDetach" | "confirmDetached">,
@@ -300,7 +308,8 @@ export async function subtractExpiredOpenShellGit(
     let request = detach?.requestId;
     if (current.present) {
       // A confirmed detach whose provider is attached again, or an intent this request can no
-      // longer satisfy, cannot be settled by another send.
+      // longer satisfy, cannot be settled by another send. (A confirmed detach also moved the
+      // version; the epoch check is kept as a second guard.)
       if (detach?.epoch || (request && detach?.resourceVersion !== current.version)) {
         return result("retire-runtime", "attachment-after-send-intent");
       }
@@ -331,16 +340,33 @@ export async function subtractExpiredOpenShellGit(
         }
       }
       // The same request again when an earlier send did not take effect.
-      check = detach?.requestId ? "repeated-conditional-detach" : "conditional-detach";
+      const repeated = detach?.requestId !== undefined;
+      check = repeated ? "repeated-conditional-detach" : "conditional-detach";
       signal.throwIfAborted();
-      const sent = await client.detachSandboxProvider(workspace, name, provider, signal, {
-        requestId: request,
-        expectedResourceVersion: current.version,
-      });
-      requireIdentity(sent?.detached === true && sent.receiptId);
-      receiptId = sent.receiptId;
-      check = "launch-after-detach";
-      current = await inspect();
+      let sent: Awaited<ReturnType<Client["detachSandboxProvider"]>> | undefined;
+      try {
+        sent = await client.detachSandboxProvider(workspace, name, provider, signal, {
+          requestId: request,
+          expectedResourceVersion: current.version,
+        });
+      } catch (error) {
+        if (!repeated || grpcCode(error) !== 9) {
+          throw error;
+        }
+        // The gateway holds the earlier send without a result: it may have applied since. Only
+        // the provider read absent now settles it (by OBSERVE below); otherwise retire.
+        check = "launch-after-uncertain-detach";
+        current = await inspect();
+        if (current.present) {
+          throw error;
+        }
+      }
+      if (sent !== undefined) {
+        requireIdentity(sent.detached === true && sent.receiptId);
+        receiptId = sent.receiptId;
+        check = "launch-after-detach";
+        current = await inspect();
+      }
     }
     requireIdentity(
       !current.present && request && (!detach?.epoch || detach.epoch === current.epoch),
@@ -396,11 +422,8 @@ export async function subtractExpiredOpenShellGit(
   } catch (error) {
     // Permission, failed precondition, unsupported, missing or contradictory evidence cannot
     // authorize retention. Transport loss after our durable fence is an observation to repeat.
-    // The gateway client sanitizes some failures into an error with grpcStatus; others
-    // retain gRPC's numeric code. In particular UNIMPLEMENTED must not become pending.
-    const failure = error as { grpcStatus?: number; code?: number } | null;
-    const code = failure?.grpcStatus ?? failure?.code;
-    return error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(Number(code))
+    // In particular UNIMPLEMENTED must not become pending.
+    return error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error))
       ? result("retire-runtime")
       : result("pending");
   }
