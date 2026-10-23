@@ -1,0 +1,115 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+// Independent wire subset extracted from NVIDIA/OpenShell commit
+// 42671c2dd2c02b744850e0bda72b99d5509969c1 (proto/openshell.proto and datamodel.proto).
+// Keep this fixture pinned to upstream; do not derive it from the production proto.
+// Shared datamodel types are flattened into this package, as in the v0.1.5 fixture.
+syntax = "proto3";
+package openshell.v1;
+
+service OpenShell {
+  rpc StopSandbox(StopSandboxRequest) returns (SandboxResponse);
+  rpc StartSandbox(StartSandboxRequest) returns (SandboxResponse);
+  rpc ExposeService(ExposeServiceRequest) returns (ServiceEndpointResponse);
+}
+service SandboxUpdates {
+  rpc UpdateSandbox(UpdateSandboxRequest) returns (SandboxResponse);
+}
+message WorkspaceSelector {
+  oneof selection {
+    string workspace = 1;
+  }
+}
+message StopSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 2;
+  string name = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 3;
+}
+message StartSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 2;
+  string name = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 3;
+}
+message SandboxCommandUpdate {
+  repeated string argv = 1;
+}
+message SandboxMapUpdate {
+  map<string, string> values = 1;
+}
+message UpdateSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 1;
+  // Canonical name of the existing sandbox; this is not a rename or upsert.
+  string name = 2;
+  // Nonempty OCI workload image reference. This does not change trusted runtime
+  // images or reseed an existing workspace.
+  optional string image = 3;
+  // Replace workload argv; an empty list restores image-resolved default shell behavior.
+  SandboxCommandUpdate command = 6;
+  // Replace sandbox-level overrides. Empty clears overrides; template defaults remain.
+  SandboxMapUpdate environment = 7;
+  // Replace user metadata, preserving gateway-owned keys. These do not set pod metadata.
+  SandboxMapUpdate labels = 8;
+  SandboxMapUpdate annotations = 9;
+  // Required nonzero resource version read by the caller.
+  uint64 expected_resource_version = 4;
+  // Optional nonzero UUID for durable at-most-once admission.
+  string request_id = 5;
+}
+message ObjectMeta {
+  string id = 1;
+  string name = 2;
+  map<string, string> labels = 4;
+  uint64 resource_version = 5;
+  map<string, string> annotations = 6;
+  string workspace = 7;
+}
+message Sandbox { ObjectMeta metadata = 1; }
+message SandboxResponse { Sandbox sandbox = 1; }
+
+// Public OpenShell service exposure wire contract, independent of the controller descriptor.
+message ExposeServiceRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 5;
+  // Service name within the sandbox.
+  string name = 2;
+  // Loopback TCP port inside the sandbox.
+  uint32 target_port = 3;
+  // Whether to print/use the browser-facing service URL.
+  bool domain = 4;
+  string sandbox = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 6;
+  // Application authorization behavior. Omission resolves to STRIP.
+  ServiceAuthorizationMode authorization_mode = 7;
+}
+message ServiceEndpoint {
+  ObjectMeta metadata = 1;
+  string sandbox_id = 2;
+  string sandbox = 3;
+  string name = 4;
+  uint32 target_port = 5;
+  bool domain = 6;
+  ServiceAuthorizationMode authorization_mode = 7;
+}
+message ServiceEndpointResponse {
+  ServiceEndpoint endpoint = 1;
+  string url = 2;
+}
+
+enum ServiceAuthorizationMode {
+  // Omission preserves the secure legacy behavior and resolves to STRIP.
+  SERVICE_AUTHORIZATION_MODE_UNSPECIFIED = 0;
+  // Remove Authorization before forwarding to the sandbox service.
+  SERVICE_AUTHORIZATION_MODE_STRIP = 1;
+  // Forward one syntactically valid bearer Authorization header unchanged.
+  SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH = 2;
+}

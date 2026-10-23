@@ -29,9 +29,10 @@ ID’s SHA-256 digest, which fits OpenShell pre.5 Workspace names. Earlier
 this form. Wrong names or duplicate tenant claims fail closed. Adopted namespaces
 keep their names; OpenShell rejects names exceeding its Workspace limit.
 
-The optional [OpenShell Sandbox Driver](openshell-sandbox.md) is designed to
-own dedicated Codex and native OpenClaw Harness Pods while Compute keeps the
-other resources. Dedicated native OpenClaw requires a selected
+OpenShell integrations ([operator](openshell-sandbox.md) or experimental
+[managed](kubernetes-openshell-compute.md)) own dedicated Codex and native
+OpenClaw Harness Pods. Internal execution classes share `occ/kubernetes`;
+Compute keeps other resources. Dedicated native OpenClaw requires a selected
 SandboxDriver that provisions the Harness and declares networking, filesystem, and
 process containment. Stock OpenShell cannot provide required credential and
 workload-identity projections; Agent deployment with OpenShell remains unsupported.

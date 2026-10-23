@@ -20,10 +20,11 @@ Embedded OpenClaw is unsupported. See native OpenClaw
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support at construction.
-  Dedicated needs `kubernetes.userNamespaces: false` and at most
+- `supportsHarnessExecutionMode` declares OpenClaw support.
+  Operator mode requires `kubernetes.userNamespaces: false` and at most
   one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
-  [mode support contract](sandbox.md#harness-mode-support).
+  [mode support contract](sandbox.md#harness-mode-support) and
+  [managed-mode bootstrap](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.
@@ -173,7 +174,15 @@ revision to change artifact authority. Live Agent policy apply remains unavailab
 
 Optional readiness observes an OCC-namespace Service and Pods; paired Gateways normally use a Backend `endpoint`. It requires positive `timeoutMs` and `pollIntervalMs` at most `2147483647` (default 1000). Development uses Harness readiness without `startupDelayMs`.
 
-Install OpenShell's Gateway separately. Required `gateway.workspaceMode` accepts `operator` or `managed`; `managed` fails before Kubernetes mutations or Gateway calls. Configure its Kubernetes driver with `workspaceMode: operator`, a namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels` containing `openclaw.dev/*`, `app.kubernetes.io/name`, and `app.kubernetes.io/managed-by`. Missing labels cause `SANDBOX_POD_LABELS_NOT_PERMITTED`. Workspace names must match their pre-provisioned namespace: `oce-` plus a 15-character digest (19 characters maximum).
+Install OpenShell's gateway separately. Required `gateway.workspaceMode`
+accepts `operator` or `managed`; managed mode selects the experimental
+[Kubernetes Harness runtime](kubernetes-openshell-compute.md). Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
+namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
+listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
+`app.kubernetes.io/managed-by`; otherwise deployment fails with
+`SANDBOX_POD_LABELS_NOT_PERMITTED`. An OpenShell Workspace
+name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
+15-character digest, within the 19-character limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile) installs one Gateway with workspace resources disabled in `oce-system` (Kubernetes-only) or `openshell-system` (Compose). Agent Sandbox runs in `agent-sandbox-system`. The launcher renders `openshell-workspace` once into trusted Installation configuration. The Driver applies it before each OCC Namespace's Workspace creation, without per-Namespace Helm releases.
 
@@ -295,7 +304,7 @@ children, including a `control` directory retained after a failed setup.
 
 The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
 `tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
+a `1Gi` ephemeral-storage limit. Operator-mode native provisioning privatizes writable PVC
 subpaths, keeping retained entries, in a restricted per-revision Deployment;
 ownership/mode checks, foreground deletion and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
