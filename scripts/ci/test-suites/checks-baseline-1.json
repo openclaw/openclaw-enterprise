@@ -103,6 +103,7 @@
     "tests/conformance/split-layout-adopt.test.mjs",
     "tests/conformance/url-authority.test.mjs",
     "tests/integration/static-egress.test.mjs",
+    "tests/integration/codex-workspace-authority.test.ts",
     "tests/integration/credential-proxy-peer-pin.test.ts",
     "tests/integration/egress-stock-online-authority.test.mjs",
     "tests/integration/egress-stock-online-git-authority.test.mjs",
@@ -113,6 +114,7 @@
     "tests/integration/credential-free-metadata-grant.test.ts",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
+    "tests/integration/protected-codex-pat.test.ts",
     "tests/integration/credential-policy-recovery.test.ts",
     "tests/conformance/kubernetes-prepared-repository.test.mjs",
     "tests/integration/egress-installation-exchange.test.mjs",
@@ -481,6 +483,13 @@
       ]
     },
     {
+      "path": "tests/integration/codex-workspace-authority.test.ts",
+      "expectedTests": [
+        "registered workspace PAT exchange enforces source ownership, response custody and withdrawal",
+        "workspace PAT classifies two-turn message metadata without widening Platform policy"
+      ]
+    },
+    {
       "path": "tests/integration/static-egress.test.mjs",
       "expectedTests": [
         "Responses output text assembled across parts and messages cannot reveal selected material",
@@ -552,6 +561,9 @@
         "the running OpenShell recipient refuses a changed Repo ref or foreign supplier identity without restoring access",
         "repository scope changes invalidate the external Driver identity while a reload preserves it"
       ]
+    },
+    {
+      "path": "tests/integration/protected-codex-pat.test.ts"
     },
     {
       "path": "tests/integration/credential-policy-recovery.test.ts",

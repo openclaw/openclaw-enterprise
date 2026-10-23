@@ -4,6 +4,7 @@ import {
   validRepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
 import type {
+  EgressBinding,
   EgressExecution,
   EgressInstallation,
   ProxyPlan,
@@ -20,6 +21,21 @@ export interface HarnessEgressEnrollment {
   readonly repositoryGitAuthorization?: ProxyPlan["repositoryGitAuthorization"];
 }
 
+export function isWorkspaceInferenceGrant(
+  grant: EgressBinding["grant"],
+): grant is Extract<EgressBinding["grant"], { readonly kind: "workspace_inference" }> {
+  return grant.kind === "workspace_inference";
+}
+
+export function isModelInferenceGrant(
+  grant: EgressBinding["grant"],
+): grant is Extract<
+  EgressBinding["grant"],
+  { readonly kind: "inference" | "workspace_inference" }
+> {
+  return grant.kind === "inference" || isWorkspaceInferenceGrant(grant);
+}
+
 export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollment {
   // Project keys in wire order: PostgreSQL JSONB does not preserve insertion order.
   const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
@@ -31,7 +47,7 @@ export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollmen
     routeCount: plan.routes.length + (plan.repositoryGit ? 1 : 0),
     inference: plan.harnessCredentialSource
       ? "credential_source"
-      : plan.routes.some((route) => route.binding.grant.kind === "inference"),
+      : plan.routes.some((route) => isModelInferenceGrant(route.binding.grant)),
     plan: { id: plan.id, generation: plan.generation },
     execution: {
       installationId,

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-22"
-last_updated_session: authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a
+updated: "2026-10-23"
+last_updated_session: authoring-run/e93bd191-284b-4701-929c-85a5d446c694
 ---
 
 # Protected credential request flow
@@ -49,6 +49,45 @@ graph TD
 Wire fixtures do not qualify deployed supervisors or no-bypass networking.
 
 ## Execution Trace
+
+### Workspace PAT qualification boundary
+
+`apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts:createCodexWorkspacePatProvider`
+provides generation 1 policy for an externally registered Driver using
+`codex-pat/access_token`. No bundled sender advertises it. The Driver must bind
+authenticated workspace metadata to the exact source, Namespace and material
+lifecycle. Missing authority refuses the grant; workload headers cannot establish it.
+
+OCC records proxy source ownership. `packages/occ/src/index.ts:checkEgressUseIn`
+checks the current workspace grant before material lookup and at send authorization.
+The provider separates `workspace_bootstrap` from generation and admits only identity,
+accounts, version-specific models and selected-model Responses requests. ChatGPT
+requests require the admitted account header. Identity responses reject workspace
+substitution, redirects, reflected material and alternate backend URLs. They return
+only `chatgpt_account_id` and `chatgpt_account_is_fedramp`.
+
+`packages/occ/src/index.ts:credentialSourceHarnessAuthSnapshot` selects the recorded
+source owner. A Proxy-owned Harness snapshot stores `credentialProxyId` and the
+exact nonsecret egress metadata, including Namespace, source ID, provider generation,
+sender and resolver. Gateway snapshots retain `credentialGatewayId`. Agent save
+checks the registered provider's grant against the configured model; absent workspace
+authority refuses selection. No new public input or Secret fallback is introduced.
+
+`packages/occ/src/state/platform-state.ts:validHarnessAuthSnapshot` and the SQL
+`harness_auth_is_valid` constraint accept these mutually exclusive owner shapes.
+The worker resolves the exact ready source again. Compute checks
+`packages/contracts/src/harness-auth.ts:proxyHarnessAuthProvider` against its paired
+Proxy before using the existing nonsecret PAT marker path. Changed, absent or
+ambiguous provider ownership refuses restoration or dispatch.
+
+Accounts/catalog replies and additional native identity fields remain unqualified.
+The controlled integration tests exercise actual Agent selection and deployment,
+Gateway compatibility, unauthorized access, source authority and a TLS receiver.
+They do not authenticate a real account or establish a native turn or installed enforcement.
+
+Single-host and mixed-Git guards remain unchanged. Online Git cannot substitute
+exact-dispatch admission. A combined deployment needs a separately versioned
+admission and verified independent policy reduction to retain Git after PAT withdrawal.
 
 ### 1. Admit source and install the revision plan
 
@@ -294,6 +333,10 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-23 20:14: Preserve exact Proxy ownership through Harness admission, persistence and dispatch. (authoring-run/e93bd191-284b-4701-929c-85a5d446c694 - ef61a85efa8f9a819986a072efb50ca91deca607)
+
+- 2026-10-23 19:40: Record the workspace PAT policy and remaining qualification gates in the accompanying change. (authoring-run/46d0701b-da16-43b1-8c7e-2510a4dd1475 - c250d521a59cb7d1e8be85bf02a112062e5ab259)
 
 - 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 

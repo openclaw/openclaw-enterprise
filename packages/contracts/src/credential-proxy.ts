@@ -100,12 +100,24 @@ export interface InferenceGrant {
   readonly providerTools: "none";
 }
 
+/** Workspace identity comes from the installed provider's source registry, never the workload. */
+export interface WorkspaceInferenceGrant {
+  readonly kind: "workspace_inference";
+  readonly models: readonly string[];
+  readonly providerTools: "none";
+  readonly workspaceId: string;
+}
+
 export interface EgressBinding {
   readonly binding: EgressRef;
   readonly execution: EgressExecution;
   readonly source: EgressSourceKey;
   readonly grant:
-    InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
+    | InferenceGrant
+    | WorkspaceInferenceGrant
+    | GitHubMetadataGrant
+    | CredentialFreeMetadataGrant
+    | PreparedTokenGrant;
   readonly grantHash: string;
   readonly isolationId: string;
 }
@@ -226,10 +238,16 @@ export interface InferenceOperation {
   readonly kind: "inference";
   readonly action: "generate";
   readonly model: string;
+  readonly workspaceId?: string;
 }
 
 export type EgressOperation =
   | InferenceOperation
+  | {
+      readonly kind: "workspace_bootstrap";
+      readonly action: "identity" | "accounts" | "models";
+      readonly workspaceId: string;
+    }
   | { readonly kind: "prepared_scope"; readonly action: string }
   | {
       readonly kind: "github_repository_metadata" | "credential_free_repository_metadata";
@@ -291,11 +309,19 @@ export interface CredentialProviderDefinition {
   readonly ref: EgressRef;
   readonly schemaVersion: 1;
   readonly sourceType: CredentialSourceType;
+  /** The selected proxy owns registration and authoritative material reads for this profile. */
+  readonly sourceOwnership?: "proxy";
   normalizeConfig(config: Readonly<Record<string, string>>): Readonly<Record<string, string>>;
   normalizeGrant(
     models: readonly string[],
     config?: Readonly<Record<string, string>>,
-  ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
+    source?: Readonly<CredentialSource>,
+  ):
+    | InferenceGrant
+    | WorkspaceInferenceGrant
+    | GitHubMetadataGrant
+    | CredentialFreeMetadataGrant
+    | PreparedTokenGrant;
   routes(source: Readonly<CredentialSource>, binding: EgressBinding): readonly EgressRoute[];
   classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];

@@ -1,3 +1,4 @@
+import { proxyHarnessAuthProvider } from "@openclaw-enterprise/contracts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -5276,10 +5277,20 @@ export class ControllerWorker {
     } else if (revision.harnessAuth.method === "credential_source") {
       const auth = revision.harnessAuth;
       if (
-        this.credentialGateway === undefined ||
-        auth.credentialGatewayId !== this.credentialGateway.id
+        auth.credentialProxyId !== undefined
+          ? !proxyHarnessAuthProvider(this.proxyDriver, auth)
+          : this.credentialGateway === undefined ||
+            auth.credentialGatewayId !== this.credentialGateway.id
       ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+        return {
+          result: {
+            outcome: "permanent",
+            code:
+              auth.credentialProxyId !== undefined
+                ? "EGRESS_PROVIDER_UNAVAILABLE"
+                : "CREDENTIAL_GATEWAY_MISMATCH",
+          },
+        };
       }
       const { source, withdrawal } = await this.state.read(async (view) => ({
         source: await view.credentialSources.findCredentialSource(
@@ -5300,6 +5311,7 @@ export class ControllerWorker {
       if (
         source === undefined ||
         source.state !== "ready" ||
+        source.namespaceId !== revision.namespaceId ||
         !credentialSourceMatchesSnapshot(source, auth)
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
@@ -5337,7 +5349,15 @@ export class ControllerWorker {
           ? this.credentialGateway?.id
           : this.proxyDriver?.id)
       ) {
-        return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
+        return {
+          result: {
+            outcome: "permanent",
+            code:
+              snapshot.credentialProxyId !== undefined
+                ? "EGRESS_PROVIDER_UNAVAILABLE"
+                : "CREDENTIAL_GATEWAY_MISMATCH",
+          },
+        };
       }
       const { source, withdrawal } = await this.state.read(async (view) => ({
         source: await view.credentialSources.findCredentialSource(

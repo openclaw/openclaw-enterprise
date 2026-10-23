@@ -7,6 +7,10 @@ import {
 } from "../../../../../../packages/contracts/src/runtime-failure.mjs";
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
+import {
+  PROTECTED_EGRESS_MARKER,
+  codexWorkspaceProviderArguments,
+} from "../codex-workspace-client.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
@@ -1250,10 +1254,19 @@ function assertCodexPluginRuntime(runtime) {
   if (!isPlainObject(runtime.manifest.selections ?? {})) {
     throw new Error("Codex plugin selections are invalid.");
   }
+  const nativePat = runtime.manifest.nativePat === true;
+  if (runtime.manifest.nativePat !== undefined &&
+      (!nativePat || runtime.manifest.modelEndpoint !== undefined ||
+       runtime.manifest.providerTools !== "none" ||
+       runtime.manifest.egressEnrollment?.inference !== true ||
+       process.env.CODEX_LOGIN_MODE !== "codex_pat" ||
+       process.env.OCE_CODEX_CREDENTIAL_SOURCE !== "1")) {
+    throw new Error("Codex protected native PAT profile is invalid.");
+  }
   if ((runtime.manifest.providerTools !== undefined || runtime.manifest.egressEnrollment !== undefined) &&
       (runtime.manifest.providerTools !== "none" ||
        !isPlainObject(runtime.manifest.egressEnrollment) ||
-       (runtime.manifest.egressEnrollment.inference === true &&
+       (runtime.manifest.egressEnrollment.inference === true && !nativePat &&
         (runtime.manifest.modelEndpoint?.modelProvider !== "openai-compatible" ||
          typeof runtime.manifest.modelEndpoint.baseUrl !== "string")))) {
     throw new Error("Codex protected inference profile is invalid.");
@@ -3520,18 +3533,24 @@ const workspaceDirectory = process.env.OPENCLAW_WORKSPACE_DIR ||
 if (!workspaceDirectory.startsWith("/")) {
   throw new Error("The Codex workspace directory must be an absolute path.");
 }
+const pluginRuntime = readPluginRuntime("codex");
+if (pluginRuntime !== undefined) assertCodexPluginRuntime(pluginRuntime);
+if (loginMode === "codex_pat" &&
+    (${disableUnboundedConnectionRetries} || pluginRuntime?.manifest.egressEnrollment !== undefined ||
+     process.env.OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID !== undefined ||
+     process.env.OPENCLAW_EGRESS_COMPUTE_RELEASE_PUBLIC_KEY !== undefined) &&
+    pluginRuntime?.manifest.egressEnrollment?.inference !== "credential_source" &&
+    (pluginRuntime?.manifest.nativePat !== true || accessToken !== ${JSON.stringify(PROTECTED_EGRESS_MARKER)})) {
+  throw new Error("Codex protected native PAT profile or marker is invalid.");
+}
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 mkdirSync(workspaceDirectory, { recursive: true });
 if (process.env.OPENCLAW_PLUGIN_READY_MARKER !== undefined) {
   rmSync(process.env.OPENCLAW_PLUGIN_READY_MARKER, { force: true });
 }
-const pluginRuntime = readPluginRuntime("codex");
-if (pluginRuntime !== undefined) {
-  assertCodexPluginRuntime(pluginRuntime);
-  writeCodexConfigToml(pluginRuntime);
-}
-// A Credential Gateway supplies an opaque token, so native CLI prefix detection cannot
-// classify it. The native PAT auth-file contract still hydrates and validates account metadata.
+if (pluginRuntime !== undefined) writeCodexConfigToml(pluginRuntime);
+// Credential sources can supply opaque markers, so native CLI prefix detection cannot
+// classify them. The native PAT auth-file contract still hydrates and validates account metadata.
 const providerManagedPat = loginMode === "codex_pat" && process.env.OCE_CODEX_CREDENTIAL_SOURCE === "1";
 if (providerManagedPat) {
   require("node:fs").writeFileSync(process.env.CODEX_HOME + "/auth.json",
@@ -3636,7 +3655,7 @@ if (noInference) {
       stdio: ["pipe", "ignore", "pipe"],
       timeout: Math.min(30000, Math.floor(loginDeadline - attemptStartedAt)), killSignal: "SIGKILL", maxBuffer: 262144,
     });
-    if (loginMode === "api_key" || (login.status === 0 && !login.error)) break;
+    if (pluginRuntime?.manifest.nativePat === true || loginMode === "api_key" || (login.status === 0 && !login.error)) break;
     const timedOut = login.error?.code === "ETIMEDOUT";
     const failureClass = codexFailureOutputClass(login.stderr, login.error);
     console.error(JSON.stringify({
@@ -3767,6 +3786,8 @@ ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_
       "-c", 'web_search="disabled"',
       "-c", "project_doc_max_bytes=0",
       "-c", "check_for_update_on_startup=false",
+      // This probe ignores config.toml, so pass the protected app-server profile explicitly.
+      ...(pluginRuntime?.manifest.nativePat !== true ? [] : ${JSON.stringify(["--disable", "enable_request_compression", ...codexWorkspaceProviderArguments()])}),
       // The authentication probe ignores user config, so carry the admitted
       // compatible endpoint explicitly and use its HTTPS Responses transport.
       ...(pluginRuntime?.manifest.modelEndpoint === undefined ? [] : [

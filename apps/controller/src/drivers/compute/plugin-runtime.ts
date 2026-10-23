@@ -11,7 +11,13 @@ import {
   PUBLIC_GITHUB_READ_SKILL,
   publicGithubReadSkill,
 } from "../repo/github/public-read/codex.ts";
-import { harnessEgressEnrollment, type HarnessEgressEnrollment } from "./egress-enrollment.ts";
+import { codexWorkspaceProviderToml } from "./codex-workspace-client.ts";
+import {
+  harnessEgressEnrollment,
+  isModelInferenceGrant,
+  isWorkspaceInferenceGrant,
+  type HarnessEgressEnrollment,
+} from "./egress-enrollment.ts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -23,16 +29,14 @@ export const PLUGIN_RUNTIME_READY_MARKER_ENVIRONMENT = "OPENCLAW_PLUGIN_READY_MA
 export const PLUGIN_RUNTIME_READY_MARKER = "/tmp/openclaw-plugin-runtime-ready";
 
 const MAX_DOCKER_PLUGIN_RUNTIME_BYTES = 64 * 1024;
-const CODEX_NO_PLUGIN_FEATURES_TOML = `[features]
-apps = false
+const CODEX_NO_PLUGIN_FEATURES_TOML = `apps = false
 plugins = false
 remote_plugin = false
 
 [apps._default]
 enabled = false
 `;
-const CODEX_SELECTED_PLUGIN_FEATURES_TOML = `[features]
-apps = true
+const CODEX_SELECTED_PLUGIN_FEATURES_TOML = `apps = true
 plugins = true
 remote_plugin = true
 
@@ -68,6 +72,8 @@ export type PluginRuntimeSpec =
       readonly repositoryBrokerNetworkPolicy?: CodexRepositoryBrokerNetworkPolicy;
       readonly publicGithubRead?: CodexPublicGithubRead;
       readonly modelEndpoint?: CodexModelEndpoint;
+      /** Host admission selects native managed PAT authentication without an API endpoint. */
+      readonly nativePat?: true;
       readonly providerTools?: "none";
       readonly egressEnrollment?: HarnessEgressEnrollment;
     };
@@ -124,9 +130,7 @@ function pluginFreeRuntimeForRevision(
       ...(revision.pluginApprovers === undefined
         ? {}
         : { pluginApprovers: revision.pluginApprovers }),
-      ...(openaiBaseUrl === undefined
-        ? {}
-        : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
+      ...codexModelAuthentication(revision, openaiBaseUrl),
       ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
       ...(publicGithubRead === undefined ? {} : { publicGithubRead }),
     };
@@ -185,9 +189,7 @@ export function pluginRuntimeSpecForRevision(
                 egressEnrollment: harnessEgressEnrollment(revision.egressPlan),
               }),
           pluginApprovers: revision.pluginApprovers,
-          ...(openaiBaseUrl === undefined
-            ? {}
-            : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } }),
+          ...codexModelAuthentication(revision, openaiBaseUrl),
           ...(repositoryBrokerNetworkPolicy === undefined ? {} : { repositoryBrokerNetworkPolicy }),
           ...(publicGithubRead === undefined ? {} : { publicGithubRead }),
         }
@@ -196,12 +198,42 @@ export function pluginRuntimeSpecForRevision(
   return runtime;
 }
 
+function codexModelAuthentication(
+  revision: Readonly<AgentRevision>,
+  openaiBaseUrl?: string,
+): Pick<Extract<PluginRuntimeSpec, { readonly kind: "codex" }>, "nativePat" | "modelEndpoint"> {
+  const auth = revision.harnessAuth;
+  const nativePat =
+    revision.executionAdmission.mode === "protected" &&
+    revision.egressPlan !== undefined &&
+    revision.harness.id === "codex" &&
+    revision.harness.mode === "dedicated" &&
+    auth?.method === "credential_source" &&
+    auth.loginMode === "codex_pat" &&
+    auth.sourceType === "codex-pat" &&
+    revision.egressPlan.routes.some(
+      ({ binding }) =>
+        isWorkspaceInferenceGrant(binding.grant) &&
+        binding.source.source.id === auth.sourceId &&
+        binding.source.namespaceId === revision.namespaceId,
+    );
+  if (nativePat) {
+    if (openaiBaseUrl !== undefined) {
+      throw new Error("Protected native Codex PAT authentication cannot select a model endpoint.");
+    }
+    return { nativePat: true };
+  }
+  return openaiBaseUrl === undefined
+    ? {}
+    : { modelEndpoint: { baseUrl: openaiBaseUrl, modelProvider: "openai-compatible" } };
+}
+
 function protectedProviderTools(revision: Readonly<AgentRevision>): "none" {
   const routes = revision.egressPlan?.routes;
   if (
     routes === undefined ||
     routes.some(({ binding: { grant } }) =>
-      grant.kind === "inference"
+      isModelInferenceGrant(grant)
         ? grant.providerTools !== "none"
         : grant.kind !== "prepared_scope" &&
           grant.kind !== "github_repository_metadata" &&
@@ -226,7 +258,7 @@ function codexToml(
   approvalPolicy: string | undefined,
   pluginDefaults: boolean,
 ): string {
-  const plugins = `${
+  const plugins = `[features]\n${runtime.nativePat === true ? "enable_request_compression = false\n" : ""}${
     Object.keys(runtime.selections).length === 0
       ? CODEX_NO_PLUGIN_FEATURES_TOML
       : CODEX_SELECTED_PLUGIN_FEATURES_TOML
@@ -238,11 +270,24 @@ function codexToml(
       : `approval_policy = ${JSON.stringify(approvalPolicy)}\n\n${plugins}`);
   const endpoint = runtime.modelEndpoint;
   if (
+    runtime.nativePat !== undefined &&
+    (runtime.nativePat !== true ||
+      runtime.providerTools !== "none" ||
+      runtime.egressEnrollment?.inference !== true ||
+      endpoint !== undefined)
+  ) {
+    throw new Error("Protected native Codex PAT profile is invalid.");
+  }
+  if (
     runtime.providerTools === "none" &&
     runtime.egressEnrollment?.inference === true &&
-    endpoint === undefined
+    endpoint === undefined &&
+    runtime.nativePat !== true
   ) {
     throw new Error("Protected inference requires an explicit normalized model endpoint.");
+  }
+  if (runtime.nativePat === true) {
+    return codexWorkspaceProviderToml(configuration);
   }
   return endpoint === undefined
     ? configuration
@@ -338,6 +383,9 @@ function runtimeManifest(runtime: PluginRuntimeSpec): Readonly<Record<string, un
       : {}),
     ...(runtime.kind === "codex" && runtime.modelEndpoint !== undefined
       ? { modelEndpoint: runtime.modelEndpoint }
+      : {}),
+    ...(runtime.kind === "codex" && runtime.nativePat !== undefined
+      ? { nativePat: runtime.nativePat }
       : {}),
     ...(runtime.pluginApprovers === undefined ? {} : { pluginApprovers: runtime.pluginApprovers }),
     ...(runtime.kind === "codex" && runtime.repositoryBrokerNetworkPolicy !== undefined

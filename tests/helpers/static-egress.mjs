@@ -82,7 +82,9 @@ export function supervisorBearer(claims, privateKey) {
 export async function staticEgressFixture(
   t,
   {
-    appFactory = createConsoleAppFixture,
+    appFactory = /** @type {typeof createConsoleAppFixture | typeof import("./postgres-egress-app.mjs").postgresApp} */ (
+      createConsoleAppFixture
+    ),
     driverConfigurations = /** @type {readonly import("../../packages/occ/src/index.ts").DriverConfigurationRegistration[]} */ ([]),
     includeLegacy = false,
     protectedSourceOnly = false,
@@ -592,7 +594,19 @@ export async function staticEgressFixture(
     resourceId: source.id,
   });
   if (!admitRevision) {
-    return { ...app, namespace, agent, source, grant };
+    return {
+      ...app,
+      namespace,
+      agent,
+      source,
+      grant,
+      secret,
+      sandboxDriver: sandbox,
+      egress,
+      get secretReads() {
+        return secretReads;
+      },
+    };
   }
   const revisionMetadata = await app.deployAgent(namespace.id, agent.id);
   const revision = await app.controller.transact((unit) =>

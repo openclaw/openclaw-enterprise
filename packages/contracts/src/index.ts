@@ -1,3 +1,4 @@
+import { Equal } from "typebox/value";
 import type {
   CredentialPolicyWithdrawalOptions,
   ExecutionAdmission,
@@ -24,6 +25,7 @@ export type {
   VersionedSecretValue,
   EgressExecution,
   InferenceGrant,
+  WorkspaceInferenceGrant,
   EgressBinding,
   EgressRoute,
   ProxyPlan,
@@ -625,7 +627,10 @@ export type CredentialSourceSnapshot = {
 /** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
 export function credentialSourceMatchesSnapshot(
   source: CredentialSource,
-  snapshot: CredentialSourceSnapshot | undefined,
+  snapshot:
+    | CredentialSourceSnapshot
+    | Extract<HarnessAuthSnapshot, { method: "credential_source" }>
+    | undefined,
 ): boolean {
   if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
     return false;
@@ -637,7 +642,9 @@ export function credentialSourceMatchesSnapshot(
       );
     case "credential_proxy":
       return (
-        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+        snapshot.credentialGatewayId === undefined &&
+        snapshot.credentialProxyId === source.driverId &&
+        (!("method" in snapshot) || Equal(snapshot.egress, source.egress))
       );
     default:
       return false;
@@ -687,13 +694,23 @@ export type HarnessAuthSnapshot =
         readonly credentialIssued: boolean;
       };
     }
-  | {
+  | ({
       readonly method: "credential_source";
       readonly sourceId: string;
-      readonly credentialGatewayId: string;
       readonly sourceType: string;
       readonly loginMode: CredentialSourceLoginMode;
-    };
+    } & (
+      | {
+          readonly credentialGatewayId: string;
+          readonly credentialProxyId?: never;
+          readonly egress?: never;
+        }
+      | {
+          readonly credentialProxyId: string;
+          readonly credentialGatewayId?: never;
+          readonly egress: ProtectedEgressSource;
+        }
+    ));
 
 /** Authoritative delivery references, resolved again at dispatch; never secret values. */
 export type ResolvedHarnessAuth =
@@ -2465,6 +2482,7 @@ export {
   harnessAuthBindingFromSnapshot,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
+  proxyHarnessAuthProvider,
 } from "./harness-auth.ts";
 
 export type {

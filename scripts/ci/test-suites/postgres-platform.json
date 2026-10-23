@@ -51,7 +51,8 @@
     "tests/integration/postgres-standing-execution.test.ts",
     "tests/integration/postgres-standing-session-worker.test.ts",
     "tests/integration/postgres-standing-expiry-authority.test.ts",
-    "tests/integration/credential-proxy-withdrawal.test.ts"
+    "tests/integration/credential-proxy-withdrawal.test.ts",
+    "tests/integration/codex-workspace-authority.test.ts"
   ],
   "files": [
     {
@@ -468,6 +469,12 @@
         "ordinary revision authorization distinguishes State unavailable",
         "ordinary revision authorization distinguishes IAM unavailable",
         "ordinary revision authorization distinguishes backend unavailable"
+      ]
+    },
+    {
+      "path": "tests/integration/codex-workspace-authority.test.ts",
+      "expectedTests": [
+        "registered workspace PAT exchange persists exact Harness ownership in PostgreSQL"
       ]
     }
   ]

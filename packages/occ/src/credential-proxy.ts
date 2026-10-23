@@ -729,7 +729,14 @@ export class CredentialProxy implements CredentialProxyExchange {
         }),
       };
     }
-    if (use.operation.kind !== "inference") {
+    if (
+      use.operation.kind !== "inference" &&
+      !(
+        use.operation.kind === "workspace_bootstrap" &&
+        route.binding.grant.kind === "workspace_inference" &&
+        use.operation.workspaceId === route.binding.grant.workspaceId
+      )
+    ) {
       return { kind: "denied", code: "scope_mismatch" };
     }
     const material = await this.ports.read(source, lifetime);

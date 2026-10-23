@@ -1,7 +1,7 @@
 ---
 created: 2026-08-24
-updated: 2026-10-16
-last_updated_session: authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6
+updated: 2026-10-23
+last_updated_session: authoring-run/8288dab6-7c7f-450e-9982-b65af300ee70
 ---
 
 # Harness Authentication Binding Flow
@@ -95,6 +95,12 @@ Namespace locks serialize source reference changes against deletion. Missing or
 foreign sources fail closed. Binding never selects a different model, Backend,
 Harness, or execution mode and cannot issue an account credential.
 
+`packages/occ/src/index.ts:OpenClawController.validateSavedAgentTopology` checks
+an exact registered Proxy owner even when the Configuration has no model.
+A valid binding can be saved as a draft. Once a model is selected, save also
+checks its provider grant. Deployment still requires a concrete model and an
+admitted sender; saving a draft does not authorize release.
+
 The [Secret storage flow](secret-storage-and-delivery.md) owns value storage;
 [account issuance](service-account-driver-credential-delivery.md) owns upstream
 credentials and their private Backend binding.
@@ -136,6 +142,9 @@ The worker authorizes the original deploying actor and required Agent Secret
 grants for the saved version, checks source ownership, and
 matches managed-account credential and Backend metadata against the frozen
 snapshot. Revocation or a changed source rejects work before provisioning.
+A changed Proxy owner reports `EGRESS_PROVIDER_UNAVAILABLE`; a changed
+Credential Gateway reports `CREDENTIAL_GATEWAY_MISMATCH`. These fixed diagnostics
+do not include credentials.
 For `runtime`, only Agent/Configuration authorization runs; the dispatch context
 carries only the method, and SSH neither reads the operator credential file nor
 issues a model probe.
@@ -293,6 +302,8 @@ integration described in the [Driver reference](../reference/drivers/openshell-c
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 21:06: Preserve model-free drafts with exact Proxy ownership checks and distinguish worker owner refusals. (authoring-run/8288dab6-7c7f-450e-9982-b65af300ee70 - d24a0eb0d7fe3b92820a52ed4fb1544a6de6889e)
 
 - 2026-10-16 01:36: Keep external OAuth custody while integrating current Sandbox policy. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 

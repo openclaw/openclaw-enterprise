@@ -614,10 +614,18 @@ export function validHarnessAuthSnapshot(value: HarnessAuthSnapshot, namespaceId
       return normalizeHarnessAuthBinding(value) !== null;
     }
     if (value.method === "credential_source") {
+      if (value.credentialProxyId !== undefined) {
+        assertProtectedEgressSource(value.egress, namespaceId, value.sourceId);
+      }
       return (
         normalizeHarnessAuthBinding({ method: value.method, sourceId: value.sourceId }) !== null &&
-        Object.keys(value).length === 5 &&
-        isNonEmptyString(value.credentialGatewayId) &&
+        (value.credentialProxyId === undefined
+          ? Object.keys(value).length === 5 &&
+            isNonEmptyString(value.credentialGatewayId) &&
+            value.egress === undefined
+          : Object.keys(value).length === 6 &&
+            isNonEmptyString(value.credentialProxyId) &&
+            value.credentialGatewayId === undefined) &&
         isNonEmptyString(value.sourceType) &&
         (value.loginMode === "api_key" ||
           value.loginMode === "codex_pat" ||

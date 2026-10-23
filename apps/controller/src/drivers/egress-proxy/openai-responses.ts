@@ -177,9 +177,63 @@ const toolCall: Validator = (value) => {
     { id: text, namespace: name, status },
   )(value);
 };
-const inputItems = array(
-  (item) => inputMessage(item) || reasoningItem(item) || toolCall(item) || toolOutput(item),
+const inputItem: Validator = (item) =>
+  inputMessage(item) || reasoningItem(item) || toolCall(item) || toolOutput(item);
+const inputItems = array(inputItem);
+
+const developerTextKind = oneOf(
+  "model.base_instructions",
+  "host_skills.instructions",
+  "permissions.instructions",
+  "collaboration_mode.instructions",
+  "multi_agent.role_instructions",
+  "multi_agent.mode_instructions",
 );
+const userTextKind = oneOf("environments.environment_context", "user.text");
+const nativeTextKind = {
+  developer: developerTextKind,
+  user: userTextKind,
+  assistant: oneOf("unknown"),
+};
+const nativeTurnStamp = {
+  turn_id: (value: unknown) =>
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value),
+  // Codex records fractional Unix seconds. This is a wire bound, not a freshness check.
+  create_time: (value: unknown) => typeof value === "number" && value > 0 && value < 253402300800,
+};
+const inputTextPart = object({ type: oneOf("input_text"), text });
+const outputTextPart = object({ type: oneOf("output_text"), text });
+
+// Native Codex aligns one harness classification with each text part.
+// These describe content; never use them as authority or admit tool-call metadata here.
+function nativePatMessage(value: unknown): boolean {
+  const message = asRecord(value);
+  const role = message?.role;
+  if (role !== "developer" && role !== "user" && role !== "assistant") {
+    return false;
+  }
+  const content = message?.content;
+  if (!Array.isArray(content) || content.length < 1 || content.length > 16) {
+    return false;
+  }
+  const count = content.length;
+  const kinds = { content_item_kinds: array(nativeTextKind[role], count, count) };
+  // Replayed assistant output has a turn ID, but no harness-authored creation time.
+  const assistant = role === "assistant";
+  const metadata: Validator = assistant
+    ? object({ ...kinds, turn_id: nativeTurnStamp.turn_id })
+    : (value) => object(kinds)(value) || object({ ...kinds, ...nativeTurnStamp })(value);
+  return object({
+    type: oneOf("message"),
+    id: text,
+    role: oneOf(role),
+    content: array(assistant ? outputTextPart : inputTextPart, count, count),
+    internal_chat_message_metadata_passthrough: metadata,
+  })(message);
+}
+
+const nativePatItems = array((item) => inputItem(item) || nativePatMessage(item));
 
 const reasoning = optionalFields({
   effort: oneOf("none", "minimal", "low", "medium", "high", "xhigh"),
@@ -247,30 +301,34 @@ const textSettings = optionalFields({
   format: (value) => plainTextFormat(value) || jsonFormat(value),
 });
 
-export const validResponsesRequest = object(
-  { model: text, input: (value) => text(value) || inputItems(value), store: oneOf(false) },
-  {
-    instructions: text,
-    tools,
-    tool_choice: toolChoice,
-    parallel_tool_calls: bool,
-    reasoning: nullable(reasoning),
-    stream: bool,
-    stream_options: optionalFields({
-      include_usage: bool,
-      include_obfuscation: bool,
-      reasoning_summary_delivery: oneOf("sequential_cutoff"),
-    }),
-    include: array(oneOf("reasoning.encrypted_content"), 1),
-    service_tier: oneOf("auto", "default", "flex", "priority"),
-    prompt_cache_key: text,
-    client_metadata: clientMetadata,
-    text: textSettings,
-    temperature: (value) => number(value) && Number(value) >= 0 && Number(value) <= 2,
-    top_p: (value) => number(value) && Number(value) >= 0 && Number(value) <= 1,
-    max_output_tokens: (value) => integer(value) && Number(value) > 0,
-  },
-);
+const responsesRequest = (items: Validator) =>
+  object(
+    { model: text, input: (value) => text(value) || items(value), store: oneOf(false) },
+    {
+      instructions: text,
+      tools,
+      tool_choice: toolChoice,
+      parallel_tool_calls: bool,
+      reasoning: nullable(reasoning),
+      stream: bool,
+      stream_options: optionalFields({
+        include_usage: bool,
+        include_obfuscation: bool,
+        reasoning_summary_delivery: oneOf("sequential_cutoff"),
+      }),
+      include: array(oneOf("reasoning.encrypted_content"), 1),
+      service_tier: oneOf("auto", "default", "flex", "priority"),
+      prompt_cache_key: text,
+      client_metadata: clientMetadata,
+      text: textSettings,
+      temperature: (value) => number(value) && Number(value) >= 0 && Number(value) <= 2,
+      top_p: (value) => number(value) && Number(value) >= 0 && Number(value) <= 1,
+      max_output_tokens: (value) => integer(value) && Number(value) > 0,
+    },
+  );
+
+export const validResponsesRequest = responsesRequest(inputItems);
+export const validNativePatResponsesRequest = responsesRequest(nativePatItems);
 
 // The legacy Chat surface accepts plain message strings and no tools.
 const chatNumber: Validator = (value) => number(value) && Number(value) >= 0;
