@@ -1202,6 +1202,10 @@ const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
+// The proxy header that caps a trusted-proxy request's operator scopes. Native HTTP
+// APIs ignore identityScopes: without it, OpenClaw grants its default operator scopes,
+// operator.admin included (finding 2183).
+const TRUSTED_PROXY_SCOPES_HEADER = "x-openclaw-scopes";
 // Native Gateway scope enum at the supported OpenClaw runtime pin.
 const NATIVE_OPERATOR_SCOPES: ReadonlySet<string> = new Set([
   "operator.admin",
@@ -13229,6 +13233,34 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "must exclude operator.admin when allowUsers includes human identities; grant administrators through identityScopes instead",
       );
     }
+    const requiredHeaders = trustedProxy.requiredHeaders;
+    if (
+      requiredHeaders !== undefined &&
+      (!Array.isArray(requiredHeaders) ||
+        requiredHeaders.some(
+          (header) => typeof header !== "string" || header === "" || header.trim() !== header,
+        ))
+    ) {
+      throw new GatewaySettingFailure(
+        "gateway.auth.trustedProxy.requiredHeaders",
+        "must be an array of nonblank, trimmed header names when set",
+      );
+    }
+    // Native HTTP APIs such as /tools/invoke and /sessions/<key>/kill ignore identityScopes:
+    // a trusted-proxy request without x-openclaw-scopes receives OpenClaw's default operator
+    // scopes, operator.admin included. Once a human is admitted, the Gateway must refuse
+    // requests that do not carry the header; the operator HTTPRoute sends the machine
+    // identity's exact grant, so OCC's own access keeps working.
+    const admitsHumans =
+      Array.isArray(allowUsers) && allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY);
+    const requiredHeadersWithScopes = (requiredHeaders as readonly string[] | undefined)?.some(
+      (header) => header.toLowerCase() === TRUSTED_PROXY_SCOPES_HEADER,
+    )
+      ? requiredHeaders
+      : [
+          ...((requiredHeaders as readonly string[] | undefined) ?? []),
+          TRUSTED_PROXY_SCOPES_HEADER,
+        ];
     // OpenClaw binds its MCP Apps sandbox listener on mcp.apps.sandboxPort, else
     // gatewayPort + 1: at startup when MCP Apps are enabled, lazily otherwise. The private
     // status listener binds first, so the Gateway would fail with EADDRINUSE on 18791.
@@ -13263,6 +13295,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           mode: "trusted-proxy",
           trustedProxy: {
             ...trustedProxy,
+            ...(admitsHumans ? { requiredHeaders: requiredHeadersWithScopes } : {}),
             userHeader: TRUSTED_PROXY_HEADER,
             allowUsers: allowUsers ?? [TRUSTED_PROXY_IDENTITY],
           },
@@ -13416,7 +13449,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       requestHeaderModifier: {
         set: [
           ...(access === "operator"
-            ? [{ name: "x-occ-identity", value: "occ-workspace-files" }]
+            ? [
+                { name: TRUSTED_PROXY_HEADER, value: TRUSTED_PROXY_IDENTITY },
+                // The machine identity's exact grant. The Gateway requires this header
+                // once humans are admitted, and a client value must never cap or widen it.
+                { name: TRUSTED_PROXY_SCOPES_HEADER, value: "operator.admin" },
+              ]
             : []),
           {
             name: "x-real-ip",
@@ -13428,9 +13466,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "cookie",
           "forwarded",
           "x-forwarded-for",
-          "x-openclaw-scopes",
           ...(access === "node" || access === "node-transfer"
             ? [
+                TRUSTED_PROXY_SCOPES_HEADER,
                 "x-occ-identity",
                 "x-api-key",
                 "tailscale-user-login",

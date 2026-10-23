@@ -252,3 +252,146 @@ test(
     });
   },
 );
+
+// Native HTTP APIs ignore identityScopes: a trusted-proxy request without
+// x-openclaw-scopes receives the pinned Gateway's default operator scopes, admin
+// included. Compute therefore requires the header once a human is admitted, and the
+// operator HTTPRoute sends operator.admin for the machine identity (finding 2183).
+test(
+  "runtime image Gateway refuses trusted-proxy requests without x-openclaw-scopes once Compute admits a human",
+  imageTestOptions,
+  async (t) => {
+    const driver = plaintextGatewayComputeDrivers()[0][1];
+    const network = `oce-native-scopes-${randomBytes(6).toString("hex")}`;
+    await runDocker(["network", "create", "--internal", network]);
+    const runtimeCleanups = [];
+    t.after(async () => {
+      for (const cleanup of runtimeCleanups.reverse()) {
+        await cleanup();
+      }
+      await runDocker(["network", "rm", network]);
+    });
+    const subnet = JSON.parse((await runDocker(["network", "inspect", network])).stdout)[0].IPAM
+      .Config[0].Subnet;
+    assert.ok(subnet);
+    const directory = await mkdtemp(join(tmpdir(), "oce-native-scopes-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const humanAuth = {
+      mode: "trusted-proxy",
+      trustedProxy: {
+        userHeader: "x-occ-identity",
+        allowUsers: ["occ-workspace-files", "oidc:member-01"],
+      },
+      identityScopes: {
+        "occ-workspace-files": ["operator.admin"],
+        "oidc:member-01": ["operator.read"],
+      },
+    };
+    // Run kills stay admin-only upstream: 404 means the scope check passed for a
+    // session that does not exist, 403 names the missing scope, 401 is refused admission.
+    const scopeCases = [
+      [
+        "human admitted",
+        humanAuth,
+        undefined,
+        [
+          ["oidc:member-01", undefined, 401, /Unauthorized/],
+          ["oidc:member-01", "operator.read", 403, /missing scope: operator\.admin/],
+          ["occ-workspace-files", undefined, 401, /Unauthorized/],
+          ["occ-workspace-files", "operator.admin", 404, /Session not found/],
+        ],
+      ],
+      [
+        "human admitted without the rendered requirement",
+        humanAuth,
+        (configuration) => {
+          // The upstream default the requirement exists for: a read-only human
+          // acts as owner when the proxy omits the header.
+          delete configuration.gateway.auth.trustedProxy.requiredHeaders;
+        },
+        [
+          ["oidc:member-01", undefined, 404, /Session not found/],
+          ["oidc:member-01", "operator.read", 403, /missing scope: operator\.admin/],
+        ],
+      ],
+      [
+        "machine only",
+        undefined,
+        undefined,
+        [
+          ["occ-workspace-files", undefined, 404, /Session not found/],
+          ["occ-workspace-files", "operator.admin", 404, /Session not found/],
+          ["oidc:member-01", "operator.admin", 401, /Unauthorized/],
+        ],
+      ],
+    ];
+    await eachSettled(scopeCases, async ([label, auth, adjust, requests], index) => {
+      // Admitted configurations are frozen; the auth block is this case's input.
+      const input = structuredClone(createAdmittedRuntimeImageConfiguration("openclaw"));
+      if (auth !== undefined) {
+        input.gateway = { ...input.gateway, auth: structuredClone(auth) };
+      }
+      const configuration = driver.kubernetesGatewayConfigurationDocument(input);
+      assert.deepEqual(
+        configuration.gateway.auth.trustedProxy.requiredHeaders,
+        auth === undefined ? undefined : ["x-openclaw-scopes"],
+      );
+      // The probe container stands in for the proxy; Compute renders the Installation's
+      // CIDRs, which cannot name this test network.
+      configuration.gateway.trustedProxies = [subnet];
+      adjust?.(configuration);
+      configuration.models.providers.openai.baseUrl = "http://127.0.0.1:18880/v1";
+      configuration.models.providers.openai.apiKey = "synthetic-owned-native-scopes";
+      const path = join(directory, `openclaw-${index}.json`);
+      await writeFile(path, JSON.stringify(configuration), { mode: 0o644 });
+      const { containerName } = await runGatewaySmoke(
+        { after: (cleanup) => runtimeCleanups.push(cleanup) },
+        "openclaw",
+        {
+          configurationPath: "/etc/openclaw/openclaw.json",
+          entrypoint: countingProvider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+          network,
+          volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
+          waitUntilReady: false,
+          withAppServer: false,
+          extraEnvironment: [
+            "OPENCLAW_RUNTIME_STATUS_PORT=18791",
+            "OPENCLAW_RUNTIME_STATUS_CONTAINER=gateway",
+            "OPENCLAW_AGENT_REVISION_ID=owned-native-scopes",
+            "OPENCLAW_POD_UID=owned-native-scopes",
+          ],
+        },
+      );
+      await waitForListenerReady(
+        containerName,
+        'fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+      );
+      const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
+      const address = inspected.NetworkSettings.Networks[network].IPAddress;
+      assert.ok(address);
+      const remote = await runDocker([
+        "run",
+        "--rm",
+        "--pull=never",
+        "--network",
+        network,
+        "--entrypoint",
+        "node",
+        image,
+        "-e",
+        `const requests=${JSON.stringify(requests.map(([identity, scopes]) => ({ identity, scopes })))};
+Promise.all(requests.map(async ({identity,scopes})=>{const r=await fetch("http://${address}:8080/sessions/probe-session/kill",{method:"POST",headers:{"x-real-ip":"192.0.2.10","x-occ-identity":identity,...(scopes===undefined?{}:{"x-openclaw-scopes":scopes})},signal:AbortSignal.timeout(10000)});return {status:r.status,body:await r.text()};})).then(v=>console.log(JSON.stringify(v)));`,
+      ]);
+      const outcomes = JSON.parse(remote.stdout.trim());
+      for (const [position, [identity, scopes, status, body]] of requests.entries()) {
+        const outcome = outcomes[position];
+        const request = `${label}: ${identity} with ${scopes === undefined ? "no scope header" : `x-openclaw-scopes=${scopes}`}`;
+        assert.equal(outcome.status, status, `${request}: ${outcome.body}`);
+        assert.match(outcome.body, body, request);
+      }
+      await assertNoModelRequests(containerName);
+      t.diagnostic(`${label}: ${outcomes.map(({ status }) => status).join(",")} modelCalls=0`);
+      await runDocker(["rm", "-f", containerName]);
+    });
+  },
+);

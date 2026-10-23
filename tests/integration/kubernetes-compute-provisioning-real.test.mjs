@@ -366,10 +366,11 @@ test(
       `gateway-${hash(agentId)}-rev-${hash(candidate.id)}`,
       existingName,
     );
-    assert.deepEqual(
-      JSON.parse(gatewayConfiguration.data["openclaw.json"]).gateway.auth,
-      gatewayAuth,
-    );
+    // Admitting a human makes the Gateway require the proxy's scope header (finding 2183).
+    assert.deepEqual(JSON.parse(gatewayConfiguration.data["openclaw.json"]).gateway.auth, {
+      ...gatewayAuth,
+      trustedProxy: { ...gatewayAuth.trustedProxy, requiredHeaders: ["x-openclaw-scopes"] },
+    });
     const workload = await resource("deployment", revisionName(candidate), existingName);
     const harnessClaim = await assertHarnessWorkspaceClaim(existingName, owner.id, agentId);
     assert.equal(

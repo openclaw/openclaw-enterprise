@@ -68,11 +68,15 @@ the human ingress must never emit that identity.
 The ingress must also set `x-openclaw-scopes` on every request, HTTP and WebSocket
 upgrade, to that person's granted scopes, replacing any client value. To grant none,
 send a value that is not a scope, such as `none`: many proxies drop empty
-headers. Stripping the header is not enough. Native HTTP APIs, such as
-`/tools/invoke` and `/sessions/<key>/kill`, ignore `identityScopes`: without the
-header, OpenClaw gives a trusted-proxy request its default operator scopes,
-including `operator.admin`, narrowed only by native role ceilings. On WebSocket
-upgrades the header caps the union of device and identity grants.
+headers. Native HTTP APIs, such as `/tools/invoke` and `/sessions/<key>/kill`,
+ignore `identityScopes`: without the header, OpenClaw gives a trusted-proxy request
+its default operator scopes, including `operator.admin`, narrowed only by native
+role ceilings. So whenever `allowUsers` admits a human, Compute adds
+`x-openclaw-scopes` to `trustedProxy.requiredHeaders` (operator entries are kept,
+and must be nonblank, trimmed names), and the Gateway answers `401` to any
+trusted-proxy request without it. The operator HTTPRoute sets the header to
+`operator.admin` for the machine identity. On WebSocket upgrades the header caps
+the union of device and identity grants.
 
 Private routing can remain enabled. Its operator HTTPRoute always replaces
 `x-occ-identity` with the machine identity, so human traffic needs a separate

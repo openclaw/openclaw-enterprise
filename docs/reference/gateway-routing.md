@@ -147,11 +147,11 @@ cluster-wide binding for it. The worker
 is part of the trusted control plane. Harnesses receive a node-only setup code
 and public CA bundle, never this administrative service key.
 
-The HTTPRoute sets `x-occ-identity: occ-workspace-files` and `x-real-ip` from
-Envoy's direct connection. It removes `authorization`, `cookie`, `x-forwarded-for`,
-`forwarded`, and `x-openclaw-scopes`. Compute renders `network.gatewayTrustedProxyCidrs`,
+The HTTPRoute sets `x-occ-identity: occ-workspace-files`, `x-openclaw-scopes:
+operator.admin` and direct-connection `x-real-ip`, removing `authorization`,
+`cookie`, `x-forwarded-for`, `forwarded`. Compute renders `network.gatewayTrustedProxyCidrs`,
 `allowRealIpFallback: true`, and the machine identity's exact `operator.admin` grant.
-Agent Configuration may add human grants but cannot replace machine access or
+Agent Configuration may add human grants, never replace machine access or
 Driver-owned trust. Humans need [separate ingress](drivers/kubernetes-compute/gateway-authentication.md).
 Loopback access requires the Driver-managed password's
 [environment SecretRef](drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
