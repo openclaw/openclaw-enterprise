@@ -1340,6 +1340,76 @@ test("SSH setup failures withhold activation, preserve private input, and reject
   }
 });
 
+test("SSH setup reads the main roster entry under any letter case, like Kubernetes and Docker", async (t) => {
+  // The fixture has no runuser, so a stand-in records the workspace the helper chose.
+  const bin = await mkdtemp(join(tmpdir(), "occ-ssh-runuser-"));
+  const runuser = join(bin, "runuser");
+  await writeFile(
+    runuser,
+    `#!/bin/sh\nprintf '%s' "$OPENCLAW_WORKSPACE_DIR" > "$OCC_SSH_FIXTURE_STATE/setup-workspace"\n`,
+  );
+  await chmod(runuser, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    await rm(bin, { recursive: true, force: true });
+  });
+  for (const key of ["Main", " MAIN "]) {
+    await t.test(JSON.stringify(key), async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const agentId = "agent-ssh-roster";
+      const workspace = join(f.agentDir({ agentId }), "state", "roster");
+      // The entry's workspace wins over the defaults, as for the literal main key.
+      const configuration = {
+        agents: {
+          defaults: { workspace: "/tmp/foreign-workspace" },
+          entries: { [key]: { workspace } },
+        },
+      };
+      const first = revision(f.driver, 1, agentId, configuration);
+      bind(f.driver, first);
+      const prepared = await f.driver.prepareRevision(first, {
+        secretEnvironment: [],
+        harnessAuth: { method: "runtime" },
+        workspaceSetup: {
+          id: "setup-ssh-roster",
+          namespaceId: tenant.id,
+          agentId,
+          files: { "AGENTS.md": "roster" },
+          completed: false,
+        },
+      });
+      assert.equal(prepared.ready, true);
+      assert.equal(await readFile(join(f.state, "setup-workspace"), "utf8"), workspace);
+      assert.equal((await json(join(f.agentDir(first), "workspace-setup.json"))).completed, true);
+    });
+  }
+  // Two keys that both name main are as ambiguous here as in the shared rule.
+  const f = await fixture(t);
+  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+  const twice = revision(f.driver, 1, "agent-ssh-twice", {
+    agents: { entries: { main: {}, Main: {} } },
+  });
+  bind(f.driver, twice);
+  await assert.rejects(
+    f.driver.prepareRevision(twice, {
+      secretEnvironment: [],
+      harnessAuth: { method: "runtime" },
+      workspaceSetup: {
+        id: "setup-ssh-twice",
+        namespaceId: tenant.id,
+        agentId: twice.agentId,
+        files: { "AGENTS.md": "roster" },
+        completed: false,
+      },
+    }),
+    /SSH helper rejected host or revision configuration/,
+  );
+  await missing(join(f.agentDir(twice), "workspace-setup.json"));
+});
+
 test("system SSH executor sends exact argv and stdin and bounds cancellation and timeout", async (t) => {
   const f = await fixture(t);
   const bin = join(f.base, "bin");
