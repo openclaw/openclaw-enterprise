@@ -229,7 +229,9 @@ test(
       writePending: undefined,
       blocked: "supervisor_replaced",
     });
-    assert.equal(await store.owns(revision.id, 6), false);
+    // Closed at the holder's fence, the route answers its reason, not a replacement.
+    assert.equal(await store.owns(revision.id, 6), "supervisor_replaced");
+    assert.equal(await store.owns(revision.id, 5), false);
     assert.equal(await store.record(revision.id, 6, active), false);
     await store.withdraw({ revisionId: revision.id });
     assert.equal((await store.adopt(revision.id, workers[2]!))?.blocked, "supervisor_replaced");
@@ -250,6 +252,8 @@ test(
       "another Namespace",
     );
     await store.withdraw({ namespaceId: other.namespaceId });
+    // Withdrawal leaves the fence: its holder reads the reason (finding 2218).
+    assert.equal(await store.owns(other.id, 2), "withdrawn");
     assert.deepEqual(await store.adopt(other.id, workers[1]!), {
       ...second,
       fence: 2,
@@ -375,14 +379,15 @@ test(
     assert.equal(await store.owns(id, 2), true);
     const frozen = await expire();
     assert.equal(frozen?.retainedLaunchHash, launch);
-    assert.equal(await store.owns(id, 2), false);
+    assert.equal(await store.owns(id, 2), "repository_expired");
     assert.equal(await store.record(id, 2, snapshot), false);
     assert.equal(await store.writing(id, 2, "rotate"), undefined);
     assert.equal((await store.adopt(id, randomUUID()))?.blocked, "repository_expired");
     const request = randomUUID();
     assert.equal(await store.beginDetach(id, launch, request, "13"), true);
     assert.equal(await store.beginDetach(id, launch, randomUUID(), "13"), false);
-    assert.deepEqual((await expire())?.detach, { requestId: request });
+    // The intent keeps the precondition a repeated send must carry (finding 2219).
+    assert.deepEqual((await expire())?.detach, { requestId: request, resourceVersion: "13" });
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), true);
     assert.equal(await store.confirmDetached(id, launch, request, "epoch-replaced"), false);
     assert.equal((await expire())?.detach?.epoch, "epoch-two");
@@ -473,6 +478,66 @@ test(
       }),
       undefined,
     );
+  },
+);
+
+test(
+  "a bootstrap refused before its write is cleared and reserved again at the next fence",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2210: the worker that opened the route proves its bootstrap write unsent and
+    // clears it; the next pass adopts the empty route and reserves the bootstrap again.
+    const pool = new pg.Pool({ connectionString: databaseUrl });
+    t.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const { revision } = await seedSessionRevision(state);
+    const store = new PostgresOpenShellGitRouteStore(pool);
+    const route = {
+      revisionId: revision.id,
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      bindingId: "r".repeat(32),
+      workspace: observed.workspace,
+      sandbox: observed.sandbox,
+    };
+    await store.open(route, randomUUID());
+    assert.equal(await store.cancelWriting(revision.id, 1), true);
+    const empty = {
+      generation: undefined,
+      material: undefined,
+      observed: undefined,
+      writePending: undefined,
+      blocked: undefined,
+    };
+    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
+      ...route,
+      fence: 2,
+      ...empty,
+    });
+    assert.equal(await store.writing(revision.id, 1, "bootstrap"), undefined, "a stale fence");
+    assert.equal(await store.writing(revision.id, 2, "bootstrap"), 3);
+    assert.equal(
+      await store.cancelWriting(revision.id, 1),
+      false,
+      "a stale clear cannot clear the new reservation",
+    );
+    const generation = {
+      credentialState: "bootstrap" as const,
+      expiresAt: "",
+      providerId: observed.providerId,
+      resourceVersion: "1",
+      profileVersion: "1",
+    };
+    assert.equal(
+      await store.record(revision.id, 3, { generation, material: undefined, observed: undefined }),
+      true,
+    );
+    assert.deepEqual(await store.adopt(revision.id, randomUUID()), {
+      ...route,
+      fence: 4,
+      ...empty,
+      generation,
+    });
   },
 );
 

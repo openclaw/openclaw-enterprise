@@ -508,7 +508,7 @@ export const scenarios = {
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
-      "The API refuses creation, clears the entered value and disables the refused write.",
+      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
   },
   secretsUnknownSave: {
     group: "Pages/Secrets",
@@ -559,7 +559,7 @@ export const scenarios = {
       { selector: "#secret-value", value: "synthetic-story-value" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
-    description: "A denied replacement clears the entered value and disables further submission.",
+    description: "A denied replacement clears the value, disables editing, and focuses Close.",
   },
   secretsDelete: {
     group: "Pages/Secrets",
@@ -855,12 +855,22 @@ export const scenarios = {
     name: "Session expired",
     path: draft,
     signedOut: true,
+    expiredSession: true,
     description:
-      "A protected deep link with no session redirects to sign-in and retains the return destination.",
+      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
     steps: [
       "Sign in with the fixture credentials and confirm the Agent draft page returns.",
       "Confirm no draft is saved or deployment started by signing in.",
     ],
+  },
+  firstVisit: {
+    group: "Pages/Sign in",
+    name: "Deep link, first visit",
+    path: draft,
+    signedOut: true,
+    description:
+      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
+    steps: ["Sign in with the fixture credentials and confirm the Agent draft page returns."],
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
@@ -894,9 +904,25 @@ export const scenarios = {
       "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
-      "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
+      "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
+      "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",
+      "Drag across an Agent ID to select text. Releasing the mouse keeps the list visible so the ID can be copied.",
       "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
+    ],
+  },
+  agentsRowNavigation: {
+    group: "Pages/Agents",
+    name: "Row navigation",
+    description:
+      "Open an Agent from row padding or text. Name and version links, row actions, and text selection keep their existing behavior.",
+    steps: [
+      "Click padding in Execution mode or Created. The Agent detail opens. Use ← Agents and confirm focus returns to its name. Repeat at phone width.",
+      "Press Enter on the focused name to open the same Agent, then return.",
+      "Open a current-version or latest-deployment link and confirm its version is selected.",
+      "Open Stop or Delete and cancel. The list stays visible. In Row restricted, disabled buttons and their icons do not open the Agent.",
+      "Select part of an Agent ID with the mouse. Releasing the mouse keeps the selected text and list visible.",
     ],
   },
   navigationFirstVisit: {
@@ -1352,7 +1378,7 @@ export const scenarios = {
     observabilityDenied: true,
     rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
       { click: "Cancel" },
@@ -1364,7 +1390,7 @@ export const scenarios = {
     group: "Pages/Namespaces",
     name: "Create Namespace",
     path: "/console/namespaces",
-    actions: [{ click: "Create Namespace" }],
+    actions: [{ click: "Create Namespace", focus: true }],
     description:
       "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
     steps: [
@@ -1377,7 +1403,7 @@ export const scenarios = {
     path: "/console/namespaces",
     mobile: true,
     emptyNamespaces: true,
-    actions: [{ click: "Create Namespace" }],
+    actions: [{ click: "Create Namespace", focus: true }],
     description:
       "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
   },
@@ -1386,7 +1412,7 @@ export const scenarios = {
     name: "Create name required",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
     description:
@@ -1397,7 +1423,7 @@ export const scenarios = {
     name: "Create invalid name",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support\tteam" },
     ],
     description:
@@ -1408,7 +1434,7 @@ export const scenarios = {
     name: "Create name conflict",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Engineering" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1422,7 +1448,7 @@ export const scenarios = {
     emptyNamespaces: true,
     rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1435,7 +1461,7 @@ export const scenarios = {
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", method: "POST", hold: true }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1448,7 +1474,7 @@ export const scenarios = {
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1460,7 +1486,7 @@ export const scenarios = {
     name: "Namespace created",
     path: "/console/namespaces",
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1475,7 +1501,7 @@ export const scenarios = {
     // A create-only role: the authorized list never includes the new Namespace.
     rules: [{ path: "/namespaces", data: [] }],
     actions: [
-      { click: "Create Namespace" },
+      { click: "Create Namespace", focus: true },
       { selector: "#namespace-name", value: "Support" },
       { selector: 'dialog button[type="submit"]', click: true },
     ],
@@ -1487,7 +1513,9 @@ export const scenarios = {
     name: "Access denied",
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", status: 403 }],
-    description: "Namespace discovery is denied.",
+    description:
+      "Namespace discovery is denied, as for an account whose access was removed. Private data stays hidden, and the panel offers Sign out beside Retry.",
+    steps: ["Choose Sign out and confirm the sign-in page replaces the panel."],
   },
   settings: {
     group: "Pages/Settings",
@@ -6347,6 +6375,44 @@ export const scenarios = {
     description:
       "A pending channel save disables deployment and revision navigation. The real client times out after 15 seconds; reset the story to replay it.",
   },
+  channelSecretGrantRefused: {
+    group: "Components/Channels",
+    name: "Slack token saved, grant refused",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    rules: [{ suffix: "/iam/roles", status: 403 }],
+    description:
+      "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+    steps: [
+      "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
+      "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
+    ],
+    gap: "The member browser test uses a member account and the real Native IAM refusal.",
+  },
+  channelSecretGrantMemberUnverified: {
+    group: "Components/Channels",
+    name: "Member Slack token saved, access not verified",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    observabilityDenied: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    description:
+      "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
+    steps: [
+      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
+  },
   channelSaveUnknown: {
     group: "Components/Channels",
     name: "Channel save outcome unknown",
@@ -6485,6 +6551,48 @@ export const scenarios = {
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
   },
+  credentialsSecretListScrolling: {
+    group: "Components/Credentials",
+    name: "Scrolling Secret list",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
+      id: `sec_story_scroll_${index}`,
+      name: `Scrolling Secret ${index} (simulated)`,
+    })),
+    description:
+      "With more readable Secrets than fit, the open API key Secret list scrolls. It is not a Tab stop: focus stays in the field and moves on with Tab.",
+    steps: [
+      "Click API key Secret. The list opens and scrolls.",
+      "Press Tab. The list closes and focus moves to the metadata link below the field, not to the page.",
+      "Click the field, type Scrolling, then drag the list's scrollbar. The list stays open with the search kept, and the field keeps focus.",
+    ],
+  },
+  credentialsSecretListFailsAfterStaging: {
+    group: "Components/Credentials",
+    name: "Secret list fails after a staged Secret",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "GET",
+        delayMs: 4000,
+        status: 503,
+      },
+    ],
+    actions: [
+      { selector: "#harness-auth-secret", value: "__openclaw_create_secret__" },
+      { selector: "#create-harness-auth-secret-name", value: "Created while loading (simulated)" },
+      { selector: "#create-harness-auth-secret-value", value: "synthetic-demo-key" },
+      click("Create Secret"),
+    ],
+    description:
+      "A Secret created while the list loads is staged. The list read then fails, and the hint still says the binding is staged instead of showing a list error.",
+    steps: [
+      "Wait four seconds for the simulated list failure. The hint under API key Secret still reads Secret binding staged. Save changes to apply it.",
+      "Choose Reset story to replay it.",
+    ],
+    gap: "The list failure is simulated; a lost session (401) still ends the session as before.",
+  },
   credentialsSlackGrantDenied: {
     group: "Components/Credentials",
     name: "Slack grant denied",
@@ -6502,7 +6610,20 @@ export const scenarios = {
       },
     ],
     description:
-      "A saved Secret reference remains visible when the follow-up exact Secret access grant is denied.",
+      "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
+  },
+  credentialsSlackGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack Secret bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
+    ],
   },
   credentialsSavePending: {
     group: "Components/Credentials",
@@ -6609,12 +6730,43 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
     actions: [click("Save authentication source")],
     description:
-      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+      "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused, names the Installation administrator step, and keeps Retry credential access for when access is restored. Deployment stays blocked in this view until access is confirmed.",
     steps: [
       "Read the partial-save message and disabled authentication controls.",
       "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
       "The form refreshes without another Agent PATCH.",
     ],
+  },
+  authSecretGrantMissing: {
+    group: "Components/Credentials",
+    name: "Authentication Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    harnessGrantMissing: true,
+    description:
+      "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
+    steps: [
+      "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
+      "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
+    ],
+  },
+  authSecretGrantMemberUnverified: {
+    group: "Components/Credentials",
+    name: "Member authentication saved, access not verified",
+    path: `${draft}&tab=credentials`,
+    observabilityDenied: true,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+      click("Save authentication source"),
+    ],
+    description:
+      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
+    steps: [
+      "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
+      "Only Reload authentication source remains. Deploy new version stays blocked. The request log shows the Agent PATCH and no /iam/ request.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
   },
   authSaveRefused: {
     group: "Components/Credentials",
@@ -6757,6 +6909,18 @@ export const scenarios = {
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
   },
+  nativeRefreshing: {
+    group: "Components/Native admin",
+    name: "Refreshing access",
+    path: draft,
+    nativeAdmin: "stopped",
+    // The first access check answers at once; each Refresh access reads for 1.5 s.
+    rules: [{ suffix: "/native-admin", skip: 1, delayMs: 1500 }],
+    description: "Refresh access keeps keyboard focus while it rereads native admin access.",
+    steps: [
+      "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
+    ],
+  },
   workspaceNavigation: {
     group: "Components/Workspace",
     name: "Keep unsaved files",
@@ -6833,6 +6997,17 @@ export const scenarios = {
     ],
     description:
       "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
+  },
+  workspaceOperateDenied: {
+    group: "Components/Workspace",
+    name: "Save needs Agent operate",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
+    steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
+    gap: "Simulated files and permission answer; the API still refuses the write.",
   },
   workspaceMissing: {
     group: "Components/Workspace",

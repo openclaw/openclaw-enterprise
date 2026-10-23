@@ -25,6 +25,7 @@ import {
   issueResponse,
   pullResponse,
 } from "../fixtures/repository-credentials/builders.mjs";
+import { validateDraftProjection } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-draft-pull.ts";
 
 test("development token Driver admits exact REST methods, read-only GraphQL and configured Git routes", async (t) => {
   const { factory, bind } = await createGitHubPlanningFixture(t);
@@ -654,3 +655,55 @@ test(
     await assert.rejects(access(config.gateway.controlSocket), { code: "ENOENT" });
   },
 );
+
+test("a prepared draft keeps GitHub's spelling of the repository and still reads stored rows", async (t) => {
+  // The registry lowercases the repository; GitHub answers with its own spelling, and its
+  // names ignore case (finding 2236). The same check re-reads stored receipts, which hold
+  // the lowercase URL (the broker test replays both spellings from PostgreSQL).
+  const target = {
+    apiOrigin: "https://api.github.com",
+    repository: "acme/kit",
+    repositoryId: "42",
+    head: "review/task",
+    base: "main",
+  };
+  const side = (ref) => ({ repositoryId: "42", ref, sha: "a".repeat(40) });
+  const projection = (url, number = 8) => ({
+    id: "9001",
+    number,
+    url,
+    state: "open",
+    draft: true,
+    head: side("review/task"),
+    base: side("main"),
+  });
+  for (const url of [
+    "https://github.com/acme/kit/pull/8",
+    "https://github.com/Acme/Kit/pull/8",
+    "https://github.com/ACME/KIT/pull/8",
+  ]) {
+    await t.test(`admits ${url}`, () => {
+      assert.deepEqual(validateDraftProjection(projection(url), target), projection(url));
+    });
+  }
+  for (const [name, url, number] of [
+    ["another repository", "https://github.com/Acme/Other/pull/8"],
+    ["another owner", "https://github.com/Other/Kit/pull/8"],
+    ["a longer path", "https://github.com/Acme/Kit/x/pull/8"],
+    ["another number", "https://github.com/Acme/Kit/pull/9"],
+    ["a trailing slash", "https://github.com/Acme/Kit/pull/8/"],
+    ["a query", "https://github.com/Acme/Kit/pull/8?x=1"],
+    ["number zero", "https://github.com/Acme/Kit/pull/0", 0],
+    ["a number that disagrees", "https://github.com/Acme/Kit/pull/8", 9],
+    ["another host", "https://github.org/Acme/Kit/pull/8"],
+    ["plain HTTP", "http://github.com/Acme/Kit/pull/8"],
+    ["a non-ASCII letter that folds to ASCII", "https://github.com/acme/\u212Ait/pull/8"],
+  ]) {
+    await t.test(`refuses ${name}`, () => {
+      assert.throws(
+        () => validateDraftProjection(projection(url, number), target),
+        /invalid-draft-pull/,
+      );
+    });
+  }
+});

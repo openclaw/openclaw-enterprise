@@ -152,26 +152,24 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 		if !ok || len(profiles) == 0 {
 			return nil, fmt.Errorf("repository profiles must be explicitly approved")
 		}
-		if origin != "" {
-			refs, _ := policy["pushRefAllowlist"].([]any)
-			var ref string
-			if len(refs) == 1 {
-				ref, _ = refs[0].(string)
-			}
-			transportOK := policy["transport"] == "git-only" ||
-				(policy["transport"] == "git-and-draft-pr" && policy["pullRequestBase"] == "main")
-			if !transportOK || !reflect.DeepEqual(profiles, []any{"git-write"}) ||
-				!strings.HasPrefix(ref, "refs/heads/review/") || len(ref) <= len("refs/heads/review/") {
-				return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
-			}
+		// The worker and broker prepare only one exact writable branch per grant and
+		// refuse any other policy at startup, after the cluster effects.
+		refs, _ := policy["pushRefAllowlist"].([]any)
+		var ref string
+		if len(refs) == 1 {
+			ref, _ = refs[0].(string)
 		}
-		seenProfiles := map[string]bool{}
-		for _, profile := range profiles {
-			name, ok := profile.(string)
-			if !ok || (name != "git-read" && name != "git-write" && name != "git-full") || seenProfiles[name] {
-				return nil, fmt.Errorf("repository profiles must be supported and unique")
-			}
-			seenProfiles[name] = true
+		base, _ := policy["pullRequestBase"].(string)
+		_, hasBase := policy["pullRequestBase"]
+		transportOK := (policy["transport"] == "git-only" && !hasBase) ||
+			(policy["transport"] == "git-and-draft-pr" && base != "" && ref != "refs/heads/"+base)
+		if !transportOK || !reflect.DeepEqual(profiles, []any{"git-write"}) || !strings.HasPrefix(ref, "refs/heads/") ||
+			len(ref) <= len("refs/heads/") || strings.Contains(ref, "*") {
+			return nil, fmt.Errorf("prepared repository access requires profiles [\"git-write\"], exactly one exact pushRefAllowlist branch, and transport git-only or git-and-draft-pr with a different pullRequestBase")
+		}
+		if origin != "" && (!strings.HasPrefix(ref, "refs/heads/review/") || len(ref) <= len("refs/heads/review/") ||
+			(policy["transport"] == "git-and-draft-pr" && base != "main")) {
+			return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
 		}
 	}
 	cidrData, err := read("upstream-cidrs.json", false)
@@ -374,14 +372,13 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		return err
 	}
 	const preparedCA = "/etc/openclaw/prepared-repository-ca/ca.crt"
-	backend := map[string]any{"kind": "github-app-registry", "backendId": inputs.backendID}
+	backend := map[string]any{"kind": "github-prepared-git-registry", "backendId": inputs.backendID}
 	if inputs.preparedOrigin != "" {
-		backend["kind"] = "github-prepared-git-registry"
 		backend["gitOrigin"], backend["apiOrigin"], backend["gitCaFile"] = inputs.preparedOrigin, inputs.preparedOrigin, preparedCA
 	}
 	config, err := json.Marshal(map[string]any{
 		"gateway":       map[string]any{"listen": "0.0.0.0:8443", "controlSocket": "/run/openclaw/repository-control/private/control.sock"},
-		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-read", "git-write", "git-full"}},
+		"sessionPolicy": map[string]any{"maximumDurationSeconds": inputs.registry["maximumDurationSeconds"], "defaultProfile": "git-write", "allowedProfiles": []string{"git-write"}},
 		"backend":       backend,
 	})
 	if err != nil {
@@ -403,16 +400,17 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		{"generic", "occ-repository-ca", "--from-file=ca.crt=" + filepath.Join(state.directory, "repository-ca.crt")},
 		{"tls", "occ-repository-tls", "--cert=" + filepath.Join(state.directory, "repository-tls.crt"), "--key=" + filepath.Join(state.directory, "repository-tls.key")},
 	}
+	// The worker's custody key seals the installation tokens it prepares.
+	custody := make([]byte, 32)
+	if _, err := rand.Read(custody); err != nil {
+		return err
+	}
+	custodyPath := filepath.Join(state.directory, "repository-custody.key")
+	if err := exclusiveWrite(custodyPath, custody, 0600); err != nil {
+		return err
+	}
+	secrets = append(secrets, []string{"generic", "occ-repository-custody", "--from-file=custody.key=" + custodyPath})
 	if inputs.preparedOrigin != "" {
-		key := make([]byte, 32)
-		if _, err := rand.Read(key); err != nil {
-			return err
-		}
-		keyPath := filepath.Join(state.directory, "repository-custody.key")
-		if err := exclusiveWrite(keyPath, key, 0600); err != nil {
-			return err
-		}
-		secrets = append(secrets, []string{"generic", "occ-repository-custody", "--from-file=custody.key=" + keyPath})
 		ca := map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": kubernetesMetadata("occ-repository-provider-ca", namespace, labels), "immutable": true, "data": map[string]string{"ca.crt": string(inputs.issuerCA)}}
 		if err := r.writeAndApply(ctx, state, "repository-provider-ca", ca); err != nil {
 			return err
@@ -436,13 +434,19 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if !ok {
 		return fmt.Errorf("development Installation has no Drivers")
 	}
-	drivers["repo"] = map[string]any{"id": "repository-credentials", "configuration": map[string]any{"controlSocket": "/run/openclaw/repository-control/private/control.sock", "sessionDurationSeconds": inputs.registry["maximumDurationSeconds"], "publicCaPath": "/etc/openclaw/repository-ca/ca.crt"}}
+	// Native Git with worker-prepared GitHub custody; startup refuses the retired drivers.repo.
+	prepared := map[string]any{
+		"privateKeyPath": "/etc/openclaw/prepared-repository/private-key.pem",
+		"custodyKeyPath": "/etc/openclaw/prepared-repository/custody.key",
+	}
 	if inputs.preparedOrigin != "" {
-		drivers["repo"].(map[string]any)["preparedGitHub"] = map[string]any{
-			"privateKeyPath": "/etc/openclaw/prepared-repository/private-key.pem",
-			"custodyKeyPath": "/etc/openclaw/prepared-repository/custody.key",
-			"issuerCaPath":   preparedCA, "apiOrigin": inputs.preparedOrigin,
-		}
+		prepared["issuerCaPath"], prepared["apiOrigin"] = preparedCA, inputs.preparedOrigin
+	}
+	installation["repository"] = map[string]any{
+		"id":             "repository-credentials",
+		"configuration":  map[string]any{"sessionDurationSeconds": inputs.registry["maximumDurationSeconds"]},
+		"nativeSender":   map[string]any{"controlSocket": "/run/openclaw/repository-control/private/control.sock", "publicCaPath": "/etc/openclaw/repository-ca/ca.crt"},
+		"preparedGitHub": prepared,
 	}
 	// Keep the installed Compute and model backend selection unchanged.
 	backends, _ := installation["backend"].([]any)
@@ -480,13 +484,12 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if err := json.Unmarshal(valuesData, &values); err != nil {
 		return err
 	}
-	values["repositoryCredentials"] = map[string]any{"enabled": true, "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
+	repositoryValues := map[string]any{"enabled": true, "authority": "prepared-git", "preparedCustodySecretName": "occ-repository-custody", "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
 	if inputs.preparedOrigin != "" {
-		v := values["repositoryCredentials"].(map[string]any)
-		v["authority"], v["upstreamPort"] = "prepared-git", inputs.preparedPort
-		v["preparedCustodySecretName"] = "occ-repository-custody"
-		v["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
+		repositoryValues["upstreamPort"] = inputs.preparedPort
+		repositoryValues["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
 	}
+	values["repositoryCredentials"] = repositoryValues
 	valuesData, err = json.Marshal(values)
 	if err != nil {
 		return err

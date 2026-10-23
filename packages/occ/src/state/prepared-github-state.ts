@@ -7,11 +7,14 @@ import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
 // Do not trust enrollment alone. A tombstone, an in-place change to the grant or a different
 // issuer reference fences use even if management crashed before reaching this repository.
+// The grant names one Agent: once its deletion begins (one-way), nothing renews or uses it.
 export const preparedGitHubLive = (states: "'ready'" | "'registering','ready'") => `EXISTS (
  SELECT 1 FROM occ.credential_sources s JOIN occ.credential_source_secrets r
  ON r.namespace_id=s.namespace_id AND r.credential_source_id=s.id AND r.field='private_key'
  JOIN occ.secrets k ON k.namespace_id=r.namespace_id AND k.id=r.secret_id
  JOIN occ.installation i ON i.id=f.source #>> '{key,installationId}'
+ JOIN occ.agents g ON g.namespace_id=s.namespace_id AND g.id=f.source #>> '{grant,isolationId}'
+ AND g.status='active'
  WHERE s.id=f.source_id AND s.egress=f.source AND s.config->>'authority'='execution' AND s.state IN (${states})
  AND k.id=f.issuer->>'id' AND k.driver_id=f.issuer->>'driverId'
  AND k.backend_uid=f.issuer #>> '{backendRef,uid}' AND s.namespace_id=f.source #>> '{key,namespaceId}')`;

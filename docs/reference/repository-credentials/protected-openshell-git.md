@@ -9,6 +9,14 @@ and [Driver delivery profiles](../drivers/credential-proxy.md#delivery-profiles)
 OCC's v7 support is for a capable exact-dispatch Driver with verified reduction;
 it does not qualify this stock adapter or upgrade its v5/v6 guarantees.
 
+The bundled OpenShell Driver therefore refuses `git-write` delivery: deploy returns
+`409 REPOSITORY_GIT_SENDER_UNQUALIFIED` and creates no revision, and a revision
+admitted before this check fails with the same code instead of waiting for the
+convergence deadline. Use [native prepared Git](prepared-native-git.md) or a separately
+installed sender qualified for the profile, or remove the binding. A `git-read` or
+`git-full` binding has no protected delivery profile, so deploy refuses it on any
+Credential Proxy with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
+
 For an existing installation, first follow the
 [compatibility upgrade](../../guides/deploy/credential-proxy-upgrade.md#check-compatibility-before-interrupting-access).
 You can retain current selections and unprotected admissions. Keep Credential
@@ -39,11 +47,18 @@ from the same Driver registration. Use the
 [OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
 Keep `repository.preparedGitHub`, `repository.openShell`, the session duration,
 and the GitHub Backend registry at `/etc/openclaw/repository-registry/registry.json`.
-Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`.
+Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`. Remove
+`network.repositoryCredentials` from the Compute configuration: startup refuses it
+without `repository.nativeSender`.
 
 Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repositoryCredentials.enabled: false`, and
-`repositoryCredentials.authority: prepared-git`. The `repositoryCredentials`
+`repositoryCredentials.authority: prepared-git`. Keep
+`repository.openShell.authority` on host `0.0.0.0` (or `::`) and on the
+`openshellGit.port` value (default 8445), with the chart's files
+`/etc/openclaw/openshell-git/tls.crt`, `tls.key` and `gateway-public.pem`.
+Startup and the upgrade check refuse another host, port or path with
+`CHART_LISTENER_MISMATCH`. The `repositoryCredentials`
 inputs select the registry ConfigMap, worker-only App-key and existing custody
 Secrets, and approved issuer CIDRs. Preserve the custody key across restarts;
 never put either key in Agent configuration or Helm values.
@@ -162,6 +177,14 @@ for profile-specific allowed/denied requests and the required model-source choic
 
 ## Use the admitted repository
 
+With repository scope, clone, fetch and push exactly
+`https://github.com/$OCE_OPENSHELL_GIT_REPOSITORY.git`: the lowercase name OCE
+gives the Sandbox, with `.git`. Git and OpenShell match the credential path
+case-sensitively, so GitHub's mixed-case spelling, such as
+`https://github.com/Acme/Widgets.git`, or the URL without `.git` gets no
+credential, and Git fails, for example with `could not read Username` or
+`The requested URL returned error: 403`.
+
 [OCC access rules](../../flows/agent-repository-credentials.md) own grant lifetime
 and standing approval. Access is finite unless separately approved as standing;
 each token and session still expires. Remove standing approval with its current
@@ -230,14 +253,20 @@ Sandbox, supervisor and provider generation, or material is unavailable.
 `REPOSITORY_GIT_ROUTE_BLOCKED` closes Git until a new revision; continued chat
 requires independent model access and verified Git-only removal. Unsafe identity
 changes, overlapping GitHub access from retained providers or failed observation
-can require runtime retirement instead. An empty OpenShell profile workspace
-selects the platform profile, not a same-named Workspace profile.
+can require runtime retirement instead. Git-only removal records one conditional
+detach request. While Git stays attached, the worker sends that same request again;
+a moved Sandbox version or an outcome the gateway cannot tell retires the runtime.
+An empty OpenShell profile workspace selects the platform profile, not a same-named
+Workspace profile.
 
 A failed read closes the route until the same installation verifies, with retry
-backoff from 1 s to 10 s. After restart, the worker reads durable delivery facts,
-re-observes the installation and reads eligible prepared material. It does not
-replay an uncertain provider write. Generic fences and pending-write rules are
-in [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+backoff from 1 s to 10 s. A failed read before the route's first provider write
+is retried by the next preparation pass; a refused identity still closes the
+route. A provider write runs to its own deadline, not the rest of a pass's read
+budget. After restart, the worker reads durable delivery facts, re-observes the
+installation and reads eligible prepared material. It does not replay an
+uncertain provider write. Generic fences and pending-write rules are in
+[Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).
@@ -245,7 +274,17 @@ its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github
 Inspect `OPENSHELL_GIT_RECONCILIATION_REQUIRED` and its `reason`:
 `execution_replaced`, `supervisor_replaced`, `write_unknown`, `worker_restarted`
 or `gateway_unauthorized`. `worker.openshell-git-route-warning` distinguishes
-`unobserved` reads, `closed` worker replacement and `pending` material.
+`unobserved` reads, `pending` material, `closed` routes (`worker_replaced`, or
+`withdrawn` and `repository_expired` when another worker closed the route) and
+`retained` ones.
+`OPENSHELL_GIT_WITHDRAWAL_UNRECORDED` means the store did not record a withdrawal:
+this worker still refuses the route, but confirm its Sandbox was deleted, or another
+worker could adopt it. The worker drops a closed route once its Sandbox reads absent
+(twice if it never observed one); a failed read keeps it. A read the gateway refuses by
+the worker's identity logs one `retained` warning with `gateway_unauthorized`: the
+route stays in memory, read again with backoff, until a read finds its Sandbox gone.
+The worker still refuses to
+prepare, adopt or verify that revision, and later denials log `no_binding`.
 `worker.openshell-git-route` reports adoption and restoration, with `durationMs`.
 Correlate the revision and request ID with `worker.openshell-git-denied`.
 

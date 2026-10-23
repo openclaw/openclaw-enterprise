@@ -336,5 +336,42 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
       base: "main",
       draft: true,
     });
+
+    // The registry delivers a lowercased name; GitHub answers with the repository's own
+    // spelling (finding 2232). That is the same draft; another repository is not.
+    const own = "Example/Project";
+    const canonical = (url, headName = own, baseName = own) => ({
+      status: 201,
+      body: {
+        number: 8,
+        html_url: url,
+        state: "open",
+        draft: true,
+        head: { ref: "review/task", repo: { full_name: headName } },
+        base: { ref: "main", repo: { full_name: baseName } },
+      },
+    });
+    reply = canonical("https://github.com/Example/Project/pull/8");
+    const spelled = await create();
+    assert.equal(spelled.code, 0, spelled.stderr);
+    assert.deepEqual(JSON.parse(spelled.stdout), {
+      url: "https://github.com/Example/Project/pull/8",
+      number: 8,
+      head: "review/task",
+      base: "main",
+      draft: true,
+    });
+    for (const [label, response] of [
+      ["url", canonical("https://github.com/Example/Other/pull/8")],
+      ["url number", canonical("https://github.com/Example/Project/pull/9")],
+      ["url host", canonical("https://github.org/Example/Project/pull/8")],
+      ["head", canonical("https://github.com/Example/Project/pull/8", "Example/Other")],
+      ["base", canonical("https://github.com/Example/Project/pull/8", own, "Example/Other")],
+    ]) {
+      reply = response;
+      const other = await create();
+      assert.equal(other.code, 1, `another repository in ${label}`);
+      assert.deepEqual(other.lines.slice(1), [unconfirmed], `another repository in ${label}`);
+    }
   },
 );

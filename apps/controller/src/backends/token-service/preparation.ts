@@ -9,7 +9,15 @@ export interface TokenIssue {
   assertIssuing(): Promise<void>;
   /** Transfer candidate ownership to cleanup custody before validating it or awaiting transport close. */
   capture(candidate: Uint8Array): void;
+  /** Record a complete provider answer that refused issuance. Never for a lost or partial answer. */
+  refused(): void;
 }
+
+/**
+ * How far the issuer's wall clock may run ahead of the store's before it refuses to dispatch. A
+ * clock behind only shortens what the issuer signs.
+ */
+const storeClockToleranceMs = 120_000;
 
 interface PreparationOptions<A extends TokenAdmission> {
   readonly admission: A;
@@ -83,6 +91,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
 
       let candidate: Uint8Array | undefined;
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
+      let refused = false;
       try {
         verified = await options.issue({
           attemptId,
@@ -90,24 +99,35 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           // The issuer might await its signing input before this check. Recovery could have
           // fenced this attempt in the meantime. Publication must independently recheck it.
           async assertIssuing() {
-            const issuing = await store.readCurrent(
-              admission.familyId,
-              (row) =>
-                preparationAdmitted(row, admission) &&
-                row.attempts.some(
-                  (entry) =>
-                    entry.id === attemptId &&
-                    entry.state === "issuing" &&
-                    sameTokenAdmission(entry.admission, admission),
-                ),
+            const issuing = await store.readCurrent(admission.familyId, (row) =>
+              preparationAdmitted(row, admission) &&
+              row.attempts.some(
+                (entry) =>
+                  entry.id === attemptId &&
+                  entry.state === "issuing" &&
+                  !entry.stale &&
+                  sameTokenAdmission(entry.admission, admission),
+              )
+                ? { observedAt: row.observedAt }
+                : undefined,
             );
-            if (!issuing || !inBounds()) {
+            // Settlement measures the attempt in the store's clock, but our clock sets the JWT
+            // expiry that bounds when the provider can still mint: ours must not run ahead.
+            if (
+              !issuing ||
+              !inBounds() ||
+              (issuing.observedAt !== undefined &&
+                !(clock.wallNow() - issuing.observedAt <= storeClockToleranceMs))
+            ) {
               throw new Error("preparation-fenced");
             }
           },
           capture(bytes) {
             candidate?.fill(0);
             candidate = bytes;
+          },
+          refused() {
+            refused = true;
           },
         });
       } catch {
@@ -136,6 +156,9 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
             attempt.state = "quarantined";
             if (candidate) {
               attempt.candidate = Uint8Array.from(candidate);
+            } else if (refused) {
+              // The provider answered this attempt's one request without a token: terminal.
+              attempt.notIssued = true;
             }
             return "quarantined" as const;
           }

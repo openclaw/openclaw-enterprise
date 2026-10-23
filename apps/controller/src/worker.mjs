@@ -1,7 +1,10 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
-import { startPreparedGitHubGitOwner } from "./backends/repository-credentials/prepared-git-owner.ts";
+import {
+  PreparedGitHubAppKeyError,
+  startPreparedGitHubGitOwner,
+} from "./backends/repository-credentials/prepared-git-owner.ts";
 import {
   bindRepositoryGitTransport,
   repositoryGitAuthority,
@@ -17,7 +20,11 @@ import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logg
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupConfigurationFailure } from "./startup-failure.ts";
+import {
+  startupDependencyFailure,
+  startupConfigurationFailure,
+  startupListenerFailure,
+} from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 function positiveEnvironment(name, fallback) {
@@ -289,8 +296,12 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ??
-      startupConfigurationFailure(error) ?? { code: workerStartupFailureCode(error) }),
+    ...((error instanceof PreparedGitHubAppKeyError
+      ? { code: error.code, reason: error.reason }
+      : undefined) ??
+      startupDependencyFailure(error) ??
+      startupConfigurationFailure(error) ??
+      startupListenerFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });
   process.exitCode = 1;
 }

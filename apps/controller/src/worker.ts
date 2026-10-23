@@ -68,10 +68,15 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
+  PersistedStateInvalidError,
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
-  operationRefusalHint,
+  operationRefusalHintCode,
+  type OperationRefusalHintCode,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
   ScopeViolationError,
@@ -108,6 +113,7 @@ import {
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
+import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import {
   ComputeStopYieldedError,
   withComputeAbortSignal,
@@ -283,12 +289,84 @@ function causeStatusLogFields(error: object): {
 }
 
 /**
+ * The cleanup failures a Compute Driver reported beside each primary failure the worker took out
+ * of a ComputeCleanupFailedError, so the pass's log line still shows that cleanup failed.
+ */
+const computeCleanupFailures = new WeakMap<object, readonly unknown[]>();
+
+/**
+ * The failure a Compute Driver operation's outcome follows. A Driver whose cleanup also failed
+ * reports both; the operation's own failure decides, so a refusal still fails at once and an
+ * outage still waits, and the cleanup failure is kept for the log fields (finding 2268). A
+ * primary failure that is not an object cannot carry that record, so its aggregate stays whole
+ * and is classified as before. A Driver can throw one error object again (a memoized client
+ * failure), so a failure without a failed cleanup clears any record it kept.
+ */
+function primaryComputeFailure(error: unknown): unknown {
+  if (!(error instanceof ComputeCleanupFailedError)) {
+    if (error !== null && typeof error === "object") {
+      computeCleanupFailures.delete(error);
+    }
+    return error;
+  }
+  const primary = error.primary;
+  if (primary === null || typeof primary !== "object" || error.cleanupFailures.length === 0) {
+    return error;
+  }
+  computeCleanupFailures.set(primary, error.cleanupFailures);
+  return primary;
+}
+
+/** The error class a log line may name: its own name or constructor's, else `Error`. */
+function loggedErrorClass(error: unknown): string {
+  const record = error !== null && typeof error === "object" ? error : undefined;
+  return (
+    (record === undefined
+      ? undefined
+      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
+          (candidate): candidate is string =>
+            typeof candidate === "string" &&
+            candidate !== "Error" &&
+            LOGGED_ERROR_NAME.test(candidate),
+        )) ?? "Error"
+  );
+}
+
+/**
  * Log fields that say which dependency failed and why, without provider text:
  * a transient dependency names itself and a closed reason; any other failure
  * gives its error class and any fixed Driver request diagnostic. Other errors add
  * the HTTP status of an SDK error, its own or its cause's, and the Status reason a cause keeps.
+ * A failure whose Compute cleanup also failed adds `cleanupCause`, the first cleanup failure's
+ * class, so a failed cleanup never reads as a clean one (finding 2268).
  */
 function revisionFailureLogFields(error: unknown): {
+  readonly dependency?: string;
+  readonly cause?: string;
+  readonly status?: number;
+  readonly reason?: string;
+  readonly method?: string;
+  readonly grpcStatus?: number;
+  readonly validationCategory?: string;
+  readonly cleanupCause?: string;
+} {
+  return { ...primaryFailureLogFields(error), ...computeCleanupLogFields(error) };
+}
+
+/** `cleanupCause` when the Compute cleanup after this failure failed too, else nothing. */
+function computeCleanupLogFields(error: unknown): { readonly cleanupCause?: string } {
+  if (error === null || typeof error !== "object") {
+    return {};
+  }
+  // A Sandbox gateway outage reaches the log as the transient failure that wraps it.
+  const cause = (error as { readonly cause?: unknown }).cause;
+  const cleanup =
+    computeCleanupFailures.get(error) ??
+    (cause !== null && typeof cause === "object" ? computeCleanupFailures.get(cause) : undefined);
+  return cleanup === undefined ? {} : { cleanupCause: loggedErrorClass(cleanup[0]) };
+}
+
+function primaryFailureLogFields(error: unknown): {
   readonly dependency?: string;
   readonly cause?: string;
   readonly status?: number;
@@ -301,16 +379,7 @@ function revisionFailureLogFields(error: unknown): {
     return { dependency: error.dependency, cause: error.reason, ...causeStatusLogFields(error) };
   }
   const record = error !== null && typeof error === "object" ? error : undefined;
-  const name =
-    record === undefined
-      ? undefined
-      : [(record as { readonly name?: unknown }).name, record.constructor?.name].find(
-          (candidate): candidate is string =>
-            typeof candidate === "string" &&
-            candidate !== "Error" &&
-            LOGGED_ERROR_NAME.test(candidate),
-        );
-  const errorClass = name ?? "Error";
+  const errorClass = loggedErrorClass(error);
   if (error instanceof DependencyUnavailableError && error.requestDiagnostic !== undefined) {
     const { method, grpcStatus, validationCategory } = error.requestDiagnostic;
     return { cause: errorClass, method, grpcStatus, validationCategory };
@@ -323,6 +392,11 @@ function revisionFailureLogFields(error: unknown): {
   return record === undefined
     ? { cause: errorClass }
     : { cause: errorClass, ...causeStatusLogFields(record) };
+}
+
+/** An invalid row: reading it again fails the same way until someone repairs it. */
+function unrecoverableRead(error: unknown): boolean {
+  return error instanceof ScopeViolationError || error instanceof PersistedStateInvalidError;
 }
 
 /**
@@ -623,10 +697,16 @@ function harnessExposureWithdrawalCode(error: unknown): string {
     : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
 }
 
-/** The operator guidance a failed stop, deletion or withdrawal logs with its code (finding 1694). */
-function refusalHintField(terminal: boolean, code: string): { readonly hint?: string } {
-  const hint = terminal ? operationRefusalHint(code) : undefined;
-  return hint === undefined ? {} : { hint };
+/**
+ * The operator guidance a failed stop, deletion or withdrawal logs with its code, as a fixed code
+ * (findings 1694, 2245): the log sanitizer keeps no free text.
+ */
+function refusalHintField(
+  terminal: boolean,
+  code: string,
+): { readonly hintCode?: OperationRefusalHintCode } {
+  const hintCode = terminal ? operationRefusalHintCode(code) : undefined;
+  return hintCode === undefined ? {} : { hintCode };
 }
 
 /** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */
@@ -1604,7 +1684,11 @@ export class ControllerWorker {
       this.validateExecutionAdmission(revision);
       this.stoppedPredecessors.delete(revision.id);
     }
-    await stage.call(this.compute, revision, context);
+    try {
+      await stage.call(this.compute, revision, context);
+    } catch (error) {
+      throw primaryComputeFailure(error);
+    }
   }
 
   private shouldActivateAfterCommit(compute: ComputeDriver): boolean {
@@ -1776,7 +1860,8 @@ export class ControllerWorker {
         }
       }
       return prepared;
-    } catch (error) {
+    } catch (failure) {
+      const error = primaryComputeFailure(failure);
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
@@ -3986,6 +4071,48 @@ export class ControllerWorker {
     }
   }
 
+  /**
+   * A withdrawal recorded on a revision that was not yet the Agent's active one (a candidate
+   * still deploying) is refused with CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT, which
+   * awaits a replay (finding 2235). Once that revision's deployment activates it, the same
+   * attempt can reduce its policy, so the transaction that completes the deployment queues one
+   * attempt (finding 2242). That attempt takes the ordinary path: it rechecks each requester,
+   * and only a confirmed reduction marks a withdrawal revoked. Only the deployment claim calls
+   * this, and that claim completes once in this transaction, so it runs once per revision; the
+   * fixed key names the attempt, and none is queued beside an outstanding attempt. A proxy or
+   * plan that cannot reduce in place refuses with the same reason, so its candidate gets one
+   * more refused attempt (and failure audit) on activation, not a chain.
+   */
+  private async queueActivatedRevisionWithdrawal(
+    unit: PlatformUnitOfWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const refused = (
+      await unit.credentialSources.listCredentialWithdrawals(revision.namespaceId, revision.id)
+    ).find(
+      ({ state, lastReason }) =>
+        state === "pending" && lastReason === CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
+    );
+    if (
+      refused === undefined ||
+      (await unit.operations.hasOutstandingCredentialWithdrawalWork(
+        revision.namespaceId,
+        revision.id,
+      ))
+    ) {
+      return;
+    }
+    await unit.operations.append({
+      kind: "agent_revision",
+      action: "reconcile",
+      target: CREDENTIAL_WITHDRAWAL_TARGET,
+      namespaceId: revision.namespaceId,
+      resourceId: revision.id,
+      actorId: refused.requestedBy,
+      operationId: "activation",
+    });
+  }
+
   private beginDeployPass(claim: ClaimedWork): void {
     // Maintenance, cleanup and stop work are not deployments.
     if (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile`) {
@@ -4431,7 +4558,12 @@ export class ControllerWorker {
           // claim's chain too: the revision cannot activate without a new one.
           if (
             error instanceof ActivationFailedError ||
-            error instanceof CredentialSourceRevisionError
+            error instanceof CredentialSourceRevisionError ||
+            // Finding 2265: a 403 on a private Secret write fails the deployment at once here as
+            // in preparation (finding 1770). A maintenance pass keeps the running revision's
+            // chain instead, as for an outage: it recovers once an operator fixes the grant.
+            (error instanceof KubernetesSecretWriteForbiddenError &&
+              !claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`))
           ) {
             await this.finalizeRevision(
               claim,
@@ -4536,9 +4668,17 @@ export class ControllerWorker {
           result = { outcome: error.transient ? "retry" : "permanent", code: error.code };
         } else if (
           error instanceof RepositoryCredentialAuthorityError ||
+          // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
+          // can never enroll, so it fails now instead of at the convergence deadline.
+          error instanceof RepositoryGitSenderUnqualifiedError ||
+          // Finding 2204: a Git plan with no delivery profile can never start either.
+          error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
-          error instanceof ActivationFailedError
+          error instanceof ActivationFailedError ||
+          // Finding 1770: Kubernetes refused a private Secret write with 403. An operator must
+          // change a grant, admission policy or quota first, so no retry can succeed.
+          error instanceof KubernetesSecretWriteForbiddenError
         ) {
           result = { outcome: "permanent", code: error.code };
         } else if (error instanceof ComputeStopYieldedError) {
@@ -5671,24 +5811,27 @@ export class ControllerWorker {
         if (error instanceof WorkClaimLostError) {
           throw error;
         }
-        resolved =
-          error instanceof RepositoryCredentialAuthorityError
-            ? { outcome: "permanent", code: error.code }
-            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+        if (error instanceof RepositoryCredentialAuthorityError) {
+          resolved = { outcome: "permanent", code: error.code };
+        } else {
+          resolved = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          // Say why the check failed, as a failure in dispatch does (finding 2272).
+          failureLogFields = revisionFailureLogFields(error);
+        }
       }
     }
     if (
       resolved.outcome === "retry" &&
       claim.attemptCount >= this.maxAttempts &&
-      (await this.continueExhaustedActiveRevision(claim, resolved.code))
+      (await this.continueExhaustedActiveRevision(claim, resolved.code, failureLogFields))
     ) {
       return;
     }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
-    // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
-    // it only reaches a published (active) revision, which the stop skips.
+    // A permanent activation failure also lands here, but no bundled Driver activates before
+    // commit, so it only reaches a published (active) revision, which the stop skips.
     if (
       resolved.outcome === "permanent" &&
       heldFailureCode === undefined &&
@@ -5897,18 +6040,27 @@ export class ControllerWorker {
           throw error;
         }
         if (error instanceof RepositoryCredentialAuthorityError) {
-          await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "permanent", code: error.code },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         if (error instanceof ComputeStopYieldedError) {
           // The Agent stopped after activation and its stop yielded: the next pass repeats it as
           // the stopped Agent's active revision, then retires the earlier ones.
-          await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+          await this.finalizeRevision(
+            claim,
+            { outcome: "pending", code: "AGENT_STOP_YIELDED" },
+            computeCleanupLogFields(error),
+          );
           return;
         }
         await this.finalizeRevision(
           claim,
-          error instanceof ActivationFailedError
+          error instanceof ActivationFailedError ||
+            error instanceof KubernetesSecretWriteForbiddenError
             ? { outcome: "permanent", code: error.code }
             : activationPendingResult(error),
           revisionFailureLogFields(error),
@@ -6154,9 +6306,11 @@ export class ControllerWorker {
    * an ordinary retry instead, the error spent an attempt and its evidence ended the wait: the
    * next pass prepared the candidate again, and at the attempt limit the work failed with the
    * candidate running and the refusal lost (finding 1041). If this read fails too, the error
-   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. A
-   * ScopeViolationError (an invalid row) cannot recover by itself, so it stays a retry that the
-   * attempt limit ends instead of a wait repeated forever.
+   * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. An
+   * invalid row (a ScopeViolationError, or persisted state its reader cannot decode) cannot
+   * recover by itself, so it stays a retry that the attempt limit ends instead of a wait repeated
+   * forever (finding 1801). After one, the wait is kept only if the stop can still read its
+   * Namespace, Agent and revision: an unreadable active revision alone does not block the stop.
    */
   private async rereadRefusalWait(
     claim: ClaimedWork,
@@ -6172,9 +6326,14 @@ export class ControllerWorker {
       return;
     }
     try {
-      const current =
-        agent ??
-        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      const current = await this.state.read(async (view) => {
+        if (unrecoverableRead(error)) {
+          // The rows `stopRefusedCandidate` reads.
+          await view.namespaces.findNamespace(claim.namespaceId);
+          await view.revisions.findRevision(claim.namespaceId, agentId, revisionId);
+        }
+        return agent ?? view.agents.findAgent(claim.namespaceId, agentId);
+      });
       if (current !== undefined) {
         await this.readRefusalWait(claim, current, revisionId);
       }
@@ -6182,7 +6341,7 @@ export class ControllerWorker {
       if (reread instanceof WorkClaimLostError) {
         throw reread;
       }
-      if (reread instanceof ScopeViolationError || error instanceof ScopeViolationError) {
+      if (unrecoverableRead(reread) || unrecoverableRead(error)) {
         return;
       }
       // The run loop's own log names no work.
@@ -6296,6 +6455,9 @@ export class ControllerWorker {
         await unit.workspaceSetups.complete(revision.namespaceId, revision.agentId, setup.id);
       }
       await this.appendRevisionObservation(unit, claim, result);
+      if (isCandidateDeployment(claim)) {
+        await this.queueActivatedRevisionWithdrawal(unit, revision);
+      }
       await queue.complete(claim, {
         code: result.code,
         ...(result.resultData === undefined ? {} : { resultData: result.resultData }),
@@ -6438,6 +6600,7 @@ export class ControllerWorker {
   private async continueExhaustedActiveRevision(
     claim: ClaimedWork,
     code: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
   ): Promise<boolean> {
     const revisionId = claim.revisionId;
     if (
@@ -6498,6 +6661,8 @@ export class ControllerWorker {
       result: "retry",
       outcome: "retry",
       code,
+      // Like any other ended pass, say why the last attempt failed (finding 1743).
+      ...failureLogFields,
       ...this.deployTimingFields(claim),
     });
     return true;

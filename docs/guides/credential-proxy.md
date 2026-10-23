@@ -10,6 +10,8 @@ delivery profile.
 **There is no qualified stock OpenShell deployment for protected access in this
 release.** Stock OpenShell 0.1.5 is not qualified. A successful fixture, Helm
 rollout, or source registration does not establish an installed enforcing path.
+Deploy refuses a `git-write` binding on the bundled OpenShell Credential Proxy
+with `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`.
 Before enrolling real credentials, qualify the exact Driver, Compute, Sandbox,
 images, charts, and TLS path for the requested profile. The
 [Credential Proxy reference](../reference/drivers/credential-proxy.md) describes
@@ -52,7 +54,7 @@ drivers:
       middlewareName: oce-authority
       authorityScope: execution
       authority:
-        host: 127.0.0.1
+        host: 0.0.0.0
         port: 9444
         certificatePath: /etc/openclaw/egress/tls/tls.crt
         privateKeyPath: /etc/openclaw/egress/tls/tls.key
@@ -67,11 +69,16 @@ and middleware name to the configured peers. Keep the
 [OpenShell Backend and Sandbox configuration](../reference/drivers/openshell-credential-gateway.md).
 A packaged Driver instead takes configuration through its Sandbox selection;
 its matching Credential Proxy selection has an empty `configuration`.
+Either kind can add `requestCapacity` to size OCC's in-memory request bounds; see
+[request-time capacity](../reference/drivers/credential-proxy.md#request-time-capacity).
 
 The API owns the static authority listener. Development binds only to loopback.
-Production needs an explicitly reachable host and a certificate covering the
-Service DNS name. The Backend requires HTTPS with bearer-file or mutual TLS
-authentication. Register `oce-authority` under
+Production needs a reachable host and a certificate covering the Service DNS
+name. With Helm, use `host: 0.0.0.0` (or `::`) and the `egressAuthority.port`
+value. Startup and the upgrade check refuse another host or port, a disabled
+`egressAuthority`, or file paths other than the chart mounts shown above, with
+`CHART_LISTENER_MISMATCH`. The Backend requires HTTPS
+with bearer-file or mutual TLS authentication. Register `oce-authority` under
 `[[openshell.supervisor.middleware]]` with its HTTPS `grpc_endpoint`, `audience`,
 `tls_ca_cert_path`, and `max_payload_bytes = 4194304`. Both peers must support
 `openshell.supervisor-middleware.http-credential-access.v1` and all five capabilities
@@ -215,7 +222,12 @@ Inspect the withdrawal state and reason:
   Agent; record the enforcement refusal and verify that no request reached the
   controlled origin.
 - **Runtime retirement required:** if the reason is
-  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`, follow the
+  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` and `revisionId` names a
+  version other than the selected one, see
+  [withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent).
+  For the selected version, if `withdrawalInProgress` is `true`, wait for that
+  attempt first: a version that just became selected gets one more attempt.
+  Otherwise follow the
   [retirement procedure](deploy/credential-proxy-upgrade.md#stop-and-settle-before-upgrading).
   Observe retirement of the exact execution, record the actual withdrawal state
   and reason, and leave pending custody with its original owner. Do not restart

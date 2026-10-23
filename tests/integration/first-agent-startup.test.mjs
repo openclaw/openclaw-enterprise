@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { cp, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
@@ -302,8 +303,12 @@ test("first-Agent admits a native admin origin on the default HTTPS port", async
   }
 });
 
-test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {
-  const { directory, engineLog, env } = await fixture(t, "none");
+// A k3d development state whose controller answers the reads first-agent makes before it
+// touches the database: the Installation, a ready default Namespace and its (empty) Agent list.
+// kubectl records the PostgreSQL exec and fails, so a run that gets that far stops there.
+async function k3dFixture(t) {
+  const fixtureState = await fixture(t, "none");
+  const { directory } = fixtureState;
   const server = createServer((request, response) => {
     const data = {
       "/installation": { id: "ins_test" },
@@ -341,9 +346,12 @@ test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) =
 esac
 `,
   );
+  return { ...fixtureState, context };
+}
 
-  // spawnSync would block this process's fake controller, so wait asynchronously.
-  const child = spawn(process.execPath, [firstAgent, "state-contract-test"], {
+// spawnSync would block this process's fake controller, so wait asynchronously.
+async function runFirstAgentAsync(env, ...args) {
+  const child = spawn(process.execPath, [firstAgent, "state-contract-test", ...args], {
     cwd: repository,
     env,
     stdio: ["ignore", "pipe", "pipe"],
@@ -353,13 +361,75 @@ esac
   child.stdout.on("data", (chunk) => (output += chunk));
   child.stderr.on("data", (chunk) => (output += chunk));
   const [status] = await once(child, "close");
-
   assert.equal(status, 1, output);
+  return output;
+}
+
+test("first-Agent runs psql through the k3d PostgreSQL StatefulSet", async (t) => {
+  const { engineLog, env, context } = await k3dFixture(t);
+
+  const output = await runFirstAgentAsync(env);
   assert.match(output, /kubectl did not complete successfully \(exit 23\)/);
   assert.match(
     await readFile(engineLog, "utf8"),
     new RegExp(
       `^--kubeconfig \\S+ --context ${context} -n occ-system exec -i statefulset/postgres -c postgres -- psql `,
     ),
+  );
+});
+
+test("first-Agent refuses a record from an older helper as such", async (t) => {
+  const { directory, engineLog, env } = await k3dFixture(t);
+  const recordPath = join(
+    directory,
+    `first-agent-${createHash("sha256").update("state-contract-test").digest("hex").slice(0, 32)}.json`,
+  );
+  const current = {
+    version: 3,
+    authMethod: "api_key",
+    name: "state-contract-test",
+    namespaceId: "ns_test",
+    model: "gpt-test",
+    harness: "openclaw",
+    sandboxDriver: "none",
+    controlUi: false,
+    secretName: "first-agent-test",
+  };
+  const run = async (record, extraEnv = {}) => {
+    await rm(engineLog, { force: true });
+    await writeFile(recordPath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    return runFirstAgentAsync({ ...env, ...extraEnv });
+  };
+
+  // The current record shape passes the check and reaches the database step.
+  assert.match(await run(current), /kubectl did not complete successfully \(exit 23\)/);
+
+  // Versions 1 and 2 predate the Harness and Control UI fields, and version 3 records saved
+  // before PAT support have no authMethod. None can be verified, so the refusal says the
+  // record is old, even with a model selected, instead of blaming a selection or an
+  // authentication method the caller kept (findings 1756, 1798).
+  const beforePat = { ...current };
+  delete beforePat.authMethod;
+  for (const [label, record, extraEnv] of [
+    ["version 1", { ...current, version: 1 }],
+    ["version 2", { ...current, version: 2 }],
+    ["version 3 without authMethod", beforePat],
+    [
+      "version 1 with a selected model",
+      { ...current, version: 1 },
+      { OPENCLAW_FIRST_AGENT_MODEL: "gpt-other" },
+    ],
+  ]) {
+    const output = await run(record, extraEnv);
+    assert.match(output, /has a record from an older first-agent helper/, label);
+    assert.match(output, /Choose a new Agent name/, label);
+    assert.doesNotMatch(output, /differs|Personal access tokens/, label);
+    await assert.rejects(readFile(engineLog), { code: "ENOENT" }, label);
+  }
+
+  // A changed selection on a current record keeps its own refusal.
+  assert.match(
+    await run({ ...current, harness: "codex" }),
+    /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
 });

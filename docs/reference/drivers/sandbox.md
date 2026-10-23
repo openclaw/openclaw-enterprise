@@ -242,7 +242,11 @@ too, so a Sandbox the identity may no longer see (the provider hides it as
 missing) is never recorded gone. A missing role fails at once; an identity the
 provider could not authenticate (`transient`: a token file or signing key between
 refreshes) retries within the attempt budget first. The worker logs the failed
-stop, deletion or withdrawal with the same guidance the deployment status shows.
+stop, deletion or withdrawal with `hintCode: sandbox-gateway-identity`, which names
+the guidance the deployment status shows: check the controller gateway identity's
+token file and the gateway's signing-key refresh, or restore its Workspace role (or
+recreate the Workspace with a deploy; a Workspace removed outside the controller
+presents the same way), then deploy, stop, delete or withdraw again.
 A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
 the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 

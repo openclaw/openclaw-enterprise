@@ -28,6 +28,7 @@ import {
 } from "../helpers/kubernetes-compute.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
@@ -3557,10 +3558,12 @@ test(
     // The failed delete does not change the refusal: the job still forgets the write, so a
     // retry never trusts it, and the operator log names the document left behind. The job
     // also keeps it marked for deletion, so the leftover is not only a log line (finding 1399).
+    // The line is the one the worker log keeps (finding 2245).
     assert.equal(created.length, 1);
     assert.deepEqual(
       completed
         .filter((event) => event.workId === workId)
+        .map(occLogLine)
         .map(({ outcome, code, orphanedConfigurationId }) => ({
           outcome,
           code,

@@ -25,6 +25,7 @@ import {
 // installed custody and PostgreSQL recovery have their own qualifications.
 test("consented protected repository read uses only exact, already prepared metadata grant", async (t) => {
   let forbiddenTrailer = false;
+  let spelling;
   const clock = createSystemClock();
   const gh = await startGitHubFixture(t, {
     clock,
@@ -33,6 +34,7 @@ test("consented protected repository read uses only exact, already prepared meta
         response.addTrailers({ "x-forbidden-last": "last" });
       }
     },
+    metadataResponse: (body) => (spelling === undefined ? body : { ...body, full_name: spelling }),
   });
   const key = createGitHubKeyOwner({ appId: fixtureAppId, clock, privateKey: gh.privateKey });
   t.after(() => key.close());
@@ -175,19 +177,36 @@ test("consented protected repository read uses only exact, already prepared meta
   );
   assert.equal(gh.issuesOfTokens.length, 1);
 
-  for (const block of [false, true]) {
+  // The registry lowercases the repository; GitHub answers with its own spelling, and the
+  // response releases the admitted name (finding 2239). Another name is never released.
+  for (const [block, spelled, released = true] of [
+    [false],
+    [false, "Fixture/Repository"],
+    [false, "FIXTURE/REPOSITORY"],
+    [false, "fixture/repository-other", false],
+    [false, "fixture/repository.git", false],
+    // Only ASCII letter case may differ: no lookalike letters, no non-string names.
+    [false, "fixture/repo\u017Fitory", false],
+    [false, null, false],
+    [true],
+  ]) {
     forbiddenTrailer = block;
+    spelling = spelled;
     const captured = captureMetadata(f);
     const { ready } = await f.resolve(captured);
     assert.ok(ready);
     const safe = await dispatchMetadata(f, gh, captured, ready, block);
-    if (!block) {
+    if (!block && released) {
       assert.equal(
         safe.body.toString(),
         JSON.stringify({ id: Number(fixtureRepositoryId), full_name: fixtureRepository }),
+        String(spelled),
       );
+    } else if (!block) {
+      assert.deepEqual(safe, { blocked: true }, String(spelled));
     }
   }
+  spelling = undefined;
   const captured = captureMetadata(f);
   const { ready } = await f.resolve(captured);
   await store.transact(admission.familyId, (row) => {
@@ -197,7 +216,7 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 3);
+  assert.equal(sendChecks, 9);
   assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
 });
 

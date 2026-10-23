@@ -368,6 +368,7 @@ spec:
             {{- end }}
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- include "openclaw.listenerEnv" $ | trim | nindent 12 }}
             {{- with $.Values.preprovisionedNamespace }}
             - name: OCC_PREPROVISIONED_NAMESPACE
               value: {{ . | toJson | quote }}

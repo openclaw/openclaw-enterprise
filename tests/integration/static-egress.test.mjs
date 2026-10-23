@@ -10,9 +10,25 @@ import { readFileSync } from "node:fs";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { EgressSendReceipts } from "../../packages/occ/src/egress-send-receipts.ts";
 import { InMemoryPlatformState } from "../../packages/occ/src/state/platform-state.ts";
+import { OpenClawController } from "../../packages/occ/src/index.ts";
+import {
+  installationControllerOptions,
+  loadInstallationConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
+import { createCredentialProxyInstallationConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { OpenShellEgressIdentity } from "../../apps/controller/src/drivers/egress-proxy/openshell-identity.ts";
 import {
+  CREDENTIAL_PROXY_CAPACITY_MAXIMUM,
   CredentialProxy,
+  DEFAULT_CREDENTIAL_PROXY_CAPACITY,
+  OPERATION_AUTHENTICATION_BUDGET,
+  OPERATION_CAPACITY,
+  OPERATION_SANDBOX_SHARE,
+  REPLAY_SANDBOX_SHARE,
+  REPLAY_TABLE_CAPACITY,
   STREAM_LEASE_CEILING_MS,
   STREAM_LEASE_IDLE_MS,
   STREAM_LEASE_RECHECK_MS,
@@ -253,9 +269,7 @@ test("provider authentication rejection fences the exact material version and en
   assert.ok(result.blocked, "duplicate JSON keys cannot conceal reflected material from parsing");
   // Function arguments have their own protocol-defined JSON layer. Ordinary tool
   // decoding must never recover the protected value from escaped response text.
-  const escaped = [..."synthetic-key-initial"]
-    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
-    .join("");
+  const escaped = unicodeEscapes("synthetic-key-initial");
   result = await f.exchangeResponse({
     status: 200,
     body: {
@@ -649,6 +663,21 @@ const encode = (events) => encodeSyntheticEvents(events).toString("utf8");
 const selectedMaterial = "synthetic-key-initial";
 const reflectedMaterial = [selectedMaterial, Buffer.from(selectedMaterial).toString("base64")];
 
+function splitText(text) {
+  const middle = Math.floor(text.length / 2);
+  return [text.slice(0, middle), text.slice(middle)];
+}
+
+function outputTextParts(...texts) {
+  return texts.map((text) => ({ type: "output_text", text, annotations: [] }));
+}
+
+function unicodeEscapes(text) {
+  return [...text]
+    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
+    .join("");
+}
+
 // Exercise the actual protected exchange in both directions. A denied response must
 // release no messages (including its head); an allowed response must arrive byte-for-byte.
 function responseChecks(f) {
@@ -683,15 +712,14 @@ test("Responses output text assembled across parts and messages cannot reveal se
     id,
     status: "completed",
     role: "assistant",
-    content: parts.map((text) => ({ type: "output_text", text, annotations: [] })),
+    content: outputTextParts(...parts),
   });
   // Deltas and completed items stay harmless. Only the terminal envelope contains
   // the candidate, so protecting an earlier projection cannot mask this test.
   for (const stream of [false, true]) {
     for (const acrossMessages of [false, true]) {
       for (const text of [...reflectedMaterial, "ordinary response"]) {
-        const middle = Math.floor(text.length / 2);
-        const parts = [text.slice(0, middle), text.slice(middle)];
+        const parts = splitText(text);
         const events = responseEvents();
         events.at(-1).response.output = acrossMessages
           ? parts.map((part, i) => message(`msg_${i}`, [part]))
@@ -714,7 +742,7 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
   // A provider safety refusal streams as a `refusal` content part with refusal deltas.
   const refusalEvents = (refusal) => {
     const events = responseEvents();
-    const middle = Math.floor(refusal.length / 2);
+    const [prefix, suffix] = splitText(refusal);
     return events.flatMap((event) => {
       const next = structuredClone(event);
       if (next.part) {
@@ -722,8 +750,8 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
       }
       if (next.type === "response.output_text.delta") {
         return [
-          { ...next, type: "response.refusal.delta", delta: refusal.slice(0, middle) },
-          { ...next, type: "response.refusal.delta", delta: refusal.slice(middle) },
+          { ...next, type: "response.refusal.delta", delta: prefix },
+          { ...next, type: "response.refusal.delta", delta: suffix },
         ];
       }
       if (next.type === "response.output_text.done") {
@@ -763,18 +791,18 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
   // join both, so the assistant stream protects their concatenation.
   const mixed = (text) => {
     const [created, item, part, delta, ...rest] = responseEvents();
-    const middle = Math.floor(text.length / 2);
+    const [prefix, suffix] = splitText(text);
     return [
       created,
       item,
       part,
-      { ...delta, delta: text.slice(0, middle) },
+      { ...delta, delta: prefix },
       { ...part, content_index: 1, part: { type: "refusal", refusal: "" } },
       {
         ...delta,
         type: "response.refusal.delta",
         content_index: 1,
-        delta: text.slice(middle),
+        delta: suffix,
       },
       ...rest,
     ];
@@ -806,14 +834,7 @@ test("Responses refusal parts pass as assistant content and cannot reveal select
 test("Responses assistant projections protect independent items and seeded deltas", async (t) => {
   const f = await staticEgressFixture(t);
   const check = responseChecks(f);
-  const parts = (text) => {
-    const middle = Math.floor(text.length / 2);
-    return [text.slice(0, middle), text.slice(middle)].map((text) => ({
-      type: "output_text",
-      text,
-      annotations: [],
-    }));
-  };
+  const parts = (text) => outputTextParts(...splitText(text));
   function eventsFor(text, kind) {
     const events = responseEvents();
     if (kind === "done") {
@@ -951,16 +972,20 @@ test("Responses assistant projections protect independent items and seeded delta
 test("signed Responses Plan projections protect completed and response-wide streamed text", async (t) => {
   const f = await staticEgressFixture(t);
   const check = responseChecks(f);
-  const parts = (text) => [{ type: "output_text", text, annotations: [] }];
   const added = (index, text) => ({
     type: "response.output_item.added",
     output_index: index,
-    item: { type: "message", id: `msg_plan_${index}`, role: "assistant", content: parts(text) },
+    item: {
+      type: "message",
+      id: `msg_plan_${index}`,
+      role: "assistant",
+      content: outputTextParts(text),
+    },
   });
   const done = (event, text = "READY") => ({
     ...event,
     type: "response.output_item.done",
-    item: { ...event.item, content: parts(text) },
+    item: { ...event.item, content: outputTextParts(text) },
   });
   const response = (...events) => [wire.responseEvents[0], ...events, wire.responseEvents.at(-1)];
   for (const unsafe of [false, true]) {
@@ -972,18 +997,18 @@ test("signed Responses Plan projections protect completed and response-wide stre
     // Ordinary citation-visible text and the terminal envelope stay harmless.
     const completed = responseEvents();
     const markup = `<oai-mem-citation>outer\n<proposed_plan>\n${left}<oai-mem-citation>note</oai-mem-citation>${right}\n</proposed_plan>\n`;
-    completed[6].item.content = parts(markup);
+    completed[6].item.content = outputTextParts(markup);
     assert.ok(!encode(completed).includes(expected));
     await check.events(completed, unsafe, "completed Plan and benign twin");
     // Each completed message owns its Plan; a later safe message must not
     // erase an unsafe earlier message from the response-envelope projection.
     const envelope = responseEvents();
     envelope.at(-1).response.output = [
-      { ...completed[6].item, content: parts(markup) },
+      { ...completed[6].item, content: outputTextParts(markup) },
       {
         ...completed[6].item,
         id: "msg_later_plan",
-        content: parts("<proposed_plan>\nSafe final message\n</proposed_plan>"),
+        content: outputTextParts("<proposed_plan>\nSafe final message\n</proposed_plan>"),
       },
     ];
     await check.events(envelope, unsafe, "independent completed Plan in envelope");
@@ -1003,8 +1028,8 @@ test("signed Responses Plan projections protect completed and response-wide stre
     const events = responseEvents();
     events[4].text = generated;
     events[5].part.text = generated;
-    events[6].item.content = parts(generated);
-    events[7].response.output[0].content = parts(generated);
+    events[6].item.content = outputTextParts(generated);
+    events[7].response.output[0].content = outputTextParts(generated);
     events.splice(
       3,
       1,
@@ -1078,7 +1103,7 @@ test("signed Responses Plan projections protect completed and response-wide stre
   // Completed Plan selects the last raw block, not every prior block. Ordinary
   // citation-visible text stays harmless while the earlier Plan would be unsafe.
   const last = responseEvents();
-  last[6].item.content = parts(
+  last[6].item.content = outputTextParts(
     "<oai-mem-citation>outer\n<proposed_plan>\nsynthetic-key-<oai-mem-citation>note</oai-mem-citation>initial\n</proposed_plan>\n<proposed_plan>\nfinal safe plan\n</proposed_plan>",
   );
   await check.events(last, false, "completed Plan selects only the last block");
@@ -1089,9 +1114,7 @@ test("Responses incremental text snapshots cannot reveal selected material", asy
   const check = responseChecks(f);
   const events = (candidate, kind) => {
     const [created, item, part, delta, ...rest] = responseEvents();
-    const middle = Math.floor(candidate.length / 2);
-    const prefix = candidate.slice(0, middle);
-    const suffix = candidate.slice(middle);
+    const [prefix, suffix] = splitText(candidate);
     if (kind === "item") {
       item.item.content = [{ ...part.part, text: prefix }];
       return [created, item, { ...delta, delta: suffix }, ...rest];
@@ -1221,7 +1244,6 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     };
     const end = structuredClone(wire.responseEvents.at(-1));
     end.response.output = [item];
-    const middle = Math.floor(argumentsText.length / 2);
     return [
       structuredClone(wire.responseEvents[0]),
       {
@@ -1229,7 +1251,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
         output_index: 0,
         item: { ...item, arguments: "", status: "in_progress" },
       },
-      ...[argumentsText.slice(0, middle), argumentsText.slice(middle)].map((delta) => ({
+      ...splitText(argumentsText).map((delta) => ({
         type: "response.function_call_arguments.delta",
         output_index: 0,
         item_id: item.id,
@@ -1258,9 +1280,7 @@ test("selected Codex Responses wire admits local tools and finite SSE while reje
     true,
     "function_call_arguments.done and output_item.done cannot disagree about the arguments",
   );
-  const escapedCredential = [..."synthetic-key-initial"]
-    .map((character) => "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"))
-    .join("");
+  const escapedCredential = unicodeEscapes("synthetic-key-initial");
   const escapedFunction = functionEvents('{"cmd":"' + escapedCredential + '"}');
   const disguisedFunction = structuredClone(escapedFunction);
   disguisedFunction.splice(4, 1);
@@ -1482,15 +1502,25 @@ test(
     // Advance the controller's supported clock while keeping genuine signed identity, IAM,
     // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
     // fixed operation horizons must release replay capacity during the same long-lived JWT.
-    for (let i = 0; i < 4200; i += 1) {
-      elapsed += 25;
+    // One Sandbox at 40 requests/s holds about 1200 replay entries per 30 s horizon, under its
+    // share. Its share is the first replay bound it meets, so each operation past the share
+    // needs an expired entry released. Operation slots must also return on completion, or the
+    // loop stops at the operation share or capacity. "one Sandbox's replay share bounds it
+    // without refusing other Sandboxes" covers the installation-wide table's expiry.
+    const step = 25;
+    const operations = REPLAY_SANDBOX_SHARE + 64;
+    assert.ok(30_000 / step < REPLAY_SANDBOX_SHARE);
+    assert.ok(REPLAY_SANDBOX_SHARE < REPLAY_TABLE_CAPACITY);
+    assert.ok(OPERATION_CAPACITY < operations);
+    for (let i = 0; i < operations; i += 1) {
+      elapsed += step;
       const captured = f.capture();
       const ready = (await f.resolve(captured, peer)).ready;
       assert.ok(ready, `sequential operation ${i} should resolve`);
       assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
       assert.ok((await f.protect(captured, await f.send(captured, ready))).body);
     }
-    assert.equal(f.providerRequests.length, 4200);
+    assert.equal(f.providerRequests.length, operations);
     assert.ok(
       f.providerRequests.every(
         (request) => request.authorization === "Bearer synthetic-key-initial",
@@ -1579,53 +1609,49 @@ test("credential proxy rejects an oversized body before copying request fields",
   assert.equal(f.reads, 0);
 });
 
+const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+
 test("in-flight Secret selection and outstanding handles consume the same bounded capacity", async (t) => {
   // Exercise the actual 1024-slot registry, not a race to finish 1024 TLS handshakes,
   // native IAM checks and Kubernetes reads inside their intentionally short deadlines.
   const f = await syntheticDispatchFixture(t);
-  const ids = new Set();
   let reads = 0;
-  const full = Promise.withResolvers();
+  let target = 0;
+  let filled;
   const gate = Promise.withResolvers();
-  const forwarder = new CredentialProxy({
-    ...f.ports,
-    exchangeOwner: {
-      verify: f.ports.exchangeOwner.verify,
-      capture: (use) => {
-        ids.add(use.id);
-        return { ...f.association, responseId: use.id };
-      },
-      owns: (value, use) => ids.has(use.id) && value.responseId === use.id,
-    },
-    read: async (...args) => {
-      if (++reads === 1024) {
-        full.resolve();
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    async read(...args) {
+      if (++reads === target) {
+        filled.resolve();
       }
       await gate.promise;
-      return f.ports.read(...args);
+      return ports.read(...args);
     },
-  });
-  const use = (signal) =>
-    forwarder.resolve(
-      "synthetic-peer",
-      f.association.installation.sandboxId,
-      { ...f.request, id: requestId(f.ports.now()) },
-      signal,
-    );
+  }));
   const first = new AbortController();
   const other = new AbortController().signal;
-  const pending = Array.from({ length: 1024 }, (_, i) => use(i === 0 ? first.signal : other));
-  await full.promise;
-  const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+  // Four Sandboxes fill their shares; each burst exactly fits the authentication budget.
+  assert.equal(OPERATION_SANDBOX_SHARE * 4, OPERATION_CAPACITY);
+  assert.equal(OPERATION_AUTHENTICATION_BUDGET, OPERATION_SANDBOX_SHARE);
+  const pending = [];
+  for (const name of ["a", "b", "c", "d"]) {
+    filled = Promise.withResolvers();
+    target += OPERATION_SANDBOX_SHARE;
+    for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
+      pending.push(s.resolve(name, undefined, pending.length === 0 ? first.signal : other));
+    }
+    await filled.promise;
+  }
   assert.deepEqual(
-    await use(other),
+    await s.resolve("e", undefined, other),
     saturated,
     "pending selection is charged before material returns",
   );
   assert.deepEqual(
-    await forwarder.resolve(
-      "synthetic-peer",
-      f.association.installation.sandboxId,
+    await s.proxy.resolve(
+      "e",
+      "unauthenticated-sandbox",
       {
         ...f.request,
         get headers() {
@@ -1636,17 +1662,461 @@ test("in-flight Secret selection and outstanding handles consume the same bounde
     ),
     saturated,
   );
-  assert.equal(reads, 1024, "the excess resolution never starts selection");
+  assert.equal(reads, OPERATION_CAPACITY, "the excess resolution never starts selection");
   gate.resolve();
   assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
-  assert.deepEqual(await use(other), saturated, "ready handles remain charged");
+  assert.deepEqual(
+    await s.resolve("e", undefined, other),
+    saturated,
+    "ready handles remain charged",
+  );
   first.abort();
   assert.equal(
-    (await use(other)).kind,
+    (await s.resolve("e", undefined, other)).kind,
     "ready",
     "closing the owning sender frees exactly its slot",
   );
-  assert.deepEqual(await use(other), saturated);
+  assert.deepEqual(await s.resolve("e", undefined, other), saturated);
+});
+
+test("one Sandbox's open handles leave operation capacity to other Sandboxes", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes();
+  const held = new AbortController();
+  // As many requests as the installation-wide cap, each holding its handle open.
+  const decisions = [];
+  for (let i = 0; i < OPERATION_CAPACITY; i += 1) {
+    decisions.push(await s.resolve("a", undefined, held.signal));
+  }
+  assert.equal((await s.resolve("b")).kind, "ready", "another Sandbox's first request");
+  assert.ok(decisions.slice(0, OPERATION_SANDBOX_SHARE).every((d) => d.kind === "ready"));
+  for (const decision of decisions.slice(OPERATION_SANDBOX_SHARE)) {
+    assert.deepEqual(decision, saturated, "a Sandbox holds at most its share");
+  }
+  assert.equal(f.reads, OPERATION_SANDBOX_SHARE + 1, "a refused request starts no selection");
+  // Closing the handles returns the share, and so does their deadline.
+  held.abort();
+  const again = new AbortController();
+  for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
+    assert.equal((await s.resolve("a", undefined, again.signal)).kind, "ready");
+  }
+  assert.deepEqual(await s.resolve("a"), saturated);
+  f.advance(20_000);
+  assert.equal((await s.resolve("a")).kind, "ready", "expired handles were discarded");
+});
+
+test("requests still authenticating share a small budget charged before verification", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  let gate;
+  let verified = 0;
+  let filled;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    exchangeOwner: {
+      ...ports.exchangeOwner,
+      async verify(name) {
+        verified += 1;
+        if (gate && name === "a") {
+          if (verified === OPERATION_AUTHENTICATION_BUDGET) {
+            filled.resolve();
+          }
+          await gate.promise;
+        }
+        return ports.exchangeOwner.verify(name);
+      },
+    },
+  }));
+  gate = Promise.withResolvers();
+  filled = Promise.withResolvers();
+  const pending = Array.from({ length: OPERATION_AUTHENTICATION_BUDGET }, () => s.resolve("a"));
+  await filled.promise;
+  assert.deepEqual(await s.resolve("b"), saturated, "the budget is global before verification");
+  assert.equal(verified, OPERATION_AUTHENTICATION_BUDGET, "the excess request is never verified");
+  gate.resolve();
+  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
+  gate = undefined;
+  // Verified requests moved to their Sandbox's share and left the budget.
+  assert.equal((await s.resolve("b")).kind, "ready");
+});
+
+test("every refusal returns its operation slot", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  let mode;
+  let gate;
+  let gated = 0;
+  let filled;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    exchangeOwner: {
+      ...ports.exchangeOwner,
+      async verify(name) {
+        if (mode === "gated" && name === "a") {
+          if (++gated === OPERATION_AUTHENTICATION_BUDGET) {
+            filled.resolve();
+          }
+          await gate.promise;
+        }
+        if (mode === "verification throws") {
+          throw new Error("synthetic verification failure");
+        }
+        return mode === "unknown peer" ? undefined : ports.exchangeOwner.verify(name);
+      },
+    },
+    installation: async (peer) =>
+      mode === "installation missing" ? undefined : ports.installation(peer),
+    async check(use) {
+      if (mode === "policy throws") {
+        throw new Error("synthetic policy failure");
+      }
+      return mode === "policy denies" ? { kind: "denied", code: "withdrawn" } : ports.check(use);
+    },
+    async read(...args) {
+      if (mode === "Secret read throws") {
+        throw new Error("synthetic Secret failure");
+      }
+      return ports.read(...args);
+    },
+  }));
+  const denied = (code) => ({ kind: "refused", error: { kind: "denied", code } });
+  const unavailable = (code) => ({ kind: "refused", error: { kind: "unavailable", code } });
+  const unsupported = {
+    body: Buffer.from(JSON.stringify({ model: "other-model", input: "hello", store: false })),
+  };
+  const paths = [
+    // Before verification settles: the authentication budget.
+    [
+      "cancelled before verification",
+      () => s.resolve("a", undefined, AbortSignal.abort()),
+      { kind: "refused", error: { kind: "cancelled" } },
+    ],
+    ["unknown peer", () => s.resolve("a"), denied("identity")],
+    [
+      "verification throws",
+      () => s.resolve("a").catch((error) => error.message),
+      "synthetic verification failure",
+    ],
+    [
+      "another Sandbox's ID",
+      () => s.proxy.resolve("a", "other-sandbox", s.request(), new AbortController().signal),
+      denied("identity"),
+    ],
+    // After verification: the Sandbox's share.
+    [
+      "deadline already passed",
+      () => s.resolve("a", { deadlineAt: new Date(f.ports.now()).toISOString() }),
+      { kind: "refused", error: { kind: "deadline_exceeded" } },
+    ],
+    [
+      "installation missing",
+      () => s.resolve("a"),
+      { kind: "refused", error: { kind: "not_ready", code: "attachment_pending" } },
+    ],
+    ["unsupported route", () => s.resolve("a", unsupported), denied("unsupported_operation")],
+    ["policy denies", () => s.resolve("a"), denied("withdrawn")],
+    ["policy throws", () => s.resolve("a"), unavailable("authority")],
+    ["Secret read throws", () => s.resolve("a"), unavailable("secret_store")],
+  ];
+  // Each path refuses more requests than the budget or a share holds, and all of them
+  // together more than the installation-wide cap.
+  for (const [name, attempt, refused] of paths) {
+    mode = name;
+    for (let i = 0; i <= OPERATION_SANDBOX_SHARE; i += 1) {
+      assert.deepEqual(await attempt(), refused, name);
+    }
+    mode = undefined;
+    const closed = new AbortController();
+    assert.equal((await s.resolve("a", undefined, closed.signal)).kind, "ready", name);
+    closed.abort();
+  }
+  // No slot was returned twice either: the share and the budget still hold exactly.
+  const held = new AbortController();
+  for (let i = 0; i < OPERATION_SANDBOX_SHARE; i += 1) {
+    assert.equal((await s.resolve("a", undefined, held.signal)).kind, "ready");
+  }
+  assert.deepEqual(await s.resolve("a"), saturated, "the share still holds");
+  held.abort();
+  mode = "gated";
+  gate = Promise.withResolvers();
+  filled = Promise.withResolvers();
+  const pending = Array.from({ length: OPERATION_AUTHENTICATION_BUDGET }, () => s.resolve("a"));
+  await filled.promise;
+  assert.deepEqual(await s.resolve("b"), saturated, "the budget still holds");
+  mode = undefined;
+  gate.resolve();
+  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
+});
+
+test("requests refused before capture leave the replay table to every Sandbox", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes();
+  const unsupported = {
+    body: Buffer.from(JSON.stringify({ model: "other-model", input: "hello", store: false })),
+  };
+  const refused = { kind: "refused", error: { kind: "denied", code: "unsupported_operation" } };
+  for (let i = 0; i < REPLAY_TABLE_CAPACITY; i += 1) {
+    assert.deepEqual(await s.resolve("a", unsupported), refused);
+  }
+  assert.equal((await s.resolve("b")).kind, "ready", "another Sandbox's first request");
+  assert.equal((await s.resolve("a")).kind, "ready", "the refused Sandbox's next request");
+  // Nothing used an ID refused before capture, so it remains the sender's to use.
+  const id = requestId(f.ports.now());
+  assert.deepEqual(await s.resolve("a", { ...unsupported, id }), refused);
+  assert.equal((await s.resolve("a", { id })).kind, "ready");
+  assert.equal(f.reads, 3);
+});
+
+test("one Sandbox's replay share bounds it without refusing other Sandboxes", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  let gate;
+  let entered;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    async installation(peer) {
+      entered?.resolve();
+      await gate?.promise;
+      return ports.installation(peer);
+    },
+  }));
+  // Material was selected, so each ID stays reserved after its handle closes.
+  const use = async (name) => {
+    const closed = new AbortController();
+    const decision = await s.resolve(name, undefined, closed.signal);
+    closed.abort();
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (let i = 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
+    assert.equal(await use("a"), "ready");
+  }
+  assert.deepEqual(await use("a"), saturated, "a Sandbox past its share is refused");
+  assert.equal(await use("b"), "ready", "another Sandbox keeps its share");
+  for (const name of ["b", "c", "d"]) {
+    for (let i = name === "b" ? 1 : 0; i < REPLAY_SANDBOX_SHARE; i += 1) {
+      assert.equal(await use(name), "ready");
+    }
+  }
+  assert.equal(REPLAY_SANDBOX_SHARE * 4, REPLAY_TABLE_CAPACITY);
+  assert.deepEqual(await use("e"), saturated, "the installation-wide bound still holds");
+  // Fixed 30-second horizons return both the shares and the table, including
+  // horizons that pass while a request's installation lookup is pending.
+  f.advance(29_000);
+  gate = Promise.withResolvers();
+  entered = Promise.withResolvers();
+  const crossing = use("a");
+  await Promise.race([entered.promise, crossing]);
+  f.advance(1_000);
+  gate.resolve();
+  assert.equal(await crossing, "ready");
+  gate = undefined;
+  entered = undefined;
+  assert.equal(await use("e"), "ready");
+});
+
+test("request-time capacity defaults to today's bounds and is set once per controller", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const today = {
+    operations: OPERATION_CAPACITY,
+    authenticatingOperations: OPERATION_AUTHENTICATION_BUDGET,
+    sandboxOperations: OPERATION_SANDBOX_SHARE,
+    requestIds: REPLAY_TABLE_CAPACITY,
+    sandboxRequestIds: REPLAY_SANDBOX_SHARE,
+  };
+  assert.deepEqual(today, {
+    operations: 1024,
+    authenticatingOperations: 256,
+    sandboxOperations: 256,
+    requestIds: 8192,
+    sandboxRequestIds: 2048,
+  });
+  assert.deepEqual(DEFAULT_CREDENTIAL_PROXY_CAPACITY, today);
+  assert.deepEqual(new CredentialProxy(f.ports).capacity, today);
+  const installation = { id: "installation", name: "installation", createdAt: f.startedAt };
+  const owner = f.ports.exchangeOwner;
+  assert.deepEqual(
+    new OpenClawController(installation).createCredentialProxy(owner).capacity,
+    today,
+  );
+  const configured = {
+    operations: 64,
+    authenticatingOperations: 8,
+    sandboxOperations: 16,
+    requestIds: 512,
+    sandboxRequestIds: 128,
+  };
+  const controller = new OpenClawController(installation, { credentialProxyCapacity: configured });
+  assert.deepEqual(controller.createCredentialProxy(owner).capacity, configured);
+  // Direct composition refuses what Installation startup refuses, before any request.
+  for (const capacity of [
+    { operations: 0 },
+    { sandboxOperations: OPERATION_CAPACITY + 1 },
+    { requestIds: 16, sandboxRequestIds: 17 },
+    { requestIds: CREDENTIAL_PROXY_CAPACITY_MAXIMUM.requestIds + 1 },
+    { operations: "64" },
+  ]) {
+    assert.throws(() => new CredentialProxy(f.ports, capacity), RangeError);
+    assert.throws(
+      () => new OpenClawController(installation, { credentialProxyCapacity: capacity }),
+      RangeError,
+    );
+  }
+});
+
+test("configured operation bounds limit each Sandbox, the process and authentication", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes(undefined, { operations: 7, sandboxOperations: 2 });
+  assert.equal(s.proxy.capacity.authenticatingOperations, 1, "a quarter of the configured pool");
+  const held = new Map();
+  const hold = async (name) => {
+    const closed = held.get(name) ?? new AbortController();
+    held.set(name, closed);
+    const decision = await s.resolve(name, undefined, closed.signal);
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (const name of ["a", "b", "c"]) {
+    assert.equal(await hold(name), "ready");
+    assert.equal(await hold(name), "ready");
+    assert.deepEqual(await hold(name), saturated, `${name} holds at most its configured share`);
+  }
+  // Three full shares leave one slot of the configured process bound.
+  assert.equal(await hold("d"), "ready");
+  assert.deepEqual(await hold("d"), saturated, "the configured process bound holds");
+  held.get("a").abort();
+  assert.equal(await hold("d"), "ready", "a closed handle returns its slot");
+
+  let gate = Promise.withResolvers();
+  let verified = 0;
+  const filled = Promise.withResolvers();
+  const g = f.sandboxes(
+    (ports) => ({
+      ...ports,
+      exchangeOwner: {
+        ...ports.exchangeOwner,
+        async verify(name) {
+          if (++verified === 2) {
+            filled.resolve();
+          }
+          await gate?.promise;
+          return ports.exchangeOwner.verify(name);
+        },
+      },
+    }),
+    { authenticatingOperations: 2 },
+  );
+  const pending = [g.resolve("a"), g.resolve("b")];
+  await filled.promise;
+  assert.deepEqual(await g.resolve("c"), saturated, "the configured budget holds");
+  assert.equal(verified, 2, "the excess request is never verified");
+  gate.resolve();
+  gate = undefined;
+  assert.ok((await Promise.all(pending)).every((decision) => decision.kind === "ready"));
+  assert.equal((await g.resolve("c")).kind, "ready");
+});
+
+test("configured replay bounds limit each Sandbox and the process", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  const s = f.sandboxes(undefined, { requestIds: 5, sandboxRequestIds: 3 });
+  // Material was selected, so each ID stays reserved after its handle closes.
+  const use = async (name) => {
+    const closed = new AbortController();
+    const decision = await s.resolve(name, undefined, closed.signal);
+    closed.abort();
+    return decision.kind === "ready" ? "ready" : decision;
+  };
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(await use("a"), "ready");
+  }
+  assert.deepEqual(await use("a"), saturated, "a Sandbox past its configured share");
+  assert.equal(await use("b"), "ready");
+  assert.equal(await use("b"), "ready");
+  assert.deepEqual(await use("c"), saturated, "the configured table bound holds");
+  f.advance(30_000);
+  assert.equal(await use("c"), "ready", "expired IDs return both bounds");
+  assert.equal(await use("a"), "ready");
+});
+
+test("an Installation's request capacity bounds the actual exchange and recovers on release", async (t) => {
+  // Startup loads the operator's block, and the API compositions spread these options
+  // into the controller unchanged; the fixture's controller takes the same value.
+  const configuration = createCredentialProxyInstallationConfiguration();
+  configuration.drivers.credential_proxy.requestCapacity = { sandboxOperations: 1 };
+  const directory = await temporaryDirectory(t, "oce-request-capacity-");
+  const path = join(directory, "installation.yaml");
+  await writeFile(path, JSON.stringify(configuration));
+  const loaded = await loadInstallationConfiguration({
+    mode: "development",
+    environment: { OCC_CONFIG_PATH: path },
+  });
+  const { credentialProxyCapacity } = installationControllerOptions(loaded.installation);
+  assert.equal(credentialProxyCapacity?.sandboxOperations, 1);
+  const f = await staticEgressFixture(t, { credentialProxyCapacity });
+  // The Sandbox's only operation slot is held by a ready handle on an open exchange.
+  const held = await f.beginExchange();
+  held.stream.write(held.opening(f.capture()));
+  assert.ok((await held.next()).resolved.ready, "the first request is ready");
+  const reads = f.secretReads;
+  const refused = await f.resolve(f.capture());
+  assert.equal(refused.refused?.code, f.refusalCode("UNAVAILABLE"), JSON.stringify(refused));
+  assert.equal(f.secretReads, reads, "a request past the configured share reads no Secret");
+  // Closing the exchange releases its handle and with it the slot. The authority sees the
+  // cancellation asynchronously, so the next request may briefly still be refused.
+  held.stream.cancel();
+  const deadline = Date.now() + 10_000;
+  let next = await f.resolve(f.capture());
+  while (!next.ready && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    next = await f.resolve(f.capture());
+  }
+  assert.ok(next.ready, `the released slot serves the next request: ${JSON.stringify(next)}`);
+});
+
+test("a request ID stays reserved once policy or Secret work can start", async (t) => {
+  const f = await syntheticDispatchFixture(t);
+  let checks = 0;
+  let lookups = 0;
+  let gate;
+  let entered;
+  const s = f.sandboxes((ports) => ({
+    ...ports,
+    async installation(peer) {
+      lookups += 1;
+      entered?.resolve();
+      await gate?.promise;
+      return ports.installation(peer);
+    },
+    async check(use) {
+      checks += 1;
+      return checks === 1 ? { kind: "denied", code: "withdrawn" } : ports.check(use);
+    },
+  }));
+  const replay = { kind: "refused", error: { kind: "denied", code: "invalid_handle" } };
+  // A policy refusal is effectful: the ID cannot be used again in its window.
+  const denied = s.request();
+  assert.deepEqual(await s.resolve("a", denied), {
+    kind: "refused",
+    error: { kind: "denied", code: "withdrawn" },
+  });
+  assert.deepEqual(await s.resolve("a", denied), replay);
+  assert.deepEqual([checks, lookups], [1, 1], "a known replay is refused before any lookup");
+  const ready = s.request();
+  assert.equal((await s.resolve("a", ready)).kind, "ready");
+  assert.deepEqual(await s.resolve("a", ready), replay);
+  // Concurrent duplicates both pass the early check; only one may reserve after the lookup.
+  gate = Promise.withResolvers();
+  const duplicate = s.request();
+  const both = Promise.all([s.resolve("a", duplicate), s.resolve("a", duplicate)]);
+  gate.resolve();
+  const decisions = (await both).map((decision) => decision.kind);
+  assert.deepEqual(decisions.toSorted(), ["ready", "refused"]);
+  assert.equal(lookups, 4, "both duplicates passed the early check");
+  assert.equal(f.reads, 2);
+  // A lookup that outlasts the deadline reserves nothing and starts no policy work.
+  gate = Promise.withResolvers();
+  entered = Promise.withResolvers();
+  const late = s.resolve("a");
+  await Promise.race([entered.promise, late]);
+  f.advance(30_000);
+  gate.resolve();
+  assert.deepEqual(await late, { kind: "refused", error: { kind: "deadline_exceeded" } });
+  assert.equal(checks, 3);
 });
 
 test("cancelled and denied exchanges retain capacity until receipt work settles", async (t) => {
@@ -1660,6 +2130,7 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
       const fillerCancellation = new AbortController();
       let now = f.ports.now();
       let filling = 0;
+      const filled = Promise.withResolvers();
       const pause = async (name) => {
         if (phase === name || (phase === "expiry" && name === "authorize")) {
           entered.resolve();
@@ -1671,16 +2142,25 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
         now: () => now,
         exchangeOwner: {
           ...f.ports.exchangeOwner,
+          // Fillers and the probe authenticate as the target's Sandbox, so they share its
+          // slots, with a peer that outlives the target's deadline.
           async verify(authorization) {
-            if (authorization === "filler") {
-              filling += 1;
-              return fillerGate.promise;
-            }
-            if (authorization === "probe") {
-              return undefined;
-            }
-            return f.ports.exchangeOwner.verify(authorization);
+            const peer = await f.ports.exchangeOwner.verify(authorization);
+            return ["filler", "probe"].includes(authorization)
+              ? { ...peer, expiresAt: new Date(now + 3_600_000).toISOString() }
+              : peer;
           },
+        },
+        // The first requests hold the share's slots in their installation lookup.
+        async installation(peer) {
+          if (filling < OPERATION_SANDBOX_SHARE - 1) {
+            if (++filling === OPERATION_SANDBOX_SHARE - 1) {
+              filled.resolve();
+            }
+            await fillerGate.promise;
+            return undefined;
+          }
+          return f.ports.installation(peer);
         },
         check: async (use, evidence) =>
           phase === "deny" && evidence
@@ -1704,17 +2184,23 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
         },
       });
       const sandboxId = f.association.installation.sandboxId;
-      const resolve = (authorization, signal) =>
-        proxy.resolve(authorization, sandboxId, f.request, signal);
-      const fillers = Array.from({ length: 1023 }, () =>
+      const resolve = (authorization, signal, request = f.request) =>
+        proxy.resolve(authorization, sandboxId, request, signal);
+      // The probe is refused at its deadline once it gets a slot.
+      const probe = () =>
+        resolve("probe", fillerCancellation.signal, {
+          ...f.request,
+          deadlineAt: new Date(0).toISOString(),
+        });
+      // Leave the Sandbox's share one slot.
+      const fillers = Array.from({ length: OPERATION_SANDBOX_SHARE - 1 }, () =>
         resolve("filler", fillerCancellation.signal),
       );
-      assert.equal(filling, 1023);
-      const saturated = { kind: "refused", error: { kind: "unavailable", code: "resolver" } };
+      await filled.promise;
       const target = (async () => {
         const ready = await resolve("synthetic-peer", cancellation.signal);
         assert.equal(ready.kind, "ready");
-        assert.deepEqual(await resolve("probe", fillerCancellation.signal), saturated);
+        assert.deepEqual(await probe(), saturated);
         const decision = await proxy.authorizeSend(
           "synthetic-peer",
           sandboxId,
@@ -1755,15 +2241,15 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
           cancellation.abort();
         }
         assert.deepEqual(
-          await resolve("probe", fillerCancellation.signal),
+          await probe(),
           saturated,
           "revoking the handle must not release pending receipt work",
         );
         waiting.resolve();
         await target;
         assert.deepEqual(
-          await resolve("probe", fillerCancellation.signal),
-          { kind: "refused", error: { kind: "denied", code: "identity" } },
+          await probe(),
+          { kind: "refused", error: { kind: "deadline_exceeded" } },
           "capacity returns when the final outstanding work settles",
         );
         assert.equal(f.arrivals, 0);
@@ -1771,23 +2257,32 @@ test("cancelled and denied exchanges retain capacity until receipt work settles"
         cancellation.abort();
         fillerCancellation.abort();
         waiting.resolve();
-        fillerGate.resolve(undefined);
+        fillerGate.resolve();
         await Promise.allSettled([target, ...fillers]);
       }
     });
   }
 });
 
-function receiptAttempt(f, captured, ready) {
+async function stageReceiptExchange(f) {
+  const captured = f.capture();
+  const { ready } = await f.resolve(captured);
+  assert.ok(ready, "authority resolved the staged operation");
+  const useId = captured.request.context.request_id;
   return {
-    sender: f.egress.sourceControl.sender,
-    instanceId: f.installation.enforcement.instanceId,
-    useId: captured.request.context.request_id,
-    attemptId: captured.request.context.request_id,
-    material: JSON.parse(ready.evidence.authority_evidence.toString()),
-    deadlineAt: new Date(
-      Number(captured.deadline.seconds) * 1000 + captured.deadline.nanos / 1e6,
-    ).toISOString(),
+    captured,
+    ready,
+    permit: f.permitRequest(captured, ready),
+    input: {
+      sender: f.egress.sourceControl.sender,
+      instanceId: f.installation.enforcement.instanceId,
+      useId,
+      attemptId: useId,
+      material: JSON.parse(ready.evidence.authority_evidence.toString()),
+      deadlineAt: new Date(
+        Number(captured.deadline.seconds) * 1000 + captured.deadline.nanos / 1e6,
+      ).toISOString(),
+    },
   };
 }
 
@@ -2242,10 +2737,8 @@ test("stream progress beyond the response bound is refused", async (t) => {
 
 test("authenticated sender receipts survive authority restart without replay permission and distinguish observations", async (t) => {
   const f = await staticEgressFixture(t);
-  const captured = f.capture();
-  const ready = (await f.resolve(captured)).ready;
-  const input = receiptAttempt(f, captured, ready);
-  assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+  const { captured, ready, input, permit } = await stageReceiptExchange(f);
+  assert.ok((await f.authorize(permit)).allowed);
   const possible = await readReceipt(f, input);
   assert.deepEqual(possible.outcome, { kind: "uncertain", dispatch: "possible" });
   assert.equal(possible.observation, null);
@@ -2299,12 +2792,10 @@ test("receipt observation fences only positive credential rejection, including b
   const f = await staticEgressFixture(t);
   async function exchange(status, body) {
     f.setResponse({ status, body });
-    const captured = f.capture();
-    const ready = (await f.resolve(captured)).ready;
-    assert.ok(ready);
-    assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+    const { captured, ready, input, permit } = await stageReceiptExchange(f);
+    assert.ok((await f.authorize(permit)).allowed);
     const result = await f.protect(captured, await f.send(captured, ready));
-    return { result, receipt: await readReceipt(f, receiptAttempt(f, captured, ready)) };
+    return { result, receipt: await readReceipt(f, input) };
   }
   for (const [status, body] of [
     [401, { error: "invalid credential" }],
@@ -2326,16 +2817,15 @@ test("receipt observation fences only positive credential rejection, including b
     status: 401,
     body: { error: { code: "invalid_api_key", type: "invalid_request_error" } },
   });
-  const partialCapture = f.capture();
-  const partialReady = (await f.resolve(partialCapture)).ready;
-  assert.ok((await f.authorize(f.permitRequest(partialCapture, partialReady))).allowed);
-  const partialResponse = await f.send(partialCapture, partialReady);
-  const incomplete = await f.protect(partialCapture, {
+  const partial = await stageReceiptExchange(f);
+  assert.ok((await f.authorize(partial.permit)).allowed);
+  const partialResponse = await f.send(partial.captured, partial.ready);
+  const incomplete = await f.protect(partial.captured, {
     ...partialResponse,
     response_complete: false,
   });
   assert.equal(incomplete.blocked, true);
-  const partialReceipt = await readReceipt(f, receiptAttempt(f, partialCapture, partialReady));
+  const partialReceipt = await readReceipt(f, partial.input);
   assert.equal(partialReceipt.observation.kind, "response_blocked");
   assert.equal(partialReceipt.feedback, null);
   const acceptedRejection = await exchange(401, {
@@ -2393,9 +2883,7 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         now: () => new Date(Date.now() + elapsed),
         appFactory: fault.appFactory,
       });
-      const captured = f.capture();
-      const ready = (await f.resolve(captured)).ready;
-      const input = receiptAttempt(f, captured, ready);
+      const { captured, input, permit } = await stageReceiptExchange(f);
       const gate = fault.arm(
         scenario === "check_deadline"
           ? "isEgressMaterialRejected"
@@ -2405,7 +2893,7 @@ test("receipt persistence failure, lost acknowledgment and late authorization ne
         ["reject", "lost_ack"].includes(scenario) ? scenario : "pause",
       );
       t.after(gate.release);
-      const result = f.authorize(f.permitRequest(captured, ready), {
+      const result = f.authorize(permit, {
         cancelAfterMs: scenario === "cancel" ? 50 : undefined,
       });
       if (scenario !== "reject") {
@@ -2491,10 +2979,8 @@ test("response persistence must commit its observation and fence before policy b
         status: 401,
         body: { error: { code: "invalid_api_key", type: "invalid_request_error" } },
       });
-      const captured = f.capture();
-      const ready = (await f.resolve(captured)).ready;
-      const input = receiptAttempt(f, captured, ready);
-      assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
+      const { captured, ready, input, permit } = await stageReceiptExchange(f);
+      assert.ok((await f.authorize(permit)).allowed);
       const response = await f.send(captured, ready);
       const gate = fault.arm("save", scenario === "deadline" ? "pause" : scenario);
       t.after(gate.release);
@@ -2638,20 +3124,38 @@ test("production Compute refuses protected admission and release, including empt
   );
 });
 
-test("protected admission refuses an Agent's network policy additions instead of dropping them", async (t) => {
-  // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
-  // Admission says so at deploy time; it must not silently admit a revision without them.
-  const grant = {
+function networkPolicyGrant() {
+  return {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
     host: "example.org",
     ports: [{ from: 443, to: 443 }],
   };
+}
+
+async function networkPolicyFixture(t, { admitRevision = true } = {}) {
+  const grant = networkPolicyGrant();
   const f = await staticEgressFixture(t, {
-    admitRevision: false,
+    admitRevision,
     appFactory: (context, options) =>
       createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
   });
+  return { f, grant };
+}
+
+async function enableNetworkPolicyEditing(f) {
+  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
+  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
+  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
+  const view = await f.request("GET", base);
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+  return { base, view: view.body.data };
+}
+
+test("protected admission refuses an Agent's network policy additions instead of dropping them", async (t) => {
+  // The protected profile is the Sandbox's exact policy, so Agent additions cannot ride on it.
+  // Admission says so at deploy time; it must not silently admit a revision without them.
+  const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
   const savePolicy = (additions) =>
     f.controller.transact(async (unit) => {
       const policy = await unit.sandboxPolicies.find(f.namespace.id, f.agent.id);
@@ -2692,27 +3196,14 @@ test("protected admission refuses an Agent's network policy additions instead of
 test("the policy endpoint refuses additions and live application while the active revision is protected", async (t) => {
   // Fail early: the same rule createRevision and the worker enforce is refused at save and
   // apply time, with the Credential Proxy named, and the policy view says so up front.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const f = await staticEgressFixture(t, {
-    appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
-  });
-  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
+  const { f, grant } = await networkPolicyFixture(t);
   assert.equal(f.revision.executionAdmission.mode, "protected");
-  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
-  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
-  const view = await f.request("GET", base);
-  assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(view.body.data.editingEnabled, true);
-  assert.equal(view.body.data.protectedExecution, true);
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  assert.equal(view.editingEnabled, true);
+  assert.equal(view.protectedExecution, true);
   // The protected revision admitted no Agent policy snapshot, so no revision owns defaults.
-  assert.equal(view.body.data.defaultsRevisionId, undefined);
-  const version = view.body.data.policy.version;
+  assert.equal(view.defaultsRevisionId, undefined);
+  const version = view.policy.version;
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
@@ -2744,28 +3235,10 @@ test("the policy endpoint refuses additions and live application while the activ
 test("the policy endpoint refuses additions before an Agent's first protected deploy", async (t) => {
   // Finding 2053, fail early: with the Credential Proxy selected, the next deploy is protected
   // and would refuse saved additions, so save refuses them before any revision exists.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
-  const f = await staticEgressFixture(t, {
-    admitRevision: false,
-    appFactory: (context, options) =>
-      createConsoleAppFixture(context, { ...options, sandboxNetworkPolicyCeiling: [grant] }),
-  });
-  const base = `/namespaces/${f.namespace.id}/agents/${f.agent.id}/sandbox-policy/networking`;
-  const enabled = await f.request("PATCH", `${base}/editing`, { body: { enabled: true } });
-  assert.equal(enabled.status, 200, JSON.stringify(enabled.body));
-  const view = await f.request("GET", base);
-  assert.equal(view.status, 200, JSON.stringify(view.body));
-  assert.equal(
-    view.body.data.protectedExecution,
-    true,
-    "no revision yet; the next one is protected",
-  );
-  const version = view.body.data.policy.version;
+  const { f, grant } = await networkPolicyFixture(t, { admitRevision: false });
+  const { base, view } = await enableNetworkPolicyEditing(f);
+  assert.equal(view.protectedExecution, true, "no revision yet; the next one is protected");
+  const version = view.policy.version;
   const refused = await f.request("PUT", base, {
     body: { expectedVersion: version, additions: [grant] },
   });
@@ -2796,12 +3269,7 @@ test("the OpenShell Driver refuses a protected revision carrying Agent network p
   // profile alone. Admission never stores additions on a protected revision; should one carry
   // them anyway, provisioning refuses it rather than silently dropping them.
   const f = await staticEgressFixture(t);
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
+  const grant = networkPolicyGrant();
   const requirements = {
     loginMode: "api_key",
     image: "harness-fixture:local",
@@ -2843,12 +3311,7 @@ test("the policy worker names protected execution when it fails queued live appl
   // Finding 2053's worker backstop: OCC now refuses live application to a protected revision,
   // so only work queued by earlier admission code reaches this state. It must fail at once,
   // name the rule and touch no provider.
-  const grant = {
-    id: "python-demo",
-    binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
-  };
+  const grant = networkPolicyGrant();
   const application = {
     id: "application-2053",
     revisionId: "rev-2053",

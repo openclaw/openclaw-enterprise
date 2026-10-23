@@ -175,6 +175,17 @@ App and platform Secrets while other Agents depend on them. For permanent
 offboarding, retire affected Agents, resolve cleanup, and then remove the
 repository from the App installation and publish a new immutable registry policy.
 
+## Fix an App key the worker refuses
+
+The worker reads and parses the mounted key at startup. A key that cannot sign stops it
+with `PREPARED_GITHUB_APP_KEY_INVALID` and a `reason`: `app_key_unreadable` (missing,
+empty, over 32 KiB, or open to group write or other users), `app_key_unparsable` (a
+public key, certificate or passphrase-protected key) or `app_key_unsupported` (not
+RSA of 2048 to 8192 bits). The log never includes key bytes. The worker restarts until
+the Secret holds a usable key; put one there as in the next section. A key that goes
+bad while the worker runs is read at the next preparation, which logs `worker.error`
+with the same code and `reason`; the worker keeps running and retries every 5 seconds.
+
 ## Replace a rejected App key
 
 Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then
@@ -189,6 +200,9 @@ Put a key GitHub accepts in `private-key.pem` of the Secret selected by
 [installation](installation.md#prepare-the-registry-and-protected-inputs).
 Keep it worker-only. Allow the mounted Secret to update, then deploy a new
 revision of each affected Agent and verify a fresh fetch. The worker re-reads the
-key; restoring it alone does not reopen a quarantined preparation. Preserve
+key; restoring it alone does not reopen a quarantined preparation. The new revision
+gets material at once when GitHub refused the old attempt. If GitHub's answer was
+lost, it waits until no token from that attempt can be valid, 72 minutes after the
+attempt began. Preserve
 unresolved retirement with its original owner; see
 [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).

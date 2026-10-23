@@ -70,7 +70,12 @@ export type OpenShellGitRouteWithdrawal =
 export interface OpenShellGitExpiry {
   readonly retainedLaunchHash: string;
   readonly observed: OpenShellPreparedGitInstalled;
-  readonly detach?: { readonly requestId: string; readonly epoch?: string };
+  readonly detach?: {
+    readonly requestId: string;
+    /** The Sandbox resource version the recorded detach is conditional on. */
+    readonly resourceVersion?: string;
+    readonly epoch?: string;
+  };
 }
 
 export interface OpenShellGitRouteStore {
@@ -105,8 +110,13 @@ export interface OpenShellGitRouteStore {
   cancelWriting(revisionId: string, fence: number): Promise<boolean>;
   /** Records the route as verified and clears a pending write. False when the fence is stale. */
   record(revisionId: string, fence: number, snapshot: OpenShellGitRouteSnapshot): Promise<boolean>;
-  /** Whether the fence still names the holder. */
-  owns(revisionId: string, fence: number): Promise<boolean>;
+  /**
+   * True while the fence still names the holder; false once another worker took the route (or
+   * it is gone). A route closed at this fence answers its reason instead: another worker
+   * withdrew the revision or expired its access, which leaves the fence where it was. Only
+   * `=== true` means held.
+   */
+  owns(revisionId: string, fence: number): Promise<boolean | OpenShellGitRouteBlockReason>;
   /** Closes the route for good (the first reason stays). False when the fence is stale. */
   block(revisionId: string, fence: number, reason: OpenShellGitRouteBlockReason): Promise<boolean>;
   /** Confirm this exact preview closure, or observe that another owner or terminal reason won. */
@@ -468,12 +478,15 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     );
   }
 
-  async owns(revisionId: string, fence: number): Promise<boolean> {
+  async owns(revisionId: string, fence: number): Promise<boolean | OpenShellGitRouteBlockReason> {
     const c = await this.pool.connect();
     let discard = false;
     try {
       const key = await this.key(c, revisionId, false);
-      return key?.fence === fence && key.blocked === null;
+      if (key?.fence !== fence) {
+        return false;
+      }
+      return (key.blocked as OpenShellGitRouteBlockReason | null) ?? true;
     } catch (error) {
       discard = true;
       throw error;
@@ -596,6 +609,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           ...(progress.requestId && {
             detach: {
               requestId: progress.requestId,
+              ...(progress.expectedVersion && { resourceVersion: progress.expectedVersion }),
               ...(progress.observedGeneration && { epoch: progress.observedGeneration }),
             },
           }),

@@ -282,7 +282,7 @@ spec:
         {{- end }}
       ports:
         - protocol: TCP
-          {{- $port := int .Values.repositoryCredentials.upstreamPort }}
+          {{- $port := include "openclaw.positiveSafeInteger" (dict "name" "repositoryCredentials.upstreamPort" "value" .Values.repositoryCredentials.upstreamPort "port" true) | atoi }}
           {{- if and (ne $port 443) (or (ne .Values.repositoryCredentials.authority "prepared-git") (lt $port 1024) (gt $port 65535)) }}
           {{- fail "repositoryCredentials.upstreamPort must be 443 or a private prepared Git provider port" }}
           {{- end }}
@@ -317,7 +317,7 @@ spec:
 {{- end }}
 {{- if .Values.preparedGitHub.custodySecretName }}
 {{- if not .Values.preparedGitHub.issuerCidrs }}{{ fail "preparedGitHub.issuerCidrs requires exact GitHub API IPv4 destinations" }}{{ end }}
-{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort) | atoi }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "preparedGitHub.issuerPort" "value" .Values.preparedGitHub.issuerPort "port" true) | atoi }}
 {{- if gt $port 65535 }}{{ fail "preparedGitHub.issuerPort must be a TCP port from 1 to 65535" }}{{ end }}
 ---
 apiVersion: networking.k8s.io/v1

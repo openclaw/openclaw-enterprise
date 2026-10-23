@@ -69,6 +69,11 @@ Compute validates admission for OCC and rechecks it with the worker before launc
 PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Older workers refuse v3;
 upgrade all writers before admitting it. Qualify release and installed deny-all behavior.
 
+Deploy refuses Git that cannot start: no delivery profile in `admitProxyPlan`
+(409 `REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled OpenShell `git-write` in
+`apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
+(409 `REPOSITORY_GIT_SENDER_UNQUALIFIED`). Bundled preparation repeats both, failing older `git-write` revisions.
+
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway
 attachment; they receive no Gateway authentication environment. Gateway-owned sources
@@ -112,19 +117,20 @@ the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 Request JSON cannot supply a key; bearer-only RPCs refuse.
 
 Before awaiting work, the adapter copies the request and binds a private capability to the stream.
-Credential Proxy bounds body size and capacity, reserves a slot and snapshots headers and body.
+Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
 The stream owns the response. OCC copies each authenticated peer descriptor before
 awaiting more work. Send and response require the captured sender, Sandbox,
 instance, exchange, installation and optional peer key. Adding, changing or removing the key
 refuses; peer expiry must be valid and future at resolution, send and response lookup. A bearer
 or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
-releases material; pending policy or receipt work retains its slot until settled. No pipelining.
+releases material; pending policy or receipt work keeps its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` maps the peer to persisted installation state and classifies one exact
-route through its registered provider. Before asynchronous authorization, it reserves
-the UUIDv7 request ID; its creation time fixes the 30-second replay horizon. Pending
-resolution and replay state are bounded; unsupported or ambiguous operations refuse
-before Secret access.
+`packages/occ/src/credential-proxy.ts:resolve` then moves the slot to the verified Sandbox's share,
+maps the peer to persisted installation state and classifies one exact route through its
+provider. Before capture or policy I/O, it reserves the UUIDv7 request ID; its creation time
+fixes the 30-second replay horizon. Slots and IDs are
+[bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
+unsupported or ambiguous operations refuse before reserving one.
 
 Supplier enrollment starts at its authenticated current supervisor hello, not the first
 exchange. The supplier must keep the corresponding private key outside the Agent and
@@ -263,6 +269,7 @@ operation fence. Confirmation grants no request authority.
 
 `apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts:reconcile`
 cancels only definitely unsent writes. Uncertain writes stay pending and blocked.
+`release` drops closed routes whose Sandbox is gone; refusal stays.
 See [restart behavior](../reference/repository-credentials/protected-openshell-git.md#route-state-restarts-and-recovery).
 
 Creation requires the exact live owner. Deletion retains custody but prevents live
@@ -287,6 +294,8 @@ the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-22 23:30: Refuse unqualified OpenShell Git senders early. (fix-2199 - b4a8157be)
 
 - 2026-10-22 05:35: Pin peer identity and original authentication expiry throughout the exchange in the accompanying correction. (authoring-run/009b70d4-eb48-4ea6-97f0-25b0395d1e1a - d87db85f74052e9ff819920acd820880e7a6a8af)
 

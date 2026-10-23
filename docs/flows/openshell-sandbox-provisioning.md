@@ -309,12 +309,11 @@ Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
 fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 `DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
-deletes the runtime provider. `cleanupNativeWorkspace` retires
-interrupted preparers without a Sandbox, refusing foreign/replaced resources. Namespace cleanup
-removes unused runtime profiles.
+deletes the runtime provider, then the Git provider and profile. `cleanupNativeWorkspace` retires
+interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
-After retirement, Namespace `cleanup` verifies Workspace ownership, removes
-owned providers/profile, sends idempotent `DeleteWorkspace`, then removes chart
+Namespace `cleanup` then verifies Workspace ownership, removes
+owned runtime/Git providers and profiles, sends idempotent `DeleteWorkspace`, then removes chart
 resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
@@ -332,8 +331,8 @@ fences the delivery and commits its reduction intent through
 `packages/occ/src/state/credential-delivery-reductions.ts:CredentialDeliveryReductions`.
 `apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
 conditionally detaches Git. It independently verifies the reduced generation, original
-process and network, retained providers and model attachment. Lost replies consume the
-send opportunity: restart observes without resending. A replacement cannot settle it.
+process and network, retained providers and model attachment. Applied detaches are observed,
+never resent; an unapplied intent repeats its request. A replacement cannot settle it.
 
 This supports one Git binding with separately authorized model access. Removing the last Git route
 denies Git while that conversation continues. Multiple independent Git bindings

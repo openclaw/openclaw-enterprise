@@ -19,6 +19,10 @@ import {
 } from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
+import {
+  preparedRepositoryBackend,
+  preparedRepositoryInstallation,
+} from "./lib/prepared-repository-installation.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -2039,7 +2043,6 @@ function buildRendered(profile, parsed, diagnostics) {
         "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
       );
     }
-    const repoDriverId = "repository-credentials";
     values.repositoryCredentials = {
       enabled: true,
       authority: "prepared-git",
@@ -2099,28 +2102,10 @@ function buildRendered(profile, parsed, diagnostics) {
         description: "an IPv4 CIDR",
       }),
     };
-    installation.backend.push({
-      id: values.repositoryCredentials.backendId,
-      type: "github",
-      configuration: {
-        registryPath: "/etc/openclaw/repository-registry/registry.json",
-      },
-      drivers: {
-        repo: repoDriverId,
-      },
-    });
-    installation.repository = {
-      id: repoDriverId,
-      configuration: { sessionDurationSeconds: 86_400 },
-      nativeSender: {
-        controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-      },
-      preparedGitHub: {
-        custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
-        privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
-      },
-    };
+    installation.backend.push(
+      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
+    );
+    installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
       podLabels: {

@@ -20,7 +20,11 @@ import type {
   ProxyRevisionContext,
   SandboxDriver,
 } from "@openclaw-enterprise/contracts";
-import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
+} from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
 import { type OpenShellGateway, openShellWorkspaceName } from "../../backends/openshell.ts";
 import {
@@ -377,11 +381,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     });
   }
 
-  /** Stock may offer the observed-hook preview only by explicit Installation opt-in. Its
-   * strict online-request profile remains unavailable independently at the release boundary. */
+  /** Stock may offer the observed-hook preview only by explicit Installation opt-in. The
+   * repository profile's online-request authorization has no qualified release: the release
+   * gate (`repositoryGitEnforcement`) never observes enforcement for it, so admission refuses
+   * it here instead of leaving its Harness to wait out enrollment (finding 2199). A sender that
+   * qualifies it must replace both checks together. */
   protected assertRepositoryGitProfileAvailable(
     profile: RepositoryGitDeliveryProfile | undefined,
   ): void {
+    if (profile === "repository_git") {
+      throw new RepositoryGitSenderUnqualifiedError();
+    }
     if (
       profile === "github_installation" &&
       !(this.options.observedHookPreviewWorkspace && this.previewEnforcement)
@@ -394,10 +404,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   async configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring> {
     this.assertPlan(context);
-    await this.sourceControl.assertAvailable(
-      context.signal,
-      repositoryGitDeliveryProfile(context.plan.repositoryGit),
-    );
+    const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
+    if (context.plan.repositoryGit !== undefined && profile === undefined) {
+      // Finding 2204: never check a Git plan's counterpart as an ordinary egress plan. Deploy
+      // refuses it first; preparation repeats the refusal so the worker fails it at once.
+      throw new RepositoryGitProfileUnsupportedError();
+    }
+    await this.sourceControl.assertAvailable(context.signal, profile);
     return immutableCopy({
       plan: context.plan,
       configuration: openShellEgressConfiguration(context.plan, this.options),
@@ -545,7 +558,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   /**
    * Release gate for the public online profile. Registration, a loaded policy and provider
    * readiness do not prove that this sender cannot skip the request hook or reuse an execution
-   * identity. Stock v0.1.5 can omit the request phase; no published release is qualified here.
+   * identity. Stock v0.1.5 can omit the request phase; no published release is qualified here,
+   * so `assertRepositoryGitProfileAvailable` refuses the profile at admission.
    * Require verified TLS, credential placement and no bypass on a supported release. Never use
    * the private installation-exchange capability or the reported URL scheme as that proof.
    */

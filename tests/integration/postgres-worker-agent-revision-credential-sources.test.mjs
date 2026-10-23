@@ -11,6 +11,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   CREDENTIAL_GATEWAY_FIXTURE_ID,
@@ -22,6 +23,7 @@ import {
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
+  withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 import { gitCommandBodies, gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
@@ -890,11 +892,14 @@ test(
     const revoked = await withdrawal.read(fixture.actor.id);
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
-    const completed = events.filter(
-      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
+    const completed = events
+      .filter(
+        ({ event, code }) =>
+          event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+      )
+      .map(occLogLine);
     assert.deepEqual(
-      completed.map(({ outcome, hint }) => [outcome, hint]),
+      completed.map(({ outcome, hintCode }) => [outcome, hintCode]),
       [["retry", undefined]],
     );
 
@@ -924,14 +929,17 @@ test(
     const recovery = await queuedWithdrawal(fixture, other.candidate);
     assert.equal(recovery.idempotencyKey, `${persistent.idempotencyKey}:recovery:1`);
     assertRetryDelay(recovery, 30_000);
-    const terminal = events.filter(
-      ({ event, code, hint }) =>
-        event === "worker.completed" &&
-        code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
-        hint !== undefined,
-    );
+    // The lines the worker log keeps (finding 2245).
+    const terminal = events
+      .map(occLogLine)
+      .filter(
+        ({ event, code, hintCode }) =>
+          event === "worker.completed" &&
+          code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
+          hintCode !== undefined,
+      );
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0].hint, /restore that identity's Workspace role/);
+    assert.equal(terminal[0].hintCode, "sandbox-gateway-identity");
     // The Driver's retry, the queue's permanent failure (with the recovery series queued).
     assert.deepEqual(
       [terminal[0].attempt, terminal[0].result, terminal[0].outcome],
@@ -1646,6 +1654,140 @@ for (const harness of [false, true]) {
   );
 }
 
+revisionTest(
+  "a candidate's withdrawal refused until it is active settles when its deployment activates it, without a replay",
+  async (fixture) => {
+    const owners = [];
+    for (const label of ["activates", "other-refusal", "outstanding", "active-retirement"]) {
+      owners.push(await agentWithHarnessAndToolSources(fixture, `withdraw-activation-${label}`, 1));
+    }
+    const firsts = [];
+    for (const owner of owners) {
+      firsts.push(await fixture.revision(owner, 1));
+    }
+    // Revisions whose withdrawal Compute refuses for another cause, whichever is active.
+    const refusals = new Map();
+    const withdrawn = [];
+    const compute = {
+      ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
+      // Like reduceCredentialPolicy, reduce only the Agent's active revision (finding 2235).
+      async withdrawCredentialSource(revision, source) {
+        withdrawn.push(revision.id);
+        const agent = await fixture.state.read((view) =>
+          view.agents.findAgent(revision.namespaceId, revision.agentId),
+        );
+        const code =
+          refusals.get(revision.id) ??
+          (agent?.activeRevisionId === revision.id
+            ? undefined
+            : "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+        if (code !== undefined) {
+          throw new CredentialWithdrawalRefusedError(code, "Compute refused the withdrawal.");
+        }
+        return { sourceId: source.id, state: "revoked" };
+      },
+    };
+    const options = { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway };
+    await fixture.start(compute, options);
+    for (const first of firsts) {
+      await fixture.work(first, "succeeded");
+    }
+    await fixture.stop();
+
+    // The first three Agents have a later candidate still deploying when the withdrawal is
+    // requested. The last one has none; its active revision refuses retirement itself.
+    const seconds = [];
+    for (const owner of owners.slice(0, 3)) {
+      seconds.push(await admitHeldRevision(fixture, owner, 2));
+    }
+    refusals.set(seconds[1].id, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    refusals.set(firsts[3].id, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    // Another operator requests the first Agent's withdrawal; its attempts run as that operator.
+    const requester = `withdraw-activation-requester-${randomUUID()}`;
+    await fixture.copyActorGrants(requester);
+    const withdrawals = [];
+    for (const [index, owner] of owners.entries()) {
+      const sourceId = toolSources(owner)[0].sourceId;
+      withdrawals.push(
+        await requestWithdrawal(
+          fixture,
+          owner,
+          sourceId,
+          index === 0 ? requester : fixture.actor.id,
+        ),
+      );
+    }
+    await fixture.start(compute, options);
+    for (const [index, second] of seconds.entries()) {
+      await fixture.work((await withdrawalAttempts(fixture, second))[0], "failed_permanent");
+      await fixture.work((await withdrawalAttempts(fixture, firsts[index]))[0], "succeeded");
+    }
+    await fixture.work((await withdrawalAttempts(fixture, firsts[3]))[0], "failed_permanent");
+    await fixture.stop();
+    const refused = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(refused.revisionId, seconds[0].id);
+    assert.equal(refused.state, "pending");
+    assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    assert.equal(refused.withdrawalInProgress, false, "the refusal awaits a replay or activation");
+
+    // The third Agent's operator replays while its candidate still deploys. That attempt would
+    // fail the same way; hold it, so it is still queued when the candidate activates.
+    await withdrawals[2].replay(fixture.actor.id);
+    const replay = (await withdrawalAttempts(fixture, seconds[2]))[1];
+    assert.equal(replay.state, "queued");
+    const hold = (work, at) =>
+      fixture.observerPool.query(
+        `UPDATE occ.controller_work SET available_at = ${at} WHERE idempotency_key = $1`,
+        [work.idempotencyKey],
+      );
+    await hold(replay, "clock_timestamp() + interval '1 day'");
+    for (const second of seconds) {
+      await hold(second, "clock_timestamp()");
+    }
+    await fixture.start(compute, options);
+    for (const second of seconds) {
+      await fixture.work(second, "succeeded", 30_000);
+    }
+
+    // Activation queues one attempt for the refused withdrawal, as its requester, and that
+    // attempt reduces the now-active revision. Nobody replayed it.
+    const activated = await withdrawalAttempts(fixture, seconds[0]);
+    assert.equal(activated.length, 2, "activation queues exactly one attempt");
+    const activation = activated[1];
+    assert.equal(
+      activation?.idempotencyKey,
+      `agent_revision:${seconds[0].id}:reconcile:credentials_withdrawn:activation`,
+    );
+    assert.equal(activation.actorId, requester);
+    await fixture.work(activation, "succeeded");
+    const settled = await withdrawals[0].read(fixture.actor.id);
+    assert.equal(settled.revisionId, seconds[0].id);
+    assert.equal(settled.state, "revoked");
+    assert.equal(withdrawn.filter((id) => id === seconds[0].id).length, 2);
+
+    // Activation queues nothing for a refusal it does not change, nor beside an attempt that
+    // is still queued; that attempt then settles the withdrawal.
+    assert.equal((await withdrawalAttempts(fixture, seconds[1])).length, 1);
+    const other = await withdrawals[1].read(fixture.actor.id);
+    assert.equal(other.state, "pending");
+    assert.equal(other.lastReason, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.equal((await withdrawalAttempts(fixture, seconds[2])).length, 2);
+    await hold(replay, "clock_timestamp()");
+    await fixture.work(replay, "succeeded");
+    assert.equal((await withdrawals[2].read(fixture.actor.id)).state, "revoked");
+
+    // An active revision's own retirement refusal still waits for a replay: its maintenance
+    // passes, which complete the activated revision too, queue no attempt.
+    await runMaintenancePass(fixture, firsts[3]);
+    await fixture.stop();
+    assert.equal((await withdrawalAttempts(fixture, firsts[3])).length, 1);
+    const retirement = await withdrawals[3].read(fixture.actor.id);
+    assert.equal(retirement.state, "pending");
+    assert.equal(retirement.withdrawalInProgress, false);
+  },
+);
+
 for (const successor of [false, true]) {
   test(
     `maintenance stops re-queuing ${successor ? "an admitted successor's Harness" : "a tool"} source withdrawal denied to its requester until an authorized replay`,
@@ -1670,28 +1812,8 @@ for (const successor of [false, true]) {
       };
       const options = {
         convergenceTimeoutMs: 50,
-        transformDrivers: (drivers) => {
-          const withGateway = withCredentialGateway(drivers);
-          const createIAMDriver = withGateway.createIAMDriver;
-          return {
-            ...withGateway,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (iamUnavailable) {
-                    throw new Error("IAM is temporarily unavailable");
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
+        transformDrivers: (drivers) =>
+          withUnavailableIAM(() => iamUnavailable)(withCredentialGateway(drivers)),
       };
       const first = await fixture.revision(owner, 1);
       await fixture.start(compute, options);

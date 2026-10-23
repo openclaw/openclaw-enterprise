@@ -8,6 +8,7 @@ import {
   openShellEgressConfiguration,
   type OpenShellProxyOptions,
 } from "../egress-proxy/openshell.ts";
+import { deleteOpenShellPreparedGitProviders } from "../egress-proxy/openshell-prepared-git-provider.ts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
   requireConfiguration,
@@ -3802,6 +3803,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace, provider, context.signal);
         }
       }
+      const git = this.openShellGit;
+      const revision = context.revision;
+      if (git !== undefined && revision.repositoryCredentials !== undefined) {
+        // cleanup() withdrew the route and the Sandbox is gone: nothing uses the revision's
+        // Git provider, which would otherwise keep DeleteWorkspace refused (finding 2206).
+        const attached = present?.spec?.providers;
+        await refused(() =>
+          git.removeProvider(
+            revision,
+            client,
+            workspace,
+            sandbox.resourceName,
+            Array.isArray(attached) ? attached.filter((name) => typeof name === "string") : [],
+            context.signal,
+          ),
+        );
+      }
       return;
     }
     this.requireOperatorWorkspaceMode("clean up a Namespace");
@@ -3812,7 +3830,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // A prior delete can have reached TERMINATING before its response was lost.
       // Ownership remains the cleanup boundary, and DeleteWorkspace is idempotent.
       verifyWorkspaceOwnership(workspace, context.namespace);
-      for (const provider of await client.listProviders(workspace.name, context.signal)) {
+      const providers = await client.listProviders(workspace.name, context.signal);
+      for (const provider of providers) {
         if (
           Object.values(RUNTIME_PROFILE_IDS).some((id) => provider.type === id) &&
           provider.labels[OPENSHELL_MANAGED_BY_LABEL] === OPENSHELL_MANAGED_BY &&
@@ -3821,6 +3840,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           await client.deleteProvider(workspace.name, provider.name, context.signal);
         }
       }
+      // Revisions cleaned up before finding 2206's fix left their Git providers behind.
+      await deleteOpenShellPreparedGitProviders(client, workspace.name, providers, context.signal);
       for (const profileId of Object.values(RUNTIME_PROFILE_IDS)) {
         await this.deleteRuntimeProfileIfUnused(client, workspace.name, profileId, context.signal);
       }

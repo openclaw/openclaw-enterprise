@@ -16,12 +16,14 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  recordFocusTrail,
   repositoryCheckbox,
   routeFailedDeployment,
   secretOptionLabel,
   setSlackSelection,
   selectSecret,
   settlePageRequests,
+  stopFocusTrail,
   waitForCondition,
   waitForEnabled,
   waitForInputValue,
@@ -860,36 +862,9 @@ for (const [scenario, heldRead, heldMs, reader] of [
     if (reader === "moves on") {
       await page.evaluate(() => globalThis.document.activeElement?.blur());
     }
-    // Every frame from admission until the new version shows: the focused node (numbered, so a
-    // replaced heading counts as a new one), and whether the loading page stood in.
-    await page.evaluate(() => {
-      const ids = new WeakMap();
-      let next = 0;
-      const trail = [];
-      const state = { trail, loadingShown: false, stopped: false };
-      const sample = () => {
-        if (state.stopped) {
-          return;
-        }
-        const node = globalThis.document.activeElement;
-        if (node && node !== globalThis.document.body && !ids.has(node)) {
-          ids.set(node, ++next);
-        }
-        const entry =
-          !node || node === globalThis.document.body
-            ? "BODY"
-            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-        if (trail.at(-1) !== entry) {
-          trail.push(entry);
-        }
-        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
-        state.loadingShown ||=
-          shown.includes("Reading this Agent.") || shown.includes("Checking Namespace access.");
-        globalThis.requestAnimationFrame(sample);
-      };
-      globalThis.focusFrames = state;
-      sample();
-    });
+    // Every focused node from admission until the new version shows (numbered, so a replaced
+    // heading counts as a new one), and whether the loading page stood in.
+    await recordFocusTrail(page, ["Reading this Agent.", "Checking Namespace access."]);
     const heldPath = {
       agent: path,
       namespaces: "/namespaces",
@@ -902,8 +877,8 @@ for (const [scenario, heldRead, heldMs, reader] of [
     admitted.release();
     await versionRead.requested;
     if (reader === "goes back") {
-      // The Loading page has replaced the held draft by now; Back returns to the draft.
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      // Once the Loading page has replaced the held draft, Back returns to the draft.
+      await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
       await page.goBack({ waitUntil: "commit" });
       versionRead.release();
       await page.waitForURL(/revision=draft/);
@@ -919,10 +894,7 @@ for (const [scenario, heldRead, heldMs, reader] of [
         !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
         globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
     );
-    const { trail, loadingShown } = await page.evaluate(() => {
-      globalThis.focusFrames.stopped = true;
-      return globalThis.focusFrames;
-    });
+    const { trail, loadingShown } = await stopFocusTrail(page);
     if (heldRead !== "revision" && heldMs > 250) {
       assert.ok(loadingShown, trail.join(" | "));
     }
@@ -1228,8 +1200,13 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     effect: "deny",
   });
   assert.equal(await refusal(403), "The exact platform operation was not authorized.");
+  // Granting these writes IAM policy, which only an Installation administrator can do (finding
+  // 2260).
   await page
-    .getByText("Deployment denied. Check Agent deploy permission", { exact: false })
+    .getByText(
+      "Deployment denied. Check Agent deploy permission and access to selected Secrets. First deployment also needs Agent read and operate permissions to create connection credentials. Granting them needs Installation administration access: ask an Installation administrator to check these grants.",
+      { exact: true },
+    )
     .waitFor();
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
@@ -1258,7 +1235,7 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
 
 for (const mutation of ["authentication", "channel Secrets"]) {
   test(`Agent deployment waits for ${mutation} writes and their recovery`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(
         t,
         mutation === "channel Secrets" ? { secretDriver: createTestSecretDriver() } : {},
@@ -1314,28 +1291,9 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     });
     assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
     if (mutation === "channel Secrets") {
-      const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-        body: {
-          name: "Channel access",
-          permissions: [{ action: "operate", resourceKind: "secret" }],
-        },
-      });
-      assert.equal(role.status, 201, JSON.stringify(role.body));
-      for (const secret of [appSecret, botSecret]) {
-        const binding = await fixture.request(
-          "POST",
-          `/namespaces/${namespace.id}/iam/access-bindings`,
-          {
-            body: {
-              subjectKind: "identity",
-              subjectId: agent.servicePrincipalId,
-              roleId: role.data.id,
-              resourceKind: "secret",
-              resourceId: secret.id,
-            },
-          },
-        );
-        assert.equal(binding.status, 201, JSON.stringify(binding.body));
+      // The replacement too: a reloaded draft must find every saved Secret granted to be ready.
+      for (const secret of [appSecret, botSecret, replacementSecret]) {
+        await grantSecretAccess(agent, secret);
       }
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     }
@@ -1562,7 +1520,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
 
 for (const changed of ["generation", "identity"]) {
   test(`Channel Secret save rejects a stale Configuration ${changed} before writing`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
+    const { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess } =
       await createConsoleRepositoryLaunchFixture(t, { secretDriver: createTestSecretDriver() });
     const appSecret = await fixture.createSecret(namespace.id, "Slack app", "xapp-original");
     const botSecret = await fixture.createSecret(namespace.id, "Slack bot", "xoxb-original");
@@ -1592,6 +1550,9 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(created.status, 201, JSON.stringify(created.body));
     const agent = created.data;
     await grantModelAccess(agent);
+    for (const secret of [appSecret, botSecret]) {
+      await grantSecretAccess(agent, secret);
+    }
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     assert.equal(
       (

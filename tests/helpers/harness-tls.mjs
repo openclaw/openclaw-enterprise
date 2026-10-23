@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 /** Local test-owned CA and a localhost leaf; no host trust or credentials are read. */
 export async function harnessTlsFixture(t) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-harness-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-harness-tls-");
   const run = (...args) => {
     const result = spawnSync("openssl", args, { cwd: directory, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr || result.error?.message);

@@ -227,8 +227,8 @@ a.overview-primary {
   color: var(--color-on-accent);
 }
 /* Tone hovers name the element so they outrank the plain button hover above. */
-button.button--primary:not(:disabled):hover,
-button.primary:not(:disabled):hover,
+button.button--primary:not(:disabled, [aria-disabled="true"]):hover,
+button.primary:not(:disabled, [aria-disabled="true"]):hover,
 a.button--primary:hover,
 a.primary:hover,
 a.overview-primary:hover {
@@ -2349,6 +2349,9 @@ select:not([multiple])[size="1"] {
   font-weight: var(--weight-medium);
   color: var(--muted);
 }
+.agent-table tbody tr {
+  cursor: pointer;
+}
 .agent-table tbody tr:hover {
   background: var(--hover);
 }
@@ -2678,8 +2681,7 @@ select:not([multiple])[size="1"] {
   animation: dialog-backdrop-open var(--duration-base) var(--ease);
 }
 /* Cancel first (left), the confirming action last (right). */
-.dialog-actions,
-.dialog > .form-actions {
+.dialog-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -2962,6 +2964,12 @@ select:not([multiple])[size="1"] {
 
 .workspace-files .configuration-editor {
   min-height: 200px;
+}
+/* Save stays focusable when the caller lacks Agent operate (aria-disabled, not disabled), so it
+   takes the disabled look here. */
+.workspace-files button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .channel-secrets {

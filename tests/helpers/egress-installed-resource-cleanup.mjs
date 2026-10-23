@@ -4,7 +4,9 @@ import { assertConnectedResponse } from "./egress-connected-inputs.mjs";
 
 // The API deliberately closes internal failures. Preserve its status and only known error codes,
 // never its arbitrary message, resource identifiers, or the values that failed an assertion.
+// CREDENTIAL_TOKEN_UNSETTLED is recorded, not retried: the API's retry time can reach the token lifetime.
 const cleanupCodes = new Set([
+  "CREDENTIAL_TOKEN_UNSETTLED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
   "DEPENDENCY_UNAVAILABLE",
   "FORBIDDEN",

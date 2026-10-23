@@ -12,6 +12,7 @@ import {
   admitRepositoryAgent,
 } from "../helpers/egress-custody-installed-agent.mjs";
 import { createRunEvidence } from "../helpers/egress-installed-stack.mjs";
+import { deleteInstalledResource } from "../helpers/egress-installed-resource-cleanup.mjs";
 import { createKubernetesClient } from "../helpers/kubernetes-real.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import {
@@ -32,6 +33,7 @@ import {
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
 } from "../helpers/egress-connected-inputs.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 import {
   assertOpenShellHarnessBinding,
@@ -301,19 +303,14 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
 });
 
 test("the authenticated connected request stays on the runner's exact loopback controller", async (t) => {
-  const listen = async (handler) => {
-    const server = createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => server[Symbol.asyncDispose]());
-    return `127.0.0.1:${server.address().port}`;
-  };
+  const serve = async (handler) => `127.0.0.1:${await listen(t, createServer(handler))}`;
   let foreignRequests = 0;
-  const foreign = await listen((_request, response) => {
+  const foreign = await serve((_request, response) => {
     foreignRequests++;
     response.writeHead(403).end();
   });
   const serviceKey = `fixture-${randomUUID()}`;
-  const local = await listen((request, response) => {
+  const local = await serve((request, response) => {
     assert.equal(request.headers["x-api-key"], serviceKey);
     if (request.url === "/redirect") {
       response.writeHead(307, { location: `http://${foreign}/foreign` }).end();
@@ -410,6 +407,43 @@ test("connected failed-turn observation rejects partial text without a completed
       code: "ERR_ASSERTION",
     });
   }
+});
+
+// docs/reference/credential-sources.md: an unsettled prepared source may stay deleting until its
+// token lifetime ends. Cleanup must name that outcome and must not wait it out.
+test("installed cleanup names an unsettled prepared source and does not wait out the token lifetime", async () => {
+  const records = [];
+  let removes = 0;
+  const removed = await deleteInstalledResource({
+    remove: async () => {
+      removes += 1;
+      return {
+        status: 409,
+        body: {
+          meta: { requestId: "req_cleanup" },
+          error: { code: "CREDENTIAL_TOKEN_UNSETTLED", message: "retry later" },
+        },
+      };
+    },
+    record: async (details) => records.push(details),
+    // Never reached: only a 500 INTERNAL_ERROR may observe custody and retry.
+    prepared: {
+      databaseUrl: "postgresql://127.0.0.1:1/unreachable",
+      namespaceId: "ns",
+      sourceId: "src",
+    },
+  });
+  assert.deepEqual(
+    { removed, removes, records },
+    {
+      removed: false,
+      removes: 1,
+      records: [
+        { observation: "delete-started-result-not-yet-known" },
+        { status: 409, reason: "CREDENTIAL_TOKEN_UNSETTLED" },
+      ],
+    },
+  );
 });
 
 test("connected adversarial wire carries split and nested-JSON material without raw reflection", () => {

@@ -25,7 +25,7 @@ import { randomUUID } from "node:crypto";
 import type { OperationReceipt } from "../../credentials/backend-contracts.ts";
 import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull.ts";
 import { isDeepStrictEqual } from "node:util";
-import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
+import { PreparedGitHubPostgres, preparedAttemptSettled } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   legacyAdoption,
@@ -186,7 +186,7 @@ function sessionQuery(proxy: Recipient): string {
     SELECT FROM occ.prepared_github_families prior JOIN occ.prepared_github_attempts attempt ON attempt.source_id=prior.source_id
     WHERE prior.source#>>'{session,namespaceId}'=s.namespace_id AND prior.source#>>'{session,agentId}'=s.agent_id
       AND prior.source#>>'{session,admissionId}'<>s.admission_id
-      AND attempt.custody NOT IN ('revoked','expired')
+      AND NOT ${preparedAttemptSettled("attempt")}
       AND (prior.source->>'adoption'='${installationGitAdoption}'
         OR (prior.source->>'adoption' IN ('${legacyAdoption}','${protectedGitAdoption}') AND ${
           proxy

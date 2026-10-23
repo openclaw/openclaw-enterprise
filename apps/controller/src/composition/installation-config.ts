@@ -18,9 +18,16 @@ import {
   type OpenShellProxyOptions,
 } from "../drivers/egress-proxy/openshell.ts";
 import type { EgressAuthorityConfiguration } from "./egress-authority.ts";
+import {
+  chartListeners,
+  InstallationFieldError,
+  type InstallationFieldDetail,
+  requireChartListener,
+} from "./installation-fields.ts";
 import { assertConfigurationSchema, requireConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { X509Certificate } from "node:crypto";
 import { isAbsolute } from "node:path";
@@ -51,7 +58,10 @@ import {
   DependencyUnavailableError,
   validateBackendDefinitions,
   type BundledPresetVersion,
+  type ControllerOptions,
+  type CredentialProxyCapacity,
   type NativeWorkerSupport,
+  resolveCredentialProxyCapacity,
   type OpenClawController,
   DriverConfigurationRegistry,
   type PostgresPlatformState,
@@ -130,6 +140,8 @@ export interface InstallationStartupConfiguration {
   readonly observability?: { readonly url: string };
   /** Declares a runtime image built with native worker support; see configuration reference. */
   readonly runtime?: { readonly nativeWorkerSupport: NativeWorkerSupport };
+  /** `drivers.credential_proxy.requestCapacity`, resolved; absent without a Credential Proxy. */
+  readonly credentialProxyCapacity?: CredentialProxyCapacity;
   readonly backend: readonly BackendDefinition[];
   readonly drivers: {
     readonly configuration: SelectedDriverConfiguration;
@@ -165,6 +177,31 @@ export function installationDriverConfigurations(
         ]
       : [],
   );
+}
+
+/**
+ * The controller options that come from the Installation alone. API compositions spread them
+ * unchanged, so a startup setting cannot be loaded and then dropped before the controller.
+ */
+export function installationControllerOptions(
+  installation: InstallationStartupConfiguration | undefined,
+): Pick<
+  ControllerOptions,
+  | "driverConfigurations"
+  | "sandboxNetworkPolicyCeiling"
+  | "nativeWorkerSupport"
+  | "credentialProxyCapacity"
+> {
+  return {
+    driverConfigurations: installationDriverConfigurations(installation),
+    sandboxNetworkPolicyCeiling: installation?.sandboxNetworkPolicyCeiling ?? [],
+    ...(installation?.runtime === undefined
+      ? {}
+      : { nativeWorkerSupport: installation.runtime.nativeWorkerSupport }),
+    ...(installation?.credentialProxyCapacity === undefined
+      ? {}
+      : { credentialProxyCapacity: installation.credentialProxyCapacity }),
+  };
 }
 
 export type ServiceAccountDriverFactory = (
@@ -306,6 +343,33 @@ interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
     configuration: ConfigurationRecord,
     selection: OpenShellSandboxDriverSelection,
   ) => SandboxDriver;
+}
+
+/**
+ * Validate `drivers.credential_proxy.requestCapacity`, the request registry's in-memory bounds
+ * per API process, and fill omitted bounds. Each fault names its field, never its value.
+ */
+function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCapacity {
+  const path = "drivers.credential_proxy.requestCapacity";
+  const pointer = (field?: string) =>
+    `/${path.replaceAll(".", "/")}${field === undefined ? "" : `/${field}`}`;
+  const value = asRecord(input);
+  if (!value) {
+    throw new InstallationFieldError([
+      { path: pointer(), code: "INVALID_TYPE", message: `${path} must be one object.` },
+    ]);
+  }
+  const resolved = resolveCredentialProxyCapacity(value, path);
+  if (resolved.faults) {
+    throw new InstallationFieldError(
+      resolved.faults.map((fault) => ({
+        path: pointer(fault.field),
+        code: fault.code,
+        message: fault.message,
+      })) as [InstallationFieldDetail, ...InstallationFieldDetail[]],
+    );
+  }
+  return resolved.capacity;
 }
 
 function runtimeConfiguration(
@@ -661,12 +725,17 @@ export async function loadInstallationConfiguration(options: {
   let proxySelection: SelectedDriverConfiguration | undefined;
   let packageProxyId: string | undefined;
   let egressAuthority: EgressAuthorityConfiguration | undefined;
+  let credentialProxyCapacity: CredentialProxyCapacity | undefined;
   let preparedGitHubKeyPath: string | undefined;
   let preparedGitHubOrigin: string | undefined;
   let preparedGitHubCa: Buffer | undefined;
   if (drivers.credential_proxy !== undefined) {
     const selection = object(drivers.credential_proxy, "drivers.credential_proxy");
-    closed(selection, ["id", "configuration"], "drivers.credential_proxy");
+    closed(selection, ["id", "configuration", "requestCapacity"], "drivers.credential_proxy");
+    // OCC's request registry, not the Driver, owns these bounds: they apply to any Driver.
+    credentialProxyCapacity = credentialProxyCapacityConfiguration(
+      selection.requestCapacity === undefined ? {} : selection.requestCapacity,
+    );
     const egress = object(selection.configuration, "drivers.credential_proxy.configuration");
     if (sandboxSelection?.package !== undefined) {
       const id = nonempty(selection.id, "drivers.credential_proxy.id");
@@ -705,6 +774,13 @@ export async function loadInstallationConfiguration(options: {
       );
     }
   }
+
+  requireChartListener(egressAuthority, environment, chartListeners.egressAuthority);
+  requireChartListener(
+    repositoryTransportConfiguration?.authority,
+    environment,
+    chartListeners.openshellGit,
+  );
 
   const backends = backendConfiguration(
     configuration.backend,
@@ -866,12 +942,44 @@ export async function loadInstallationConfiguration(options: {
     );
   }
   if (repositoryDeliveryMode === "native") {
-    const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
-    if (kubernetes.network.repositoryCredentials?.port !== 8443) {
-      throw new Error(
-        "repository.nativeSender requires an exact Kubernetes repository service peer on port 8443.",
-      );
+    const peer = (compute.configuration as unknown as KubernetesComputeDriverOptions).network
+      .repositoryCredentials;
+    if (peer?.port !== 8443) {
+      // A field error, so API and worker startup logs name the field (finding 2227).
+      const path = "/drivers/compute/configuration/network/repositoryCredentials";
+      throw new InstallationFieldError([
+        peer === undefined
+          ? {
+              path,
+              code: "REQUIRED",
+              message:
+                "repository.nativeSender requires drivers.compute.configuration.network.repositoryCredentials, the Kubernetes repository service peer.",
+            }
+          : {
+              path: `${path}/port`,
+              code: "INVALID_VALUE",
+              message:
+                "repository.nativeSender requires drivers.compute.configuration.network.repositoryCredentials.port to be 8443.",
+            },
+      ]);
     }
+  } else if (
+    kubernetesCompute &&
+    (compute.configuration as unknown as KubernetesComputeDriverOptions).network
+      .repositoryCredentials !== undefined
+  ) {
+    // The peer makes Compute project and clean up repository material Secrets. Only native
+    // delivery creates them, and only its chart grants the worker Secret list, so a peer
+    // left behind after a switch to protected Git fails every stop, retire and delete with a
+    // 403 (finding 2212). A field error, so startup logs name the field (finding 2226).
+    throw new InstallationFieldError([
+      {
+        path: "/drivers/compute/configuration/network/repositoryCredentials",
+        code: "INVALID_VALUE",
+        message:
+          "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
+      },
+    ]);
   }
   const sandbox =
     sandboxSelection === undefined
@@ -925,6 +1033,22 @@ export async function loadInstallationConfiguration(options: {
         "Production Kubernetes workloads require the explicitly configured Codex runtime.",
       );
     }
+    // Kubernetes Compute runs the Harness itself, so production Agents need their projected
+    // ServicePrincipal credentials. A Sandbox Driver may instead use its own infrastructure
+    // identity (plan 0044), so only Sandbox-backed installs may disable it (finding 1753).
+    if (
+      sandbox === undefined &&
+      kubernetes.servicePrincipalCredentials.mode !== "projectedServiceAccountToken"
+    ) {
+      throw new InstallationFieldError([
+        {
+          path: "/drivers/compute/configuration/servicePrincipalCredentials/mode",
+          code: "INVALID_VALUE",
+          message:
+            "drivers.compute.configuration.servicePrincipalCredentials.mode must be projectedServiceAccountToken in production unless a Sandbox Driver is selected.",
+        },
+      ]);
+    }
   }
   const installation = Object.freeze({
     occ: Object.freeze({ cluster }),
@@ -933,6 +1057,7 @@ export async function loadInstallationConfiguration(options: {
     logging,
     ...(observability === undefined ? {} : { observability }),
     ...(runtime === undefined ? {} : { runtime }),
+    ...(credentialProxyCapacity === undefined ? {} : { credentialProxyCapacity }),
     backend: backends,
     ...(repoSelection === undefined ? {} : { repository: repoSelection }),
     drivers: Object.freeze({
@@ -984,6 +1109,7 @@ export async function loadInstallationConfiguration(options: {
     prepared: preparedRepositoryGit !== undefined,
     repository: repositoryRuntime !== undefined,
     backend: openShellBackend,
+    backendIndex: openShellBackend === undefined ? -1 : backends.indexOf(openShellBackend),
     sandbox: sandbox !== undefined,
     external: sandboxPackage !== undefined,
     kubernetes: kubernetesCompute,

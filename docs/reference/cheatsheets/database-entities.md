@@ -189,9 +189,10 @@ Owns prepared token issuance and renewal for an explicitly admitted source.
 ### `prepared_github_attempts`
 
 Retains issuance and disposal custody, including unknown outcomes. Authenticated
-expiry is distinct from confirmed revocation.
+expiry is distinct from confirmed revocation. A refusal with no token is `not_issued`.
+An unknown outcome settles after GitHub's maximum token lifetime from `started_at`.
 
-- `id`, `source_id`, `admission`, `state`, `custody`
+- `id`, `source_id`, `admission`, `state`, `custody`, `started_at`
 - `material_version`, `provider_expires_at`, `usable_until`, `sealed`
 
 ### `prepared_repository_git_uses`

@@ -25,6 +25,7 @@ import {
   ChannelDirectoryError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
@@ -45,6 +46,8 @@ import {
   PostgresCommitOutcomeUnknownError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -186,6 +189,16 @@ const cases = [
     },
   ],
   [
+    "a source delete blocked by a token that may still be valid names the retry time",
+    new CredentialTokenUnsettledError(new Date("2026-10-23T01:41:00.000Z")),
+    {
+      status: 409,
+      code: "CREDENTIAL_TOKEN_UNSETTLED",
+      message:
+        "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. Retry the deletion after 2026-10-23T01:41:00.000Z, when GitHub's maximum token lifetime has passed.",
+    },
+  ],
+  [
     "network policy additions refused at deploy under protected execution name the rule",
     new ProtectedExecutionNetworkPolicyError("deploy"),
     {
@@ -193,6 +206,26 @@ const cases = [
       code: "SANDBOX_POLICY_PROTECTED_EXECUTION",
       message:
         "Protected execution keeps only the Credential Proxy egress policy, so this Agent's network policy additions are refused. Remove them, then deploy.",
+    },
+  ],
+  [
+    "a git-write deploy on a Credential Proxy with no qualified sender names the alternatives",
+    new RepositoryGitSenderUnqualifiedError(),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+      message:
+        "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.",
+    },
+  ],
+  [
+    "a repository profile a Credential Proxy cannot deliver names the supported profiles",
+    new RepositoryGitProfileUnsupportedError(),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+      message:
+        "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.",
     },
   ],
   [

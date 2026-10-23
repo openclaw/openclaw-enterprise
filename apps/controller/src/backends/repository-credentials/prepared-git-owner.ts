@@ -1,5 +1,5 @@
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
-import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, type KeyObject } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
@@ -57,6 +57,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     code:
       | "PREPARED_GITHUB_RECOVERY_REQUIRED"
       | "PREPARED_GITHUB_MAINTENANCE_FAILED"
+      | "PREPARED_GITHUB_APP_KEY_INVALID"
       | "PREPARED_GITHUB_RETIRED_UNREVOKED",
     context?: Readonly<Record<string, string>>,
   ) => void;
@@ -134,6 +135,54 @@ async function privateInput(path: string) {
   }
 }
 
+const appKeyRefusals = {
+  app_key_unreadable:
+    "must name a readable regular file of 1 to 32768 bytes with no group write or other access",
+  app_key_unparsable:
+    "must hold an unencrypted private key; a public key, certificate or passphrase-protected key cannot sign",
+  app_key_unsupported:
+    "must hold an RSA key of 2048 to 8192 bits, the key type GitHub Apps sign with",
+} as const;
+
+/** The mounted App key cannot sign. Names the field and a fixed reason class, never key bytes. */
+export class PreparedGitHubAppKeyError extends Error {
+  override readonly name = "PreparedGitHubAppKeyError";
+  readonly code = "PREPARED_GITHUB_APP_KEY_INVALID";
+  readonly reason: keyof typeof appKeyRefusals;
+  constructor(reason: keyof typeof appKeyRefusals) {
+    super("repository.preparedGitHub.privateKeyPath " + appKeyRefusals[reason] + ".");
+    this.reason = reason;
+  }
+}
+
+/** Reads and parses the App key the way issuance uses it, zeroing the file bytes. */
+async function appSigningKey(
+  path: string,
+  appId: string,
+  clock: ReturnType<typeof createSystemClock>,
+) {
+  let bytes: Buffer;
+  try {
+    bytes = await privateInput(path);
+  } catch {
+    throw new PreparedGitHubAppKeyError("app_key_unreadable");
+  }
+  let keyObject: KeyObject;
+  try {
+    keyObject = createPrivateKey(bytes);
+  } catch {
+    throw new PreparedGitHubAppKeyError("app_key_unparsable");
+  } finally {
+    bytes.fill(0);
+  }
+  // The registry already admitted appId, so the signer refuses only the key's type or size.
+  try {
+    return { keyObject, owner: createGitHubKeyOwner({ privateKey: keyObject, appId, clock }) };
+  } catch {
+    throw new PreparedGitHubAppKeyError("app_key_unsupported");
+  }
+}
+
 /** A single owner of App issuance, renewal, durable uncertainty and retirement.
  * No Git request can call maintain, and neither the broker nor API needs either key mount. */
 export async function startPreparedGitHubGitOwner(options: Options) {
@@ -153,6 +202,9 @@ export async function startPreparedGitHubGitOwner(options: Options) {
   const apiOrigin = githubProviderOrigin(options.apiOrigin ?? "https://api.github.com");
   const ca = options.ca;
   const authority = preparationIssuerAuthority(apiOrigin, ca);
+  // Refuse a key that cannot sign before the worker reports ready, not at the first
+  // preparation (finding 2217). Maintenance reads it again, so a rotated Secret applies.
+  (await appSigningKey(options.privateKeyPath, registry.appId, clock)).owner.close();
   const custody = await privateInput(options.custodyKeyPath);
   if (custody.length !== 32) {
     custody.fill(0);
@@ -267,19 +319,15 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       if (!sources.length) {
         return;
       }
-      const bytes = await privateInput(options.privateKeyPath);
-      const keyObject = (() => {
-        try {
-          return createPrivateKey(bytes);
-        } finally {
-          bytes.fill(0);
-        }
-      })();
-      const version = createHash("sha256")
-        .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-        .digest("hex");
-      const key = createGitHubKeyOwner({ privateKey: keyObject, appId: registry.appId, clock });
+      const { keyObject, owner: key } = await appSigningKey(
+        options.privateKeyPath,
+        registry.appId,
+        clock,
+      );
       try {
+        const version = createHash("sha256")
+          .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
+          .digest("hex");
         for (const source of sources) {
           const admission = await store.claimGit(source, version);
           if (!admission) {
@@ -310,7 +358,12 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         key.close();
       }
     },
-    failed: () => options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+    // A key that went bad after startup (a rotated Secret) logs the same code and fixed
+    // reason as the startup refusal, never key bytes or its path.
+    failed: (error) =>
+      error instanceof PreparedGitHubAppKeyError
+        ? options.report?.(error.code, { reason: error.reason })
+        : options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
   });
   if (options.startWorker !== false) {
     maintenance.start();

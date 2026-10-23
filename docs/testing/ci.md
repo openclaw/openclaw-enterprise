@@ -221,8 +221,8 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 | ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
 | `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
 | `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
-| `git-full`        | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials.                                           |
-| `git-read`        | No          | Codex           | Reject read-only push and dispose credentials.                                                              |
+| `git-write`       | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                 |
+| `git-push-denied` | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                  |
 | `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
 | `linear`          | Yes (Codex) | Codex           | Select the Linear plugin and verify a harmless native tool read and successful result.                      |
 | `slack`           | No          | Codex           | Threaded reply and new root message.                                                                        |
@@ -260,8 +260,10 @@ post/history/reply access. Reserve the Socket Mode app for this run.
 
 Git's private input directory contains `registry.json`, `private-key.pem`, and
 `upstream-cidrs.json`. Follow [fixture setup](../guides/deploy/local-repository-credentials.md):
-exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, `git-read`/`git-full`
-profiles, approved IPv4 `/32` endpoints, and run-branch push permissions.
+exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, approved IPv4 `/32`
+endpoints, and run-branch push permissions. The run grants `git-write` with `git-only`
+transport on one branch, `oce-qa-<run>`, and opens no PR. The run generates the
+worker's custody key.
 `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` instead supplies an isolated
 observer App's `registry.json` and `private-key.pem`. Observer credentials stay outside Agents and clean
 only verified run-owned refs.

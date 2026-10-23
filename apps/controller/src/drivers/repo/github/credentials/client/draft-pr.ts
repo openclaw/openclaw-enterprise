@@ -9,6 +9,7 @@ import {
   requireCurrentBinding,
 } from "./manifest.ts";
 import { readPrivateFile } from "./private-files.ts";
+import { isGitHubPullUrl, isSameGitHubRepository } from "../../../credentials/client-contracts.ts";
 
 const USAGE =
   "Usage: oce-github pr-create --draft --head <branch> --base <branch> --title <text> [--body <text>]";
@@ -238,17 +239,18 @@ export async function createDraftPull(args: string[], manifestRoot?: string) {
             if (openShell) {
               // OCE authorizes this create once; only GitHub's reply confirms its outcome.
               const { html_url: url, number } = result;
+              // GitHub answers with the repository's own spelling of the lowercased name.
               if (
                 res.statusCode !== 201 ||
                 result.state !== "open" ||
                 result.draft !== true ||
                 !Number.isSafeInteger(number) ||
                 number < 1 ||
-                url !== `https://github.com/${repository}/pull/${number}` ||
+                !isGitHubPullUrl(url, repository, number) ||
                 result.head?.ref !== head ||
-                result.head?.repo?.full_name !== repository ||
+                !isSameGitHubRepository(result.head?.repo?.full_name, repository) ||
                 result.base?.ref !== base ||
-                result.base?.repo?.full_name !== repository
+                !isSameGitHubRepository(result.base?.repo?.full_name, repository)
               ) {
                 throw (
                   openShellRefusal(
@@ -267,7 +269,7 @@ export async function createDraftPull(args: string[], manifestRoot?: string) {
               result.draft === true &&
               result.head?.ref === head &&
               result.base?.ref === base &&
-              result.url === "https://github.com/" + repository + "/pull/" + result.number
+              isGitHubPullUrl(result.url, repository, result.number)
             ) {
               resolve(JSON.stringify(result));
             } else {

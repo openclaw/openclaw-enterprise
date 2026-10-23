@@ -49,7 +49,9 @@ route set must still enforce deny-all.
 `repositoryGitDeliveryProfile` admits exactly one repository binding:
 `git-write` maps to `repository_git`; installation profiles map to
 `github_installation`. The latter requires positive counterpart confirmation;
-a Driver that ignores the profile argument does not qualify.
+a Driver that ignores the profile argument does not qualify. Deploy refuses any
+other binding (`git-read`, `git-full`, or more than one) before reading the
+counterpart, with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
 
 `repositoryGitAuthorization` distinguishes exact dispatch, `online-request`,
 `request-hook-observed` and unavailable. Admission versions 4, 5 and 6 preserve
@@ -181,6 +183,57 @@ bundled version 6 preview. Do not infer support from interface membership alone.
 Online request authorization does not establish exact dispatch or response
 custody. Those stronger guarantees require the actual enforcing sender and
 response transport. See [qualification requirements](../../testing/protected-repository-custody.md).
+
+### Request-time capacity
+
+The OCC [request registry](../../../packages/occ/src/credential-proxy.ts) keeps
+its bounds in memory, per API process. Set them with the optional
+`requestCapacity` block beside the selection's `id` and `configuration`. It
+applies to any selected Driver, bundled or packaged:
+
+```yaml
+drivers:
+  credential_proxy:
+    id: openshell-egress
+    configuration: # unchanged: the selected Driver's own settings
+    requestCapacity:
+      operations: 1024
+      authenticatingOperations: 256
+      sandboxOperations: 256
+      requestIds: 8192
+      sandboxRequestIds: 2048
+```
+
+| Field                      | Bound                                 | Default                   | Maximum | Released                                                                                                         |
+| -------------------------- | ------------------------------------- | ------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------- |
+| `operations`               | Operations in progress, all Sandboxes | 1024                      | 8192    | When the handle closes or expires and no authentication, installation, policy, Secret or receipt work is pending |
+| `authenticatingOperations` | Operations still authenticating       | A quarter of `operations` | 8192    | When peer verification settles; a verified request moves to its Sandbox's share                                  |
+| `sandboxOperations`        | Operations in progress, per Sandbox   | A quarter of `operations` | 8192    | When the handle closes or expires and no installation, policy, Secret or receipt work is pending                 |
+| `requestIds`               | Request IDs, all Sandboxes            | 8192                      | 131072  | 30 s after each ID's UUIDv7 creation time                                                                        |
+| `sandboxRequestIds`        | Request IDs, per Sandbox              | A quarter of `requestIds` | 131072  | Same                                                                                                             |
+
+Each value is a count from 1 to its maximum. An omitted share is a quarter of
+its configured pool, rounded down and at least 1. A share above its pool, a
+value out of range, a non-integer or an unknown field stops API and worker
+startup, and the chart's upgrade check, with `DRIVER_CONFIGURATION_INVALID`
+naming the field. Each operation in progress can hold its request body (up to 1
+MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
+before raising it. Restart API Pods to apply a change.
+
+A ready handle holds its operation slot until it closes or its deadline (at most
+30 s) passes. Per-Sandbox shares are keyed on the verified sender and Sandbox, so
+one Sandbox's traffic cannot spend another's. Before verification only an unverified
+Sandbox ID is known, so that budget is global. The bundled OpenShell verification is
+in memory, so the budget only bounds bursts; a Driver whose verification does I/O lets
+one Sandbox hold the budget for that latency. The default ID bounds allow about 270
+protected requests per second per API process, and about 68 per Sandbox
+(`requestIds / 30` and `sandboxRequestIds / 30`). With default shares, one Sandbox
+cannot use the whole operation cap or ID table, but four busy Sandboxes can. A request refused
+by the installation or route checks reserves no ID. From exchange capture on, its ID
+stays reserved for the whole window, even if the request is refused.
+Past any bound, `resolve` refuses with `unavailable`/`resolver`. The bundled
+OpenShell authority also admits at most 1024 pending exchange openings and 1024
+accepted exchanges.
 
 ## Troubleshooting
 

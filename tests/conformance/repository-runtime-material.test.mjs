@@ -11,6 +11,7 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { encodeRepositoryCredentialSessionFiles } from "../../apps/controller/src/drivers/repo/github/credentials/client/config.ts";
+import { openShellRepositoryAccess } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 
@@ -113,11 +114,17 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         ...(nodeEnrollment === undefined
           ? { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }
           : {}),
-        repositoryCredentials: {
-          namespace: options.repositoryNamespace ?? "credentials",
-          podLabels: options.repositoryPodLabels ?? { app: "credentials" },
-          port: 8443,
-        },
+        // An Installation whose Sandbox delivers repository Git material configures no
+        // repository credential endpoint (chart repositoryCredentials.enabled=false).
+        ...(options.repositoryBroker === false
+          ? {}
+          : {
+              repositoryCredentials: {
+                namespace: options.repositoryNamespace ?? "credentials",
+                podLabels: options.repositoryPodLabels ?? { app: "credentials" },
+                port: 8443,
+              },
+            }),
         ...(options.publicGithubRead === undefined
           ? {}
           : { publicGithubRead: options.publicGithubRead }),
@@ -139,7 +146,11 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
         gatewayNodeSelector: { "oce-role": "control-plane" },
       },
     },
-    { nodeEnrollment, preparedRepositoryIngress: options.preparedRepositoryIngress },
+    {
+      nodeEnrollment,
+      preparedRepositoryIngress: options.preparedRepositoryIngress,
+      sandboxDriver: options.sandboxDriver,
+    },
   );
   // Fixture failures are final; skip the driver's API retry waits.
   driver.waitBeforeRetry = async () => {};
@@ -442,6 +453,12 @@ async function fixture(mode = "embedded", nodeEnrollment, options = {}) {
       ],
     };
   };
+  if (options.repositoryBroker === false) {
+    // Without that endpoint the chart grants the worker no Secret list (rbac.yaml).
+    clients.core.listNamespacedSecret = async () => {
+      throw failure(403);
+    };
+  }
   driver.apiClients = Promise.resolve(clients);
   const preparedNamespace = await driver.ensureNamespace({
     id: revision.namespaceId,
@@ -1986,6 +2003,67 @@ test("stop and retirement fence an admitted reader when the Sandbox is unavailab
     await assert.rejects(f.driver[operation](f.revision), /SandboxDriver|Sandbox-owned/);
     assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
     assert.equal(publicReaderPolicies(f).length, 0);
+  }
+});
+
+// With an OpenShell repository-access Sandbox the worker transfers repository Git material to
+// the Sandbox, so Compute projects no material Secret and the Installation configures no
+// repository credential endpoint; the chart then grants the worker no Secret list. Stopping,
+// retiring or deleting such a revision must finish without listing Secrets: the refused list
+// once left repository cleanup retrying forever and Agent deletion failing (finding 2201).
+test("a repository-access Sandbox revision stops, retires and is deleted without listing Secrets", async () => {
+  for (const operation of ["stopRevision", "retireRevision"]) {
+    const cleanups = [];
+    const sandboxDriver = {
+      id: "openshell-sandbox",
+      implementation: "openshell",
+      capability: "sandbox",
+      facets: ["networking", "filesystem", "process"],
+      repositoryAccess: openShellRepositoryAccess(
+        {
+          route: () => ({ state: "installed" }),
+          materialInstalledAt: () => undefined,
+        },
+        () => undefined,
+      ),
+      async provisionHarness(context) {
+        return {
+          namespaceName: context.namespace.name,
+          resourceName: "openshell-harness",
+          agentId: context.revision.agentId,
+          revisionId: context.revision.id,
+        };
+      },
+      async cleanup(context) {
+        cleanups.push(context.revision.id);
+      },
+    };
+    const f = await fixture("dedicated", undefined, { repositoryBroker: false, sandboxDriver });
+    f.revision.sandboxDriverId = sandboxDriver.id;
+    f.revision.repositoryCredentials.bindings[0].profile = "git-write";
+    // Preparation projects no material: the Sandbox receives it from the worker.
+    await f.driver.prepareRevision(f.revision, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    await f.driver[operation](f.revision);
+    assert.deepEqual(cleanups, [f.revision.id], operation);
+    // A fresh deploy with no active predecessor prepares without material either.
+    const next = { ...structuredClone(f.revision), id: "revision-repository-material-next" };
+    await f.driver.prepareRevision(next, f.context(undefined));
+    assert.deepEqual(f.secrets(), []);
+    // Agent deletion retires each revision, then removes the Agent's runtime credentials.
+    for (const revision of [f.revision, next]) {
+      await f.driver.retireRevision(revision);
+    }
+    await f.driver.deleteAgentRuntimeCredentials({
+      namespace: { id: f.revision.namespaceId },
+      agent: { id: f.revision.agentId, namespaceId: f.revision.namespaceId },
+    });
+    assert.deepEqual(cleanups, [f.revision.id, f.revision.id, next.id], operation);
+    assert.equal(
+      f.apiCalls.includes("core.listNamespacedSecret"),
+      false,
+      `${operation} must not list Secrets`,
+    );
   }
 });
 

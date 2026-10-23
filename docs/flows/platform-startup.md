@@ -162,6 +162,13 @@ also runs optional Compute preflight before initializing authentication or
 registering routes. The default unconfigured development API retains its existing
 startup path. The [production startup flow](production-startup.md#4-start-private-api-and-worker-deployments)
 owns the Kubernetes version decision and warning details.
+Both compositions pass the loader's resolved `drivers.credential_proxy.requestCapacity`
+to the `OpenClawController` constructor, which validates it again;
+`packages/occ/src/index.ts:createCredentialProxy` then builds the exchange registry
+with those bounds when `installEgressAuthority` binds the selected transport. The worker
+validates the block but builds no registry. The
+[Credential Proxy reference](../reference/drivers/credential-proxy.md#request-time-capacity)
+owns the limits.
 It registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,
@@ -271,6 +278,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23: Pass the Installation's Credential Proxy request capacity from startup to the exchange registry.
 
 - 2026-10-21: Load the route validators and serializers the image build precompiled.
 

@@ -408,6 +408,73 @@ test("a refused workspace file save names Agent operate", async (t) => {
   assert.equal(await editor.inputValue(), "after");
 });
 
+// A member who can read the Agent but not operate it was offered an enabled Save on every
+// workspace file, and learned only from the refusal that saving needs Agent operate (finding
+// 521, D443). When the Agent permission answer denies operate, each Save is marked unavailable
+// up front, its description names the grant, the files stay readable but not editable, and
+// activating Save sends nothing.
+test("a member without Agent operate sees workspace Saves unavailable with the reason", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace Reader", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workspace Reader", nativeValues("ws"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await createReader(fixture, namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  // The fixture has no Agent gateway, so the file reads are answered here; the permission
+  // answer comes from the real API and IAM policy.
+  const writes: string[] = [];
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    (route) => {
+      const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)!);
+      if (route.request().method() !== "GET") {
+        writes.push(name);
+        return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { name, content: `# ${name}\n` } }),
+      });
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    member.credentials,
+  );
+  const reason =
+    "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+  await page.getByText(reason, { exact: true }).waitFor();
+  for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
+    const editor = page.getByLabel(name, { exact: true });
+    assert.equal(await editor.inputValue(), `# ${name}\n`);
+    assert.equal(await editor.isEditable(), false, `${name} is read-only`);
+    const save = page.getByRole("button", { name: `Save ${name}`, exact: true });
+    assert.equal(await save.getAttribute("aria-disabled"), "true");
+    assert.equal(
+      await save.evaluate(
+        (node) => document.getElementById(node.getAttribute("aria-describedby") ?? "")?.textContent,
+      ),
+      reason,
+    );
+    // Save stays a keyboard stop. Even with a changed file (set by script, past readOnly),
+    // activating it sends no write.
+    await editor.evaluate((node: HTMLTextAreaElement) => {
+      node.value = "changed";
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await save.focus();
+    assert.equal(await save.evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press("Enter");
+  }
+  await nextFrames(page);
+  assert.deepEqual(writes, []);
+});
+
 for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
   test(`Agent policy does not apply after ${reply}`, async (t) => {
     const grant = {

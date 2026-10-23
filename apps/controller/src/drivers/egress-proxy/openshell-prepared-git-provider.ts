@@ -103,15 +103,31 @@ export class OpenShellPreparedGitProviderError extends Error {
 
 const KEY = "GITHUB_TOKEN";
 const OWNER = "openclaw.dev/prepared-git-binding";
+const REPOSITORY_PROVIDER_PREFIX = "oce-git-";
 
 function refuse(): never {
   throw new OpenShellPreparedGitProviderError("refused");
 }
 
+/**
+ * How long a provider write may run once it is sent. The caller's signal bounds the reads
+ * before it and decides whether the write starts; it never abandons a write in flight, which
+ * would leave its outcome unknown and close the route for good (finding 2211). The gateway
+ * client's own request deadline (10 s by default) normally ends a hung call first.
+ */
+const WRITE_TIMEOUT_MS = 30_000;
+
 /** Classifies a failed gateway read behind a refusal. The provider's own refusals (refuse(),
- * a mismatched profile) classify as nothing: the write was refused, not merely unobserved. */
-function readFailure(error: unknown): OpenShellPreparedGitReadFailure | undefined {
-  if (error instanceof OpenShellPreparedGitProviderError) {
+ * a mismatched profile) classify as nothing: the write was refused, not merely unobserved.
+ * A read the caller's signal ended (its budget, or the worker stopping) is a timeout, whatever
+ * the signal's reason. A refused identity (gRPC PERMISSION_DENIED or UNAUTHENTICATED) is not a
+ * read failure: it stays a refusal, never retried. */
+function readFailure(
+  error: unknown,
+  signal: AbortSignal,
+): OpenShellPreparedGitReadFailure | undefined {
+  const code = (error as { readonly code?: unknown } | null)?.code;
+  if (error instanceof OpenShellPreparedGitProviderError || code === 7 || code === 16) {
     return undefined;
   }
   if (error instanceof SandboxGatewayUnavailableError) {
@@ -120,7 +136,10 @@ function readFailure(error: unknown): OpenShellPreparedGitReadFailure | undefine
   if (error instanceof DependencyUnavailableError) {
     return "gateway_request_failed";
   }
-  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+  if (
+    signal.aborted ||
+    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+  ) {
     return "timeout";
   }
   return undefined;
@@ -199,7 +218,9 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId ? openShellInstallationGitProviderPrefix : "oce-git-";
+    const prefix = scope.installationId
+      ? openShellInstallationGitProviderPrefix
+      : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -345,19 +366,31 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
-    // An accepted update is not evidence that the current supervisor installed it.
+    return this.bindingForGeneration({
+      providerId: provider.id,
+      profileVersion,
+      resourceVersion: provider.resourceVersion,
+      expiresAt,
+      credentialState,
+    });
+  }
+
+  private bindingForGeneration(
+    generation: OpenShellPreparedGitGeneration,
+  ): OpenShellPreparedGitBinding {
+    // Neither a confirmed write nor a restored generation proves supervisor installation.
     // observe() separately correlates the gateway's desired and installed identities.
     return Object.freeze({
       workspace: this.scope.workspace,
       sandbox: this.scope.sandbox,
       executionId: this.scope.executionId,
       provider: this.provider,
-      providerId: provider.id,
+      providerId: generation.providerId,
       profile: this.profile.id,
-      profileVersion,
-      resourceVersion: provider.resourceVersion,
-      expiresAt,
-      credentialState,
+      profileVersion: generation.profileVersion,
+      resourceVersion: generation.resourceVersion,
+      expiresAt: generation.expiresAt,
+      credentialState: generation.credentialState,
       update: "accepted",
       supervisor: "unknown",
       readiness: Object.freeze({
@@ -401,25 +434,12 @@ export class OpenShellPreparedGitProvider {
       refuse();
     }
     const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
-    return Object.freeze({
-      workspace: this.scope.workspace,
-      sandbox: this.scope.sandbox,
-      executionId: this.scope.executionId,
-      provider: this.provider,
+    return this.bindingForGeneration({
       providerId: generation.providerId,
-      profile: this.profile.id,
       profileVersion: generation.profileVersion,
       resourceVersion: generation.resourceVersion,
       expiresAt: expired ? "" : generation.expiresAt,
       credentialState: expired ? "bootstrap" : generation.credentialState,
-      update: "accepted",
-      supervisor: "unknown",
-      readiness: Object.freeze({
-        rpc: "GetSandboxProviderStatus",
-        workspace: this.scope.workspace,
-        sandbox: this.scope.sandbox,
-        provider: this.provider,
-      }),
     });
   }
 
@@ -446,9 +466,12 @@ export class OpenShellPreparedGitProvider {
       ) {
         refuse();
       }
+      // A caller out of time sends nothing: refused before the write, so it can be retried.
+      signal.throwIfAborted();
       writing = true;
-      await this.client.importProviderProfile(this.scope.workspace, this.profile, signal);
-      const profileVersion = await this.profileVersion(signal);
+      const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
+      await this.client.importProviderProfile(this.scope.workspace, this.profile, write);
+      const profileVersion = await this.profileVersion(write);
       const provider = await this.client.createProvider(
         {
           workspace: this.scope.workspace,
@@ -460,7 +483,7 @@ export class OpenShellPreparedGitProvider {
             ? { credentialExpirationTimes: { [KEY]: token.expiresAt } }
             : {}),
         },
-        signal,
+        write,
       );
       return this.binding(provider, profileVersion, token.expiresAt, credentialState);
     } catch (error) {
@@ -469,7 +492,7 @@ export class OpenShellPreparedGitProvider {
       // automatically retry or delete it.
       throw new OpenShellPreparedGitProviderError(
         writing ? "unknown" : "refused",
-        writing ? undefined : readFailure(error),
+        writing ? undefined : readFailure(error, signal),
       );
     }
   }
@@ -733,6 +756,33 @@ export class OpenShellPreparedGitProvider {
     return observeOpenShellGitPredecessor(this.client, previous, signal);
   }
 
+  /**
+   * Deletes this route's provider, then its profile (finding 2206). The caller first confirms
+   * the route's Sandbox gone; OpenShell also refuses to delete a provider a Sandbox still
+   * attaches. A same-name object without this binding's owner fingerprint is refused, never
+   * deleted.
+   */
+  async remove(signal: AbortSignal): Promise<void> {
+    const provider = await this.client.getProvider(this.scope.workspace, this.provider, signal);
+    if (provider !== undefined) {
+      if (provider.labels[OWNER] !== this.fingerprint || provider.type !== this.profile.id) {
+        refuse();
+      }
+      await this.client.deleteProvider(this.scope.workspace, this.provider, signal);
+    }
+    const profile = await this.client.getProviderProfile(
+      this.scope.workspace,
+      this.profile.id,
+      signal,
+    );
+    if (profile !== undefined) {
+      if (profile.annotations[OWNER] !== this.fingerprint) {
+        refuse();
+      }
+      await this.client.deleteProviderProfile(this.scope.workspace, this.profile.id, signal);
+    }
+  }
+
   async rotate(
     previous: OpenShellPreparedGitBinding,
     release: () => Promise<OpenShellPreparedGitToken | undefined>,
@@ -765,6 +815,8 @@ export class OpenShellPreparedGitProvider {
       }
       this.token(token);
       phase = "writing";
+      // The write runs to its own deadline, not the caller's remaining read budget (finding 2211).
+      const write = AbortSignal.timeout(WRITE_TIMEOUT_MS);
       const updated = await this.client.updateProviderCredentialsConditionally(
         {
           workspace: this.scope.workspace,
@@ -775,7 +827,7 @@ export class OpenShellPreparedGitProvider {
           credentialExpirationTimes: { [KEY]: token.expiresAt },
         },
         previous.resourceVersion,
-        signal,
+        write,
       );
       if (
         updated.id !== previous.providerId ||
@@ -817,8 +869,80 @@ export class OpenShellPreparedGitProvider {
       }
       throw new OpenShellPreparedGitProviderError(
         phase === "writing" ? "unknown" : "refused",
-        phase === "writing" ? undefined : readFailure(error),
+        phase === "writing" ? undefined : readFailure(error, signal),
       );
+    }
+  }
+}
+
+/** Whether `name` is the name a preparation derives from the owner fingerprint it wrote. */
+function preparedGitName(name: string, owner: string | undefined): boolean {
+  const hash = owner?.slice(0, 32);
+  return (
+    owner !== undefined &&
+    /^[0-9a-f]{48}$/.test(owner) &&
+    (name === REPOSITORY_PROVIDER_PREFIX + hash ||
+      name === openShellInstallationGitProviderPrefix + hash)
+  );
+}
+
+function preparedGitProvider(provider: OpenShellProviderResponse): boolean {
+  return provider.type === provider.name && preparedGitName(provider.name, provider.labels[OWNER]);
+}
+
+/**
+ * Deletes one prepared Git provider and its profile, each only with the owner fingerprint its
+ * preparation wrote (finding 2206). For a Sandbox's own provider when its route's scope no
+ * longer names it; OpenShell refuses to delete a provider a Sandbox still attaches.
+ */
+export async function deleteOpenShellPreparedGitProvider(
+  client: Pick<
+    OpenShellGatewayClient,
+    "deleteProvider" | "getProviderProfile" | "deleteProviderProfile"
+  >,
+  workspace: string,
+  provider: OpenShellProviderResponse,
+  signal: AbortSignal,
+): Promise<void> {
+  if (!preparedGitProvider(provider)) {
+    return;
+  }
+  await client.deleteProvider(workspace, provider.name, signal);
+  const profile = await client.getProviderProfile(workspace, provider.type, signal);
+  if (profile?.annotations[OWNER] === provider.labels[OWNER]) {
+    await client.deleteProviderProfile(workspace, provider.type, signal);
+  }
+}
+
+/**
+ * Namespace cleanup (finding 2206): deletes every prepared Git provider in `providers`, then
+ * every prepared Git profile in the Workspace, before the Workspace is deleted. Its routes are
+ * withdrawn and its Sandboxes gone by then; OpenShell refuses to delete a provider a Sandbox
+ * still attaches. Profiles are listed, not reached through their providers, so a profile whose
+ * provider is already gone (a lost CreateProvider reply, or an earlier pass that failed between
+ * the two deletes) is found too. Only an object whose name derives from its owner fingerprint,
+ * as a preparation wrote it, is deleted.
+ */
+export async function deleteOpenShellPreparedGitProviders(
+  client: Pick<
+    OpenShellGatewayClient,
+    "deleteProvider" | "listProviderProfiles" | "deleteProviderProfile"
+  >,
+  workspace: string,
+  providers: readonly OpenShellProviderResponse[],
+  signal: AbortSignal,
+): Promise<void> {
+  for (const provider of providers.filter(preparedGitProvider)) {
+    await client.deleteProvider(workspace, provider.name, signal);
+  }
+  for (const profile of await client.listProviderProfiles(workspace, signal)) {
+    // The listing also returns platform and static profiles; a preparation imports into the
+    // Workspace, and only that scope's profile is the Workspace's member.
+    if (
+      profile.definition?.scope === "workspace" &&
+      preparedGitName(profile.id, profile.annotations[OWNER])
+    ) {
+      await client.deleteProviderProfile(workspace, profile.id, signal);
     }
   }
 }

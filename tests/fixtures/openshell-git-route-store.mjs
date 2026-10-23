@@ -113,7 +113,8 @@ export function routeStore() {
     async owns(revisionId, fence) {
       calls.owns += 1;
       store.check();
-      return store.held(revisionId, fence) !== undefined;
+      const row = rows.get(revisionId);
+      return row !== undefined && row.fence === fence ? (row.blocked ?? true) : false;
     },
     async block(revisionId, fence, reason) {
       calls.block += 1;

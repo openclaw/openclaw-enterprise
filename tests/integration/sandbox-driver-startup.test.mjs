@@ -31,6 +31,10 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
+import { openShellEgressConfiguration } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { validateOpenShellRepositoryTransport } from "../../apps/controller/src/drivers/egress-proxy/openshell-configuration.ts";
+import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
   normalizeServiceUrl,
   OpenShellProviderAlreadyExistsError,
@@ -59,6 +63,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
@@ -130,10 +135,16 @@ function harnessRuntimeCommand(program) {
   return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(program)];
 }
 
+/** The gRPC FAILED_PRECONDITION error OpenShell answers a delete that members still block. */
+function failedPrecondition(details) {
+  return Object.assign(new Error(`9 FAILED_PRECONDITION: ${details}`), { code: 9, details });
+}
+
 function workspaceGatewayClient(seed = [], events = []) {
   const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
   const profiles = new Map();
   const providers = new Map();
+  const sandboxes = new Map();
   const calls = [];
   const storeProfile = (profile, resourceVersion) =>
     profiles.set(profile.id, {
@@ -146,6 +157,7 @@ function workspaceGatewayClient(seed = [], events = []) {
     calls,
     profiles,
     providers,
+    sandboxes,
     workspaces,
     async health() {
       calls.push(["health"]);
@@ -166,20 +178,42 @@ function workspaceGatewayClient(seed = [], events = []) {
     async deleteWorkspace(name) {
       calls.push(["deleteWorkspace", name]);
       events.push(["gateway", "deleteWorkspace", name]);
+      // As OpenShell 0.1.4 (grpc/workspace.rs): a Workspace that still holds Sandboxes,
+      // providers or provider profiles stays, and the delete is refused. Every scenario on this
+      // fake has one Workspace, so its maps hold that Workspace's members.
+      const blocking = [
+        ...(sandboxes.size > 0 ? ["sandbox"] : []),
+        ...(providers.size > 0 ? ["provider"] : []),
+        ...(profiles.size > 0 ? ["provider profile"] : []),
+      ];
+      if (workspaces.has(name) && blocking.length > 0) {
+        throw failedPrecondition(
+          `workspace '${name}' still contains resources: ${blocking.join(", ")}`,
+        );
+      }
       workspaces.delete(name);
     },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
-    async getSandbox() {
-      return undefined;
+    async getSandbox({ name }) {
+      return sandboxes.get(name);
     },
     async getService() {
       return undefined;
     },
-    async deleteSandbox() {},
+    async deleteSandbox({ name }) {
+      sandboxes.delete(name);
+    },
     async getProviderProfile(_workspace, id) {
       return profiles.get(id);
+    },
+    async listProviderProfiles() {
+      // Every profile here was imported into the Workspace.
+      return [...profiles.values()].map((profile) => ({
+        ...profile,
+        definition: { ...profile.definition, scope: "workspace" },
+      }));
     },
     async importProviderProfile(_workspace, profile) {
       storeProfile(profile, "1");
@@ -188,6 +222,10 @@ function workspaceGatewayClient(seed = [], events = []) {
       storeProfile(profile, "2");
     },
     async deleteProviderProfile(_workspace, id) {
+      // OpenShell refuses to delete a profile a provider still uses.
+      if ([...providers.values()].some((provider) => provider.type === id)) {
+        throw failedPrecondition(`provider profile '${id}' is in use by providers`);
+      }
       profiles.delete(id);
     },
     async createProvider(request) {
@@ -212,6 +250,11 @@ function workspaceGatewayClient(seed = [], events = []) {
       return [...providers.values()];
     },
     async deleteProvider(_workspace, name) {
+      calls.push(["deleteProvider", name]);
+      // OpenShell refuses to delete a provider a Sandbox still attaches.
+      if ([...sandboxes.values()].some((sandbox) => sandbox.spec?.providers?.includes(name))) {
+        throw failedPrecondition(`provider '${name}' is attached to sandbox(es)`);
+      }
       providers.delete(name);
     },
     async updateProviderCredentials(_workspace, name, credentials) {
@@ -5137,10 +5180,7 @@ test("OpenShell preparer cleanup tolerates a concurrent delete but waits for lin
           assert.equal(version, "v1");
           assert.equal(kind, "Pod");
           assert.equal(namespace, context.namespace.name);
-          assert.deepEqual(
-            Object.fromEntries(selector.split(",").map((entry) => entry.split("="))),
-            deployment.metadata.labels,
-          );
+          assert.deepEqual(labelSelectorLabels(selector), deployment.metadata.labels);
           assert.equal(gateway.providers.size, 1);
           assert.equal(
             gateway.calls.some(([method]) => method === "deleteSandbox"),
@@ -5457,6 +5497,83 @@ for (const kind of ["Role", "RoleBinding"]) {
   });
 }
 
+test("repository.openShell names each unmet requirement, including ones earlier checks preempt", () => {
+  const configuration = {
+    registrationName: "oce-prepared-git",
+    authority: {},
+    observedHookPreviewWorkspace: undefined,
+  };
+  let messages = [];
+  const refusal = (input) => {
+    try {
+      validateOpenShellRepositoryTransport(configuration, input);
+    } catch (error) {
+      assert.equal(error.name, "InstallationFieldError");
+      messages = error.details.map(({ message }) => message);
+      return error.details.map(({ path, code }) => [path, code]);
+    }
+    return [];
+  };
+  const backend = {
+    id: "openshell",
+    type: "openshell",
+    configuration: {
+      endpoint: "https://gateway.example.test:8443",
+      auth: { mode: "mtls", certificatePath: "/c", privateKeyPath: "/k" },
+    },
+    drivers: { sandbox: "sandbox", credential_gateway: "gateway" },
+  };
+  const met = {
+    prepared: true,
+    repository: true,
+    backend,
+    backendIndex: 2,
+    sandbox: true,
+    external: false,
+    kubernetes: true,
+  };
+  assert.deepEqual(refusal(met), []);
+  assert.doesNotThrow(() =>
+    validateOpenShellRepositoryTransport(undefined, { ...met, prepared: false }),
+  );
+  assert.deepEqual(
+    refusal({
+      prepared: false,
+      repository: false,
+      backend: undefined,
+      backendIndex: -1,
+      sandbox: false,
+      external: false,
+      kubernetes: false,
+    }),
+    [
+      ["/repository/preparedGitHub", "REQUIRED"],
+      // The github entry; its message names the type.
+      ["/backend", "REQUIRED"],
+      ["/drivers/sandbox", "REQUIRED"],
+      ["/drivers/compute", "INVALID_VALUE"],
+      // The openshell entry.
+      ["/backend", "REQUIRED"],
+    ],
+  );
+  assert.deepEqual(refusal({ ...met, external: true }), [
+    ["/drivers/sandbox/package", "INVALID_VALUE"],
+  ]);
+  const { endpoint: _endpoint, auth: _auth, ...service } = backend.configuration;
+  assert.deepEqual(refusal({ ...met, backend: { ...backend, configuration: service } }), [
+    ["/backend/2/configuration/endpoint", "REQUIRED"],
+    ["/backend/2/configuration/auth", "REQUIRED"],
+  ]);
+  assert.equal(
+    messages[0],
+    "repository.openShell requires the openshell backend configuration.endpoint, an https:// URL, rather than serviceName and port.",
+  );
+  const unauthenticated = { ...backend.configuration, auth: { mode: "unauthenticated" } };
+  assert.deepEqual(refusal({ ...met, backend: { ...backend, configuration: unauthenticated } }), [
+    ["/backend/2/configuration/auth/mode", "INVALID_VALUE"],
+  ]);
+});
+
 // Production configuration and Sandbox provisioning, with controlled gateway observations.
 // This proves the join and fail-closed lifecycle, not an installed stock supervisor or GitHub.
 test(
@@ -5588,7 +5705,7 @@ test(
       ),
       { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
     )["openshell.v1.SandboxSpec"];
-    const sandboxes = new Map();
+    const sandboxes = gateway.sandboxes;
     let created;
     gateway.createSandbox = async (request) => {
       created = request;
@@ -5640,6 +5757,68 @@ test(
     const gitId = configuration.drivers.sandbox.id;
     configuration.backend[0].drivers.credential_proxy = gitId;
     configuration.drivers.credential_proxy = { id: gitId, configuration: {} };
+    // A native broker peer left in Compute after a switch to protected Git would make every
+    // stop, retire and delete list repository material Secrets the chart no longer lets the
+    // worker list (finding 2212). Startup, and so the chart's upgrade check, refuses it.
+    const brokerPeer = structuredClone(configuration);
+    brokerPeer.drivers.compute.configuration.network.repositoryCredentials = {
+      namespace: "openclaw-system",
+      podLabels: { "app.kubernetes.io/component": "worker" },
+      port: 8443,
+    };
+    await assert.rejects(
+      loadInstallationFile(t, brokerPeer, { createOpenShellBackend: () => backendFor(gateway) }),
+      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
+    );
+    // Each unmet repository.openShell requirement names its own field in the startup log and
+    // the upgrade check, never its value (finding 2216): one message used to cover all of them.
+    const unprepared = structuredClone(configuration);
+    delete unprepared.repository.preparedGitHub;
+    // A plaintext, unauthenticated gateway the Backend admits only behind a NetworkPolicy.
+    unprepared.backend[0].configuration = {
+      endpoint: "http://sentinel-5b9d.example.test:8080",
+      auth: { mode: "unauthenticated" },
+      insecureTransport: "network-policy",
+    };
+    await assert.rejects(
+      loadInstallationFile(t, unprepared, { createOpenShellBackend: () => backendFor(gateway) }),
+      (error) => {
+        const failure = formatStartupConfigurationFailure(error);
+        const prefix = "DRIVER_CONFIGURATION_INVALID: ";
+        assert.ok(failure?.startsWith(prefix), String(error));
+        assert.deepEqual(
+          JSON.parse(failure.slice(prefix.length)).map(({ path, code }) => [path, code]),
+          [
+            ["/repository/preparedGitHub", "REQUIRED"],
+            ["/backend/0/configuration/endpoint", "INVALID_VALUE"],
+            ["/backend/0/configuration/auth/mode", "INVALID_VALUE"],
+          ],
+          failure,
+        );
+        assert.ok(!failure.includes("sentinel-5b9d"), failure);
+        return true;
+      },
+    );
+    // The chart routes openshellGit.port to the worker Pod's address, so a worker listener on
+    // loopback, on another port, or without the chart listener is refused at startup and in the
+    // upgrade check, not at the first Git request (finding 2213). This test binds the listener
+    // on loopback itself, so its own load declares no chart listener.
+    for (const [declared, message] of [
+      [String(port), /repository\.openShell\.authority\.host is 127\.0\.0\.1, but the chart's/],
+      [
+        String(port + 1),
+        /repository\.openShell\.authority\.port is \d+, but Helm openshellGit\.port is \d+\./,
+      ],
+      ["disabled", /but Helm openshellGit\.enabled is false/],
+    ]) {
+      await assert.rejects(
+        loadInstallationFile(t, configuration, {
+          createOpenShellBackend: () => backendFor(gateway),
+          environment: { OCC_OPENSHELL_GIT_PORT: declared, OCC_EGRESS_AUTHORITY_PORT: "disabled" },
+        }),
+        { name: "ChartListenerMismatchError", code: "CHART_LISTENER_MISMATCH", message },
+      );
+    }
     const protectedGit = await loadInstallationFile(t, configuration, {
       createOpenShellBackend: () => backendFor(gateway),
     });
@@ -5650,7 +5829,13 @@ test(
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
     assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
-    await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git");
+    // Finding 2199: no OpenShell release is qualified to enforce git-write, so the bundled sender
+    // refuses the profile before it reads the gateway, instead of admitting a revision that waits
+    // at enrollment until the convergence deadline.
+    await assert.rejects(
+      protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git"),
+      { name: "RepositoryGitSenderUnqualifiedError", code: "REPOSITORY_GIT_SENDER_UNQUALIFIED" },
+    );
 
     protectedGit.computeDriver.validateRepositoryCredentials(
       { id: "codex", mode: "dedicated" },
@@ -5739,8 +5924,51 @@ test(
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
+        assert.equal(
+          protectedGit.computeDriver.admitRevision(rev),
+          "protected-codex-no-connection-retry:v1",
+        );
         protectedGit.computeDriver.validateRepositoryCredentials(rev.harness, sandbox.id);
-        const proxyWiring = await proxy.configureRevision(ctx);
+        // Compute's preparation refuses the profile too, so a revision admitted before this check
+        // fails with the code instead of waiting at enrollment (finding 2199). The Sandbox's own
+        // v5 checks stay covered with the wiring a qualified sender would prepare: what
+        // configureRevision returns, without its profile gate.
+        await assert.rejects(new ProtectedExecutionDriver(owner).configure(ctx), {
+          name: "RepositoryGitSenderUnqualifiedError",
+          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+        });
+        await assert.rejects(proxy.configureRevision(ctx), {
+          code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+        });
+        // Finding 2204: a git-read binding maps to no delivery profile. Preparation never checks
+        // its counterpart as an ordinary egress plan; it refuses the plan with its own code.
+        const readGit = {
+          ...revision.repositoryCredentials,
+          bindings: [{ ...revision.repositoryCredentials.bindings[0], profile: "git-read" }],
+        };
+        const { repositoryGitAuthorization: _online, ...readFields } = plan;
+        const readPlan = { ...readFields, repositoryGit: readGit };
+        const readRevision = {
+          ...rev,
+          repositoryCredentials: readGit,
+          egressPlan: readPlan,
+          executionAdmission: { version: 4, mode: "protected" },
+        };
+        const readCtx = { ...ctx, plan: readPlan, revision: readRevision };
+        for (const prepare of [
+          () => new ProtectedExecutionDriver(owner).configure(readCtx),
+          () => proxy.configureRevision(readCtx),
+        ]) {
+          await assert.rejects(prepare(), {
+            name: "RepositoryGitProfileUnsupportedError",
+            code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+          });
+        }
+        const qualifiedWiring = (c) => ({
+          plan: c.plan,
+          configuration: openShellEgressConfiguration(c.plan, proxy.options),
+        });
+        const proxyWiring = qualifiedWiring(ctx);
         const required = structuredClone({ ...requirements, proxyWiring });
         const { harnessEgressEnrollment } =
           await import("../../apps/controller/src/drivers/compute/egress-enrollment.ts");
@@ -5786,7 +6014,7 @@ test(
           exactRevision.executionAdmission.version = 4;
           delete exactRevision.egressPlan.repositoryGitAuthorization;
           const exact = { ...context, plan: exactRevision.egressPlan, revision: exactRevision };
-          const exactWiring = await proxy.configureRevision(exact);
+          const exactWiring = qualifiedWiring(exact);
           await assert.rejects(
             sandbox.provisionHarness({
               ...exact,
@@ -6045,6 +6273,131 @@ test(
             gateway.getSandbox = getSandbox;
             gateway.updatePolicy = updatePolicy;
           }
+
+          // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
+          // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
+          // while a Sandbox, provider or provider profile remains (the fake gateway does too).
+          const gitProvider = spec.providers.find((p) => p.startsWith("oce-git-"));
+          const leftBehind = {
+            provider: structuredClone(gateway.providers.get(gitProvider)),
+            profile: structuredClone(gateway.profiles.get(gitProvider)),
+          };
+          assert.ok(leftBehind.provider && leftBehind.profile);
+          // A same-name provider without the revision's owner fingerprint is refused, not deleted.
+          gateway.providers.get(gitProvider).labels = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
+            name: "OpenShellPreparedGitProviderError",
+          });
+          assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+          gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
+          // The same for its profile: the provider goes, the profile stays.
+          gateway.profiles.get(gitProvider).annotations = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
+            name: "OpenShellPreparedGitProviderError",
+          });
+          assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+          gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
+          await sandbox.cleanup({ ...ctx, revision: rev });
+          assert.equal(gateway.sandboxes.has(created.name), false);
+          assert.equal(gateway.providers.has(gitProvider), false, "Git provider deleted");
+          assert.equal(gateway.profiles.has(gitProvider), false, "Git provider profile deleted");
+          assert.deepEqual([...gateway.providers.keys()], [inferenceProvider]);
+
+          // The operator withdrew the Namespace's grant from the registry and restarted the
+          // controller, a usual reason for a revision to stop. The restarted worker cannot derive
+          // the Git provider's name from the revision's scope any more; the Sandbox's own
+          // provider list, read before its deletion, names it.
+          const withdrawnId = "rev_" + randomUUID();
+          const withdrawnPlan = {
+            ...plan,
+            id: randomUUID(),
+            execution: {
+              ...plan.execution,
+              revisionId: withdrawnId,
+              executionId: randomUUID().replaceAll("-", ""),
+            },
+          };
+          const withdrawnRev = { ...rev, id: withdrawnId, egressPlan: withdrawnPlan };
+          const withdrawnCtx = { ...context, plan: withdrawnPlan, revision: withdrawnRev };
+          const withdrawnRequired = structuredClone({
+            ...requirements,
+            proxyWiring: qualifiedWiring(withdrawnCtx),
+          });
+          withdrawnRequired.files[0].content = JSON.stringify({
+            kind: "codex",
+            selections: {},
+            providerTools: "none",
+            egressEnrollment: harnessEgressEnrollment(withdrawnPlan),
+          });
+          await sandbox.provisionHarness({ ...withdrawnCtx, requirements: withdrawnRequired });
+          const withdrawnProvider = created.spec.providers.find((p) => p.startsWith("oce-git-"));
+          assert.ok(withdrawnProvider !== gitProvider && gateway.providers.has(withdrawnProvider));
+          const revokedRegistry = structuredClone(registry);
+          revokedRegistry.repositories[0].namespaces[0].namespaceId =
+            "ns_00000000-0000-4000-8000-000000000999";
+          const revokedPath = join(tls.directory, "registry-revoked.json");
+          await writeFile(revokedPath, JSON.stringify(revokedRegistry));
+          const revoked = structuredClone(configuration);
+          revoked.backend.find(({ id }) => id === "github-primary").configuration.registryPath =
+            revokedPath;
+          const restarted = await loadInstallationFile(t, revoked, {
+            createOpenShellBackend: () => backendFor(gateway),
+          });
+          // A same-name profile another owner annotated is kept (the provider's own, renamed).
+          gateway.profiles.get(withdrawnProvider).annotations = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await restarted.sandboxDriver.cleanup(withdrawnCtx);
+          assert.equal(gateway.sandboxes.has(created.name), false);
+          assert.equal(gateway.providers.has(withdrawnProvider), false, "provider deleted");
+          assert.equal(gateway.profiles.has(withdrawnProvider), true, "foreign profile kept");
+          gateway.profiles.delete(withdrawnProvider);
+
+          // A revision cleaned up before this fix left its Git provider and profile behind.
+          // Namespace cleanup deletes them before the Workspace, but only objects whose owner
+          // label matches the name a preparation derives from it: a provider without it, or a
+          // profile another owner annotated, is kept, and OpenShell keeps refusing the Workspace.
+          gateway.providers.set(gitProvider, leftBehind.provider);
+          gateway.profiles.set(gitProvider, leftBehind.profile);
+          const foreign = "oce-git-" + "0".repeat(32);
+          gateway.providers.set(foreign, { ...leftBehind.provider, name: foreign, type: foreign });
+          const owner = "1".repeat(48);
+          const reused = "oce-git-" + owner.slice(0, 32);
+          gateway.providers.set(reused, {
+            ...leftBehind.provider,
+            name: reused,
+            type: reused,
+            labels: { "openclaw.dev/prepared-git-binding": owner },
+          });
+          gateway.profiles.set(reused, { ...leftBehind.profile, id: reused });
+          // A profile whose provider is already gone: a CreateProvider reply was lost, or an
+          // earlier pass failed between the two deletes. Only a listing finds it.
+          const orphan = "oce-github-installation-" + "2".repeat(32);
+          gateway.profiles.set(orphan, {
+            ...leftBehind.profile,
+            id: orphan,
+            annotations: { "openclaw.dev/prepared-git-binding": "2".repeat(48) },
+          });
+          // The model source's provider belongs to the Credential Gateway, which withdraws it.
+          gateway.providers.delete(inferenceProvider);
+          gateway.profiles.delete("inference-profile");
+          const workspace = openShellWorkspaceName(ctx.namespace);
+          gateway.workspaces.set(workspace, ownedWorkspace(workspace, ctx.namespace.id));
+          const namespaceCleanup = { ...ctx, revision: undefined };
+          await assert.rejects(sandbox.cleanup(namespaceCleanup), {
+            code: 9,
+            details: `workspace '${workspace}' still contains resources: provider, provider profile`,
+          });
+          assert.deepEqual([...gateway.providers.keys()], [foreign]);
+          assert.deepEqual([...gateway.profiles.keys()], [reused]);
+          gateway.providers.delete(foreign);
+          gateway.profiles.delete(reused);
+          await sandbox.cleanup(namespaceCleanup);
+          assert.equal(gateway.workspaces.has(workspace), false, "Workspace deleted");
         } finally {
           await git.close();
         }

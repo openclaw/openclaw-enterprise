@@ -1013,6 +1013,7 @@ async function resolveMigrationHistoryFixture() {
     assert.match(container, /^[a-f0-9]{12,64}$/);
     return {
       ...fixture,
+      container,
       ...(await historyAdministrator(container, "127.0.0.1", fixture.port)),
       databasePrefix: "openclaw_ci_canonical",
     };
@@ -1044,6 +1045,7 @@ async function resolveMigrationHistoryFixture() {
   return {
     migrationUrl,
     port,
+    container,
     databasePrefix,
     ...(await historyAdministrator(container, url.hostname, port)),
   };
@@ -1317,7 +1319,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 62);
+  assert.equal(receipts.length, 63);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1987,13 +1989,15 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "prePreparedAttemptSettlement"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
           computeAdmission: prefix >= 55,
-          executionAdmission: false,
+          // 0060 requires an execution admission on every revision written after it.
+          executionAdmission: prefix >= 62,
         });
         const assertSourceOwners =
           prefix === 59
@@ -2399,6 +2403,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "prePreparedAttemptSettlement"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2415,6 +2420,114 @@ test(
         // Approver storage appends to either continuation without rewriting existing receipts.
         await assertCompletedHistory(db, receipts);
       });
+    }
+  },
+);
+
+async function restoreHistoryArchive(context, fixture, archive) {
+  const restored = await historyDatabase(context, fixture, "restore", { schemas: false });
+  const command = ["exec", "-i", fixture.container, "pg_restore", "-U", "postgres"];
+  const restore = execFileAsync(
+    "docker",
+    [...command, "--exit-on-error", "--single-transaction", "-d", restored.name],
+    { timeout: 180_000, maxBuffer: 16 * 1024 * 1024 },
+  );
+  restore.child.stdin.end(archive);
+  await restore;
+  return restored;
+}
+
+async function logicalRestoreSnapshot(db) {
+  const sequence = await db.migrator.query(
+    "SELECT last_value,is_called FROM drizzle.__drizzle_migrations_id_seq",
+  );
+  return {
+    ...(await historySnapshot(db)),
+    identities: (await db.app.query("SELECT * FROM occ.iam_identities ORDER BY id")).rows,
+    sequence: sequence.rows,
+  };
+}
+
+test(
+  "Logical restore preserves reviewed canonical and Provider migration histories",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    for (const lineage of ["canonical", "provider"]) {
+      const source = await historyDatabase(context, fixture, "dump");
+      if (lineage === "provider") {
+        await installProviderCompletedHistory(source);
+      }
+      const previous = await historyReceipts(source.migrator);
+      assert.deepEqual(await runHistoryCommand(source, "production"), {
+        ok: true,
+        history: lineage === "provider" ? "providerCompleted" : "empty",
+      });
+      await assertCompletedHistory(source, previous);
+      await source.app.query(
+        "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES ('restore-human','principal','restore-fixture','human'), ('restore-service','service_principal',NULL,NULL)",
+      );
+      const native = await logicalRestoreSnapshot(source);
+      assert.equal(native.identities.length, 2);
+
+      // Restore a real archive into a distinct database, preserving ownership and grants atomically.
+      const { stdout: archive } = await execFileAsync(
+        "docker",
+        ["exec", fixture.container, "pg_dump", "-U", "postgres", "-Fc", source.name],
+        { encoding: "buffer", timeout: 180_000, maxBuffer: 32 * 1024 * 1024 },
+      );
+      const restored = await restoreHistoryArchive(context, fixture, archive);
+      const accepted = await logicalRestoreSnapshot(restored);
+      const restoredDigest = catalogDigest(accepted.occ);
+      assert.notEqual(restoredDigest, catalogDigest(native.occ));
+      assert.deepEqual(accepted.receipts, native.receipts);
+      assert.deepEqual(accepted.drizzle, native.drizzle);
+      assert.deepEqual(accepted.identities, native.identities);
+      assert.deepEqual(accepted.sequence, native.sequence);
+      await assertCredentialSchemaPrivileges(restored.app);
+      for (const flag of ["--check", undefined]) {
+        assert.deepEqual(await runHistoryCommand(restored, "production", flag), {
+          ok: true,
+          history: "completed",
+        });
+        assert.deepEqual(await logicalRestoreSnapshot(restored), accepted);
+      }
+
+      if (lineage !== "canonical") {
+        continue;
+      }
+      // Start each hostile case from the accepted archive; never undo digest-sensitive DDL.
+      const catalogRefusal = /catalog objects or effective grants differ/;
+      for (const [query, refusal, expectedRows] of [
+        [
+          `ALTER TABLE occ.credential_sources DROP CONSTRAINT credential_sources_driver_id_valid,
+           ADD CONSTRAINT credential_sources_driver_id_valid
+           CHECK (char_length(driver_id) BETWEEN 1 AND 201 AND driver_id = btrim(driver_id))`,
+          catalogRefusal,
+        ],
+        ["REVOKE SELECT ON occ.iam_identities FROM occ_app", catalogRefusal],
+        [
+          {
+            text: "UPDATE drizzle.__drizzle_migrations SET hash=repeat('0',64) WHERE id=$1 AND hash <> repeat('0',64)",
+            values: [native.receipts[14].id],
+          },
+          /applied receipts differ from canonical history/,
+          1,
+        ],
+      ]) {
+        const drifted = await restoreHistoryArchive(context, fixture, archive);
+        assert.equal(catalogDigest(await migrationCatalog(drifted.migrator)), restoredDigest);
+        const change = await drifted.migrator.query(query);
+        if (expectedRows !== undefined) {
+          assert.equal(change.rowCount, expectedRows);
+        }
+        const beforeRefusal = await historySnapshot(drifted);
+        assert.deepEqual(await runHistoryCommand(drifted, "production", undefined, refusal), {
+          ok: false,
+          code: "MIGRATION_HISTORY_UNSUPPORTED",
+        });
+        assert.deepEqual(await historySnapshot(drifted), beforeRefusal);
+      }
     }
   },
 );
@@ -2487,6 +2600,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "prePreparedAttemptSettlement"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2494,7 +2608,7 @@ test(
           await seedCanonicalData(db, {
             preset: prefix >= 25,
             computeAdmission: prefix >= 55,
-            executionAdmission: false,
+            executionAdmission: prefix >= 62,
           });
         }
         const before = await historySnapshot(db);
@@ -2580,7 +2694,7 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 62);
+    assert.equal(manifest.entries.length, 63);
     assert.deepEqual(
       manifest.entries.slice(58).map(({ tag }) => tag),
       [
@@ -2588,6 +2702,7 @@ test(
         "0060_credential_proxy_admission",
         "0061_repository_credential_authority",
         "0062_credential_delivery_custody",
+        "0063_prepared_attempt_settlement",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });
@@ -2665,7 +2780,7 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-2);
+    const middle = completed.receipts.at(-3);
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [
@@ -2696,7 +2811,7 @@ test(
       });
     }
 
-    // Discarding all three new receipts leaves main's exact ledger but the completed
+    // Discarding all four new receipts leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2704,7 +2819,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      3,
+      4,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(

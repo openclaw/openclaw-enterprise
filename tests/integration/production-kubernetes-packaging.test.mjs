@@ -176,6 +176,70 @@ try {
   };
 }
 
+test("execution peer label maps reject non-string values before rendering", tooling, async () => {
+  const renderExecution = (field, value, option = "--set-json") =>
+    execute(
+      helm,
+      [
+        "template",
+        "oce",
+        "deploy/helm/openclaw-execution",
+        "--set",
+        "routing.hostname=agents.example.invalid",
+        "--set",
+        "routing.gatewayClassName=private-envoy-gateway",
+        "--set",
+        "routing.tlsSecretName=agents-tls",
+        "--set",
+        "routing.controlPlaneCidrs[0]=198.51.100.0/24",
+        ...(field === undefined ? [] : [option, `${field}=${value}`]),
+      ],
+      { cwd: repository, maxBuffer: 2_000_000 },
+    );
+  const defaults = await resources((await renderExecution()).stdout);
+  const defaultPolicy = defaults.find(({ kind }) => kind === "NetworkPolicy");
+  for (const [field, peer] of [
+    ["dns.podLabels", 0],
+    ["routing.envoyGatewayPodLabels", 2],
+  ]) {
+    for (const value of [
+      "true",
+      "31",
+      "[]",
+      '"text"',
+      '{"probe":true}',
+      '{"probe":31}',
+      '{"probe":[]}',
+      '{"probe":{}}',
+    ]) {
+      await assert.rejects(renderExecution(field, value), ({ stderr }) => stderr.includes(field));
+    }
+    for (const value of [
+      '{"probe":"true"}',
+      '{"probe":"31"}',
+      '{"probe":""}',
+      '{"probe":null}',
+      "{}",
+      "null",
+    ]) {
+      const objects = await resources((await renderExecution(field, value)).stdout);
+      const policy = objects.find(({ kind }) => kind === "NetworkPolicy");
+      const labels = policy.spec.egress[peer].to[0].podSelector.matchLabels;
+      const requested = JSON.parse(value);
+      const defaultLabels = defaultPolicy.spec.egress[peer].to[0].podSelector.matchLabels;
+      assert.deepEqual(labels, requested === null ? null : { ...defaultLabels, ...requested });
+    }
+    const quoted = await resources(
+      (await renderExecution(`${field}.probe`, "true", "--set-string")).stdout,
+    );
+    const quotedPolicy = quoted.find(({ kind }) => kind === "NetworkPolicy");
+    assert.deepEqual(quotedPolicy.spec.egress[peer].to[0].podSelector.matchLabels, {
+      ...defaultPolicy.spec.egress[peer].to[0].podSelector.matchLabels,
+      probe: "true",
+    });
+  }
+});
+
 test(
   "Helm DNS grants preserve configured peers and admit OpenShift backend ports",
   tooling,
@@ -5892,6 +5956,11 @@ test(
       [{ "egressAuthority.clients[0].podSelector": "null" }, /podSelector.matchLabels/],
       [{ "egressAuthority.port": "8080" }, /distinct TCP port/],
       [{ "egressAuthority.port": "65536" }, /distinct TCP port/],
+      // Sprig int read "09444" as 0 and startup refused the text, after the install.
+      [
+        { "egressAuthority.port": "09444" },
+        /egressAuthority.port must be a TCP port without leading/,
+      ],
       [
         { "backend.openshell.clientSecretName": "authority-server-tls" },
         /egressAuthority.tlsSecretName must name a dedicated Secret.*backend.openshell.clientSecretName/,
@@ -5911,7 +5980,7 @@ test(
     };
     // Kubernetes interprets a null NetworkPolicyPort.port as every TCP port to this peer.
     const portKey = "preparedGitHub.issuerPort";
-    for (const invalid of [null, "", "https", 0, 65536]) {
+    for (const invalid of [null, "", "https", 0, 65536, "0443"]) {
       await assert.rejects(
         render({ ...prepared, [portKey]: invalid }),
         /preparedGitHub.issuerPort must be/,
@@ -6122,6 +6191,17 @@ test(
       [{ "openshellGit.port": "8443" }, /distinct from repository/],
       [{ "openshellGit.port": "65536" }, /unprivileged TCP port/],
       [{ "openshellGit.port": "8445.5" }, /positive safe integer/],
+      // Sprig int read "02000" as octal 1024 and startup refused the text, after the install.
+      [{ "openshellGit.port": "02000" }, /openshellGit.port must be a TCP port without leading/],
+      // The provider egress rule read "02000" as port 1024 and "0x7d0" as 2000.
+      [
+        { "repositoryCredentials.upstreamPort": "02000" },
+        /repositoryCredentials.upstreamPort must be a TCP port without leading/,
+      ],
+      [
+        { "repositoryCredentials.upstreamPort": "0x7d0" },
+        /repositoryCredentials.upstreamPort must be a positive safe integer/,
+      ],
       [{ "openshellGit.tlsSecretName": "repository-app-key" }, /must name a dedicated Secret/],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);

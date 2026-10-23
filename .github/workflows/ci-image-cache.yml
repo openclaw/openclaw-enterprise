@@ -31,6 +31,7 @@ on:
       - scripts/*.mjs
       - scripts/ci/download-pinned.sh
       - scripts/ci/prepare.mjs
+      - scripts/ci/resource-names.mjs
       - scripts/ci/test-suites/images-packaging.json
       - scripts/lib/**
       - tsconfig.base.json

@@ -1,6 +1,7 @@
 export {
   asRecord,
   deepFreeze,
+  freezeSnapshot,
   immutableCopy,
   immutableSnapshot,
   isImmutableSnapshot,

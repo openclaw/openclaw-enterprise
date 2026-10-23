@@ -615,11 +615,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+      # The action retries after a pause and says why.
+      - name: Download full integration results
+        uses: ./.github/actions/download-results
         with:
           pattern: full-results-*
           path: ${{ runner.temp }}/results
-          merge-multiple: true
       - name: Write selected job state
         env:
           NEEDS_JSON: ${{ toJson(needs) }}

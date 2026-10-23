@@ -6,6 +6,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   detailUrl,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -425,8 +426,6 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     );
   });
   const seen = () => page.evaluate(() => globalThis.diagnosticsSeen.splice(0));
-  const focused = (locator) =>
-    locator.evaluate((node) => node === globalThis.document.activeElement);
   const description = () =>
     run.evaluate(
       (node) =>
@@ -449,13 +448,13 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
       await page.clock.runFor(249);
       assert.equal(await waiting.count(), 0);
       assert.equal(await run.isEnabled(), true);
-      assert.equal(await focused(run), true);
+      assert.equal(await hasFocus(run), true);
       if (slow) {
         // Past the delay the run behaves as before: the line shows and takes focus from the
         // disabled button.
         await page.clock.runFor(1);
         await waiting.waitFor();
-        assert.equal(await focused(waiting), true);
+        assert.equal(await hasFocus(waiting), true);
         assert.equal(await run.isDisabled(), true);
         // Focus events land at once, mutation records a microtask later.
         assert.deepEqual((await seen()).sort(), ["focus p", "waiting line"]);
@@ -466,7 +465,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     const shown = await page.evaluate((value) => new Date(value).toLocaleString(), observedAt);
     const observed = observations.getByText(`Observed ${shown}`);
     await observed.waitFor();
-    assert.equal(await focused(run), true);
+    assert.equal(await hasFocus(run), true);
     assert.equal(await description(), await observed.textContent());
     assert.deepEqual((await seen()).sort(), slow ? ["focus button", "result"] : ["result"]);
   }
@@ -1363,6 +1362,35 @@ test("Agent detail does not move shown sections when Deployment activity first s
 });
 
 const listUrl = (namespaceId) => `/console/agents?namespace=${namespaceId}`;
+
+for (const width of [1440, 390]) {
+  test(`Agent row content opens its detail at ${width}px and Back restores the list`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Row navigation ${width}`);
+    const agent = await fixture.createAgent(namespace.id, "Clickable Agent", nativeValues("row"));
+    const { page } = await newPage(t, fixture);
+    await page.setViewportSize({ width, height: 900 });
+    await login(page, fixture, listUrl(namespace.id));
+    const row = page.getByRole("row").filter({ hasText: agent.name });
+    const name = row.getByRole("link", { name: agent.name, exact: true });
+    await name.waitFor();
+    const destination = await name.getAttribute("href");
+
+    // Non-link cells, nested text and padding all follow the same route as the name.
+    // Returning after each click also detects an accidental second navigation entry.
+    for (const target of [
+      row.locator('[data-label="Execution mode"]'),
+      row.locator(".resource-id"),
+      row.locator('[data-label="Created"]'),
+    ]) {
+      await target.click({ position: { x: 8, y: 8 } });
+      await page.waitForURL((url) => `${url.pathname}${url.search}` === destination);
+      await page.getByRole("heading", { name: agent.name, exact: true }).waitFor();
+      await page.goBack();
+      await name.waitFor();
+      assert.equal(new URL(page.url()).pathname, "/console/agents");
+    }
+  });
+}
 
 test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
   const fixture = await createConsoleAppFixture(t);

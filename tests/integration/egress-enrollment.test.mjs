@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
@@ -20,11 +19,15 @@ import {
   pluginRuntimeSpecForRevision,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const token = "synthetic-harness-transport";
 const serviceUrl = "http://fixture-harness.example.test/";
@@ -34,8 +37,7 @@ const path = HARNESS_EGRESS_ENROLLMENT_PATH;
 // implements only the authenticated transport handshake. This proves generated
 // startup coordination, not packaged Codex or installed supervisor enforcement.
 function nativeCli(callsPath, modelUrl) {
-  return `#!${process.execPath}
-const fs = require("node:fs");
+  return `const fs = require("node:fs");
 const { createHash } = require("node:crypto");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
@@ -72,14 +74,26 @@ test(
   "protected Harness waits for committed installation and rejects stale startup releases before its first model request",
   { timeout: 30000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "egress-enrollment-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "egress-enrollment-");
     let reservation = await reservePort({ host: "0.0.0.0" });
     t.after(() => reservation.release());
     const { port } = reservation;
     const transport = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
     t.after(() => transport.close());
+    const compute = createTestKubernetesComputeDriver("launch-compute", { channelRuntime: true });
     const f = await staticEgressFixture(t, {
+      // Keep local lifecycle observations, but run the actual Compute admission at
+      // the normal deploy route and read its immutable result back from State.
+      appFactory: (t, options) =>
+        createConsoleAppFixture(t, {
+          ...options,
+          computeDriver: {
+            ...options.computeDriver,
+            id: compute.id,
+            implementation: compute.implementation,
+            admitRevision: compute.admitRevision.bind(compute),
+          },
+        }),
       recordInstallation: false,
       physicalPlacement: true,
       serviceTransport: transport,
@@ -118,12 +132,29 @@ test(
     const modelPort = model.address().port;
     const callsPath = join(directory, "calls.jsonl");
     const script = join(directory, "entrypoint.cjs");
-    await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
+    assert.equal(f.revision.compute.admission, "protected-codex-no-connection-retry:v1");
+    const legacy = { ...f.revision, compute: { ...f.revision.compute, admission: undefined } };
+    assert.equal(compute.pluginRuntimeSnapshot(legacy).entrypoint, AGENT_RUNTIME_ENTRYPOINT);
+    const ordinary = {
+      ...legacy,
+      executionAdmission: { version: 2, mode: "unprotected" },
+      egressPlan: undefined,
+      sandboxDriverId: undefined,
+    };
+    assert.equal(compute.admitRevision(ordinary), undefined);
+    for (const revision of [
+      { ...ordinary, compute: f.revision.compute },
+      { ...legacy, compute: { ...legacy.compute, admission: "unknown:v1" } },
+    ]) {
+      assert.throws(() => compute.pluginRuntimeSnapshot(revision), /Compute admission is invalid/);
+    }
+    await writeFile(script, compute.pluginRuntimeSnapshot(f.revision).entrypoint);
     await writeFile(callsPath, "");
-    await writeFile(
-      join(directory, "codex"),
+    await writeCommand(
+      directory,
+      "codex",
       nativeCli(callsPath, `http://127.0.0.1:${modelPort}/v1/responses`),
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
     const runtime = pluginRuntimeSpecForRevision(
       f.revision,
@@ -328,6 +359,13 @@ test(
     assert.equal(probes.length, 1);
     assert.ok(probes[0].includes("model_providers.openai-compatible.request_max_retries=0"));
     assert.ok(probes[0].includes("model_providers.openai-compatible.stream_max_retries=0"));
+    const servers = (await calls()).filter((args) => args.includes("app-server"));
+    assert.equal(servers.length, 1);
+    for (const args of [probes[0], servers[0]]) {
+      const feature = args.indexOf("unbounded_connection_retries");
+      assert.ok(feature > 0);
+      assert.equal(args[feature - 1], "--disable");
+    }
     // A repeated reconciliation observes the already-serving Harness and cannot
     // replay either the release or the first model request.
     await f.sandboxDriver.enrollHarness(enrollmentContext, installed, () =>

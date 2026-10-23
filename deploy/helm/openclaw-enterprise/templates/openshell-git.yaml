@@ -5,7 +5,7 @@
 {{- end }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.tlsSecretName" "value" (required "openshellGit.tlsSecretName is required" $git.tlsSecretName)) }}
 {{- include "openclaw.validateResourceName" (dict "label" "openshellGit.issuerPublicKeyConfigMapName" "value" (required "openshellGit.issuerPublicKeyConfigMapName is required" $git.issuerPublicKeyConfigMapName)) }}
-{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.port" "value" $git.port) | int }}
+{{- $port := include "openclaw.positiveSafeInteger" (dict "name" "openshellGit.port" "value" $git.port "port" true) | int }}
 {{- if or (lt $port 1024) (gt $port 65535) (eq $port 8443) (and .Values.metrics.enabled (eq $port (int .Values.metrics.port))) }}
 {{- fail "openshellGit.port must be an unprivileged TCP port distinct from repository and metrics listeners" }}
 {{- end }}

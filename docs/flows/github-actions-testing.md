@@ -1,7 +1,7 @@
 ---
 created: 2026-09-04
-updated: 2026-10-14
-last_updated_session: authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c
+updated: 2026-10-23
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # GitHub Actions testing flow
@@ -81,9 +81,7 @@ source. Docs mode produces no test artifacts. The impact summary shows mode, fix
 and accepted lanes; it omits paths and raw output. Selector errors fail the job, and missing
 evidence is reported as unavailable.
 
-For full-mode PRs, `affected-packages` verifies merge identity and checkout
-cleanliness, then reports declared workspace dependents. It is advisory and does
-not select tests or gate `CI Required`.
+For full-mode PRs, `affected-packages` verifies merge identity and checkout cleanliness, then reports workspace dependents. This advisory neither selects tests nor gates `CI Required`.
 
 A PR can change the workflow loaded from its merge checkout despite base-loaded
 policy. Separately trusted enforcement is a deployment decision, not an
@@ -106,7 +104,7 @@ The application lane gives the native IAM barrier test its own migrated PostgreS
 
 Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the commit, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
 
-Ordinary PR dependency caches may be restored and saved within GitHub's PR merge-ref scope. Main jobs use main-scoped caches. Test results and credential-bearing state are not dependency caches, and protected jobs do not promote PR build artifacts.
+PR dependency caches stay within GitHub's PR merge-ref scope; main caches stay main-scoped. Results and credential-bearing state are not caches; protected jobs do not promote PR artifacts.
 
 The provider job uses the shared `blacksmith-8vcpu-ubuntu-2404` runner for image-build and k3d-import disk headroom; standard Ubuntu reached `DiskPressure` and evicted the seccomp probe before startup. Preparation copies the archive to each owned k3d node for node-local `ctr image import`; k3d `tools-node` can report success despite logged per-node failures. Imported manifest and CRI checks remain required before tests.
 
@@ -120,12 +118,11 @@ For `logging-collector`, `scripts/ci/prepare.mjs:prepareLane` pre-pulls the pinn
 
 `checks-browser`, `checks-browser-2`, `postgres-auth`, `postgres-platform`, `images-model-probes`, `images-runtime-startup`, `images-runtime-startup-2` and `images-runtime-startup-3` use separate runners and required artifacts. `scripts/ci/prepare.mjs:imageBuildArgs` enables scoped BuildKit caches for hosted image jobs: packaging exports; probes and runtime startup restore. Images load into the job's Docker engine; cache credentials stay in preparation.
 
-Kubernetes fixture startup records phase timings and host snapshots. On failure,
-reads with time and size limits save `<state-file>.diagnostics.json` outside the cluster directory
-before cleanup. These lanes use `--no-rollback` so the workflow owns teardown
-after capture; local callers still clean up using the failed run's state file.
-Collection preserves the original error even if observation fails or times out.
-The [CI guide](../testing/ci.md) describes the retained evidence.
+Kubernetes preparation records host snapshots. Failed reads, bounded
+by time and size, save `<state-file>.diagnostics.json` outside the cluster directory.
+These lanes use `--no-rollback`; workflows own teardown after capture, while
+local callers use the failed state file. Observation failures preserve the original error. `nodeLogExcerpt` orders Docker streams
+and retry summaries by full UTC timestamp precision using locale-independent ASCII comparison ([CI guide](../testing/ci.md)).
 
 Tests delete Agent namespaces and their events before file exit. While each file
 runs, `scripts/ci/run-tests.mjs:runFile` watches Compute-managed Pods and events
@@ -244,6 +241,12 @@ External reconciliation awaits an approved resource ledger.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 07:40: Preserve upstream CI selection alongside locale-independent timestamp ordering after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - a6a49a5192fa1c9cc5035801eed7d64b03336491)
+
+- 2026-10-23 03:43: Order Docker timestamps and retain twelve latest retry kinds independently of locale. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 9bca605f5175bb225a522c3d5537a7ee6e1a7751)
+
+- 2026-10-21 04:42: Preserve submillisecond Docker event order. (authoring-run/458f4777-70d1-4992-a922-ab387c6a4aba - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-14 22:31: Complete all selection. (authoring-run/d5130a41-8ae6-4a80-aef3-32d61a53348c - 9b50982b75a578d6967ee12befb1fa3904e20a38)
 

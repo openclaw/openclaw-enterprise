@@ -4,6 +4,7 @@ import test from "node:test";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -12,8 +13,11 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expireSessions,
+  hasFocus,
   holdRequests,
   login,
+  MEMBER_WRITE,
   nativeValues,
   newPage,
   settlePageRequests,
@@ -209,22 +213,20 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // and returns to the button with the result, instead of falling to the page (finding 1705).
   const refreshRecord = versionRecord.getByRole("button", { name: "Refresh record" });
   const recordPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`;
-  const focused = (locator) =>
-    locator.evaluate((node) => node === globalThis.document.activeElement);
   await runDiagnostics.focus();
   await page.keyboard.press("Enter");
   try {
     await diagnosticsRequest.requested;
     await waiting.waitFor();
     assert.equal(await idle.isVisible(), false);
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     // A record read re-renders the panel (as each deployment poll does); the waiting line
     // keeps focus through it. A dispatched click leaves focus where it is.
     const recordReads = pathRequests(requests, "GET", recordPath).length;
     await refreshRecord.dispatchEvent("click");
     await refreshRecord.waitFor();
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     assert.deepEqual(await page.evaluate(() => globalThis.diagnosticsAnnouncements), [
       "Waiting for diagnostic results…",
     ]);
@@ -236,7 +238,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations.getByText("slack / authentication").waitFor();
   assert.equal(await waiting.isVisible(), false);
   await waitForEnabled(runDiagnostics);
-  assert.equal(await focused(runDiagnostics), true);
+  assert.equal(await hasFocus(runDiagnostics), true);
   const description = () =>
     runDiagnostics.evaluate(
       (node) =>
@@ -249,7 +251,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     await refreshRecord.dispatchEvent("click");
     await refreshRecord.waitFor();
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
-    assert.equal(await focused(runDiagnostics), true);
+    assert.equal(await hasFocus(runDiagnostics), true);
   };
   // The "Observed" line, not the whole check list.
   assert.match(await description(), /^Observed /);
@@ -273,7 +275,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .getByText(/Current-runtime diagnostics are unavailable/);
   await page.keyboard.press("Enter");
   await unavailableAlert.waitFor();
-  assert.equal(await focused(runDiagnostics), true);
+  assert.equal(await hasFocus(runDiagnostics), true);
   assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
   await pollPanel();
   assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
@@ -287,14 +289,14 @@ test("Agent detail separates the current version, viewed version, and latest dep
   try {
     await movedOnRequest.requested;
     await waiting.waitFor();
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     await page.keyboard.press("Shift+Tab");
-    assert.equal(await focused(refreshRecord), true);
+    assert.equal(await hasFocus(refreshRecord), true);
   } finally {
     movedOnRequest.release();
   }
   await unavailableAlert.waitFor();
-  assert.equal(await focused(refreshRecord), true);
+  assert.equal(await hasFocus(refreshRecord), true);
   // That run started by dropping the earlier result's description, and nothing described the
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
@@ -591,25 +593,35 @@ test("Configuration save names the field that holds an inline model credential w
 });
 
 test("Agent deployment shows the API's reason when it rejects the saved model", async (t) => {
-  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model");
+  const configurationDriver = createTestConfigurationDriver({ id: "console-configuration" });
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unqualified model", {
+    configurationDriver,
+  });
   const values = nativeValues("unqualified-model");
   const agent = await fixture.createAgent(namespace.id, "Unqualified model Agent", values, {
     harnessAuth: { method: "runtime" },
   });
-  // The Configuration accepts a bare model name; only deployment requires provider/model form.
+  const bare = {
+    ...values,
+    agents: { ...values.agents, defaults: { ...values.agents.defaults, model: "gpt-5.1" } },
+  };
+  const reason =
+    "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.";
+  // Save refuses a bare model name with deployment's text (finding 1828).
   const saved = await fixture.request(
     "PATCH",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    {
-      body: {
-        values: {
-          ...values,
-          agents: { ...values.agents, defaults: { ...values.agents.defaults, model: "gpt-5.1" } },
-        },
-      },
-    },
+    { body: { values: bare } },
   );
-  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.status, 400, JSON.stringify(saved.body));
+  assert.equal(saved.body.error.message, reason);
+  // A row an older release saved with it still reads, and deployment refuses it.
+  const stored = configurationDriver.stored({
+    namespaceId: namespace.id,
+    id: agent.configurationId,
+  });
+  assert.ok(stored);
+  await configurationDriver.update({ ...stored, values: bare });
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
@@ -621,12 +633,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   await page.getByRole("button", { name: "Deploy new version" }).click();
   assert.equal((await rejected).status(), 400);
   // The generic "check the entered values" text cannot tell the user which setting to fix.
-  await page
-    .getByText(
-      "The configured Agent model must identify its provider and model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1.",
-      { exact: true },
-    )
-    .waitFor();
+  await page.getByText(reason, { exact: true }).waitFor();
   const revisions = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,
@@ -1008,6 +1015,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   );
   assert.equal(draft.generation, 3);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
 
   await login(
@@ -1022,13 +1030,17 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-two"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
 
   await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, second.revision.id);
 
   await page.getByRole("button", { name: "View version v1" }).click();
@@ -1041,7 +1053,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-current"').waitFor();
-  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/);
+  await expectNoText(page, /"marker": "rev-one"|"marker": "rev-two"/, () =>
+    waitForIdleFetches(page),
+  );
   assertRevisionUrl(page, "draft");
 
   await page.getByRole("button", { name: "Edit Configuration" }).click();
@@ -1140,7 +1154,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
-  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
+  await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/, () =>
+    waitForIdleFetches(page),
+  );
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
   // Edit current Configuration opens the draft's editor on the saved document (finding 2061).
@@ -1214,15 +1230,7 @@ test("Agent detail saves plugin changes for the next revision without changing a
     "Plugin Revision Service Accounts token",
     "at-browser-plugin-revision",
   );
-  fixture.policy.bindings.push({
-    id: `grant-plugin-${tokenSecret.id}`,
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: agent.servicePrincipalId,
-    roleId: `auth-${agent.id}`,
-    resourceKind: "secret",
-    resourceId: tokenSecret.id,
-  });
+  await fixture.grantAgentSecretOperate(agent, tokenSecret.ref);
   const pluginId = "codex-plugin:linear@openai-curated-remote";
   const originalPlugins = {
     [pluginId]: { enabled: true, toolDefaults: { approval: "all_actions" } },
@@ -2081,60 +2089,120 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   await page.getByRole("dialog", { name: "Create harness authentication Secret" }).waitFor();
 });
 
-test("a Secret created before the picker's Secret list arrives stays staged and listed", async (t) => {
+test("Tab leaves a scrolling Secret list for the next control, and the list keeps focus in the picker", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slow Secret list", { ready: true });
-  const original = await fixture.createSecret(namespace.id, "Original binding", "original-value");
+  const namespace = await fixture.createNamespace("Scrolling Secret list", { ready: true });
+  const secrets = [];
+  // Nine readable Secrets overflow the open list, which then scrolls.
+  for (let index = 1; index <= 9; index += 1) {
+    secrets.push(
+      await fixture.createSecret(namespace.id, `Scrolling Secret ${index}`, `value-${index}`),
+    );
+  }
   const agent = await fixture.createAgent(
     namespace.id,
-    "Slow List Agent",
-    nativeValues("slow-secret-list", { harnessId: "codex" }),
-    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+    "Scrolling List Agent",
+    nativeValues("scrolling-secret-list", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: secrets[0].ref }, executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const secretsPath = `/namespaces/${namespace.id}/secrets`;
-  // The API answers the list read; the page sees that answer only after the create.
-  let releaseList;
-  const listGate = new Promise((resolve) => {
-    releaseList = resolve;
-  });
-  t.after(releaseList);
-  let listReads = 0;
-  await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.continue();
-      return;
-    }
-    listReads += 1;
-    const response = await route.fetch();
-    await listGate;
-    await route.fulfill({ response });
-  });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
-  await apiKeySecret.fill("no matching create target");
-  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
-  await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
-  await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
-  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.waitFor({ state: "detached" });
-  const staged = page.getByText("Secret binding staged. Save changes to apply it.");
-  await staged.waitFor();
-  assert.ok(listReads > 0);
-  releaseList();
-  // Every held list read and the create have now reached the page's own code.
-  await waitForSettledFetches(page, secretsPath, listReads + 1);
-  assert.equal(await staged.count(), 1);
-  const created = (await fixture.request("GET", secretsPath)).data.find(
-    (secret) => secret.name === "Created while loading",
+  await page.getByText("Choose an existing Secret or create a new one.").waitFor();
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  const listbox = page.getByRole("listbox", { name: "Available Secrets" });
+  await picker.focus();
+  await listbox.waitFor();
+  assert.ok(await listbox.evaluate((node) => node.scrollHeight > node.clientHeight));
+
+  // The list is not a Tab stop: focus used to enter it, the list hid, and focus fell to the
+  // page (finding 1919).
+  await picker.fill("Scrolling");
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await hasFocus(page.getByRole("link", { name: /View harness authentication Secret metadata/ })),
+    true,
   );
-  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
-  await apiKeySecret.fill("Created while");
-  await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+  await listbox.waitFor({ state: "hidden" });
+  assert.equal(await picker.inputValue(), secrets[0].name);
+
+  // Focus that still reaches the list, as a press on its scrollbar can, returns to the input
+  // with the list and the search kept.
+  await page.keyboard.press("Shift+Tab");
+  await picker.fill("Secret 9");
+  await listbox.focus();
+  assert.equal(await hasFocus(picker), true);
+  assert.equal(await picker.inputValue(), "Secret 9");
+  assert.deepEqual(await listbox.getByRole("option").allTextContents(), [
+    secrets[8].name,
+    "Create new Secret...",
+  ]);
+  await page.keyboard.press("Escape");
+  await listbox.waitFor({ state: "hidden" });
 });
+
+// A failed list read must not replace the staged hint with an error either (finding 1748).
+for (const listOutcome of ["arrives", "fails"]) {
+  test(`a Secret created before the picker's Secret list ${listOutcome} stays staged and listed`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Slow Secret list", { ready: true });
+    const original = await fixture.createSecret(namespace.id, "Original binding", "original-value");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Slow List Agent",
+      nativeValues("slow-secret-list", { harnessId: "codex" }),
+      { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+    );
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    const secretsPath = `/namespaces/${namespace.id}/secrets`;
+    // The API answers the list read; the page sees that answer only after the create.
+    let releaseList;
+    const listGate = new Promise((resolve) => {
+      releaseList = resolve;
+    });
+    t.after(releaseList);
+    let listReads = 0;
+    await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      listReads += 1;
+      const response = await route.fetch();
+      await listGate;
+      await route.fulfill(
+        listOutcome === "arrives"
+          ? { response }
+          : { status: 500, contentType: "application/json", body: "{}" },
+      );
+    });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+    const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+    await apiKeySecret.fill("no matching create target");
+    await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+    await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
+    await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    const staged = page.getByText("Secret binding staged. Save changes to apply it.");
+    await staged.waitFor();
+    assert.ok(listReads > 0);
+    releaseList();
+    // Every held list read and the create have now reached the page's own code.
+    await waitForSettledFetches(page, secretsPath, listReads + 1);
+    assert.equal(await staged.count(), 1);
+    assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
+    const created = (await fixture.request("GET", secretsPath)).data.find(
+      (secret) => secret.name === "Created while loading",
+    );
+    assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
+    await apiKeySecret.fill("Created while");
+    await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+  });
+}
 
 test("a different Secret in a create response cannot stage a binding or repeat the write", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -2212,9 +2280,7 @@ test("session expiry clears the unsent value in the Secret picker dialog", async
   const field = dialog.getByLabel("Value", { exact: true });
   await field.fill("synthetic-unsent-value");
   const input = await field.evaluateHandle((node) => node);
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
   release.resolve();
   assert.equal((await refused).status(), 401);
@@ -2406,6 +2472,15 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
   assert.equal(await serviceAccountSecret.inputValue(), secretOptionLabel(createdSecret));
 });
 
+// The shared grant wording for the harness authentication source (findings 1920, 2259).
+const HARNESS_GRANT_REFUSED =
+  "Authentication source saved, but the request to grant this Agent access to the selected Secret was refused. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source. Select Retry credential access once you have that access.";
+// An Installation administrator's console read the IAM policy and found no grant (finding 2260).
+const HARNESS_GRANT_MISSING =
+  "This Agent has no access to its authentication Secret, so deploying it would be refused. Select Save authentication source to grant it.";
+const HARNESS_GRANT_UNVERIFIED =
+  "Authentication source saved, but this session did not verify that this Agent can use the selected Secret. Granting access needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Save authentication source.";
+
 test("Agent credentials report partial harness Secret grant failure", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2451,8 +2526,12 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   requests.length = 0;
   await selectSecret(page, "API key Secret", replacementSecret);
   await page.getByRole("button", { name: "Save authentication source" }).click();
+  // The grant request itself was refused: the warning says so, names who grants it, and keeps
+  // Retry for when the reader's access is restored (finding 2259).
   await page
-    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .getByText(`${HARNESS_GRANT_REFUSED} Request ID: req_00000000-0000-4000-8000-000000000633`, {
+      exact: true,
+    })
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
   await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
@@ -2469,6 +2548,29 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
       body.resourceId,
     ]),
     [[agent.servicePrincipalId, replacementSecret.id]],
+  );
+
+  // Retry rereads the Agent before any grant request. Native IAM now refuses that read: the
+  // warning is about the read, not a grant refusal, and Retry stays for when the read works.
+  fixture.policy.restrictions.push({
+    id: "deny-agent-read-on-retry",
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read",
+    effect: "deny",
+  });
+  requests.length = 0;
+  await page.getByRole("button", { name: "Retry credential access" }).click();
+  await page
+    .getByText(
+      /^Authentication source saved, but this Agent could not be read before retrying its credential access\. .+ Select Retry credential access once the Agent can be read\.$/,
+    )
+    .waitFor();
+  assert.deepEqual(accessBindingPostRequests(requests, namespace.id), []);
+  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((item) => item.id === "deny-agent-read-on-retry"),
+    1,
   );
 
   // A retry after this denial must not grant the Secret to a different service principal.
@@ -2494,6 +2596,144 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   assert.equal(await retry.isDisabled(), true);
   await page.getByText(/Agent identity changed. Reload authentication source/).waitFor();
+});
+
+// Granting the Agent its authentication Secret writes IAM policy, which needs Installation
+// administration. A member's save sends no IAM request, so it says this session did not verify
+// the Agent's access, whether or not an administrator already granted it. It names who finishes
+// the grant and how, and offers no Retry the API would refuse. The named step grants it.
+test("Agent credentials name the administrator step for a member's harness Secret grant", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Member harness grant", { ready: true });
+  const replacementSecret = await fixture.createSecret(
+    namespace.id,
+    "Member harness Secret",
+    "hidden-member-harness",
+  );
+  const ungranted = await fixture.createAgent(
+    namespace.id,
+    "Member Harness Agent",
+    nativeValues("member-harness"),
+  );
+  // An administrator already granted this Agent the Secret the member is about to select.
+  const granted = await fixture.createAgent(
+    namespace.id,
+    "Member Granted Agent",
+    nativeValues("member-granted"),
+  );
+  await fixture.grantAgentSecretOperate(granted, replacementSecret.ref);
+  const writer = await fixture.createNamespaceMember("member-write", namespace.id, MEMBER_WRITE);
+
+  for (const agent of [ungranted, granted]) {
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    const probe = page.waitForResponse(`${fixture.origin}/observability`);
+    await login(page, fixture, url, writer.credentials);
+    await page.getByRole("heading", { name: agent.name }).waitFor();
+    // The session's Installation read already found this account is no administrator.
+    assert.equal((await probe).status(), 403);
+    await selectSecret(page, "API key Secret", replacementSecret);
+    await page.getByRole("button", { name: "Save authentication source" }).click();
+    const warning = page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED });
+    await warning.waitFor();
+    assert.equal(await warning.textContent(), HARNESS_GRANT_UNVERIFIED);
+    assert.deepEqual(await statusTone(warning), {
+      className: "status",
+      tone: "warning",
+      role: "alert",
+    });
+    // The Agent saved its new source; no IAM request went out that the API would refuse and
+    // audit.
+    const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+    assert.deepEqual(saved.data.harnessAuth, { method: "api_key", source: replacementSecret.ref });
+    assert.deepEqual(
+      requests.filter(({ path }) => path.includes("/iam/")),
+      [],
+    );
+    // No dead Retry: only Reload remains, and Deploy waits until the access is confirmed.
+    assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+    assert.equal(await page.getByRole("button", { name: "Save authentication source" }).count(), 0);
+    await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
+    assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+    // The rebuilt tab keeps the same words and still offers no Retry.
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+    await page.getByRole("alert").filter({ hasText: HARNESS_GRANT_UNVERIFIED }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+  }
+
+  // The administrator the warning names opens the Agent's Credentials: its IAM policy read finds
+  // the grant missing, so the tab names the same step and Deploy waits (finding 2260).
+  const { page: adminPage } = await newPage(t, fixture);
+  await login(
+    adminPage,
+    fixture,
+    detailUrl(fixture, namespace.id, ungranted.id, "draft", "credentials"),
+  );
+  await adminPage.getByRole("heading", { name: "Member Harness Agent" }).waitFor();
+  await waitForInputValue(
+    adminPage.getByLabel("API key Secret", { exact: true }),
+    secretOptionLabel(replacementSecret),
+  );
+  const missing = adminPage.getByText(HARNESS_GRANT_MISSING, { exact: true });
+  await missing.waitFor();
+  assert.equal(await missing.getAttribute("data-tone"), "warning");
+  await adminPage
+    .getByText("Confirm authentication and Secret access in Credentials before deploying.")
+    .waitFor();
+  assert.equal(
+    await adminPage.getByRole("button", { name: "Deploy new version" }).isDisabled(),
+    true,
+  );
+  // The named step grants the Agent its Secret; the rebuilt tab reads the grant and clears both.
+  await adminPage.getByRole("button", { name: "Save authentication source" }).click();
+  await adminPage.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
+  await waitForEnabled(adminPage.getByRole("button", { name: "Deploy new version" }));
+  assert.equal(await adminPage.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
+  const grants = await fixture.addedAccessBindings(namespace.id);
+  assert.deepEqual(
+    grants
+      .filter(({ subjectId }) => subjectId === ungranted.servicePrincipalId)
+      .map(({ resourceKind, resourceId }) => [resourceKind, resourceId]),
+    [["secret", replacementSecret.id]],
+  );
+});
+
+// The harness grant check reads Namespace IAM; a refused read proves nothing missing, so an
+// administrator's Deploy stays as it was and no warning appears (finding 2260).
+test("A refused harness grant read leaves an administrator's Deploy alone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unread harness grant", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unread Grant Agent", nativeValues("u"));
+  // The Agent's binding moved to a Secret it holds no grant for.
+  const ungranted = await fixture.createSecret(namespace.id, "Ungranted model key", "hidden");
+  await fixture.updateAgent(namespace.id, agent.id, {
+    configurationId: agent.configurationId,
+    harnessAuth: { method: "api_key", source: ungranted.ref },
+  });
+  const { page } = await newPage(t, fixture);
+  await page.route(`**/namespaces/${namespace.id}/iam/roles`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Access denied." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000002260" },
+      }),
+    }),
+  );
+  const read = page.waitForResponse((response) =>
+    response.url().endsWith(`/namespaces/${namespace.id}/iam/roles`),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Unread Grant Agent" }).waitFor();
+  assert.equal((await read).status(), 403);
+  await settlePageRequests(page);
+  await waitForEnabled(page.getByRole("button", { name: "Deploy new version" }));
+  assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);
 });
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {

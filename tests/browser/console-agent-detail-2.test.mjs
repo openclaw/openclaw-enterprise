@@ -18,6 +18,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  expireSessions,
   holdRequests,
   login,
   setSlackSelection,
@@ -409,6 +410,7 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   assert.equal((await fixture.request("DELETE", path)).status, 202);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   const ownership =
@@ -437,7 +439,9 @@ test("Repeat deletion preserves bounded retry ownership feedback and ordinary de
   };
   await confirm();
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
-  await expectNoText(page, "Ask an administrator for Agent delete access");
+  await expectNoText(page, "Ask an administrator for Agent delete access", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(writes, 1);
   await page.clock.fastForward(DELETION_POLL_MS * 2);
   await page.getByRole("alert").getByText(ownership, { exact: true }).waitFor();
@@ -763,6 +767,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
   const holder = await fixture.createNamespace("Z link holder", { ready: true });
   const agent = await fixture.createAgent(holder.id, "Linked Agent", nativeValues("link"));
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const missed = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${selected.id}/agents/${agent.id}` &&
@@ -777,7 +782,7 @@ test("Agent link without a Namespace opens the Agent in the Namespace that holds
       url.searchParams.get("namespace") === holder.id,
   );
   await page.getByRole("heading", { name: "Linked Agent" }).first().waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
 });
 
 test("Agent link without a Namespace says when no readable Namespace has the Agent", async (t) => {
@@ -811,6 +816,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   const other = await fixture.createNamespace("Z uncertain other", { ready: true });
   const agentId = `agt_${randomUUID()}`;
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await page.route(`${fixture.origin}/namespaces/${other.id}/agents/${agentId}`, (route) =>
     route.fulfill({
       status: 503,
@@ -825,7 +831,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
   await login(page, fixture, `/console/agents/${agentId}`);
   await page.getByRole("heading", { name: "Agent not in this Namespace" }).waitFor();
   await page.getByText("not in the A uncertain default Namespace", { exact: false }).waitFor();
-  await expectNoText(page, "may have been deleted");
+  await expectNoText(page, "may have been deleted", () => waitForIdleFetches(page));
   await page.getByRole("button", { name: "Switch Namespace" }).click();
   assert.equal(
     await page
@@ -1151,7 +1157,7 @@ test("Agent detail opens native admin UI only after real API access checks pass"
   assert.deepEqual([...deniedTabWrites, ...nonAuthWriteRequests(requests)], []);
 });
 
-test("Agent detail rereads native admin access once when a pending deployment activates", async (t) => {
+test("Agent detail rereads native admin access once when a pending deployment activates, and Refresh access keeps keyboard focus", async (t) => {
   const cookieDomain = "oce.example.test";
   const consoleHost = `console.${cookieDomain}`;
   const nativeDomain = `agents.${cookieDomain}`;
@@ -1245,6 +1251,37 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   // The button returns from "Refreshing…" only after the reread Agent was applied.
   await activity.getByRole("button", { name: "Refresh deployment", disabled: false }).waitFor();
   assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 2);
+
+  // A keyboard reader who refreshes access keeps focus on the button through the read: a second
+  // Enter while it reads sends nothing, and the next Tab continues from the card (issue 3311).
+  const reload = card.getByRole("button", { name: "Refresh access" });
+  const isFocused = (locator) =>
+    locator.evaluate((node) => node === node.ownerDocument.activeElement);
+  const readSettled = async () => {
+    await waitForEnabled(reload);
+    // Chromium moves focus off a disabled control when it next renders.
+    await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+  };
+  let held = await holdRequests(t, page, `${fixture.origin}${nativeAdminPath}`, { once: true });
+  await reload.focus();
+  await page.keyboard.press("Enter");
+  await held.requested;
+  await page.keyboard.press("Enter");
+  held.release();
+  await readSettled();
+  assert.equal(pathRequests(requests, "GET", nativeAdminPath).length, 3);
+  assert.equal(await isFocused(reload), true);
+
+  // Focus the reader moves during a read stays where they put it.
+  held = await holdRequests(t, page, `${fixture.origin}${nativeAdminPath}`, { once: true });
+  await page.keyboard.press("Enter");
+  await held.requested;
+  await page.keyboard.press("Tab");
+  const next = page.locator("summary", { hasText: "What this page can tell you" });
+  assert.equal(await isFocused(next), true);
+  held.release();
+  await readSettled();
+  assert.equal(await isFocused(next), true);
 });
 
 for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
@@ -1486,6 +1523,7 @@ for (const kind of ["agent", "configuration", "namespace"]) {
     });
     const agent = await fixture.createAgent(namespace.id, "Revoked revision Agent");
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
     await login(page, fixture, url);
     await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
@@ -1507,7 +1545,9 @@ for (const kind of ["agent", "configuration", "namespace"]) {
         exact: true,
       })
       .waitFor();
-    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/);
+    await expectNoText(page, /Configuration draft|Create new version|Revoked revision Agent/, () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -1517,17 +1557,18 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
   const namespace = await fixture.createNamespace("Revision session expired", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Expired revision Agent");
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
-  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
+  await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/, () =>
+    waitForIdleFetches(page),
+  );
 });
 
 // Agent detail rechecks in place, so a mounted form must not suppress the refocus check.
@@ -1547,6 +1588,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     }
     const tab = variant === "sharing" ? "access" : variant;
     const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
     const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
     await login(page, fixture, url);
     await page.getByRole("heading", { name: `Refocus ${variant} Agent` }).waitFor();
@@ -1556,13 +1598,13 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     } else {
       await page.locator(".content form:not(.agent-access-form)").first().waitFor();
     }
-    for (const session of fixture.memoryDatabase.session) {
-      session.expiresAt = new Date(Date.now() - 1000);
-    }
+    expireSessions(fixture);
 
     await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     await page.getByText("Your session has expired").waitFor();
-    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`));
+    await expectNoText(page, new RegExp(`Refocus ${variant} Agent`), () =>
+      waitForIdleFetches(page),
+    );
   });
 }
 
@@ -1602,9 +1644,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   });
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await held;
-  for (const session of fixture.memoryDatabase.session) {
-    session.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await page.goBack();
   await page.getByText("Your session has expired").waitFor();
   await expectNoText(page, /Configuration draft|Create new version|History refocus Agent/);
@@ -2001,7 +2041,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-granted.png") });
-  const bindings = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
+  const bindings = await fixture.addedAccessBindings(namespace.id);
   assert.equal(bindings.length, 2);
   assert.equal(
     bindings.some((binding) => binding.roleId === misleadingRole.data.id),
@@ -2118,7 +2158,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-removed.png") });
-  const after = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
+  const after = await fixture.addedAccessBindings(namespace.id);
   assert.deepEqual(
     after.map((binding) => binding.id).sort(),
     [
@@ -2204,9 +2244,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   assert.equal((await fixture.request("GET", `${policyPath}/roles`)).data.length, 2);
   assert.equal((await fixture.request("GET", `${policyPath}/access-bindings`)).data.length, 2);
   // A sharing read must preserve global expiry handling, including private panel removal.
-  for (const savedSession of fixture.memoryDatabase.session) {
-    savedSession.expiresAt = new Date(Date.now() - 1000);
-  }
+  expireSessions(fixture);
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -2550,11 +2588,13 @@ test("Credentials retries denied and interrupted grants without repeating the au
   const fixture = await createConsoleAppFixture(t);
   const installation = await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Credential access recovery", { ready: true });
+  // No model credential yet: its listed grant would leave an exact Secret operate role for the
+  // console to reuse, and this test checks the role the console creates.
   const agent = await fixture.createAgent(
     namespace.id,
     "Recovery Agent",
     createHarnessConfiguration("codex", "gpt-4.1"),
-    { executionMode: "dedicated" },
+    { executionMode: "dedicated", harnessAuth: null },
   );
   const replacement = await fixture.createSecret(
     namespace.id,
@@ -2565,11 +2605,15 @@ test("Credentials retries denied and interrupted grants without repeating the au
   const bindingsPath = `/namespaces/${namespace.id}/iam/access-bindings`;
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const probe = page.waitForResponse(`${fixture.origin}/observability`);
   await login(
     page,
     fixture,
     `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
   );
+  // The session knows this actor administers the Installation before the denial below, so it
+  // sends the grant request; a member's session sends none (finding 2259).
+  assert.equal((await probe).status(), 200);
   // Native IAM denies the actor's grant authority while the Agent update remains authorized.
   fixture.policy.restrictions.push({
     id: "deny-update-credential-grant",
@@ -2582,7 +2626,9 @@ test("Credentials retries denied and interrupted grants without repeating the au
   await selectSecret(page, "Service account token Secret", replacement);
   await page.getByRole("button", { name: "Save authentication source" }).click();
   await page
-    .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
+    .getByText(
+      /Authentication source saved, but the request to grant this Agent access to the selected Secret was refused/,
+    )
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
@@ -2853,6 +2899,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const second = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
   let status = "running";
   await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, second.id), (route) =>
@@ -2946,7 +2993,9 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const answered = page.waitForResponse((response) => response.url().endsWith(userPath));
   userReread.release();
   await answered;
-  await expectNoText(page, "USER.md reloaded with its current contents.");
+  await expectNoText(page, "USER.md reloaded with its current contents.", () =>
+    waitForIdleFetches(page),
+  );
   assert.equal(await user.inputValue(), "# Typed during the reread\n");
   assert.equal(
     requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
@@ -3613,15 +3662,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   });
   // Real admission requires exact Agent access to each projected credential.
   for (const secret of [app, bot, replacement]) {
-    fixture.policy.bindings.push({
-      id: `grant-${secret.id}`,
-      namespaceId: namespace.id,
-      subjectKind: "identity",
-      subjectId: `service-agent-${agent.id}`,
-      roleId: `auth-${agent.id}`,
-      resourceKind: "secret",
-      resourceId: secret.id,
-    });
+    await fixture.grantAgentSecretOperate(agent, secret.ref);
   }
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   // Mutate both current owners after admission; the read-only view must keep the old references.
@@ -4328,6 +4369,15 @@ test("Credentials preserves an existing OpenClaw credential source without offer
     await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).isVisible(),
     false,
   );
+  // No grant lets the Agent operate this source yet: the administrator's tab reads the IAM policy,
+  // names the step that grants it and holds Deploy (finding 2260).
+  await page
+    .getByText(
+      "This Agent has no access to its authentication credential source, so deploying it would be refused. Select Save authentication source to grant it.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   const granted = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" && response.url().endsWith("/access-bindings"),
@@ -4343,6 +4393,12 @@ test("Credentials preserves an existing OpenClaw credential source without offer
     (request) => request.method === "PATCH" && request.path.endsWith(`/agents/${agent.id}`),
   );
   assert.deepEqual(save.body.harnessAuth, harnessAuth);
+  // The rebuilt tab reads the new grant: nothing is missing any more.
+  await page.getByRole("status").filter({ hasText: "Authentication source saved." }).waitFor();
+  assert.equal(
+    await page.getByText(/has no access to its authentication credential source/).count(),
+    0,
+  );
 });
 
 async function checkStatusRefreshFocus(page, url, name) {

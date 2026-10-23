@@ -1,12 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createSecureServer } from "node:http2";
 import { createServer as createHttpsServer } from "node:https";
 import { connect as connectTcp } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -22,49 +20,26 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { kubernetesRequest } from "../../apps/controller/src/drivers/kubernetes/request.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
-function selfSignedCertificate(directory, name, subjectAltName) {
-  const keyPath = join(directory, `${name}.key`);
-  const certPath = join(directory, `${name}.crt`);
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "ec",
-      "-pkeyopt",
-      "ec_paramgen_curve:prime256v1",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      `/CN=${name}`,
-      "-addext",
-      `subjectAltName=${subjectAltName}`,
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
-  return { keyPath, certPath };
-}
+// The certificate's CN is its name: the API server stand-in records it per connection.
+const selfSignedCertificate = (directory, name, subjectAltName) =>
+  selfSigned(directory, { name, commonName: name, subjectAltName });
 
 // A TLS API server that offers HTTP/2 first, like kube-apiserver, requires a
 // client certificate, and records every connection it accepts. With
 // keepAliveHint, it advertises that Keep-Alive header and never closes an idle
 // HTTP/1.1 connection itself, so any close comes from the client.
-async function apiServer(directory, clientCertificates, { keepAliveHint } = {}) {
-  const server = selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
+async function apiServer(t, directory, clientCertificates, { keepAliveHint } = {}) {
+  const server = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const connections = [];
   const open = new Set();
-  const sockets = new Set();
   const listener = createSecureServer({
-    key: readFileSync(server.keyPath),
-    cert: readFileSync(server.certPath),
+    key: server.key,
+    cert: server.cert,
     ca: clientCertificates.map((path) => readFileSync(path)),
     requestCert: true,
     rejectUnauthorized: true,
@@ -78,8 +53,6 @@ async function apiServer(directory, clientCertificates, { keepAliveHint } = {}) 
     connections.push(connection);
     open.add(connection);
     socket.on("close", () => open.delete(connection));
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
   });
   // Per HTTP/1.1 socket: when its last response finished and when the client
   // closed it.
@@ -104,20 +77,8 @@ async function apiServer(directory, clientCertificates, { keepAliveHint } = {}) 
     }
     response.end(JSON.stringify({ kind: "NamespaceList", apiVersion: "v1", items: [] }));
   });
-  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
-  return {
-    caPath: server.certPath,
-    url: `https://127.0.0.1:${listener.address().port}`,
-    connections,
-    open,
-    idle,
-    async close() {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      await new Promise((resolve) => listener.close(resolve));
-    },
-  };
+  const port = await listen(t, listener);
+  return { caPath: server.certPath, url: `https://127.0.0.1:${port}`, connections, open, idle };
 }
 
 async function writeKubeconfig(directory, server, client, { proxyUrl } = {}) {
@@ -139,21 +100,11 @@ async function writeKubeconfig(directory, server, client, { proxyUrl } = {}) {
   return { mode: "kubeconfig", kubeconfigPath, context: "target" };
 }
 
-async function waitFor(condition, message) {
-  const deadline = Date.now() + 10_000;
-  while (!condition()) {
-    assert.ok(Date.now() < deadline, message);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
 test("Kubernetes API requests reuse keep-alive HTTP/1.1 connections and reconnect when the client certificate rotates", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const first = selfSignedCertificate(directory, "operator-1", "DNS:operator");
-  const second = selfSignedCertificate(directory, "operator-2", "DNS:operator");
-  const server = await apiServer(directory, [first.certPath, second.certPath]);
-  t.after(() => server.close());
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+  const first = await selfSignedCertificate(directory, "operator-1", "DNS:operator");
+  const second = await selfSignedCertificate(directory, "operator-2", "DNS:operator");
+  const server = await apiServer(t, directory, [first.certPath, second.certPath]);
   const active = {
     certPath: join(directory, "operator.crt"),
     keyPath: join(directory, "operator.key"),
@@ -191,9 +142,8 @@ test("Kubernetes API requests reuse keep-alive HTTP/1.1 connections and reconnec
   for (const connection of rotated) {
     assert.deepEqual(connection, { protocol: "http/1.1", client: "operator-2" });
   }
-  await waitFor(
-    () => [...server.open].every((connection) => connection.client === "operator-2"),
-    "the connections for the old certificate must close",
+  await waitUntil("the connections for the old certificate to close", () =>
+    [...server.open].every((connection) => connection.client === "operator-2"),
   );
 });
 
@@ -245,10 +195,9 @@ test("Kubernetes API dispatchers carry the keep-alive limits, directly and throu
     keepAliveTimeout: 4_000,
     keepAliveMaxTimeout: 30_000,
   });
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const operator = selfSignedCertificate(directory, "operator", "DNS:operator");
-  const server = selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+  const operator = await selfSignedCertificate(directory, "operator", "DNS:operator");
+  const server = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const target = { url: "https://127.0.0.1:6443", caPath: server.certPath };
   for (const proxyUrl of [undefined, "http://127.0.0.1:3128"]) {
     const authentication = await writeKubeconfig(directory, target, operator, { proxyUrl });
@@ -277,16 +226,14 @@ test("Kubernetes API dispatchers carry the keep-alive limits, directly and throu
 for (const viaProxy of [false, true]) {
   test(`Kubernetes API clients close idle connections within the keep-alive limits${viaProxy ? " through an HTTP proxy" : ""}`, async (t) => {
     const limits = { keepAliveTimeout: 300, keepAliveMaxTimeout: 800 };
-    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const operator = selfSignedCertificate(directory, "operator", "DNS:operator");
+    const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+    const operator = await selfSignedCertificate(directory, "operator", "DNS:operator");
     // A Keep-Alive header without a timeout leaves the client at keepAliveTimeout.
     for (const [keepAliveHint, limit] of [
       ["timeout=600", limits.keepAliveMaxTimeout],
       ["max=100", limits.keepAliveTimeout],
     ]) {
-      const server = await apiServer(directory, [operator.certPath], { keepAliveHint });
-      t.after(() => server.close());
+      const server = await apiServer(t, directory, [operator.certPath], { keepAliveHint });
       const proxy = viaProxy ? await connectProxy() : undefined;
       if (proxy !== undefined) {
         t.after(() => proxy.close());
@@ -310,9 +257,9 @@ for (const viaProxy of [false, true]) {
         assert.equal(proxy.tunnels.length, 1, `${keepAliveHint}: one tunnel`);
       }
       const [record] = server.idle;
-      await waitFor(
+      await waitUntil(
+        `${keepAliveHint}: the client to close the idle connection`,
         () => record.clientClosedAt !== undefined,
-        `${keepAliveHint}: the client must close the idle connection`,
       );
       const idleFor = record.clientClosedAt - record.lastResponseAt;
       assert.ok(
@@ -326,26 +273,18 @@ for (const viaProxy of [false, true]) {
 
 // A TLS API server stand-in that records each request's path and Authorization
 // header. `respond(request, response)` writes every answer.
-async function recordingApiServer(directory, respond) {
-  const certificate = selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
+async function recordingApiServer(t, directory, respond) {
+  const certificate = await selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const requests = [];
   const listener = createHttpsServer(
-    { key: readFileSync(certificate.keyPath), cert: readFileSync(certificate.certPath) },
+    { key: certificate.key, cert: certificate.cert },
     (request, response) => {
       requests.push({ path: request.url, authorization: request.headers.authorization });
       respond(request, response);
     },
   );
-  await new Promise((resolve) => listener.listen(0, "127.0.0.1", resolve));
-  return {
-    caPath: certificate.certPath,
-    url: `https://127.0.0.1:${listener.address().port}`,
-    requests,
-    async close() {
-      listener.closeAllConnections();
-      await new Promise((resolve) => listener.close(resolve));
-    },
-  };
+  const port = await listen(t, listener);
+  return { caPath: certificate.certPath, url: `https://127.0.0.1:${port}`, requests };
 }
 
 /** A kubeconfig whose identity is a bearer token, like an in-cluster ServiceAccount. */
@@ -408,19 +347,14 @@ for (const [target, location] of [
   ["itself", () => STATUS_PROXY_PATH],
 ]) {
   test(`runtime status readback does not follow a Pod redirect to ${target} (finding 1347)`, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
     const otherRequests = [];
     const other = createHttpServer((request, response) => {
       otherRequests.push(request.url);
       response.end("{}");
     });
-    await new Promise((resolve) => other.listen(0, "127.0.0.1", resolve));
-    t.after(() => {
-      other.closeAllConnections();
-      return new Promise((resolve) => other.close(resolve));
-    });
-    const api = await recordingApiServer(directory, (request, response) => {
+    await listen(t, other);
+    const api = await recordingApiServer(t, directory, (request, response) => {
       // The API server's own answer for any other path: a body worth stealing.
       if (request.url !== STATUS_PROXY_PATH) {
         response.writeHead(200, { "content-type": "application/json" });
@@ -432,7 +366,6 @@ for (const [target, location] of [
       });
       response.end();
     });
-    t.after(() => api.close());
 
     const outcome = await statusReadback(await writeTokenKubeconfig(directory, api));
     assert.equal(outcome.error?.message, "Runtime status answered with a redirect.");
@@ -448,13 +381,12 @@ for (const [target, location] of [
 
 for (const body of ["truncated", "held open"]) {
   test(`runtime status readback stops at a redirect with a ${body} body`, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
     let resolveClosed;
     const closed = new Promise((resolve) => {
       resolveClosed = resolve;
     });
-    const api = await recordingApiServer(directory, (request, response) => {
+    const api = await recordingApiServer(t, directory, (request, response) => {
       if (request.url !== STATUS_PROXY_PATH) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end('{"kind":"Secret"}');
@@ -472,7 +404,6 @@ for (const body of ["truncated", "held open"]) {
         response.once("close", () => clearTimeout(timer));
       }
     });
-    t.after(() => api.close());
 
     // An unfinished body must neither delay the redirect result nor cause a retry.
     const authentication = await writeTokenKubeconfig(directory, api);
@@ -512,9 +443,8 @@ for (const [interim, write] of [
   ],
 ]) {
   test(`runtime status readback reports an unrequested ${interim} once, without a retry`, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const api = await recordingApiServer(directory, (request, response) => {
+    const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+    const api = await recordingApiServer(t, directory, (request, response) => {
       if (request.url !== STATUS_PROXY_PATH) {
         response.writeHead(200, { "content-type": "application/json" });
         response.end('{"kind":"Secret"}');
@@ -522,7 +452,6 @@ for (const [interim, write] of [
       }
       write(response);
     });
-    t.after(() => api.close());
     const authentication = await writeTokenKubeconfig(directory, api);
     const outcome = await withComputeAbortSignal(AbortSignal.timeout(4_000), () =>
       statusReadback(authentication),
@@ -539,9 +468,8 @@ for (const [interim, write] of [
 }
 
 test("runtime status readback still retries a dropped connection", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const api = await recordingApiServer(directory, (request, response) => {
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+  const api = await recordingApiServer(t, directory, (request, response) => {
     // The first read loses its connection mid-request, as when an API server restarts.
     if (api.requests.length === 1) {
       request.socket.destroy();
@@ -550,7 +478,6 @@ test("runtime status readback still retries a dropped connection", async (t) => 
     response.writeHead(200, { "content-type": "application/json" });
     response.end('{"revisionId":"revision-1"}');
   });
-  t.after(() => api.close());
   assert.deepEqual(await statusReadback(await writeTokenKubeconfig(directory, api)), {
     value: { status: { revisionId: "revision-1" }, podUid: "agent-uid", containerId: undefined },
   });
@@ -558,14 +485,12 @@ test("runtime status readback still retries a dropped connection", async (t) => 
 });
 
 test("runtime status readback through the production client keeps 200 and 404 answers", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
   let status = 200;
-  const api = await recordingApiServer(directory, (_request, response) => {
+  const api = await recordingApiServer(t, directory, (_request, response) => {
     response.writeHead(status, { "content-type": "application/json" });
     response.end(status === 200 ? '{"revisionId":"revision-1"}' : "");
   });
-  t.after(() => api.close());
   const authentication = await writeTokenKubeconfig(directory, api);
   assert.deepEqual(await statusReadback(authentication), {
     value: { status: { revisionId: "revision-1" }, podUid: "agent-uid", containerId: undefined },
@@ -577,9 +502,8 @@ test("runtime status readback through the production client keeps 200 and 404 an
 });
 
 test("Kubernetes API clients do not follow a redirect from the API server (finding 1347)", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const api = await recordingApiServer(directory, (request, response) => {
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
+  const api = await recordingApiServer(t, directory, (request, response) => {
     if (request.url.startsWith("/api/v1/namespaces?")) {
       response.writeHead(302, { location: "/api/v1/namespaces/occ-system/secrets" });
       response.end();
@@ -588,7 +512,6 @@ test("Kubernetes API clients do not follow a redirect from the API server (findi
     response.writeHead(200, { "content-type": "application/json" });
     response.end('{"kind":"SecretList","apiVersion":"v1","items":[]}');
   });
-  t.after(() => api.close());
   // The Secret and Configuration Drivers build their clients from this same configuration.
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     await writeTokenKubeconfig(directory, api),
@@ -605,11 +528,10 @@ test("Kubernetes API clients do not follow a redirect from the API server (findi
 // The non-redirecting library replaces client-node's own for every client (finding 1347), so it
 // must still send each write's method and body, and stop a read when its operation is cancelled.
 test("Kubernetes API clients send write bodies and honor cancellation through the shared library", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
   const writes = [];
   const cancel = new AbortController();
-  const api = await recordingApiServer(directory, (request, response) => {
+  const api = await recordingApiServer(t, directory, (request, response) => {
     // A read of this Namespace never answers; the operation is cancelled once it is in flight.
     if (request.url === "/api/v1/namespaces/held") {
       cancel.abort();
@@ -626,7 +548,6 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
       response.end(body);
     });
   });
-  t.after(() => api.close());
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     await writeTokenKubeconfig(directory, api),
     (message) => new Error(message),
@@ -659,15 +580,13 @@ test("Kubernetes API clients send write bodies and honor cancellation through th
 });
 
 test("Kubernetes dispatch retains the parent deadline through child and per-attempt scopes", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-kubernetes-client-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-kubernetes-client-");
   let requests = 0;
-  const api = await recordingApiServer(directory, (_request, response) => {
+  const api = await recordingApiServer(t, directory, (_request, response) => {
     requests++;
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ metadata: { name: "tenant" } }));
   });
-  t.after(() => api.close());
   const { sdk, clientConfiguration } = await createKubernetesClientConfiguration(
     await writeTokenKubeconfig(directory, api),
     (message) => new Error(message),

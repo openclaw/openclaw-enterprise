@@ -69,6 +69,9 @@ occ agent policy apply AGENT_ID --revision REVISION_ID --expected-version 2
 occ agent policy get AGENT_ID --facet networking -o json
 ```
 
+The `occ agent policy` commands print JSON by default. Use `-o yaml` for YAML.
+These commands return the complete policy or application result rather than a table.
+
 `additions.json` contains `expectedVersion` and the complete desired `additions`
 array. Get the current version first; an empty array removes Agent-specific
 grants. The apply command returns an acknowledgement; poll `get` to observe

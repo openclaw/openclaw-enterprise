@@ -1,7 +1,8 @@
 # Breaking-change notices before 2026-10-13
 
 These [breaking-change notices](breaking-changes.md) are dated 2026-10-12;
-newer ones are on that page and in the
+newer ones are on that page, in the
+[notices before 2026-10-15](breaking-changes-before-2026-10-15.md) and in the
 [earlier notices](breaking-changes-archive.md), and older ones are in the
 [notices before 2026-10-12](breaking-changes-before-2026-10-12.md). They still
 apply when you upgrade from a source commit older than their date. Entries are

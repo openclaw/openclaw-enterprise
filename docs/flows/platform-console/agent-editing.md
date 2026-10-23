@@ -204,9 +204,11 @@ reservation explains the refusal. PATCH sends
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
-IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
-and asks a Namespace administrator to grant access without repeating the
-channel save. An uncertain PATCH blocks another
+IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
+Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
+session sends no grant and says access was not verified until **Reload draft**. An administrator's console
+also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
+An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
@@ -228,11 +230,16 @@ or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
 Grant failure preserves saved authentication and freezes controls.
-**Retry credential access** checks that the Agent still has the same service principal and
+`apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
+Slack Secret path does. A session known not to administer the Installation sends
+no grant: the warning says access was not verified, names the Installation
+administrator, and offers no retry. A refused or unconfirmed grant request offers
+**Retry credential access**, which checks that the Agent still has the same service principal and
 authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
 **Reload authentication source** before saving or granting. Pending access
-survives navigation and blocks deployment until confirmed or reloaded. Admission
+survives navigation and blocks deployment until confirmed or reloaded. An administrator's
+Credentials tab blocks deployment once Namespace IAM shows no grant. Admission
 remains authoritative; preflight/authorization errors stay separate from credential
 metadata. Confirmed access does not prove provider readiness.
 

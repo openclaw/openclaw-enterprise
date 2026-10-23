@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-22"
-last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
+last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
 ---
 
 # Agent sandbox policy flow
@@ -45,6 +45,12 @@ The solid arrows trace source paths, not a claim that all providers are verified
 ## Execution Trace
 
 ### 1. Admit and persist desired additions
+
+`internal/occcli/agent_policy.go:agentPolicyCommand` declares JSON and YAML
+output for each policy subcommand. The CLI selects JSON by default before
+sending the request, then prints its acknowledged result through
+`internal/occcli/output.go:printStructured`. A successful mutation therefore
+returns its result without a later table-format error.
 
 `OpenClawController.discoverConfigurations` filters registry contributions by the
 server-selected Driver, scope, and resource-owner read authority. Installation
@@ -188,7 +194,11 @@ waiting for a policy request that never starts.
 
 ## Changelog
 
+- 2026-10-22 23:45: Preserve CLI output guidance alongside upstream grant admission rules after conflict resolution. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - c574fc743b21599c51d3809365039010a7e077d2)
+
 - 2026-10-22 13:40: Run the shared grant rules before a Driver contribution, at every admission (preview, save, apply, deploy) and the worker recheck; empty or reversed ranges never satisfy the ceiling. (bughunt-1022c)
+
+- 2026-10-21 04:25: Declare structured policy CLI output before requests. (authoring-run/a66234ce-95fd-4d64-9fe8-3ce3d143e572 - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
 

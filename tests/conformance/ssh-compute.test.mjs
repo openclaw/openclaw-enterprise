@@ -36,6 +36,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { SystemSshCommandExecutor } from "../../apps/controller/src/drivers/compute/ssh/executor.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 
@@ -971,6 +972,34 @@ test("SSH activation invokes lifecycle start hooks and cleans them up after acti
   assert.deepEqual(hooks, beforeInvalidAuth);
 });
 
+// Finding 2268: when the lifecycle cleanup after a failed activation fails too, the activation's
+// own failure stays first, so the worker classifies the deployment by it, and the cleanup
+// failure follows it instead of replacing it.
+test("SSH activation keeps its own failure first when the lifecycle cleanup also fails", async (t) => {
+  const f = await fixture(t, {
+    lifecycleDrivers: [
+      {
+        id: "hooks",
+        implementation: "test",
+        capability: "configuration",
+        computeLifecycleHooks: {
+          async beforeWorkloadStart() {},
+          async beforeWorkloadStop() {
+            throw new Error("lifecycle cleanup refused");
+          },
+        },
+      },
+    ],
+  });
+  const failed = await stage(f);
+  await writeFile(join(f.revisionDir(failed), "revision.json"), JSON.stringify({ broken: true }));
+  const error = await f.driver.activateRevision(failed).then(
+    () => assert.fail("the activation must fail"),
+    (failure) => failure,
+  );
+  assertCleanupFailure(error, /snapshot|ownership/i, [/lifecycle hook beforeWorkloadStop failed/]);
+});
+
 test("SSH revisions fail closed on unbound identities, unsupported topology, sandbox and Secret delivery", async (t) => {
   const f = await fixture(t);
   const rev = revision(f.driver);
@@ -1307,6 +1336,81 @@ test("SSH setup failures withhold activation, preserve private input, and reject
       assert.equal(snapshot.includes(content), false);
       const marker = await readFile(join(f.revisionDir(first), "revision.json"), "utf8");
       assert.equal(marker.includes(content), false);
+    });
+  }
+});
+
+test("SSH setup reads the main roster entry under any letter case, like Kubernetes and Docker", async (t) => {
+  // The fixture has no runuser, so a stand-in records the workspace the helper chose.
+  const bin = await mkdtemp(join(tmpdir(), "occ-ssh-runuser-"));
+  const runuser = join(bin, "runuser");
+  await writeFile(
+    runuser,
+    `#!/bin/sh\nprintf '%s' "$OPENCLAW_WORKSPACE_DIR" > "$OCC_SSH_FIXTURE_STATE/setup-workspace"\n`,
+  );
+  await chmod(runuser, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    await rm(bin, { recursive: true, force: true });
+  });
+  for (const key of ["Main", " MAIN "]) {
+    await t.test(JSON.stringify(key), async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const agentId = "agent-ssh-roster";
+      const workspace = join(f.agentDir({ agentId }), "state", "roster");
+      // The entry's workspace wins over the defaults, as for the literal main key.
+      const configuration = {
+        agents: {
+          defaults: { workspace: "/tmp/foreign-workspace" },
+          entries: { [key]: { workspace } },
+        },
+      };
+      const first = revision(f.driver, 1, agentId, configuration);
+      bind(f.driver, first);
+      const prepared = await f.driver.prepareRevision(first, {
+        secretEnvironment: [],
+        harnessAuth: { method: "runtime" },
+        workspaceSetup: {
+          id: "setup-ssh-roster",
+          namespaceId: tenant.id,
+          agentId,
+          files: { "AGENTS.md": "roster" },
+          completed: false,
+        },
+      });
+      assert.equal(prepared.ready, true);
+      assert.equal(await readFile(join(f.state, "setup-workspace"), "utf8"), workspace);
+      assert.equal((await json(join(f.agentDir(first), "workspace-setup.json"))).completed, true);
+    });
+  }
+  // As in the shared rule, the roster holds exactly one main entry: two keys that both name
+  // main, an empty roster and a null entry are refused before setup runs.
+  for (const entries of [{ main: {}, Main: {} }, {}, { Main: null }]) {
+    await t.test(`refuses ${JSON.stringify(entries)}`, async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const refused = revision(f.driver, 1, "agent-ssh-refused", { agents: { entries } });
+      bind(f.driver, refused);
+      await assert.rejects(
+        f.driver.prepareRevision(refused, {
+          secretEnvironment: [],
+          harnessAuth: { method: "runtime" },
+          workspaceSetup: {
+            id: "setup-ssh-refused",
+            namespaceId: tenant.id,
+            agentId: refused.agentId,
+            files: { "AGENTS.md": "roster" },
+            completed: false,
+          },
+        }),
+        /SSH helper rejected host or revision configuration/,
+      );
+      // The helper withholds its reason; the stand-in never ran, so the roster refused it.
+      await missing(join(f.state, "setup-workspace"));
+      await missing(join(f.agentDir(refused), "workspace-setup.json"));
     });
   }
 });

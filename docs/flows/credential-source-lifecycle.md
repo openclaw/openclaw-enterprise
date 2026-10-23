@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-16
-last_updated_session: authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272
+updated: 2026-10-23
+last_updated_session: fix-2242
 ---
 
 # Credential source lifecycle Flow
@@ -188,7 +188,8 @@ revision or pending deployment can block deletion (`409`), as can unfinished
 withdrawal (`CREDENTIAL_WITHDRAWAL_IN_PROGRESS`). OCC requires the recorded
 owner, then changes `registering` or `ready` to `deleting`. Neither transition is reversible.
 
-For prepared material, OCC calls the issuer's `withdraw`. A credential-free source
+For prepared material, OCC calls the issuer's `withdraw`; a token that may still be
+valid returns `409 CREDENTIAL_TOKEN_UNSETTLED`. A credential-free source
 has no material to remove. Otherwise the Refresh Driver removes refresh state,
 then Gateway `removeSource` verifies ownership and removes the provider and profile.
 Unknown ownership or a failed read cannot establish absence. Failure leaves
@@ -237,10 +238,12 @@ The worker rechecks `agent:operate` for each pending withdrawal's
 `requested_by` and calls Compute's
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
 otherwise a denied requester fails it after the others are revoked, unless a
-replay reassigned it. Each
-revocation is audited for its requester in the pass that confirms it; each
-denial or failure, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
-on the `harnessResource` Sandbox and reads the receipt's status. Each
+replay reassigned it. Revocations are audited per requester when confirmed;
+denials and failures, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
+on the `harnessResource` Sandbox and reads the receipt's status.
+`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
+sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay
+or, for a candidate, its activation, which queues one attempt. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
@@ -252,8 +255,8 @@ work; `false` means replay or maintenance must queue another attempt.
 
 Maintenance runs only with a Compute or repository credential interval. It stops
 preparing the selected version after its Harness source is withdrawn
-(`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
-any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
+(`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). The chain
+continues until every withdrawal is `revoked`. Deploy and repair work never re-attach a withdrawn source:
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
 pending withdrawals with no work outstanding, the other versions' too
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
@@ -285,7 +288,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
   `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
   and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`,
   `CREDENTIAL_WITHDRAWAL_MISCONFIGURED`, `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`,
-  and `AUTHORIZATION_DENIED` fail it at once.
+  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` and `AUTHORIZATION_DENIED` fail it at once.
 
 ## Related docs
 
@@ -300,6 +303,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
 
 - 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from protected source admission. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
