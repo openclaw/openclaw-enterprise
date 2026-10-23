@@ -2253,20 +2253,6 @@ async function prepareProductionInstallation(
       configuration.drivers.compute.configuration.resources.agent.limits.memory;
     configuration.drivers.compute.configuration.resources.namespace.quota["limits.memory"] = "16Gi";
     configuration.drivers.credential_gateway.configuration.binaries = ["/usr/local/bin/node"];
-    // Automatic enrollment egress belongs to the Driver's Codex runtime provider. The native
-    // verification bridge must admit only its Node executable and exact Gateway endpoint.
-    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
-      name: "workspace-node-enrollment",
-      binaries: [{ path: "/usr/local/bin/node" }],
-      endpoints: [
-        {
-          host: workspaceGateway.routing.hostname,
-          ports: [workspaceGateway.routing.endpointPort],
-          tls: "skip",
-          enforcement: "enforce",
-        },
-      ],
-    });
   }
   // A disposable Keycloak issues OAuth2 tokens over HTTPS signed by a private CA. The Namespace
   // gateway is configured to trust that CA so it can mint and refresh tokens itself.
@@ -2324,8 +2310,8 @@ async function prepareProductionInstallation(
   configuration.drivers.sandbox.configuration.policy.filesystem.readWrite.push(
     "/home/node/.openclaw-node",
   );
-  // For Codex, the Sandbox Driver adds the workspace node's Gateway egress rule itself
-  // (`workspace-node-enrollment`); a second rule for the same host and port is ambiguous.
+  // The Sandbox Driver adds each Harness's workspace-node enrollment rule;
+  // a second rule for the same host and port is ambiguous.
   configuration.drivers.secret.configuration.authentication = controller.authentication;
   const gatewayApiKeyPath = join(directory, "workspace-gateway-api-key");
   await writeFile(gatewayApiKeyPath, workspaceGateway.apiKey, { mode: 0o600 });
