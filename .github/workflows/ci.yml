@@ -579,7 +579,7 @@ jobs:
           else
             node scripts/ci/impact-gate.mjs --needs "$RUNNER_TEMP/raw-needs.json" --mode "$EXPECTED_MODE" --output "$RUNNER_TEMP/needs.json"
           fi
-      # Retries after 60 s and then 240 s; the action says why.
+      # The action retries after a pause and says why.
       - name: Download CI results
         uses: ./.github/actions/download-results
         if: ${{ !cancelled() && !contains(needs.*.result, 'cancelled') && (needs.impact.outputs.mode == 'full' || needs.impact.outputs.mode == 'tests') }}

@@ -615,7 +615,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: ${{ env.NODE_VERSION }}
-      # Retries after 60 s and then 240 s; the action says why.
+      # The action retries after a pause and says why.
       - name: Download full integration results
         uses: ./.github/actions/download-results
         with:
