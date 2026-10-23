@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-16
-last_updated_session: authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272
+updated: 2026-10-23
+last_updated_session: fix-2235
 ---
 
 # Credential source lifecycle Flow
@@ -241,7 +241,9 @@ otherwise a denied requester fails it after the others are revoked, unless a
 replay reassigned it. Each
 revocation is audited for its requester in the pass that confirms it; each
 denial or failure, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
-on the `harnessResource` Sandbox and reads the receipt's status. Each
+on the `harnessResource` Sandbox and reads the receipt's status.
+`packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
+sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
@@ -286,7 +288,7 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
   `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
   and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`,
   `CREDENTIAL_WITHDRAWAL_MISCONFIGURED`, `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`,
-  and `AUTHORIZATION_DENIED` fail it at once.
+  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` and `AUTHORIZATION_DENIED` fail it at once.
 
 ## Related docs
 
@@ -301,6 +303,8 @@ OpenShell detaches again only if `SandboxSpec.providers` still lists the provide
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 08:05: Refuse unselected protected withdrawals. (fix-2235 - 860eea712)
 
 - 2026-10-16 22:08: Distinguish OpenShell-owned OAuth from protected source admission. (authoring-run/9fd90bae-7158-4df5-8f2e-62b0bd548272 - 4f98051f14)
 
