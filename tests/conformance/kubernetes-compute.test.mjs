@@ -17864,26 +17864,43 @@ test("Kubernetes workspace setup redacts backend failures and refuses foreign pr
 // worker fails at once (finding 1770). Other answers keep the redacted delivery error. Each
 // way the status and Status reason stay visible to diagnostics, while the client error, whose
 // message and body echo the submitted Secret, stays behind. A Secret that already exists is
-// replaced instead of created; that write is classified the same way.
+// replaced instead of created; that write is classified the same way. The execution release
+// key Secret is immutable, so it is only ever created (finding 2266).
 for (const embedded of [true, false]) {
   test(`Kubernetes ${embedded ? "embedded" : "dedicated"} private Secret writes classify API answers without echoing Secret data`, async () => {
     const { ApiException } = createRequire(
       new URL("../../apps/controller/package.json", import.meta.url),
     )("@kubernetes/client-node");
+    const prepare = ({ driver, revision, context }) => driver.prepareRevision(revision, context);
     const targets = [
       {
         name: /^(harness|gateway)-secrets-/u,
         message: "Runtime credential delivery is unavailable.",
         stage: "harness_auth",
+        writes: ["create", "replace"],
+        run: prepare,
       },
       {
         name: /^workspace-setup-/u,
         message: "Workspace setup private delivery is unavailable.",
         stage: "workspace_setup",
+        writes: ["create", "replace"],
+        run: prepare,
+      },
+      {
+        // Only a protected execution's preparation reads its release key, outside any named
+        // stage (tests/conformance/kubernetes-provider-harness.test.mjs walks that path), so
+        // this case writes it directly where the Driver does: the control namespace.
+        name: /^compute-release-/u,
+        message: "Compute execution release key is unavailable.",
+        stage: "prepare_revision",
+        writes: ["create"],
+        run: async ({ driver, revision }) =>
+          driver.executionReleaseKey(revision, await driver.controlNamespace(revision.namespaceId)),
       },
     ];
     for (const [target, write, status, reason, transient, keptReason] of targets.flatMap((target) =>
-      ["create", "replace"].flatMap((write) =>
+      target.writes.flatMap((write) =>
         [
           [503, "ServiceUnavailable", true, "ServiceUnavailable"],
           [429, "TooManyRequests", true, "TooManyRequests"],
@@ -17927,7 +17944,7 @@ for (const embedded of [true, false]) {
         }
         return send(request);
       };
-      const error = await fixture.driver.prepareRevision(fixture.revision, fixture.context).then(
+      const error = await target.run(fixture).then(
         () => assert.fail("the private Secret write must fail"),
         (failure) => failure,
       );

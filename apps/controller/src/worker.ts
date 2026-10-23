@@ -435,6 +435,20 @@ function activationPendingResult(error: unknown): {
   return { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" };
 }
 
+/**
+ * An activation failure that no retry can clear: the Driver's own refusal, or a private Secret
+ * write Kubernetes refused with 403 (finding 1770), which only an operator's grant, admission
+ * policy or quota change clears. Both activation paths fail the deployment at once on it
+ * instead of waiting for the convergence deadline (finding 2265).
+ */
+function permanentActivationFailure(
+  error: unknown,
+): error is ActivationFailedError | KubernetesSecretWriteForbiddenError {
+  return (
+    error instanceof ActivationFailedError || error instanceof KubernetesSecretWriteForbiddenError
+  );
+}
+
 function revisionPendingCode(observation: unknown): string {
   const reason = (observation as { readonly pendingReason?: unknown }).pendingReason;
   return typeof reason === "string" && Object.hasOwn(REVISION_PENDING_CODES, reason)
@@ -4487,10 +4501,7 @@ export class ControllerWorker {
           }
           // As for a lost repository credential authority, this ends a maintenance
           // claim's chain too: the revision cannot activate without a new one.
-          if (
-            error instanceof ActivationFailedError ||
-            error instanceof CredentialSourceRevisionError
-          ) {
+          if (permanentActivationFailure(error) || error instanceof CredentialSourceRevisionError) {
             await this.finalizeRevision(
               claim,
               { outcome: "permanent", code: error.code },
@@ -5753,8 +5764,8 @@ export class ControllerWorker {
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
-    // ActivationFailedError also lands here, but no bundled Driver activates before commit, so
-    // it only reaches a published (active) revision, which the stop skips.
+    // A permanent activation failure also lands here, but no bundled Driver activates before
+    // commit, so it only reaches a published (active) revision, which the stop skips.
     if (
       resolved.outcome === "permanent" &&
       heldFailureCode === undefined &&
@@ -5974,7 +5985,7 @@ export class ControllerWorker {
         }
         await this.finalizeRevision(
           claim,
-          error instanceof ActivationFailedError
+          permanentActivationFailure(error)
             ? { outcome: "permanent", code: error.code }
             : activationPendingResult(error),
           revisionFailureLogFields(error),
