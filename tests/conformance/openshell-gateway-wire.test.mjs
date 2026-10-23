@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { getEventListeners, once } from "node:events";
+import http from "node:http";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { connect, createServer as createNetServer } from "node:net";
-import { writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -3086,4 +3088,209 @@ test("installed workload clients select the enrolled Sandbox at authenticated Ex
   selectedId = "replaced-id";
   await assert.rejects(curl(), /supplier Sandbox replaced/);
   assert.equal(launches.length, 3, "an old enrolled recipient never silently switches Sandbox");
+});
+
+// The OIDC cases prove the real client-credentials path end to end: a real local
+// token endpoint, a real in-process gRPC wire server, and the production client.
+// They cover the grant exchange, bearer presentation on gRPC metadata, token
+// caching, refresh after expiry, both client-authentication styles, and the
+// failure surface when the IdP rejects the client.
+function listenHttp(server) {
+  return new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+  );
+}
+
+async function startTokenEndpoint(handler) {
+  const requests = [];
+  const server = http.createServer((request, response) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => {
+      const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+      const record = {
+        url: request.url,
+        authorization: request.headers.authorization,
+        contentType: request.headers["content-type"],
+        body,
+      };
+      requests.push(record);
+      handler(record, response);
+    });
+  });
+  const port = await listenHttp(server);
+  return { requests, port, close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+test("OpenShell client presents an OIDC client-credentials token and refreshes it on expiry", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const authorizations = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health(call, callback) {
+      authorizations.push(call.metadata.get("authorization"));
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const tokens = [
+    // The first token expires within the client's refresh margin, so the third
+    // call must fetch a fresh token rather than replay the stale one.
+    { access_token: "wire-oidc-token-1", expires_in: 1, token_type: "Bearer" },
+    { access_token: "wire-oidc-token-2", expires_in: 3600, token_type: "Bearer" },
+  ];
+  let issued = 0;
+  const endpoint = await startTokenEndpoint((request, response) => {
+    if (request.body.get("grant_type") !== "client_credentials") {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "unsupported_grant_type" }));
+      return;
+    }
+    const token = tokens[issued++];
+    if (token === undefined) {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "server_error" }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(token));
+  });
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-secret\n", { mode: 0o600 });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `http://127.0.0.1:${endpoint.port}/token`,
+      clientId: "wire-oidc-client",
+      clientSecretPath: secretPath,
+    },
+  });
+  try {
+    await client.health(AbortSignal.timeout(2_000));
+    await client.health(AbortSignal.timeout(2_000));
+    // One token exchange served both calls: the access token is cached, not re-fetched.
+    assert.equal(endpoint.requests.length, 1);
+    assert.deepEqual(authorizations, [["Bearer wire-oidc-token-1"], ["Bearer wire-oidc-token-1"]]);
+    const exchange = endpoint.requests[0];
+    assert.equal(exchange.url, "/token");
+    assert.equal(exchange.authorization, undefined);
+    assert.equal(exchange.contentType, "application/x-www-form-urlencoded");
+    assert.equal(exchange.body.get("client_id"), "wire-oidc-client");
+    assert.equal(exchange.body.get("client_secret"), "wire-oidc-secret");
+    assert.equal(exchange.body.get("audience"), null);
+    // Wait past the short token's refresh margin, then require a fresh exchange.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    await client.health(AbortSignal.timeout(2_000));
+    assert.equal(endpoint.requests.length, 2);
+    assert.deepEqual(authorizations[2], ["Bearer wire-oidc-token-2"]);
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+    await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client sends client_secret_basic and audience parameters when selected", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const authorizations = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health(call, callback) {
+      authorizations.push(call.metadata.get("authorization"));
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const endpoint = await startTokenEndpoint((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ access_token: "wire-oidc-basic-token", expires_in: 3600 }));
+  });
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-basic-secret", { mode: 0o600 });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `http://127.0.0.1:${endpoint.port}/token`,
+      clientId: "wire-oidc-basic-client",
+      clientSecretPath: secretPath,
+      tokenAuth: "client_secret_basic",
+      audience: "openshell-cli",
+      scope: "openshell:gateway",
+    },
+  });
+  try {
+    await client.health(AbortSignal.timeout(2_000));
+    assert.deepEqual(authorizations[0], ["Bearer wire-oidc-basic-token"]);
+    const exchange = endpoint.requests[0];
+    // RFC 6749 2.3.1: the Basic credentials form-urlencode both values before base64.
+    const expected = Buffer.from(
+      `${encodeURIComponent("wire-oidc-basic-client")}:${encodeURIComponent("wire-oidc-basic-secret")}`,
+      "utf8",
+    ).toString("base64");
+    assert.equal(exchange.authorization, `Basic ${expected}`);
+    assert.equal(exchange.body.get("client_id"), "wire-oidc-basic-client");
+    assert.equal(exchange.body.get("client_secret"), null);
+    assert.equal(exchange.body.get("audience"), "openshell-cli");
+    assert.equal(exchange.body.get("scope"), "openshell:gateway");
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+    await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenShell client fails the gateway call when the OIDC token endpoint rejects the client", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health(_call, callback) {
+      callback(null, { status: "SERVICE_STATUS_HEALTHY" });
+    },
+  });
+  const endpoint = await startTokenEndpoint((_request, response) => {
+    response.writeHead(401, { "content-type": "application/json" });
+    response.end(JSON.stringify({ error: "invalid_client" }));
+  });
+  const directory = await mkdtemp(join(tmpdir(), "openshell-oidc-"));
+  const secretPath = join(directory, "client-secret");
+  await writeFile(secretPath, "wire-oidc-rejected-secret", { mode: 0o600 });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({
+    endpoint: `http://127.0.0.1:${port}`,
+    auth: {
+      mode: "oidcClientCredentials",
+      tokenUrl: `http://127.0.0.1:${endpoint.port}/token`,
+      clientId: "wire-oidc-rejected-client",
+      clientSecretPath: secretPath,
+    },
+  });
+  try {
+    await assert.rejects(
+      client.health(AbortSignal.timeout(2_000)),
+      /OpenShell OIDC token endpoint returned 401 \(invalid_client\)/,
+    );
+  } finally {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+    await endpoint.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

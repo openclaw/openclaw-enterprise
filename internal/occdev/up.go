@@ -108,6 +108,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 		r.env["OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN"] = cookieDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_CERT"] = filepath.Join(directory, "browser-tls.crt")
 		r.env["OCC_DEVELOPMENT_BROWSER_TLS_KEY"] = filepath.Join(directory, "browser-tls.key")
+		external, err := readExternalOpenShell(r.env)
+		if err != nil {
+			return err
+		}
+		if external != nil {
+			if err := external.resolve(); err != nil {
+				return err
+			}
+			state.openShellExternal = external
+		}
 	}
 
 	if err := validateClusterName(state.Cluster); err != nil {
@@ -156,6 +166,17 @@ func Up(ctx context.Context, opts Options) (result error) {
 	r.env["OCC_DEVELOPMENT_INSTALLATION_CONFIG"] = filepath.Join(directory, "installation.yaml")
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
 	r.env["OCC_DEVELOPMENT_NETWORK_NAME"] = state.ComposeProject + "_development"
+	// The Compose control plane always mounts a client-secret file beside the
+	// kubeconfig; it is empty unless an external OpenShell gateway is selected.
+	// The path must be set before the Compose configuration is rendered below; the
+	// file itself is written once the state directory exists.
+	secret := []byte("")
+	if state.openShellExternal != nil {
+		if secret, err = os.ReadFile(state.openShellExternal.clientSecretPath); err != nil {
+			return fmt.Errorf("read the OpenShell OIDC client secret: %w", err)
+		}
+	}
+	r.env["OCC_DEVELOPMENT_OPENSHELL_CLIENT_SECRET"] = filepath.Join(directory, "openshell-client-secret")
 	args := []string{"compose", "--project-name", state.ComposeProject, "-f", "compose.yaml", "-f", "compose.kubernetes.yaml"}
 	if state.BrowserPort != 0 {
 		args = append(args, "-f", "compose.native-admin.yaml")
@@ -221,6 +242,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	}
 	lock, err := lockState(directory)
 	if err != nil {
+		return err
+	}
+	if err := exclusiveWrite(filepath.Join(directory, "openshell-client-secret"), secret, 0600); err != nil {
 		return err
 	}
 	started, clusterAttempted, clusterCreationFailed, keyWritten := false, false, false, false
@@ -322,7 +346,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 			return err
 		}
 	}
-	if sandboxDriver == "openshell" {
+	if sandboxDriver == "openshell" && state.openShellExternal == nil {
 		fmt.Fprintf(r.opts.Out, "Installing the deployment OpenShell gateway in Namespace %s...\n", openShellGatewayNamespace)
 		if err := r.installOpenShellGateway(ctx, state, openShellAssets, openShellGatewayNamespace, time.Duration(timeout)*time.Second); err != nil {
 			return err
@@ -348,7 +372,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		return err
 	}
 	openShellGatewayAddress := ""
-	if sandboxDriver == "openshell" {
+	if sandboxDriver == "openshell" && state.openShellExternal == nil {
 		openShellGatewayAddress, err = r.openShellGatewayAddress(ctx, openShellGatewayNamespace)
 		if err != nil {
 			return err

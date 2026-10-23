@@ -149,6 +149,18 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 			return err
 		}
 	}
+	if sandboxDriver == "openshell" {
+		external, err := readExternalOpenShell(r.env)
+		if err != nil {
+			return err
+		}
+		if external != nil {
+			if err := external.resolve(); err != nil {
+				return err
+			}
+			state.openShellExternal = external
+		}
+	}
 	if !namespaceName.MatchString(state.PlatformNamespace) || len(state.PlatformNamespace) > 63 {
 		return fmt.Errorf("invalid OCC_DEVELOPMENT_KUBERNETES_NAMESPACE %q: the name must match %s and be at most 63 characters", state.PlatformNamespace, namespaceName)
 	}
@@ -808,6 +820,22 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	if err := r.writeAndApply(ctx, state, "oce-secrets", secrets); err != nil {
 		return err
 	}
+	if state.openShellExternal != nil {
+		// The external gateway's OIDC client secret mounts read-only into the API
+		// and worker Deployments beside the other development credentials.
+		clientSecret, err := os.ReadFile(state.openShellExternal.clientSecretPath)
+		if err != nil {
+			return fmt.Errorf("read the OpenShell OIDC client secret: %w", err)
+		}
+		oidcSecret := map[string]any{
+			"apiVersion": "v1", "kind": "Secret",
+			"metadata":   kubernetesMetadata("occ-openshell-oidc", namespace, labels),
+			"stringData": map[string]string{"client-secret": string(clientSecret)},
+		}
+		if err := r.writeAndApply(ctx, state, "openshell-oidc-client-secret", oidcSecret); err != nil {
+			return err
+		}
+	}
 	values := map[string]any{
 		"images":       map[string]string{"controller": controllerImage},
 		"installation": map[string]string{"name": "Kubernetes development"},
@@ -823,6 +851,13 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 	}
 	if state.ProtectedEgress {
 		values["egressAuthority"] = developmentEgressChartValues(state)
+	}
+	if state.openShellExternal != nil {
+		values["backend"] = map[string]any{"openshell": map[string]any{
+			"oidcSecretName": "occ-openshell-oidc",
+			"oidcSecretKey":  "client-secret",
+			"oidcFilePath":   openShellClientSecretContainerPath,
+		}}
 	}
 	if routing {
 		gatewayKey, err := randomDevelopmentSecret()
@@ -1059,7 +1094,7 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 	if state.SandboxDriver != "openshell" {
 		return r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/occ-development-api-proxy", "--timeout", timeout.String())
 	}
-	networkPolicies := developmentOpenShellNetworkPolicies(namespace, labels)
+	networkPolicies := developmentOpenShellNetworkPolicies(state, namespace, labels)
 	if err := r.writeAndApply(ctx, state, "openshell-network-policies", networkPolicies); err != nil {
 		return err
 	}
@@ -1067,8 +1102,10 @@ func (r *runner) installDevelopmentAPIProxy(ctx context.Context, state *developm
 }
 
 // developmentOpenShellNetworkPolicies admits only the OCE clients and Agent
-// Gateways that use the Kubernetes-only profile's OpenShell gateway.
-func developmentOpenShellNetworkPolicies(namespace string, labels map[string]string) map[string]any {
+// Gateways that use the Kubernetes-only profile's OpenShell gateway. An external
+// gateway is admitted by its translated exact addresses; it has no in-cluster
+// Pods, so the gateway ingress policy does not apply.
+func developmentOpenShellNetworkPolicies(state *developmentState, namespace string, labels map[string]string) map[string]any {
 	// The worker provisions Sandboxes; the API registers credential sources.
 	controlPlaneClients := map[string]any{
 		"matchLabels": map[string]string{
@@ -1088,48 +1125,60 @@ func developmentOpenShellNetworkPolicies(namespace string, labels map[string]str
 		openShellBoundaryRoleLabel: openShellSupervisorRole,
 	}
 	port := []any{map[string]any{"protocol": "TCP", "port": 8080}}
-	networkPolicies := map[string]any{
-		"apiVersion": "v1", "kind": "List", "items": []any{
-			map[string]any{
-				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-enterprise-openshell-egress", namespace, labels),
-				"spec": map[string]any{
-					"podSelector": controlPlaneClients,
-					"policyTypes": []string{"Egress"},
-					"egress":      []any{map[string]any{"to": []any{map[string]any{"podSelector": map[string]any{"matchLabels": gatewayLabels}}}, "ports": port}},
-				},
-			},
-			map[string]any{
-				"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-openshell-ingress", namespace, labels),
-				"spec": map[string]any{
-					"podSelector": map[string]any{"matchLabels": gatewayLabels},
-					"policyTypes": []string{"Ingress"},
-					"ingress": []any{map[string]any{
-						"from": []any{
-							map[string]any{"podSelector": controlPlaneClients},
-							map[string]any{
-								"namespaceSelector": map[string]any{
-									"matchLabels":      map[string]string{openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue},
-									"matchExpressions": []any{map[string]any{"key": "openclaw.dev/namespace", "operator": "Exists"}},
-								},
-								"podSelector": map[string]any{"matchLabels": supervisorLabels},
-							},
-							// Dedicated Agent Gateways reach OpenShell-exposed Harness endpoints
-							// through this relay.
-							map[string]any{
-								"namespaceSelector": map[string]any{
-									"matchExpressions": []any{map[string]any{"key": "openclaw.dev/gateway-namespace", "operator": "Exists"}},
-								},
-								"podSelector": map[string]any{"matchLabels": map[string]string{
-									"app.kubernetes.io/managed-by": "openclaw-enterprise",
-									"openclaw.dev/workload-role":   "gateway",
-								}},
-							},
-						},
-						"ports": port,
-					}},
-				},
+	controlPlaneEgressTargets := []any{map[string]any{"podSelector": map[string]any{"matchLabels": gatewayLabels}}}
+	gatewayPort := port
+	if state.openShellExternal != nil {
+		controlPlaneEgressTargets = make([]any, 0, len(state.openShellExternal.addresses))
+		for _, cidr := range state.openShellExternal.addresses {
+			controlPlaneEgressTargets = append(controlPlaneEgressTargets, map[string]any{"ipBlock": map[string]any{"cidr": cidr}})
+		}
+		gatewayPort = []any{map[string]any{"protocol": "TCP", "port": state.openShellExternal.port}}
+	}
+	items := []any{
+		map[string]any{
+			"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-enterprise-openshell-egress", namespace, labels),
+			"spec": map[string]any{
+				"podSelector": controlPlaneClients,
+				"policyTypes": []string{"Egress"},
+				"egress":      []any{map[string]any{"to": controlPlaneEgressTargets, "ports": gatewayPort}},
 			},
 		},
+	}
+	if state.openShellExternal == nil {
+		items = append(items, map[string]any{
+			"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": kubernetesMetadata("openclaw-development-openshell-ingress", namespace, labels),
+			"spec": map[string]any{
+				"podSelector": map[string]any{"matchLabels": gatewayLabels},
+				"policyTypes": []string{"Ingress"},
+				"ingress": []any{map[string]any{
+					"from": []any{
+						map[string]any{"podSelector": controlPlaneClients},
+						map[string]any{
+							"namespaceSelector": map[string]any{
+								"matchLabels":      map[string]string{openShellOperatorNamespaceLabel: openShellOperatorNamespaceValue},
+								"matchExpressions": []any{map[string]any{"key": "openclaw.dev/namespace", "operator": "Exists"}},
+							},
+							"podSelector": map[string]any{"matchLabels": supervisorLabels},
+						},
+						// Dedicated Agent Gateways reach OpenShell-exposed Harness endpoints
+						// through this relay.
+						map[string]any{
+							"namespaceSelector": map[string]any{
+								"matchExpressions": []any{map[string]any{"key": "openclaw.dev/gateway-namespace", "operator": "Exists"}},
+							},
+							"podSelector": map[string]any{"matchLabels": map[string]string{
+								"app.kubernetes.io/managed-by": "openclaw-enterprise",
+								"openclaw.dev/workload-role":   "gateway",
+							}},
+						},
+					},
+					"ports": port,
+				}},
+			},
+		})
+	}
+	networkPolicies := map[string]any{
+		"apiVersion": "v1", "kind": "List", "items": items,
 	}
 	return networkPolicies
 }

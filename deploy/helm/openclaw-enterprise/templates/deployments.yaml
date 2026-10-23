@@ -235,6 +235,16 @@ spec:
             items:
               - key: {{ $.Values.installation.key | quote }}
                 path: installation.yaml
+        {{- if $.Values.backend.openshell.oidcSecretName }}
+        {{- $openshell := $.Values.backend.openshell }}
+        - name: openshell-oidc-client-secret
+          secret:
+            secretName: {{ $openshell.oidcSecretName | quote }}
+            defaultMode: 288 # 0440: root and the Pod filesystem group only.
+            items:
+              - key: {{ $openshell.oidcSecretKey | quote }}
+                path: {{ base $openshell.oidcFilePath | quote }}
+        {{- end }}
         {{- if $.Values.database.caSecretName }}
         - name: database-ca
           secret:
@@ -570,6 +580,11 @@ spec:
             - name: installation-startup
               mountPath: /etc/openclaw/installation
               readOnly: true
+            {{- if $.Values.backend.openshell.oidcSecretName }}
+            - name: openshell-oidc-client-secret
+              mountPath: {{ dir $.Values.backend.openshell.oidcFilePath }}
+              readOnly: true
+            {{- end }}
             {{- if $.Values.database.caSecretName }}
             - name: database-ca
               mountPath: {{ $.Values.database.caMountPath | quote }}

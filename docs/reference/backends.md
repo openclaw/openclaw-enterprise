@@ -170,10 +170,20 @@ Its closed `configuration` accepts:
   hosts in the gateway's namespace only when OCE knows it: from a bare or
   `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
-- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
-  `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
+- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`,
+  `{ mode: mtls, certificatePath, privateKeyPath }`, or
+  `{ mode: oidcClientCredentials, ... }`. File paths must be absolute.
   mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
   Service HTTP/WebSocket requests retain their separate scoped bearer identity.
+  OIDC client-credentials takes `tokenUrl` (an absolute `https` URL without
+  credentials, query, or fragment; `http` only to a numeric loopback address),
+  `clientId`, `clientSecretPath` (absolute), optional `tokenAuth`
+  (`client_secret_post` default or `client_secret_basic`), and optional
+  `audience` and `scope` request parameters. The client exchanges the
+  credentials at `tokenUrl`, caches the access token until a refresh margin
+  before its reported expiry, re-reads the secret file on every refresh, and
+  presents the token as the gRPC `authorization` bearer. `audience` must match
+  the gateway's expected audience, not the client ID.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
