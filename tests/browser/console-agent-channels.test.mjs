@@ -9,6 +9,7 @@ import {
   detailUrl,
   expectNoText,
   fileBrowser,
+  holdRequests,
   login,
   MEMBER_WRITE,
   nativeValues,
@@ -774,7 +775,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     // the operator to (finding 2195: #3207 wrapped the error and dropped it).
     await page
       .getByText(
-        "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask a Namespace administrator to grant this Agent access to the saved Secret. Request ID: req_00000000-0000-4000-8000-000000000433",
+        "Configuration saved, but Secret access grants could not be confirmed. Reload the draft, inspect saved bindings in Agent Credentials, then ask an Installation administrator to grant this Agent access to the saved Secret. Request ID: req_00000000-0000-4000-8000-000000000433",
         { exact: true },
       )
       .waitFor();
@@ -865,7 +866,9 @@ describe("Agent channels", { concurrency: 3 }, () => {
       "warning",
     );
     await page.getByText("Resolve the saved Secret access grant before deploying.").waitFor();
-    await expectNoText(page, /outcome is unknown|Outcome unknown/);
+    // Not a finished save: the notice says only what saved.
+    await page.getByText("Configuration saved.", { exact: true }).waitFor();
+    await expectNoText(page, /outcome is unknown|Outcome unknown|Channels saved\./);
     assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
     assert.equal(await page.getByRole("button", { name: "Edit Slack" }).isDisabled(), false);
     const configuration = await fixture.request(
@@ -888,10 +891,27 @@ describe("Agent channels", { concurrency: 3 }, () => {
       ["Bound · Agent access not confirmed", "Bound"],
     );
 
-    // The administrator the warning names opens the Agent: its policy read finds no grant.
+    // The administrator the warning names opens the Agent: its policy read finds no grant. The
+    // answer updates the panel in place, so a reader already in a picker keeps focus.
     const { page: adminPage } = await newPage(t, fixture, { browser });
+    const bindingsRead = await holdRequests(
+      t,
+      adminPage,
+      `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+      { once: true, method: "GET" },
+    );
     await openDraft(adminPage, fixture, agent, "Member Slack Grant Agent", "credentials");
+    await bindingsRead.requested;
+    const appPicker = adminPage
+      .locator(".channel-secrets")
+      .getByLabel("Slack app token", { exact: true });
+    await appPicker.focus();
+    bindingsRead.release();
     await adminPage.getByText(GRANT_MISSING, { exact: true }).waitFor();
+    assert.equal(
+      await appPicker.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+    );
     await adminPage.getByRole("button", { name: "Retry Secret access" }).click();
     await adminPage
       .getByText(
@@ -1159,7 +1179,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
       const grantWarning = page.getByText(
         grantStatus === 403
           ? GRANT_REFUSED
-          : "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
+          : "Configuration saved, but Secret access grants could not be confirmed. Select Retry Secret access; if it is refused, ask an Installation administrator.",
       );
       await grantWarning.waitFor();
       // The Configuration saved, so the unconfirmed grant is a warning from the start, not a

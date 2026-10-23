@@ -148,10 +148,20 @@ const GRANT_WARNINGS: Record<SecretGrantProblem, string> = {
   refused:
     "Configuration saved, but this Agent cannot use the saved Slack Secret until it is granted access. Granting it needs Installation administration access: ask an Installation administrator to open this Agent's Credentials and select Retry Secret access.",
   unconfirmed:
-    "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
+    "Configuration saved, but Secret access grants could not be confirmed. Select Retry Secret access; if it is refused, ask an Installation administrator.",
   missing:
     "This Agent has no access to a bound Slack Secret, so deploying it would be refused. Select Retry Secret access to grant it.",
 };
+
+// A definite answer to a grant request is a known outcome: 403 is refused (only an Installation
+// administrator can grant), and 400/404/409/429 left it ungranted for now. A lost answer, a
+// timeout (408) or a 5xx may have granted it, so the outcome stays unknown (finding 1920).
+export function grantProblemFor(status: number | undefined): SecretGrantProblem | null {
+  if (status === 403) {
+    return "refused";
+  }
+  return status !== undefined && [400, 404, 409, 429].includes(status) ? "unconfirmed" : null;
+}
 
 interface SecretDraft {
   secretBindings: SecretBindings;
@@ -296,6 +306,7 @@ export function createChannelSecretsPanel({
   carried = null,
   outstandingGrants = null,
   checkGrants = false,
+  isCurrent = () => true,
   onOutstandingGrants,
   onConfigurationChange,
   onChange,
@@ -313,6 +324,8 @@ export function createChannelSecretsPanel({
   onOutstandingGrants?(grants: OutstandingSecretGrants | null): void;
   // Whether to read the Namespace's IAM policy for bound Secrets the Agent has no grant for.
   checkGrants?: boolean;
+  // Whether this panel is still the page's own, for answers that arrive late.
+  isCurrent?(): boolean;
   onConfigurationChange?(configuration: Configuration): void;
   onChange(): void;
   onReload(carried: CarriedChannelSecrets | null): void;
@@ -472,11 +485,17 @@ export function createChannelSecretsPanel({
     save?: HTMLButtonElement | null;
     reload?: HTMLButtonElement | null;
     outcome?: HTMLElement | null;
+    bindings?: HTMLElement;
+    error?: HTMLElement;
+    updateControls?: (() => void) | null;
   } = {};
+  // Saves started, so a grant check that a save overtook drops its answer.
+  let saveCount = 0;
 
   function renderChannelForm(error: HTMLElement) {
     shown.save = null;
     shown.status = null;
+    shown.updateControls = null;
     state.unsavedSecrets = false;
     if (!channelEnabled(state.values, "slack")) {
       return null;
@@ -577,6 +596,7 @@ export function createChannelSecretsPanel({
           : "Save channel Secrets";
       save.disabled = !canSaveChannelSecrets();
     };
+    shown.updateControls = updateControls;
     const form = element(
       "form",
       { id: formId, className: "credential-form", novalidate: "" },
@@ -598,6 +618,7 @@ export function createChannelSecretsPanel({
       }
       // A retry writes no Configuration: the saved bindings stay as they are (finding 1920).
       const retry = !state.unsavedSecrets;
+      saveCount += 1;
       state.saving = true;
       state.saveError = null;
       state.saveMessage = "";
@@ -710,7 +731,7 @@ export function createChannelSecretsPanel({
         const step = configurationSaved ? "grant" : mutationStarted ? "configuration" : "preflight";
         if (step === "grant") {
           // A refusal is known: only an Installation administrator can grant (finding 1920).
-          state.grantProblem = failure.status === 403 ? "refused" : "unconfirmed";
+          state.grantProblem = grantProblemFor(failure.status) ?? "unconfirmed";
         }
         state.saveError = { ...failure, step };
         state.saveMessage = "";
@@ -781,6 +802,9 @@ export function createChannelSecretsPanel({
             void onReload(state.reloadRequired && !state.outcomeUnknown ? state.carried : null);
           })
         : null;
+    const bindings = renderSlackBindings(state);
+    shown.bindings = bindings;
+    shown.error = error;
     const form = renderChannelForm(error);
     shown.reload = reload;
     shown.outcome = state.saveError
@@ -802,7 +826,7 @@ export function createChannelSecretsPanel({
           { className: "muted" },
           "Save Slack tokens as Secrets, then deploy a new version to apply them. Saved bindings do not confirm live channel readiness.",
         ),
-        renderSlackBindings(state),
+        bindings,
         error,
         reloadMessage,
         reload ? element("div", { className: "form-actions credential-actions" }, reload) : null,
@@ -814,15 +838,14 @@ export function createChannelSecretsPanel({
 
   // A reload forgets a refused grant. An Installation administrator's console reads the IAM
   // policy instead: a bound Slack Secret the Agent has no grant for waits for Retry Secret access
-  // as an outstanding grant does. A failed or undecided read changes nothing (finding 1920).
+  // as an outstanding grant does, and one granted since is no longer outstanding. A failed or
+  // undecided read changes nothing (finding 1920).
   async function checkBoundSecretGrants() {
     const bound = SLACK_SECRET_BINDINGS.map((binding) =>
       secretSourceForBinding(state.configuration.secretBindings?.[binding.key]),
     ).filter(
       (secret): secret is SecretReference =>
-        secret !== null &&
-        secret.namespaceId === context.namespaceId &&
-        !(secret.id in state.pendingSecretGrants),
+        secret !== null && secret.namespaceId === context.namespaceId,
     );
     if (
       !bound.length ||
@@ -831,27 +854,47 @@ export function createChannelSecretsPanel({
     ) {
       return;
     }
+    const started = saveCount;
     let grants;
     try {
       grants = await secretOperateGrants(context, state.agent, bound);
     } catch {
       return;
     }
-    const missing = bound.filter((secret) => grants.get(secret.id) === false);
-    if (!missing.length || !context.isCurrent() || state.saving) {
+    // A save since the read began may have granted or replaced these Secrets, and a rebuilt
+    // panel no longer speaks for the page.
+    if (!context.isCurrent() || state.saving || saveCount !== started || !isCurrent()) {
       return;
     }
-    if (!pendingSecretGrants().length) {
-      state.grantProblem = "missing";
+    let changed = false;
+    for (const secret of bound) {
+      const granted = grants.get(secret.id);
+      if (granted === false && !(secret.id in state.pendingSecretGrants)) {
+        state.pendingSecretGrants[secret.id] = secret;
+        changed = true;
+      } else if (granted === true && secret.id in state.pendingSecretGrants) {
+        delete state.pendingSecretGrants[secret.id];
+        changed = true;
+      }
     }
-    for (const secret of missing) {
-      state.pendingSecretGrants[secret.id] = secret;
+    // This reader can grant: the warning asks for Retry, not for an administrator.
+    if (pendingSecretGrants().length && state.grantProblem !== "missing") {
+      state.grantProblem = "missing";
+      changed = true;
+    }
+    if (!changed) {
+      return;
     }
     updateGrantWarning();
-    // A rebuilt form would drop Secret choices made meanwhile; the next render shows the grants.
-    if (!state.unsavedSecrets) {
-      render();
+    // Update in place: a rebuilt form would drop Secret choices made meanwhile and the focus.
+    const bindings = renderSlackBindings(state);
+    shown.bindings?.replaceWith(bindings);
+    shown.bindings = bindings;
+    if (shown.error && (!state.saveError || state.saveError.step === "grant")) {
+      setStatusTone(shown.error, saveErrorTone());
+      shown.error.textContent = saveErrorText();
     }
+    shown.updateControls?.();
     onChange();
   }
 
