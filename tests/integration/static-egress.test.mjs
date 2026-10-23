@@ -1491,15 +1491,25 @@ test(
     // Advance the controller's supported clock while keeping genuine signed identity, IAM,
     // Secret SDK, authority transport and HTTPS provider. Completion must release active capacity;
     // fixed operation horizons must release replay capacity during the same long-lived JWT.
-    for (let i = 0; i < 4200; i += 1) {
-      elapsed += 25;
+    // One Sandbox at 40 requests/s holds about 1200 replay entries per 30 s horizon, under its
+    // share. Its share is the first replay bound it meets, so each operation past the share
+    // needs an expired entry released. Each operation's slot must return well before that, at
+    // the operation share and capacity. "one Sandbox's replay share bounds it without refusing
+    // other Sandboxes" covers the installation-wide table's expiry.
+    const step = 25;
+    const operations = REPLAY_SANDBOX_SHARE + 64;
+    assert.ok(30_000 / step < REPLAY_SANDBOX_SHARE);
+    assert.ok(REPLAY_SANDBOX_SHARE < REPLAY_TABLE_CAPACITY);
+    assert.ok(OPERATION_CAPACITY < operations);
+    for (let i = 0; i < operations; i += 1) {
+      elapsed += step;
       const captured = f.capture();
       const ready = (await f.resolve(captured, peer)).ready;
       assert.ok(ready, `sequential operation ${i} should resolve`);
       assert.ok((await f.authorize(f.permitRequest(captured, ready))).allowed);
       assert.ok((await f.protect(captured, await f.send(captured, ready))).body);
     }
-    assert.equal(f.providerRequests.length, 4200);
+    assert.equal(f.providerRequests.length, operations);
     assert.ok(
       f.providerRequests.every(
         (request) => request.authorization === "Bearer synthetic-key-initial",
