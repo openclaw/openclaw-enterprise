@@ -898,6 +898,24 @@ test("a failed read while the Git route bootstraps is read again; a refused iden
   assert.equal(f.store.rows.get(f.revision.id).generation?.credentialState, "bootstrap");
   assert.deepEqual(replacement.errors(), []);
 
+  // A bootstrap write whose answer was lost may have been sent: never written again. A
+  // replacement worker finds it pending and closes the route.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called) =>
+    called === "createProvider"
+      ? new DependencyUnavailableError("OpenShell CreateProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), (error) => error.outcome === "unknown");
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "bootstrap");
+  f.faults.gatewayCall = undefined;
+  const writes = f.calls.providerWrites;
+  await assert.rejects(
+    workerAfterRestart(f).prepare(),
+    (error) => error instanceof OpenShellGitRouteBlockedError && error.reason === "write_unknown",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "write_unknown");
+  assert.equal(f.calls.providerWrites, writes);
+
   // The gateway refuses the worker's identity: closed, never read again.
   const denied = () => Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
   f = bootstrapping({ store: routeStore() });
@@ -911,6 +929,20 @@ test("a failed read while the Git route bootstraps is read again; a refused iden
     state: "blocked",
     reason: "bootstrap_failed",
   });
+  // Refused while bootstrapping a route already on record: closed in the store too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name)
+      ? new DependencyUnavailableError("OpenShell GetProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  f.faults.gatewayCall = (called) => (called === "getGatewayInfo" ? denied() : undefined);
+  await assert.rejects(
+    f.prepare(),
+    (error) =>
+      error instanceof OpenShellGitRouteBlockedError && error.reason === "gateway_unauthorized",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "gateway_unauthorized");
   // Refused inside the provider's bootstrap: the route is a tombstone, in the store too.
   f = bootstrapping({ store: routeStore() });
   f.faults.gatewayCall = (called, name) =>
@@ -930,16 +962,16 @@ test("a reconcile pass that runs out of time before the provider write sends not
   // writes nothing, clears its reservation and is observed again; it is not an unknown write.
   const store = routeStore();
   const f = fixture({ store });
-  f.runtime.observeTimeoutMs = 200;
+  f.runtime.observeTimeoutMs = 1_000;
   const readMaterial = f.owner.readOpenShellMaterial;
   let reads = 0;
-  f.owner.readOpenShellMaterial = async (...args) => {
+  f.owner.readOpenShellMaterial = async (revisionId, signal, ...rest) => {
     reads += 1;
     if (reads === 2) {
-      // The last read before the write, inside the release, answers after the budget.
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // The last read before the write, inside the release, answers once the budget is spent.
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
     }
-    return readMaterial(...args);
+    return readMaterial(revisionId, signal, ...rest);
   };
   await f.reconcile();
   assert.deepEqual(f.runtime.route(f.revision.id), {
@@ -955,6 +987,57 @@ test("a reconcile pass that runs out of time before the provider write sends not
   assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
   assert.equal(f.calls.rotate, 1);
   assert.equal(store.rows.get(f.revision.id).material?.materialVersion, "version-one");
+});
+
+test("a rotation the store did not confirm clearing is cleared on the next pass, never unknown", async () => {
+  // The writer sent nothing (the material went away during the release), but the store did not
+  // answer as the reservation was cleared: the next pass clears it before anything else.
+  const pass = async (cancelWriting, between = () => {}) => {
+    const store = routeStore();
+    const f = fixture({ store });
+    const material = f.owner.material;
+    let reads = 0;
+    const readMaterial = f.owner.readOpenShellMaterial;
+    f.owner.readOpenShellMaterial = async (...args) => {
+      reads += 1;
+      return reads === 2 ? undefined : readMaterial(...args);
+    };
+    const cancel = store.cancelWriting;
+    store.cancelWriting = (...args) => cancelWriting(cancel, ...args);
+    await f.reconcile();
+    assert.deepEqual(f.runtime.route(f.revision.id), {
+      state: "pending",
+      reason: "unobserved",
+      failure: "read_failed",
+    });
+    store.cancelWriting = cancel;
+    f.owner.readOpenShellMaterial = readMaterial;
+    f.owner.material = material;
+    between(f);
+    await f.reconcile();
+    return f;
+  };
+  const lost = () => {
+    throw new Error("connection terminated");
+  };
+  // The store committed the clear and only its answer was lost.
+  let f = await pass(async (cancel, ...args) => (await cancel(...args), lost()));
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // The store never cleared it: the reservation is still there until the next pass.
+  f = await pass(async () => lost());
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // Another worker adopted the route meanwhile: this one stops, without writing.
+  f = await pass(
+    async () => lost(),
+    (f) => f.store.adopt(f.revision.id, "worker-two"),
+  );
+  assert.equal(f.calls.rotate, 0);
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  assert.equal(warnings(f).at(-1).reason, "worker_replaced");
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {

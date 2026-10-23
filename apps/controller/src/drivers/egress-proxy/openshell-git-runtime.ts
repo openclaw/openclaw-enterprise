@@ -603,6 +603,7 @@ export class OpenShellGitRuntime {
         // This worker's last bootstrap was refused before its write, and the store did not
         // confirm clearing the reservation: clear it now, before the fence moves. A store that
         // answers false holds no such reservation any more; adoption reads the row as it is.
+        // Without another pass the row keeps its pending write, which reads as unknown: closed.
         const unsent = this.unsentBootstraps.get(revision.id);
         const routes = this.routes;
         if (unsent !== undefined && routes !== undefined) {
@@ -639,14 +640,22 @@ export class OpenShellGitRuntime {
           throw new OpenShellGitRouteBlockedError("repository_expired");
         }
         // A read that fails here is read again on the next pass, nothing written (finding
-        // 2210); a refused identity or an overlapping provider is final.
-        await read(
-          () => checkOpenShellGitProviders(client, workspace, otherProviders, signal),
-          signal,
-        );
-        const current = await read(
-          () => client.getSandbox({ workspace, name: sandbox }, signal),
-          signal,
+        // 2210); a refused identity or an overlapping provider is final. A route already on
+        // record is closed in the store with that reason too, as adoption closes it.
+        const verified = async <T>(operation: () => Promise<T>): Promise<T> => {
+          try {
+            return await read(operation, signal);
+          } catch (error) {
+            if (persisted !== undefined && error instanceof OpenShellGitRouteError) {
+              await routes?.block(revision.id, persisted.fence, error.reason).catch(() => {});
+              throw new OpenShellGitRouteBlockedError(error.reason);
+            }
+            throw error;
+          }
+        };
+        await verified(() => checkOpenShellGitProviders(client, workspace, otherProviders, signal));
+        const current = await verified(() =>
+          client.getSandbox({ workspace, name: sandbox }, signal),
         );
         if (current) {
           // The rejected bootstrap is retained below, so this logs once per revision while
@@ -664,7 +673,7 @@ export class OpenShellGitRuntime {
         const provider = gitProvider(
           client,
           workspace,
-          await read(() => this.gateway(client, workspace, signal), signal),
+          await verified(() => this.gateway(client, workspace, signal)),
           sandbox,
           revision.id,
           scope.delivery,
@@ -922,9 +931,9 @@ export class OpenShellGitRuntime {
       }
       throw error;
     }
-    // A gateway that does not answer here is read again on the next pass (each retry moves
-    // the fence again); one that refuses the worker's identity, or a middleware that is not
-    // registered, blocks the route with that reason, as the bootstrap path does.
+    // A gateway that does not answer here, or whose middleware is not registered (yet), is
+    // read again on the next pass (each retry moves the fence again); one that refuses the
+    // worker's identity blocks the route with that reason, as the bootstrap path does.
     let workspaceId: string;
     try {
       workspaceId = await read(() => this.gateway(client, workspace, signal), signal);
