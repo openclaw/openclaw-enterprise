@@ -1359,6 +1359,7 @@ test("a closed preview route is kept until the store confirms its closure, even 
       .map(({ status }) => status),
     ["pending", "confirmed"],
   );
+  assert.deepEqual(retained(f), []);
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {

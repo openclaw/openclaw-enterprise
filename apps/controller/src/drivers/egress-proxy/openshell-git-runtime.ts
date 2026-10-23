@@ -1958,7 +1958,8 @@ export class OpenShellGitRuntime {
     }, signal).then(
       (box) => box !== undefined,
       (error: unknown) => {
-        refused = error instanceof OpenShellGitRouteError;
+        refused =
+          error instanceof OpenShellGitRouteError && error.reason === "gateway_unauthorized";
         return true;
       },
     );
