@@ -1307,3 +1307,41 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
   }
 });
+
+test("a long Agent name's suggested Slack Secret name stays within the Name rule", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Long Agent names");
+  // An Agent name may use all 200 characters, so "<Agent name> Slack app token" cannot be
+  // suggested as is; the dialog shortens the middle and keeps what the Secret is for
+  // (finding 1809).
+  const name = `Long Slack Agent ${"n".repeat(183)}`;
+  assert.equal(Array.from(name).length, 200);
+  // The fixture's default "Auth <Agent name>" Secret would not fit either.
+  const auth = await fixture.createSecret(namespace.id, "Long Slack Agent auth", "test-api-key");
+  const { agent } = await createSlackAgent(fixture, namespace, {
+    name,
+    slug: "long-slack",
+    harnessAuth: { method: "api_key", source: auth.ref },
+  });
+  const { page } = await newPage(t, fixture, { browser });
+
+  await openDraft(page, fixture, agent, name);
+  await page.getByRole("button", { name: "Edit Slack" }).click();
+  const drawer = page.getByRole("dialog", { name: "Edit Slack" });
+  await drawer.getByLabel("Slack app token", { exact: true }).fill("Create a new Secret");
+  await drawer.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Slack app token Secret" });
+  const suggested = await dialog.getByLabel("Name", { exact: true }).inputValue();
+  assert.ok(Array.from(suggested).length <= 200, suggested);
+  assert.match(suggested, /^Long Slack Agent n+…n+ Slack app token$/u);
+
+  // The API accepts the suggestion unchanged.
+  const created = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/secrets"),
+  );
+  await dialog.getByLabel("Value", { exact: true }).fill("long-name-app-token");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const response = await created;
+  assert.equal(response.status(), 201, await response.text());
+  assert.equal((await response.json()).data.name, suggested);
+  await dialog.waitFor({ state: "hidden" });
+});

@@ -23,6 +23,29 @@ type SecretContext = Partial<AgentAccessContext> & {
   installationAdmin?: boolean | null;
 };
 
+// The API's Name length for Secrets (NAME_MAX_CHARACTERS in packages/contracts/src/api/plain-text.ts,
+// in code points). Node tests import this module, so it cannot reach namespaces.mts's copy;
+// tests/conformance/console-namespace-name.test.mjs keeps the values equal.
+export const SECRET_NAME_MAX_CHARACTERS = 200;
+// The suggested name's ending that shortening keeps: what the Secret is for, such as
+// "harness authentication" or "Slack bot token".
+const SUGGESTED_NAME_KEPT_ENDING = 40;
+
+/**
+ * A suggested Secret name within the API's Name length. Suggestions join the Agent name, which
+ * may itself use every allowed character, with what the Secret is for, so a long one keeps that
+ * ending and shortens the middle (finding 1809).
+ */
+export function suggestedSecretName(suggestion: string) {
+  const characters = Array.from(suggestion.trim());
+  if (characters.length <= SECRET_NAME_MAX_CHARACTERS) {
+    return characters.join("");
+  }
+  const start = characters.slice(0, SECRET_NAME_MAX_CHARACTERS - SUGGESTED_NAME_KEPT_ENDING - 1);
+  const ending = characters.slice(-SUGGESTED_NAME_KEPT_ENDING);
+  return `${start.join("").trimEnd()}…${ending.join("").trimStart()}`;
+}
+
 export function secretIdForBinding(binding: unknown) {
   return secretSourceForBinding(binding)?.id ?? null;
 }
@@ -513,7 +536,7 @@ export function createSecretReferenceField({
       required: "",
       "data-trim": "",
       autocomplete: "off",
-      value: createSecretName(),
+      value: suggestedSecretName(createSecretName()),
     });
     const value = element("input", {
       id: `create-${id}-value`,
