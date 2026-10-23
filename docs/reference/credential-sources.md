@@ -239,6 +239,10 @@ requires exact `delete` and returns `204`:
   A dependency failure returns `503`; an OpenShell provider ownership mismatch
   returns `404`. Both retain `deleting`. Resolve ownership drift before retrying;
   an already-removed copy counts as deleted.
+- For a prepared GitHub source, `409 CREDENTIAL_TOKEN_UNSETTLED` means a token
+  it issued may still be valid: GitHub's answer to an issue or revocation was lost.
+  The record stays `deleting`. Retry after the time in the message, at most 72
+  minutes after the attempt. A refused issue with no token does not block deletion.
 - Within 70 seconds of registration, deletion removes the copy but returns `503`
   and keeps the record, because a timed-out registration could still create a
   copy. Retry after that window.

@@ -87,7 +87,7 @@ export async function assertCredentialSchemaPrivileges(app: pg.Client) {
     ["prepared_github_families", "admission,enabled,next_check_at,worker_claim"],
     [
       "prepared_github_attempts",
-      "state,custody,material_version,provider_expires_at,usable_until,sealed",
+      "state,custody,material_version,provider_expires_at,usable_until,sealed,started_at",
     ],
     ["prepared_repository_git_uses", ""],
     ["prepared_repository_draft_pulls", "outcome,projection,settled_at"],

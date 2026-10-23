@@ -918,6 +918,7 @@ export const ERROR_CODES = Object.freeze([
   "DEPENDENCY_UNAVAILABLE",
   "CREDENTIAL_GATEWAY_NOT_CONFIGURED",
   "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
+  "CREDENTIAL_TOKEN_UNSETTLED",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
   "REPOSITORY_GIT_SENDER_UNQUALIFIED",
   "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
@@ -1002,6 +1003,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("CREDENTIAL_WITHDRAWAL_IN_PROGRESS", {
             description:
               "Only credential withdrawal work still queued or running for an Agent revision that held the source keeps it from being deleted.",
+          }),
+          Type.Literal("CREDENTIAL_TOKEN_UNSETTLED", {
+            description:
+              "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
           }),
           Type.Literal("SANDBOX_POLICY_PROTECTED_EXECUTION", {
             description:

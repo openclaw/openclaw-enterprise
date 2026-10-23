@@ -188,7 +188,8 @@ revision or pending deployment can block deletion (`409`), as can unfinished
 withdrawal (`CREDENTIAL_WITHDRAWAL_IN_PROGRESS`). OCC requires the recorded
 owner, then changes `registering` or `ready` to `deleting`. Neither transition is reversible.
 
-For prepared material, OCC calls the issuer's `withdraw`. A credential-free source
+For prepared material, OCC calls the issuer's `withdraw`; a token that may still be
+valid returns `409 CREDENTIAL_TOKEN_UNSETTLED`. A credential-free source
 has no material to remove. Otherwise the Refresh Driver removes refresh state,
 then Gateway `removeSource` verifies ownership and removes the provider and profile.
 Unknown ownership or a failed read cannot establish absence. Failure leaves

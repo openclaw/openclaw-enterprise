@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { json } from "node:stream/consumers";
 import test from "node:test";
@@ -24,7 +23,9 @@ import { staticEgressFixture } from "../helpers/static-egress.mjs";
 
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { waitFor } from "../helpers/qa-utils.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
+import { listen } from "../helpers/listen.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const token = "synthetic-harness-transport";
 const serviceUrl = "http://fixture-harness.example.test/";
@@ -34,8 +35,7 @@ const path = HARNESS_EGRESS_ENROLLMENT_PATH;
 // implements only the authenticated transport handshake. This proves generated
 // startup coordination, not packaged Codex or installed supervisor enforcement.
 function nativeCli(callsPath, modelUrl) {
-  return `#!${process.execPath}
-const fs = require("node:fs");
+  return `const fs = require("node:fs");
 const { createHash } = require("node:crypto");
 const args = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(args) + "\\n");
@@ -72,8 +72,7 @@ test(
   "protected Harness waits for committed installation and rejects stale startup releases before its first model request",
   { timeout: 30000 },
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "egress-enrollment-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "egress-enrollment-");
     let reservation = await reservePort({ host: "0.0.0.0" });
     t.after(() => reservation.release());
     const { port } = reservation;
@@ -120,10 +119,11 @@ test(
     const script = join(directory, "entrypoint.cjs");
     await writeFile(script, AGENT_RUNTIME_ENTRYPOINT);
     await writeFile(callsPath, "");
-    await writeFile(
-      join(directory, "codex"),
+    await writeCommand(
+      directory,
+      "codex",
       nativeCli(callsPath, `http://127.0.0.1:${modelPort}/v1/responses`),
-      { mode: 0o700 },
+      { interpreter: process.execPath },
     );
     const runtime = pluginRuntimeSpecForRevision(
       f.revision,

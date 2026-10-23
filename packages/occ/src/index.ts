@@ -414,6 +414,7 @@ export {
   CredentialSourceDriverError,
   CredentialSourceRevisionError,
   CredentialSourceTypeNotOfferedError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalRefusedError,
   GatewayPasswordValueError,

@@ -1079,6 +1079,23 @@ export class CredentialWithdrawalInProgressError extends ResourceStateConflictEr
 }
 
 /**
+ * Source deletion is refused only because a provider token issued for the source may still be
+ * valid: an issue or revocation whose outcome was lost. It settles once the provider's maximum
+ * token lifetime has passed, never earlier. A retry repeats only the safe withdrawal.
+ */
+export class CredentialTokenUnsettledError extends ResourceStateConflictError {
+  constructor(settlesAt?: Date) {
+    super(
+      "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
+        (settlesAt
+          ? `Retry the deletion after ${settlesAt.toISOString()}, when GitHub's maximum token lifetime has passed.`
+          : "Retry the deletion after GitHub's maximum token lifetime has passed."),
+    );
+    this.name = "CredentialTokenUnsettledError";
+  }
+}
+
+/**
  * An AccessBinding Role carries Permissions that can never take effect through the
  * binding: `create` is checked against the Namespace, not an existing resource, and a
  * binding to an exact resource applies only Permissions of that resource's kind.

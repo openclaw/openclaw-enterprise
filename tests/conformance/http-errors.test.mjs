@@ -25,6 +25,7 @@ import {
   ChannelDirectoryError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
@@ -184,6 +185,16 @@ const cases = [
       code: "CREDENTIAL_WITHDRAWAL_IN_PROGRESS",
       message:
         "A credential withdrawal is still queued or running for an Agent revision that held the source. Wait for it to finish (it retries for up to about an hour), or delete that revision's Agent, then retry.",
+    },
+  ],
+  [
+    "a source delete blocked by a token that may still be valid names the retry time",
+    new CredentialTokenUnsettledError(new Date("2026-10-23T01:41:00.000Z")),
+    {
+      status: 409,
+      code: "CREDENTIAL_TOKEN_UNSETTLED",
+      message:
+        "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. Retry the deletion after 2026-10-23T01:41:00.000Z, when GitHub's maximum token lifetime has passed.",
     },
   ],
   [

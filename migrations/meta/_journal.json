@@ -435,6 +435,13 @@
       "when": 1787000000062,
       "tag": "0062_credential_delivery_custody",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1787000000063,
+      "tag": "0063_prepared_attempt_settlement",
+      "breakpoints": true
     }
   ]
 }

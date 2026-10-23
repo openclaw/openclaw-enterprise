@@ -10,10 +10,8 @@ import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts"
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
-import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
 import { createConsoleAppFixture } from "./console-app.mjs";
@@ -30,6 +28,9 @@ import {
   createOpenShellEgressAuthority,
   bindOpenShellEgressAuthority,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-authority.ts";
+import { selfSigned } from "./certificates.mjs";
+import { listen } from "./listen.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -66,17 +67,6 @@ export const unary = (client, method, request, metadata, timeoutMs = 5000) =>
       (error, result) => (error ? reject(error) : resolve(result)),
     ),
   );
-async function listen(t, server) {
-  const port = await new Promise((resolve) =>
-    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
-  );
-  t.after(() => {
-    server.closeAllConnections();
-    return new Promise((resolve) => server.close(resolve));
-  });
-  return port;
-}
-
 export function supervisorBearer(claims, privateKey) {
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const header = encode({ alg: "EdDSA", typ: "openshell-ext+jwt", kid: "fixture-key" });
@@ -109,34 +99,14 @@ export async function staticEgressFixture(
     providerServer = createHttpsServer,
   } = {},
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "oce-egress-wire-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const keyPath = join(directory, "tls.key");
-  const certPath = join(directory, "tls.crt");
-  const generated = spawnSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-subj",
-      "/CN=localhost",
-      "-addext",
-      "subjectAltName=DNS:localhost,DNS:provider.example.test,IP:127.0.0.1",
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(generated.status, 0, generated.stderr);
-  // Only ephemeral test-generated material is read; no operator credential files are involved.
-  const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
+  const directory = await temporaryDirectory(t, "oce-egress-wire-");
+  // Only ephemeral test-generated material is used; no operator credential files are involved.
+  const generated = await selfSigned(directory, {
+    subjectAltName: "DNS:localhost,DNS:provider.example.test,IP:127.0.0.1",
+  });
+  // gRPC credentials take Buffers.
+  const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
+  const certPath = generated.certPath;
   const objects = new Map();
   let namespace;
   const namespaceResource = () => ({
@@ -1203,9 +1173,7 @@ export async function syntheticDispatchFixture(t, receipts) {
       socket.end("synthetic response");
     }),
   );
-  origin.listen(0, "127.0.0.1");
-  await once(origin, "listening");
-  t.after(() => new Promise((resolve) => origin.close(resolve)));
+  await listen(t, origin);
   const exchangeOwner = {
     verify: async () => peer,
     capture(use) {

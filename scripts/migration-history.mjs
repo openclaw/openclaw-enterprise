@@ -241,6 +241,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 59) {
     return "preCredentialProxy";
   }
+  if (count === 62) {
+    return "prePreparedAttemptSettlement";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

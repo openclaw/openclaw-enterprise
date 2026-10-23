@@ -189,6 +189,9 @@ Put a key GitHub accepts in `private-key.pem` of the Secret selected by
 [installation](installation.md#prepare-the-registry-and-protected-inputs).
 Keep it worker-only. Allow the mounted Secret to update, then deploy a new
 revision of each affected Agent and verify a fresh fetch. The worker re-reads the
-key; restoring it alone does not reopen a quarantined preparation. Preserve
+key; restoring it alone does not reopen a quarantined preparation. The new revision
+gets material at once when GitHub refused the old attempt. If GitHub's answer was
+lost, it waits until no token from that attempt can be valid, 72 minutes after the
+attempt began. Preserve
 unresolved retirement with its original owner; see
 [Token Service lifecycle](../../reference/repository-credentials.md#token-service-lifecycle).

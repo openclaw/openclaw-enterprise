@@ -32,6 +32,7 @@ import {
   validateConnectedDatabaseUrl,
   validateConnectedInputs,
 } from "../helpers/egress-connected-inputs.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 import {
   assertOpenShellHarnessBinding,
@@ -301,19 +302,14 @@ test("connected inputs accept exact bearer and mTLS shapes and only scoped HTTPS
 });
 
 test("the authenticated connected request stays on the runner's exact loopback controller", async (t) => {
-  const listen = async (handler) => {
-    const server = createServer(handler);
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-    t.after(() => server[Symbol.asyncDispose]());
-    return `127.0.0.1:${server.address().port}`;
-  };
+  const serve = async (handler) => `127.0.0.1:${await listen(t, createServer(handler))}`;
   let foreignRequests = 0;
-  const foreign = await listen((_request, response) => {
+  const foreign = await serve((_request, response) => {
     foreignRequests++;
     response.writeHead(403).end();
   });
   const serviceKey = `fixture-${randomUUID()}`;
-  const local = await listen((request, response) => {
+  const local = await serve((request, response) => {
     assert.equal(request.headers["x-api-key"], serviceKey);
     if (request.url === "/redirect") {
       response.writeHead(307, { location: `http://${foreign}/foreign` }).end();

@@ -16,7 +16,11 @@ import {
   type Secret,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
-import { postgresPreparedGitHubProof, type PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  CredentialTokenUnsettledError,
+  postgresPreparedGitHubProof,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
 import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
 import { preparationIssuerAuthority } from "./grants.ts";
@@ -224,13 +228,21 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     const db = this.db;
     await db.withdraw(source);
     // Denial commits first; background cleanup still works if the API stops or loses the response.
-    while ((await this.retire(source.key.source.id, signal)) === "retired") {
+    try {
+      while ((await this.retire(source.key.source.id, signal)) === "retired") {
+        signal.throwIfAborted();
+      }
+    } catch (error) {
+      // A lost or refused revocation is recorded as 'unknown' and never replayed. Report it
+      // as unsettled custody below, not as a failure of this request.
       signal.throwIfAborted();
+      if (!(error instanceof Error) || !unsettledRetirement.has(error.message)) {
+        throw error;
+      }
     }
-    if (!(await db.withdrawalSettled(source))) {
-      throw new Error(
-        "Prepared GitHub use withdrawn; unsettled provider attempt requires recovery.",
-      );
+    const settlement = await db.withdrawalSettlement(source);
+    if (!settlement.settled) {
+      throw new CredentialTokenUnsettledError(settlement.settlesAt);
     }
   }
 
@@ -312,6 +324,11 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     this.repository = undefined;
   }
 }
+
+const unsettledRetirement = new Set([
+  "Prepared GitHub token revocation is unconfirmed.",
+  "provider-unavailable",
+]);
 
 /** Retirement is shared by both background owners. An ambiguous attempt is never replayed. */
 export async function retirePreparedGitHubToken(

@@ -236,3 +236,30 @@ test("the upgrade hook check refuses a Console theme the API would refuse", asyn
     "installation-check: API startup would refuse (CONSOLE_THEME_INVALID): Console theme: colors must use supported roles and six- or eight-digit hex colors.\n",
   );
 });
+
+test("the upgrade hook check refuses a repository broker peer until the operator removes it", async (t) => {
+  // Finding 2212: an Installation that left native repository delivery but kept the Compute
+  // broker peer made every stop, retire and delete list Secrets the chart no longer lets the
+  // worker list. The hook refuses it before migration, so the old Pods keep serving.
+  const leftover = installation();
+  leftover.drivers.compute.configuration.network.repositoryCredentials = {
+    namespace: "openclaw-system",
+    podLabels: {
+      "app.kubernetes.io/name": "openclaw-enterprise",
+      "app.kubernetes.io/component": "worker",
+    },
+    port: 8443,
+  };
+  const refused = await runCheck(t, leftover);
+  assert.equal(refused.status, 1);
+  assert.equal(refused.stdout, "");
+  assert.equal(
+    refused.stderr,
+    "installation-check: API and worker startup would refuse the Installation: drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.\n",
+  );
+  // The documented recovery deletes only the peer; the rest of the Installation is unchanged.
+  delete leftover.drivers.compute.configuration.network.repositoryCredentials;
+  const recovered = await runCheck(t, leftover);
+  assert.equal(recovered.status, 0, recovered.stderr);
+  assert.equal(recovered.stdout, "installation-startup-ready\n");
+});

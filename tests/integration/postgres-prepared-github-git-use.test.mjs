@@ -4,7 +4,15 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import {
+  admitProtectedVersion,
+  disposeBrokerSession,
+  disposeProtectedSession,
+  fixture,
+  prepare,
+  startProtectedOwner,
+} from "../fixtures/prepared-repository-git.mjs";
+import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 
 // Refusal must come from the durable admission guard, before any issuer or retirement call.
 async function assertUseGuarded(f) {
@@ -710,3 +718,79 @@ test(
     assert.deepEqual(f.gh.errors, []);
   },
 );
+
+for (const outcome of ["refused", "response lost"]) {
+  test(
+    "a new protected version gets Git material once its predecessor's " +
+      outcome +
+      " issuance has settled",
+    { ...requiresPostgres, timeout: 60_000 },
+    async (t) => {
+      // Findings 2207/2208: an issue attempt that never settled hid every later session of the
+      // Agent for the same repository, so the runbook recovery (fix the App key, deploy a new
+      // version) waited at REPOSITORY_GIT_MATERIAL_PENDING forever.
+      const f = await fixture(t);
+      await disposeBrokerSession(f);
+      const owner = await startProtectedOwner(f);
+      const first = await admitProtectedVersion(f);
+      if (outcome === "refused") {
+        // A rejected App key: GitHub answers 401 and mints nothing.
+        f.gh.setIssueStatus(401);
+      } else {
+        // GitHub mints the token, then its answer is lost.
+        f.gh.disconnectAfterMutation(
+          "POST",
+          `/app/installations/${fixtureInstallationId}/access_tokens`,
+        );
+      }
+      await owner.maintain();
+      const attempts = async (familyId) =>
+        (
+          await f.pool.query(
+            "SELECT state, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+            [familyId],
+          )
+        ).rows;
+      // Only a complete refusal with no token is terminal at once. A lost answer stays uncertain.
+      assert.deepEqual(await attempts(first.familyId), [
+        { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
+      ]);
+      const issued = outcome === "refused" ? 0 : 1;
+      assert.equal(f.gh.issuesOfTokens.length, issued);
+      f.gh.setIssueStatus(201);
+
+      // The operator restores the key and deploys a new version; the old session ends.
+      const second = await admitProtectedVersion(f, first.revision);
+      await disposeProtectedSession(f, first);
+      const read = () => owner.protectedGit.readMaterial(second.route, t.signal);
+      if (outcome === "response lost") {
+        // The lost token may be live for GitHub's maximum lifetime: the successor waits.
+        await owner.maintain();
+        assert.deepEqual(await read(), { absent: "unprepared" });
+        assert.equal(f.gh.issuesOfTokens.length, issued);
+        // Stand for the elapsed time: just inside the bound, it still waits.
+        const age = (minutes) =>
+          f.pool.query(
+            "UPDATE occ.prepared_github_attempts SET started_at=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1",
+            [first.familyId, minutes],
+          );
+        await age(71);
+        await owner.maintain();
+        assert.deepEqual(await read(), { absent: "unprepared" });
+        // The one-minute dispatch window, ten minutes for GitHub to accept the attempt's JWT, one
+        // hour of token life and the one-minute skew have passed: no token from it can be valid.
+        await age(73);
+      }
+      await owner.maintain();
+      assert.equal(f.gh.issuesOfTokens.length, issued + 1);
+      const material = await read();
+      assert.ok(material && "value" in material, "the successor received material");
+      assert.equal(await f.providerStatus(material.value), 200);
+      // The predecessor's attempt keeps its recorded outcome; settlement is never a rewrite.
+      assert.deepEqual(await attempts(first.familyId), [
+        { state: "quarantined", custody: outcome === "refused" ? "not_issued" : "intent" },
+      ]);
+      assert.deepEqual(f.gh.errors, []);
+    },
+  );
+}

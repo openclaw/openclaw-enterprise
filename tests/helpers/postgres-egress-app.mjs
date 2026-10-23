@@ -9,6 +9,7 @@ export async function postgresApp(t, options, transportDatabaseUrl) {
     controllerOptions: {
       preparedTokens: options.preparedTokens,
       driverConfigurations: options.driverConfigurations,
+      ...(options.now && { now: options.now }),
     },
     stateOptions: { preparedTokenProof: options.preparedTokens?.postgresCurrentProof },
     authSecret: "static-egress-fixture-session-secret-2026",

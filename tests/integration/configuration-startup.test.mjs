@@ -917,6 +917,17 @@ test("repository startup constructs the same local resolver without a private so
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
 });
 
+function nativeSenderRefusal(path, code) {
+  return (error) => {
+    assert.equal(error.name, "ConfigurationValidationError");
+    assert.deepEqual(
+      error.error.details.map((detail) => [detail.path, detail.code]),
+      [[path, code]],
+    );
+    return true;
+  };
+}
+
 test("repository startup rejects unmatched ownership, registry identity, duration and CA inputs", async (t) => {
   const { configuration: baseline, tls, writableCaPath } = await repositoryInstallation(t);
   for (const [mutate, expected] of [
@@ -953,6 +964,14 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     ],
     [(value) => (value.repository.nativeSender.publicCaPath = tls.keyFile), /invalid-public-ca/],
     [(value) => (value.repository.nativeSender.publicCaPath = writableCaPath), /invalid-public-ca/],
+    // The native sender's path contract (finding 2214): an existing CA file under a
+    // non-canonical path is refused at load. The control socket client checks its own path.
+    [
+      (value) =>
+        (value.repository.nativeSender.publicCaPath =
+          value.repository.nativeSender.publicCaPath.replace(/\/ca\.crt$/, "/./ca.crt")),
+      nativeSenderRefusal("", "INVALID_VALUE"),
+    ],
     [(value) => (value.repository.package = "@example/driver"), /unsupported option package/],
     [(value) => (value.repository.implementation = "other"), /unsupported option implementation/],
     [(value) => (value.drivers.compute.id = "compute-ssh"), /bundled Kubernetes/],
@@ -963,6 +982,15 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
     [
       (value) => (value.drivers.compute.configuration.network.repositoryCredentials.port = 443),
       /repository service peer/,
+    ],
+    // Without native delivery no repository material Secret exists and the chart grants no
+    // Secret list, so a peer left behind is refused rather than looping on 403 (finding 2212).
+    [
+      (value) => {
+        delete value.repository;
+        delete value.backend;
+      },
+      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
     ],
     [
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),

@@ -872,6 +872,18 @@ export async function loadInstallationConfiguration(options: {
         "repository.nativeSender requires an exact Kubernetes repository service peer on port 8443.",
       );
     }
+  } else if (
+    kubernetesCompute &&
+    (compute.configuration as unknown as KubernetesComputeDriverOptions).network
+      .repositoryCredentials !== undefined
+  ) {
+    // The peer makes Compute project and clean up repository material Secrets. Only native
+    // delivery creates them, and only its chart grants the worker Secret list, so a peer
+    // left behind after a switch to protected Git fails every stop, retire and delete with a
+    // 403 (finding 2212).
+    throw new Error(
+      "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
+    );
   }
   const sandbox =
     sandboxSelection === undefined
