@@ -471,7 +471,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
     assert.equal(await save.evaluate((node) => node === document.activeElement), true);
     await page.keyboard.press("Enter");
   }
-  await nextFrames(page, 2);
+  await nextFrames(page);
   assert.deepEqual(writes, []);
 });
 
