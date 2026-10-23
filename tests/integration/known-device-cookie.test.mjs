@@ -334,7 +334,7 @@ test(
     const Fastify = require("fastify");
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const origin = "http://127.0.0.1";
     const authSecret = `test-secret-${randomUUID()}-${randomUUID()}`;
     const address = `route-${randomUUID()}@example.test`;
@@ -451,7 +451,7 @@ test(
     let reads = 0;
     const { passwordFailureAdmission } =
       await import("../../apps/controller/src/auth/admission.ts");
-    const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+    const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
     const admission = passwordFailureAdmission({
       perAddress: 1,
       perEmail: 1,
@@ -514,7 +514,7 @@ async function globalProofHandler(lookup) {
     new URL("../../apps/controller/src/auth/index.ts", import.meta.url),
   );
   const Fastify = require("fastify");
-  const { createControllerAuth } = await import("../../apps/controller/src/auth/index.ts");
+  const { createControllerAuth } = await import("../helpers/password-hasher.mjs");
   const { passwordFailureAdmission } = await import("../../apps/controller/src/auth/admission.ts");
   const origin = "http://127.0.0.1";
   const address = `global-proof-${randomUUID()}@example.test`;

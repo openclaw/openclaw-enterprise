@@ -6,10 +6,8 @@ import {
   PostgresHumanAuthentication,
   PostgresPlatformState,
 } from "../../packages/occ/src/index.ts";
-import {
-  betterAuthIssuer,
-  createPostgresControllerAuth,
-} from "../../apps/controller/src/auth/index.ts";
+import { betterAuthIssuer } from "../../apps/controller/src/auth/index.ts";
+import { createPostgresControllerAuth } from "../helpers/password-hasher.mjs";
 import { ensureDevelopmentBootstrap } from "../helpers/bootstrap-installation.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 

@@ -80,16 +80,16 @@ function documentationPath(path) {
 
 // Test-only mode: flat test files under the runner's test roots and the lane
 // manifests the suite index names. Helpers, fixtures and the index are not here.
-const testPath = /^tests\/(?:conformance|integration|browser|docs)\/[A-Za-z0-9._-]+\.test\.mjs$/;
+const testPath =
+  /^tests\/(?:conformance|integration|browser|docs)\/[A-Za-z0-9._-]+\.test\.(?:mjs|ts)$/;
 const manifestPath = /^scripts\/ci\/test-suites\/[a-z0-9-]+\.json$/;
 const suiteIndexPath = "scripts/ci/test-suites.json";
 const laneName = /^[a-z0-9-]+$/;
 // Static Checks lints, format-checks and builds documentation in every mode.
-// Checks and Conformance 1's Go CLI check and part 2's typecheck read no test
-// file, so a test-only change runs a part only when its lane lists a changed
-// test. Part 1 is also the matrix lane a selection needs when only the runtime
-// image fixture (its own job) would run.
+// Test-only changes run the owning lanes. TypeScript tests also need part 2's
+// typecheck. Part 1 supplies the matrix lane when only the image fixture would run.
 const fallbackLane = "checks-baseline-1";
+const typecheckLane = "checks-baseline-2";
 const fixtureLane = "runtime-image-fixture";
 
 function isObject(value) {
@@ -292,6 +292,12 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
     }
     for (const name of lanes) {
       selected.add(name);
+    }
+    if (path.endsWith(".ts")) {
+      if (!index.ci.has(typecheckLane)) {
+        throw new InspectionError("typecheck lane is unavailable", "manifest_unavailable");
+      }
+      selected.add(typecheckLane);
     }
     // Other files may read, copy or run a test file; then its lanes are not enough.
     const name = path.slice(path.lastIndexOf("/") + 1);

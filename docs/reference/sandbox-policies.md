@@ -85,6 +85,9 @@ Saving additions requires `expectedVersion` and advances the desired policy
 version. It performs no provider mutation. Deploy explicitly to freeze selected
 Driver defaults and approved additions into a new immutable AgentRevision;
 deployment retains its usual authorization and interruption behavior.
+In the Console, **Save and apply to current revision** proceeds to application
+only when the save response identifies this policy, its next version, and the
+rules shown in review. An unconfirmed save requires a policy refresh.
 
 Live application additionally requires a supporting Driver, enabled editing, the
 expected desired version, and the exact running revision. OCC records a durable

@@ -1,15 +1,15 @@
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 
 import { type LoggingConfiguration, operationalLoggingConfiguration } from "../logging.ts";
+import { closed, nonempty, object, type ConfigurationRecord } from "./installation-fields.ts";
 
 // Reads and admits the Installation startup YAML. The full loader in installation-config.ts and
 // loadOperationalLoggingConfiguration share this reader, so both refuse the same files with the same
 // errors. Keep Driver, Kubernetes client, and schema imports out of this module's static graph: the
 // migration command imports it directly and pays for every module it loads on every run.
 
-export type ConfigurationRecord = Readonly<Record<string, unknown>>;
+export { closed, nonempty, object, type ConfigurationRecord } from "./installation-fields.ts";
 
 interface LoadedStartupConfiguration {
   readonly configuration?: ConfigurationRecord;
@@ -27,29 +27,6 @@ const FORBIDDEN_SECRET_VALUE =
  */
 export function withoutByteOrderMark(text: string): string {
   return text.startsWith("\uFEFF") ? text.slice(1) : text;
-}
-
-export function object(value: unknown, path: string): ConfigurationRecord {
-  const result = asRecord(value);
-  if (result === undefined) {
-    throw new Error(`${path} must be one object.`);
-  }
-  return result;
-}
-
-export function closed(value: ConfigurationRecord, keys: readonly string[], path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!keys.includes(key)) {
-      throw new Error(`${path} contains unsupported option ${key}.`);
-    }
-  }
-}
-
-export function nonempty(value: unknown, path: string): string {
-  if (!isNonEmptyString(value)) {
-    throw new Error(`${path} must be a nonempty string.`);
-  }
-  return value;
 }
 
 function safe(value: unknown, path: string): void {
@@ -137,6 +114,7 @@ export async function startupConfiguration(
       "backend",
       "logging",
       "presets",
+      "repository",
       "observability",
       "runtime",
       "sandboxNetworkPolicyCeiling",

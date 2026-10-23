@@ -1,0 +1,38 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "composite": false,
+    "declaration": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "erasableSyntaxOnly": true,
+    "tsBuildInfoFile": "../.build/tests/tsconfig.tsbuildinfo"
+  },
+  "include": [
+    "**/*.test.ts",
+    "../scripts/console-storybook/*.stories.ts",
+    "helpers/credential-source-owner-upgrade.ts"
+  ],
+  "references": [
+    {
+      "path": "../packages/utils"
+    },
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/occ"
+    },
+    {
+      "path": "../packages/iam"
+    },
+    {
+      "path": "../packages/audit"
+    },
+    {
+      "path": "../apps/controller"
+    }
+  ]
+}

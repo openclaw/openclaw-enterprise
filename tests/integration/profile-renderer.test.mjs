@@ -31,6 +31,7 @@ import {
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { helmTemplate } from "../helpers/production-chart.mjs";
 import {
   RenderRefusal,
   renderInstallationProfile,
@@ -128,6 +129,8 @@ function managedCodexInput(overrides = {}) {
 function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
   return {
     enabled: true,
+    authority: "prepared-git",
+    preparedCustodySecretName: "occ-repository-custody",
     image: `registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:${digestC}`,
     backendId: "github-primary",
     registryConfigMapName: "occ-repository-registry-v1",
@@ -289,29 +292,6 @@ async function startDnsFixture(t, records) {
     }),
   ]);
   return { directory, queriesPath, server: `127.0.0.1:${port}` };
-}
-
-function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraArgs = []) {
-  return execFileSync(
-    helm,
-    [
-      "template",
-      releaseName,
-      "deploy/helm/openclaw-enterprise",
-      "--namespace",
-      "openclaw-system",
-      "--values",
-      join(output.directory, "values.yaml"),
-      ...extraValueFiles.flatMap((path) => ["--values", path]),
-      ...extraArgs,
-    ],
-    {
-      cwd: repository,
-      encoding: "utf8",
-      maxBuffer: 2_000_000,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
 }
 
 function deploymentChecksum(manifests, component) {
@@ -856,6 +836,7 @@ const credentialSecretNames = [
 const repositorySecretKeys = [
   "serviceConfigSecretName",
   "appKeySecretName",
+  "preparedCustodySecretName",
   "tlsSecretName",
   "publicCaSecretName",
 ];
@@ -884,6 +865,7 @@ test(
       "occ-chatgpt-admin",
       "occ-repository-service-config",
       "occ-repository-app-key",
+      "occ-repository-custody",
       "occ-repository-tls",
       "occ-repository-public-ca",
     ]) {
@@ -959,6 +941,12 @@ test(
         ["appKeySecretName", root, "the generated Gateway root CA"],
         ["appKeySecretName", "occ-database", "database.secretName"],
         ["appKeySecretName", "occ-private-gateway-key", "gatewayRouting.apiKeySecretName"],
+        ["preparedCustodySecretName", "occ-database", "database.secretName"],
+        [
+          "preparedCustodySecretName",
+          "occ-repository-app-key",
+          "repositoryCredentials.appKeySecretName",
+        ],
         ["tlsSecretName", "occ-chatgpt-admin", "backend.chatgpt.secretName"],
         ["tlsSecretName", "occ-repository-app-key", "repositoryCredentials.appKeySecretName"],
       ].map(([key, secretName, other]) => [
@@ -2069,6 +2057,7 @@ function checkoutWithoutDependencies() {
   const sources = [
     "package.json",
     "scripts/render-installation-profile.mjs",
+    "scripts/lib/prepared-repository-installation.mjs",
     "deploy/profiles",
     "apps/controller/package.json",
     "apps/controller/src",
@@ -2849,6 +2838,19 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
+    // Harness model egress is TCP/443 to public IPv4 only (finding 1740).
+    [
+      "https://models.example.com:8443/v1",
+      "must use port 443: Harness model egress allows only TCP/443.",
+    ],
+    [
+      "https://[2001:db8::1]/v1",
+      "must not be an IPv6 address: Harness model egress allows only IPv4.",
+    ],
+    [
+      "https://10.0.0.1/v1",
+      "IPv4 host must be outside 10.0.0.0/8, 100.64.0.0/10, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16: Harness model egress excludes them.",
+    ],
   ]) {
     await assertFieldRefusals("codex", codexInput(), field, [value], message);
     assert.throws(

@@ -39,10 +39,12 @@ var sleepContext = func(ctx context.Context, d time.Duration) error {
 // the latest revision and says so on notices, because that is the version whose
 // Pods and output explain the failure. When it had to read the chosen revision's
 // runtime description to decide, it returns that description too (else nil).
+// revisionAdvice tells a caller who can list no revision how to name one
+// anyway, or is "" when the command itself needs revision read.
 func (app *application) agentRevision(
 	client *occclient.Client,
 	notices io.Writer,
-	namespace, agentID, revision string,
+	namespace, agentID, revision, revisionAdvice string,
 ) (string, any, error) {
 	if revision != "" {
 		if err := revisionIDArg.check(revision, namespace); err != nil {
@@ -58,6 +60,13 @@ func (app *application) agentRevision(
 	active, _ := resource["activeRevisionId"].(string)
 	if active == "" {
 		latest, err := latestRevisionID(client, namespace, agentID)
+		if errors.Is(err, errNoReadableRevisions) {
+			return "", nil, noReadableRevisionsError(
+				client, namespace, agentID,
+				fmt.Sprintf("agent %s has no active revision and no revision you can read", agentID),
+				revisionAdvice,
+			)
+		}
 		if err != nil {
 			return "", nil, err
 		}
@@ -105,6 +114,15 @@ func (app *application) agentRevision(
 			"notice: reading the active revision %s; %s %s exists but its runtime could not be read (%v); pass --revision %s to read it",
 			active, other, probe.latest, probe.err, probe.latest,
 		)
+	case probe.unlisted && revisionAdvice != "":
+		// The list is filtered by revision read and the active revision is not in
+		// it, so the caller may read no revision: say what was not checked. A
+		// command that itself needs revision read is refused with a hint instead.
+		noticef(
+			notices,
+			"notice: reading the active revision %s; you can read none of agent %s's revisions, so a newer or failed revision was not checked (listing revisions needs revision read)",
+			active, agentID,
+		)
 	default:
 		noticef(notices, "notice: reading the active revision %s", active)
 	}
@@ -127,13 +145,18 @@ type newerRevision struct {
 	description any
 	// err is the failure to read latest's runtime description.
 	err error
+	// unlisted reports an empty revision list: the caller may read no revision.
+	unlisted bool
 }
 
 // newerRevisionWithRuntime looks for a latest revision that is not the active one
 // and checks for Pods or running, starting or lost provider Harness status. A failure to
-// list revisions keeps the active revision silently.
+// list revisions keeps the active revision silently; an empty list sets unlisted.
 func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, active string) newerRevision {
 	latest, number, err := latestReadableRevision(client, namespace, agentID)
+	if errors.Is(err, errNoReadableRevisions) {
+		return newerRevision{unlisted: true}
+	}
 	if err != nil || latest == active {
 		return newerRevision{}
 	}
@@ -194,7 +217,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			revisionID, description, err := app.agentRevision(client, command.ErrOrStderr(), namespace, args[0], revision)
+			revisionID, description, err := app.agentRevision(client, command.ErrOrStderr(), namespace, args[0], revision, "")
 			if err != nil {
 				return err
 			}
@@ -312,7 +335,11 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 	}
 	ctx := cmp.Or(app.ctx, context.Background())
 	notices := command.ErrOrStderr()
-	revisionID, _, err := app.agentRevision(client, notices, namespace, agentID, options.revision)
+	revisionID, _, err := app.agentRevision(
+		client, notices, namespace, agentID, options.revision,
+		// Log text needs no revision read, so a known revision ID still reads it.
+		"pass --revision with a revision ID",
+	)
 	if err != nil {
 		if options.follow && ctx.Err() != nil {
 			return nil

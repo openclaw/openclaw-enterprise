@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
@@ -27,6 +28,7 @@ import {
   sha256Hex,
 } from "@openclaw-enterprise/utils";
 import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness-auth-method.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
 import { WORKSPACE_SETUP_RUNTIME } from "../workspace-setup-runtime.ts";
@@ -477,10 +479,17 @@ export class SshComputeDriver implements ComputeDriver {
     }
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     this.lifecycleStarted = true;
     this.validateWorkloadRevision(revision, context);
     const result = await this.revisionOperation("prepare-revision", revision, undefined, context);
@@ -493,6 +502,7 @@ export class SshComputeDriver implements ComputeDriver {
   }
 
   async activateRevision(revision: AgentRevision, context?: ComputeRevisionContext): Promise<void> {
+    assertExecutionReleaseAllowed(revision);
     this.lifecycleStarted = true;
     this.validateWorkloadRevision(revision, context);
 
@@ -504,15 +514,11 @@ export class SshComputeDriver implements ComputeDriver {
       if (launch === undefined) {
         throw error;
       }
-      try {
-        await this.lifecycle.beforeWorkloadStop(revision, { cleanup: true });
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          "SSH workload activation and lifecycle cleanup failed.",
-        );
-      }
-      throw error;
+      throw await failureAfterCleanup(
+        error,
+        "SSH workload activation and lifecycle cleanup failed.",
+        [() => this.lifecycle.beforeWorkloadStop(revision, { cleanup: true })],
+      );
     }
   }
 

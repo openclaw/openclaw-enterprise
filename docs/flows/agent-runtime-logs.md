@@ -174,7 +174,7 @@ Signed checkpoints retain prefix digest/count, query floor and baseline, with
 ambiguous replacements reset with gaps. Sandbox pins short/unordered windows,
 untimed rows and overflowing groups. Full timed groups use counted overlap;
 cuts retain a rollover witness. Uncertain context resets with a gap and replay;
-container recovery retains reset gaps without duplicates.
+container recovery gaps once unless a short uncut window precedes the delivered frontier.
 All-untimed Driver byte cuts retain progress;
 mixed cuts advance through time with an explicit reset that may replay untimed rows.
 Matching checkpoints retain positional proof. Stable windows drain overflowing groups. UID/restarts reset progress; PEM recovery
@@ -196,7 +196,7 @@ reject reserved `content`. Container headers label `instance` without Pods. Cons
 take `-previous.log` from the request; current and Sandbox names stay unchanged.
 `runtimeLogPageAtLevel` filters after signing, preserving unknown levels, gaps and withheld counts.
 
-`console/agents/logs.mjs` clears output when status selects another source, Pod or instance.
+`console/agents/logs.mts` clears output when status selects another source, Pod or instance.
 Only a readable replacement starts a fresh tail. Status denial preserves log access; cached `403` avoids repeat denials.
 Filters use loaded rows; debug is opt-in. Pod cards show state/exit; Gateway links Harness output or Deployment activity.
 

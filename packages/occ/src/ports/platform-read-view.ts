@@ -35,6 +35,10 @@ export function createPlatformReadView(
       "listReferences",
     ]),
     credentialSources: bindRepository(repositories.credentialSources, lifetime, [
+      "findEgressInstallation",
+      "findRevisionEgressInstallation",
+      "listCredentialPolicyReductions",
+      "isEgressMaterialRejected",
       "findCredentialSource",
       "listCredentialSources",
       "findCredentialWithdrawal",
@@ -71,6 +75,10 @@ export function createPlatformReadView(
       "getServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

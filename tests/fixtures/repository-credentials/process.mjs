@@ -153,6 +153,9 @@ export async function createTlsMaterial(t) {
   };
 }
 
+// Like tests/helpers/listen.mjs (note: positional `port` before `host`, and it returns an
+// https URL), but self-contained: the isolation fixture mounts this directory alone into
+// its containers, where tests/helpers is absent.
 export async function listen(t, server, port = 0, host = "127.0.0.1") {
   const sockets = new Set();
   server.on("connection", (socket) => {
