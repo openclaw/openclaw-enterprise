@@ -190,7 +190,8 @@ for (const mode of ["transient", "generic"]) {
 // wait and refunded its attempt, so the pass failed again every lease, forever. Like an invalid
 // scope, an unreadable row cannot recover by itself: it stays an ordinary retry that the attempt
 // limit ends. The last attempt's own result cannot lock an unreadable Agent either, so its lease
-// expires. Transient failures keep the wait (above, and finding 1041 in -replacement).
+// expires; the injected revision failure (below) leaves that result readable. Transient failures
+// keep the wait (above, and finding 1041 in -replacement).
 for (const [row, code] of [
   ["Agent", "LEASE_EXPIRED"],
   ["AgentRevision", "DEPENDENCY_UNAVAILABLE"],
@@ -212,7 +213,8 @@ for (const [row, code] of [
         },
       );
       await waitForRefusedStopWaits(events, replacement, 1);
-      const restore = await makeUnreadable(fixture, row, owner, replacement);
+      const restore =
+        row === "Agent" ? await unreadableAgent(fixture, owner) : unreadableRevision(replacement);
       try {
         await assertWorkEnds(fixture, replacement, "failed_permanent", code);
         assert.ok(
@@ -231,18 +233,53 @@ for (const [row, code] of [
   );
 }
 
-// Makes the Agent's row or the candidate AgentRevision unreadable; returns an undo for the latter.
-async function makeUnreadable(fixture, row, owner, candidate) {
-  if (row === "Agent") {
-    // The column only checks for an object; the reader also checks each plugin entry.
-    await fixture.observerPool.query(
-      `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
-      [owner.id],
+// The stop reads only the candidate's Namespace, Agent and revision, so an unreadable active
+// revision fails the pass's first reads but keeps the wait: on an exclusive Compute an ordinary
+// retry would end the work with the candidate running and its refusal lost (finding 1041).
+test(
+  "a refused candidate's wait over an unreadable active revision still stops the candidate",
+  { ...requiresPostgres, timeout: 90_000 },
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2, leaseDurationMs: 5_000 });
+    const events = [];
+    const stop = failingStop();
+    const { first, replacement, driver } = await startRefusedCandidate(
+      fixture,
+      "refused-unreadable-active",
+      {
+        refuse: "unsupported",
+        emit: (event) => events.push(event),
+        stopRevision: stop.stopRevision,
+      },
     );
-    return () => {};
-  }
-  // Admitted revisions are immutable, so the reader's refusal (an older admission a newer
-  // controller no longer decodes) is injected at every read of the candidate.
+    await waitForRefusedStopWaits(events, replacement, 1);
+    const restore = unreadableRevision(first);
+    try {
+      const before = stop.failed.length;
+      await stop.waitForFailures(before + 2, 30_000);
+      stop.succeed();
+      await assertWorkEnds(fixture, replacement, "failed_permanent", "SANDBOX_HARNESS_UNSUPPORTED");
+      assert.ok(!driver.running.has(replacement.id), "the refused candidate was stopped");
+    } finally {
+      restore();
+    }
+  },
+);
+
+/** Makes the Agent's row unreadable: the column only checks for an object, the reader each entry. */
+async function unreadableAgent(fixture, owner) {
+  await fixture.observerPool.query(
+    `UPDATE occ.agents SET plugins = '{"entries": "unreadable"}'::jsonb WHERE id = $1`,
+    [owner.id],
+  );
+  return () => {};
+}
+
+/**
+ * Admitted revisions are immutable, so the reader's refusal (an older admission a newer controller
+ * no longer decodes) is injected at every `findRevision` of `revision`. Returns its undo.
+ */
+function unreadableRevision(revision) {
   const read = PostgresPlatformState.prototype.read;
   PostgresPlatformState.prototype.read = function (work) {
     return read.call(this, (view) =>
@@ -251,7 +288,7 @@ async function makeUnreadable(fixture, row, owner, candidate) {
         revisions: {
           ...view.revisions,
           async findRevision(namespaceId, agentId, revisionId) {
-            if (revisionId === candidate.id) {
+            if (revisionId === revision.id) {
               throw new PersistedStateInvalidError("Persisted AgentRevision summary is invalid.");
             }
             return view.revisions.findRevision(namespaceId, agentId, revisionId);

@@ -6219,8 +6219,8 @@ export class ControllerWorker {
    * leaves the claim to lease recovery, which keeps a stored wait and refunds its attempt. An
    * invalid row (a ScopeViolationError, or persisted state its reader cannot decode) cannot
    * recover by itself, so it stays a retry that the attempt limit ends instead of a wait repeated
-   * forever (finding 1801). It is not read again: a wait read past it would stop the candidate,
-   * whose reads fail the same way.
+   * forever (finding 1801). After one, the wait is kept only if the stop can still read its
+   * Namespace, Agent and revision: an unreadable active revision alone does not block the stop.
    */
   private async rereadRefusalWait(
     claim: ClaimedWork,
@@ -6235,13 +6235,15 @@ export class ControllerWorker {
     ) {
       return;
     }
-    if (unrecoverableRead(error)) {
-      return;
-    }
     try {
-      const current =
-        agent ??
-        (await this.state.read((view) => view.agents.findAgent(claim.namespaceId, agentId)));
+      const current = await this.state.read(async (view) => {
+        if (unrecoverableRead(error)) {
+          // The rows `stopRefusedCandidate` reads.
+          await view.namespaces.findNamespace(claim.namespaceId);
+          await view.revisions.findRevision(claim.namespaceId, agentId, revisionId);
+        }
+        return agent ?? view.agents.findAgent(claim.namespaceId, agentId);
+      });
       if (current !== undefined) {
         await this.readRefusalWait(claim, current, revisionId);
       }
@@ -6249,7 +6251,7 @@ export class ControllerWorker {
       if (reread instanceof WorkClaimLostError) {
         throw reread;
       }
-      if (unrecoverableRead(reread)) {
+      if (unrecoverableRead(reread) || unrecoverableRead(error)) {
         return;
       }
       // The run loop's own log names no work.

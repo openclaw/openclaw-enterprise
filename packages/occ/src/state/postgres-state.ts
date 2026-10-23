@@ -280,7 +280,14 @@ function timestamp(row: PostgresRow, key: string): string {
 }
 
 function jsonObject(value: unknown): Record<string, unknown> {
-  const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
+  let parsed: unknown = value;
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch {
+      throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
+    }
+  }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
   }
@@ -3006,7 +3013,7 @@ export class PostgresPlatformState implements PlatformStateStore {
           ],
         );
         if (updated.rowCount !== inputs.length) {
-          throw new PersistedStateInvalidError(
+          throw new DependencyUnavailableError(
             "Persisted credential source Secret fields are invalid.",
           );
         }
