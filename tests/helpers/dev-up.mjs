@@ -622,7 +622,12 @@ function lifecycleCommand(fake, invocation, io) {
         save();
       } else if (args.includes("ps")) {
         output(args.at(-1) + "-container-id");
-      } else if (!args.includes("exec") && !args.includes("logs") && !args.includes("stop")) {
+      } else if (
+        !args.includes("build") &&
+        !args.includes("exec") &&
+        !args.includes("logs") &&
+        !args.includes("stop")
+      ) {
         fail("unexpected compose: " + args.join(" "));
       }
     } else {

@@ -143,6 +143,9 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 	if err := r.stopComposeReconcilers(ctx, s); err != nil {
 		failures = append(failures, err)
 	}
+	if r.composeUnsettled {
+		return errors.Join(failures...)
+	}
 	if clusterAttempted {
 		exists, err := r.clusterExists(ctx, s.Cluster)
 		if err != nil {

@@ -916,7 +916,9 @@ for (const driver of ["docker", "kubernetes"]) {
       const override = join(fixture.directory, "host-network.yaml");
       await writeFile(
         override,
-        `services:\n  ${service}:\n    network_mode: host\n    networks: !reset []\n    ports: !reset []\n`,
+        // Replace the entire service so inherited networks cannot make the
+        // loader reject it before the launcher's network validator runs.
+        `services:\n  ${service}: !override\n    image: example.invalid/network-check:fixture\n    network_mode: host\n`,
       );
       const options =
         driver === "kubernetes"
@@ -930,11 +932,7 @@ for (const driver of ["docker", "kubernetes"]) {
       assert.notEqual(result.status, 0);
       assert.match(
         result.stderr,
-        // The Compose loader can reject inherited networks combined with host
-        // networking before OCE's publication validator receives the model.
-        new RegExp(
-          `Compose ${service} must use the development network|Compose config failed|could not resolve Compose configuration`,
-        ),
+        new RegExp(`Compose ${service} must use the development network, not network_mode`),
       );
       await assert.rejects(stat(fixture.env.OCC_DEVELOPMENT_STATE_DIRECTORY), { code: "ENOENT" });
       const commands = await readJsonLines(fixture.env.SAFETY_LOG);
@@ -954,8 +952,12 @@ for (const driver of ["docker", "kubernetes"]) {
     ["postgres", 5432, "PostgreSQL"],
   ]) {
     for (const [mapping, publication, error] of [
-      ["public", `"0.0.0.0:39000:${port}"`, "must publish only on loopback"],
-      ["target-only", `"${port}"`, "must publish only on loopback"],
+      [
+        "public",
+        `{target: ${port}, published: "39000", host_ip: "0.0.0.0"}`,
+        "must publish only on loopback",
+      ],
+      ["target-only", `{target: ${port}}`, "must publish only on loopback"],
       [
         "loopback-dynamic",
         `{target: ${port}, host_ip: "127.0.0.1"}`,
@@ -971,7 +973,7 @@ for (const driver of ["docker", "kubernetes"]) {
         // Kubernetes supplies its own base files and project; do not load the base twice.
         const options =
           driver === "kubernetes"
-            ? ["--env-file", fixture.emptyEnv, "--project-directory", ".", "-f", override]
+            ? ["--env-file", fixture.emptyEnv, "-f", override]
             : composeOptions(fixture, override);
         const result = await runDevUp(
           ["--key-output", join(fixture.directory, "key.json"), "--", ...options],
@@ -984,12 +986,7 @@ for (const driver of ["docker", "kubernetes"]) {
           },
         );
         assert.notEqual(result.status, 0);
-        assert.match(
-          result.stderr,
-          new RegExp(
-            `Compose ${label} port ${error}|Compose port publication must include an explicit host IP`,
-          ),
-        );
+        assert.match(result.stderr, new RegExp(`Compose ${label} port ${error}`));
         await assert.rejects(stat(stateDirectory), { code: "ENOENT" });
         const commands = await readJsonLines(fixture.env.SAFETY_LOG);
         assert.equal(

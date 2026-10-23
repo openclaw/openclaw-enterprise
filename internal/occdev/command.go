@@ -27,9 +27,10 @@ type Options struct {
 }
 
 type runner struct {
-	opts   Options
-	env    map[string]string
-	engine string
+	opts             Options
+	env              map[string]string
+	engine           string
+	composeUnsettled bool
 	// automaticNodeResolver is the host upstream resolver that startup chose for
 	// the k3d node because OCC_DEVELOPMENT_K3D_DNS_RESOLVER was unset.
 	automaticNodeResolver string
@@ -83,20 +84,44 @@ func (r *runner) run(ctx context.Context, name string, args ...string) error {
 	return nil
 }
 func (r *runner) compose(ctx context.Context, state *developmentState, args ...string) error {
-	ctx, cancel, err := r.composeContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer cancel()
-	return r.run(ctx, r.engine, append(state.composeCommand(), args...)...)
+	_, err := r.invokeCompose(ctx, state, false, args...)
+	return err
 }
 func (r *runner) composeOutput(ctx context.Context, state *developmentState, args ...string) ([]byte, error) {
-	ctx, cancel, err := r.composeContext(ctx)
+	return r.invokeCompose(ctx, state, true, args...)
+}
+
+func (r *runner) invokeCompose(ctx context.Context, state *developmentState, capture bool, args ...string) ([]byte, error) {
+	// Cold builds retain their caller's cancellation context without consuming
+	// the readiness budget. All startup calls use --no-build after this step.
+	if len(args) == 0 || args[0] != "build" {
+		bounded, cancel, err := r.composeContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer cancel()
+		ctx = bounded
+	}
+	cmd := r.command(ctx, r.engine, append(state.composeCommand(), args...)...)
+	finish, err := ownComposeProcessGroup(cmd)
 	if err != nil {
 		return nil, err
 	}
-	defer cancel()
-	return r.output(ctx, r.engine, append(state.composeCommand(), args...)...)
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = r.opts.Out, r.opts.Err
+	if capture {
+		cmd.Stdout, cmd.Stderr = &output, io.Discard
+	}
+	runErr := cmd.Run()
+	groupErr := finish()
+	if groupErr != nil {
+		// An unconfirmed provider must not race rollback or state removal.
+		r.composeUnsettled = true
+	}
+	if runErr != nil || groupErr != nil {
+		return nil, fmt.Errorf("%s Compose failed: %w", r.engine, errors.Join(ctx.Err(), runErr, groupErr))
+	}
+	return bytes.TrimSpace(output.Bytes()), nil
 }
 
 func (r *runner) composeContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
@@ -109,9 +134,15 @@ func (r *runner) composeContext(ctx context.Context) (context.Context, context.C
 }
 
 func (r *runner) composeServiceID(ctx context.Context, state *developmentState, service string) ([]byte, error) {
-	id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
-		"--filter", "label=com.docker.compose.project="+state.ComposeProject,
-		"--filter", "label=com.docker.compose.service="+service)
+	args := []string{"ps", "--all", "--quiet",
+		"--filter", "label=com.docker.compose.project=" + state.ComposeProject,
+		"--filter", "label=com.docker.compose.service=" + service}
+	// Docker Compose labels regular services explicitly. podman-compose 1.5
+	// omits the oneoff label; ambiguous Podman matches must still fail closed.
+	if r.engine == "docker" {
+		args = append(args, "--filter", "label=com.docker.compose.oneoff=False")
+	}
+	id, err := r.output(ctx, r.engine, args...)
 	if err != nil {
 		return nil, err
 	}
