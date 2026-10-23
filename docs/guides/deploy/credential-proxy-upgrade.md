@@ -86,6 +86,8 @@ retirement of the earlier broker trial. New startup rejects `drivers.repo` and
    reduce policy in place, require `revoked` and a fresh denied request. If it
    reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`, proceed to step 2;
    waiting for this attempt to return `revoked` will not fence the execution.
+   If `revisionId` names a version other than the selected one, see
+   [withdrawal](../../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent) instead.
    Repository access uses the [standing or finite withdrawal sequence](../credential-proxy.md#withdraw-repository-access).
 
 2. When the runtime must be fenced, request a stop:

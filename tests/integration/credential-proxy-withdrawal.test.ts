@@ -55,7 +55,7 @@ test(
         },
       ],
       appFactory: async (context: TestContext, options: object = {}) => {
-        // Recorded deployment work tells a failed candidate from one still deploying.
+        // Record deployment work, so a candidate can fail through the real queue.
         const app = await postgresApp(context, { ...options, recordOperations: true });
         api = app.request;
         state = app.state;
@@ -231,13 +231,16 @@ test(
     // then one still deploying. Neither is the Agent's active revision.
     const failedCandidate = await baseFixture.deployAgent(f.namespace.id, f.agent.id);
     const queue = new PostgresWorkQueue(pool);
-    for (let claim = await queue.claim(); ; claim = await queue.claim()) {
+    // Retried work becomes due after the candidate's, and exhausted work stops being claimable,
+    // so this loop ends.
+    for (;;) {
+      const claim = await queue.claim();
       assert.ok(claim, "the failed candidate's deployment is claimable");
       if (claim.idempotencyKey === `agent_revision:${failedCandidate.id}:reconcile`) {
         await queue.fail(claim, { code: "CONVERGENCE_DEADLINE_EXCEEDED" });
         break;
       }
-      // Earlier deployments stay queued.
+      // Other work is only retried.
       await queue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
     }
     const deployingCandidate = await baseFixture.deployAgent(f.namespace.id, f.agent.id);
@@ -583,6 +586,41 @@ test(
     );
     assert.equal(pending?.request.operationId, operationId);
     assert.equal(pending?.observed, undefined, "a wrong-recipient observation is not proof");
+    // The deploying candidate becomes active. The superseded revision keeps its recorded,
+    // unobserved operation and asks for retirement without observing or repeating it.
+    const deployingRevision = candidates[1];
+    assert.ok(deployingRevision);
+    assert.ok(
+      await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          f.namespace.id,
+          f.agent.id,
+          revision.id,
+          deployingRevision.id,
+        ),
+      ),
+    );
+    await assert.rejects(reduce(f.source.id), {
+      code: "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+    });
+    assert.equal(applies, 1);
+    assert.deepEqual(
+      await state.read((view) =>
+        view.credentialSources.listCredentialPolicyReductions(f.namespace.id, f.revision.id),
+      ),
+      [pending],
+      "retirement leaves the original operation unobserved",
+    );
+    assert.ok(
+      await state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          f.namespace.id,
+          f.agent.id,
+          deployingRevision.id,
+          revision.id,
+        ),
+      ),
+    );
     observationFault = "none";
     afterObserve = async () => {
       assert.ok(

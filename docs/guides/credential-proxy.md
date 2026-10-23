@@ -220,7 +220,10 @@ Inspect the withdrawal state and reason:
   Agent; record the enforcement refusal and verify that no request reached the
   controlled origin.
 - **Runtime retirement required:** if the reason is
-  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`, follow the
+  `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT` and `revisionId` names a
+  version other than the selected one, see
+  [withdrawal](../reference/credential-sources/withdrawal.md#withdraw-a-source-from-an-agent).
+  For the selected version, follow the
   [retirement procedure](deploy/credential-proxy-upgrade.md#stop-and-settle-before-upgrading).
   Observe retirement of the exact execution, record the actual withdrawal state
   and reason, and leave pending custody with its original owner. Do not restart
