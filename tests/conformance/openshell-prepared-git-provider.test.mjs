@@ -683,6 +683,12 @@ test("Namespace cleanup deletes only workspace-scoped prepared Git profiles", as
       { name: prepared, type: prepared, labels: { "openclaw.dev/prepared-git-binding": owner } },
       { name: "github", type: "github", labels: { "openclaw.dev/prepared-git-binding": owner } },
       { name: "oce-git-" + "c".repeat(32), type: "oce-git-" + "c".repeat(32), labels: {} },
+      // A preparation names the provider after its own profile; another type is not one.
+      {
+        name: installation,
+        type: "github",
+        labels: { "openclaw.dev/prepared-git-binding": owner },
+      },
     ],
     signal(),
   );

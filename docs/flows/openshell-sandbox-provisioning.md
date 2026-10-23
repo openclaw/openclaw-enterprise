@@ -309,7 +309,7 @@ Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
 fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 `DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
-deletes the Git provider and profile and the runtime provider. `cleanupNativeWorkspace` retires
+deletes the runtime provider, then the Git provider and profile. `cleanupNativeWorkspace` retires
 interrupted preparers without a Sandbox, refusing foreign/replaced resources.
 
 Namespace `cleanup` then verifies Workspace ownership, removes

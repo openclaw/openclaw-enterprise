@@ -1167,8 +1167,9 @@ export class OpenShellGitRuntime {
   /**
    * Deletes the revision's Git provider and its profile (finding 2206). The Sandbox Driver calls
    * this only after withdraw() and after OpenShell confirms the revision's Sandbox gone, so no
-   * route can use the provider again: in this process the entry is blocked, and the store's
-   * tombstone refuses adoption by any other worker. (Without a route store, which only the
+   * route can use the provider again: in this process the entry is blocked, and adoption by any
+   * other worker finds neither the Sandbox nor the provider (the store's tombstone, written best
+   * effort, refuses it earlier). (Without a route store, which only the
    * unprotected git-write path lacks, a restarted worker asked to prepare the revision again
    * starts a new bootstrap with every admission check, as a first preparation does.) The name
    * derives from the revision's own scope, as at preparation, so a restarted worker finds
