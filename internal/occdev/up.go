@@ -145,19 +145,9 @@ func Up(ctx context.Context, opts Options) (result error) {
 	r.env["OCC_DEVELOPMENT_INSTALLATION_CONFIG"] = filepath.Join(directory, "installation.yaml")
 	r.env["OCC_DEVELOPMENT_KUBECONFIG"] = filepath.Join(directory, "container-kubeconfig")
 	r.env["OCC_DEVELOPMENT_NETWORK_NAME"] = state.ComposeProject + "_development"
-	args := []string{"compose", "--project-name", state.ComposeProject, "-f", "compose.yaml", "-f", "compose.kubernetes.yaml"}
-	if state.BrowserPort != 0 {
-		args = append(args, "-f", "compose.native-admin.yaml")
-	}
-	args = append(args, opts.ComposeArgs...)
-	args = append(args, "config")
-	config, err := r.output(ctx, r.engine, args...)
+	rendered, err := r.resolveCompose(ctx, state)
 	if err != nil {
 		return err
-	}
-	var rendered any
-	if err := yaml.Unmarshal(config, &rendered); err != nil {
-		return fmt.Errorf("invalid rendered Compose configuration: %w", err)
 	}
 	if err := setKubernetesBridgeGateway(rendered); err != nil {
 		return err
@@ -212,6 +202,10 @@ func Up(ctx context.Context, opts Options) (result error) {
 		if result == nil {
 			return
 		}
+		if r.composeUnsettled {
+			result = errors.Join(result, fmt.Errorf("Compose provider termination is unconfirmed; preserving %s without rollback", directory))
+			return
+		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		var cleanupErr error
@@ -246,9 +240,15 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err := exclusiveWrite(filepath.Join(directory, "compose.yaml"), snapshot, 0600); err != nil {
 		return err
 	}
+	if _, err := r.composeOutput(ctx, state, "config", "--quiet"); err != nil {
+		return fmt.Errorf("container engine cannot consume the resolved Compose configuration: %w", err)
+	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose database, migration, and bootstrap services...")
 	started = true
-	if err := r.compose(ctx, state, "up", "--build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
+	if err := r.compose(ctx, state, "build", "postgres", "migrate", "bootstrap"); err != nil {
+		return err
+	}
+	if err := r.compose(ctx, state, "up", "--no-build", "-d", "postgres", "migrate", "bootstrap"); err != nil {
 		return err
 	}
 	for _, service := range []string{"migrate", "bootstrap"} {
@@ -274,6 +274,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		clusterArgs = append(clusterArgs, "--volume", admissionPath+":"+openShellAdmissionContainerPath+":ro@server:0", "--k3s-arg", "--kube-apiserver-arg=admission-control-config-file="+openShellAdmissionContainerPath+"@server:0")
 	}
 	clusterArgs = append(clusterArgs, "--image", clusterImage, "--servers", "1", "--agents", "0", "--network", state.ComposeProject+"_development", "--api-port", fmt.Sprintf("127.0.0.1:%d", port), "--k3s-arg", "--tls-san=k3d-"+state.Cluster+"-serverlb@server:*", "--k3s-arg", fmt.Sprintf("--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<%d%%,nodefs.inodesFree<5%%,imagefs.available<%d%%,imagefs.inodesFree<5%%@server:*", threshold, threshold), "--kubeconfig-update-default=false", "--kubeconfig-switch-context=false")
+	clusterArgs = append(clusterArgs, developmentImageGCArgs()...)
 	if err := r.createK3dCluster(ctx, clusterArgs...); err != nil {
 		clusterCreationFailed = true
 		return err
@@ -343,18 +344,21 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 	}
 	fmt.Fprintln(r.opts.Out, "Starting the Compose controller and Kubernetes worker...")
-	buildOption := "--build"
 	if routing != nil {
 		if err := r.prepareComposeRoutingFiles(ctx, state); err != nil {
 			return err
 		}
-		buildOption = "--no-build"
 	}
-	services := []string{"up", buildOption, "-d", "controller", "worker-kubernetes"}
+	services := []string{"controller", "worker-kubernetes"}
 	if state.BrowserPort != 0 {
 		services = append(services, "browser-proxy")
 	}
-	if err := r.compose(ctx, state, services...); err != nil {
+	if routing == nil {
+		if err := r.compose(ctx, state, append([]string{"build"}, services...)...); err != nil {
+			return err
+		}
+	}
+	if err := r.compose(ctx, state, append([]string{"up", "--no-build", "-d"}, services...)...); err != nil {
 		return err
 	}
 	if routing != nil {
@@ -509,7 +513,7 @@ func (r *runner) ensureAbsent(ctx context.Context, s *developmentState) error {
 }
 func (r *runner) waitCompleted(ctx context.Context, s *developmentState, service string, timeout time.Duration) error {
 	return poll(ctx, timeout, func(ctx context.Context) (bool, error) {
-		id, err := r.composeOutput(ctx, s, "ps", "--all", "-q", service)
+		id, err := r.composeServiceID(ctx, s, service)
 		if err != nil {
 			return false, err
 		}
@@ -620,7 +624,7 @@ func waitBrowserReady(ctx context.Context, state *developmentState, timeout time
 	})
 }
 func (r *runner) copyAndVerifyKey(ctx context.Context, s *developmentState, url string) (string, *occclient.Client, error) {
-	id, err := r.composeOutput(ctx, s, "ps", "--all", "-q", "bootstrap")
+	id, err := r.composeServiceID(ctx, s, "bootstrap")
 	if err != nil {
 		return "", nil, err
 	}

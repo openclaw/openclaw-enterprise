@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 )
 
 // Down stops the selected Docker stack or the recorded Kubernetes stack.
@@ -74,15 +75,10 @@ func Down(ctx context.Context, opts Options) error {
 		}
 		r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 		r.engine = state.ContainerEngine
-		if r.engine == "podman" && state.DeploymentMode == "" {
-			provider, err := exec.LookPath("podman-compose")
-			if err != nil {
-				return err
-			}
-			r.env["PODMAN_COMPOSE_PROVIDER"] = provider
-		}
 		r.useEndpoint(state.DockerHost)
-		if err := r.cleanup(ctx, state, true); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		if err := r.cleanup(cleanupCtx, state, true); err != nil {
 			return fmt.Errorf("cleanup incomplete; preserving %s for recovery: %w", directory, err)
 		}
 		if err := os.RemoveAll(directory); err != nil {
@@ -113,8 +109,11 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 		return errors.Join(failures...)
 	}
 	// Stop reconcilers before removing their cluster and database. Continue after failures to reclaim what we can.
-	if err := r.compose(ctx, s, "stop", "controller", "worker-kubernetes"); err != nil {
+	if err := r.stopComposeReconcilers(ctx, s); err != nil {
 		failures = append(failures, err)
+	}
+	if r.composeUnsettled {
+		return errors.Join(failures...)
 	}
 	if clusterAttempted {
 		exists, err := r.clusterExists(ctx, s.Cluster)
@@ -126,10 +125,93 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 			}
 		}
 	}
-	if err := r.compose(ctx, s, "down", "--volumes"); err != nil {
+	if err := r.removeComposeResources(ctx, s); err != nil {
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+func (r *runner) stopComposeReconcilers(ctx context.Context, s *developmentState) error {
+	if r.engine != "podman" {
+		return r.compose(ctx, s, "stop", "controller", "worker-kubernetes")
+	}
+	var failures []error
+	for _, service := range []string{"controller", "worker-kubernetes"} {
+		id, err := r.composeServiceID(ctx, s, service)
+		if err == nil && len(id) != 0 {
+			err = r.run(ctx, r.engine, "stop", string(id))
+		}
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+// Podman Compose does not propagate every removal failure. Use engine calls
+// against exact project labels, including partial startups, and verify absence
+// before allowing the caller to discard recovery state. Never prune images or
+// unrelated resources, or require the original Compose inputs during cleanup.
+func (r *runner) removeComposeResources(ctx context.Context, s *developmentState) error {
+	if r.engine != "podman" {
+		return r.compose(ctx, s, "down", "--volumes")
+	}
+	var failures []error
+	failures = append(failures, r.removeComposeContainers(ctx, s))
+	for _, kind := range []string{"volume", "network"} {
+		names, err := r.composeResources(ctx, s, kind)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		for _, name := range names {
+			failures = append(failures, r.run(ctx, r.engine, kind, "rm", name))
+		}
+		remaining, err := r.composeResources(ctx, s, kind)
+		if err != nil {
+			failures = append(failures, err)
+		} else if len(remaining) != 0 {
+			failures = append(failures, fmt.Errorf("project-owned %s resources remain after cleanup", kind))
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (r *runner) removeComposeContainers(ctx context.Context, s *developmentState) error {
+	names, err := r.composeResources(ctx, s, "container")
+	if err != nil {
+		return err
+	}
+	for len(names) != 0 {
+		// Podman rejects removal of a prerequisite until its dependants are gone.
+		// Retry while the owned set shrinks; --depend could remove someone else's
+		// container, so never cascade beyond the exact project inventory.
+		_, removalErr := r.output(ctx, r.engine, append([]string{"container", "rm", "--force", "--volumes"}, names...)...)
+		remaining, err := r.composeResources(ctx, s, "container")
+		if err != nil {
+			return errors.Join(removalErr, err)
+		}
+		if len(remaining) >= len(names) {
+			return errors.Join(removalErr, fmt.Errorf("project-owned containers remain after cleanup"))
+		}
+		names = remaining
+	}
+	return nil
+}
+
+func (r *runner) composeResources(ctx context.Context, s *developmentState, kind string) ([]string, error) {
+	var names []string
+	for _, prefix := range []string{"com.docker.compose", "io.podman.compose"} {
+		args := []string{kind, "ls", "--quiet"}
+		if kind == "container" {
+			args = append(args, "--all")
+		}
+		data, err := r.output(ctx, r.engine, append(args, "--filter", "label="+prefix+".project="+s.ComposeProject)...)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, strings.Fields(string(data))...)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
 }
 
 func podmanComposeArgs(args []string, files, separator string) []string {

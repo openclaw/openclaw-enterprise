@@ -19,16 +19,17 @@ func (r *runner) prepareComposeRoutingFiles(ctx context.Context, state *developm
 	if state.BrowserPort != 0 {
 		readers = append(readers, "browser-proxy")
 	}
-	args := append([]string{"up", "--no-start", "--build", "--no-deps"}, readers...)
+	if err := r.compose(ctx, state, append([]string{"build"}, readers...)...); err != nil {
+		return err
+	}
+	args := append([]string{"up", "--no-start", "--no-build", "--no-deps"}, readers...)
 	if err := r.compose(ctx, state, args...); err != nil {
 		return err
 	}
 	var owner [2]int
 	var readerImage string
 	for index, service := range readers {
-		id, err := r.output(ctx, r.engine, "ps", "--all", "--quiet",
-			"--filter", "label=com.docker.compose.project="+state.ComposeProject,
-			"--filter", "label=com.docker.compose.service="+service)
+		id, err := r.composeServiceID(ctx, state, service)
 		if err != nil {
 			return err
 		}
