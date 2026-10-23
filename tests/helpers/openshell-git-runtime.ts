@@ -1,6 +1,4 @@
-import { isDeepStrictEqual } from "node:util";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
-import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -13,34 +11,23 @@ import {
   type OpenShellProviderProfile,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
+import { unloggedFields } from "./occ-log-line.ts";
 
 // The worker logs the runtime's events through the production logger (worker.mjs), which keeps
 // only allowlisted fields. Every event a fixture emits is logged the same way here, and a field
 // the logger drops or changes is recorded (finding 2244).
-const loggedLines: Record<string, unknown>[] = [];
-const runtimeLogger = createOccLogger({
-  component: "occ-worker",
-  level: "debug",
-  destination: {
-    write(chunk: string) {
-      loggedLines.push(JSON.parse(chunk) as Record<string, unknown>);
-    },
-  },
-});
-const unloggedFields: { readonly event: unknown; readonly fields: readonly string[] }[] = [];
+const unloggedRuntimeFields: { readonly event: unknown; readonly fields: readonly string[] }[] = [];
 
 function logRuntimeEvent(event: Readonly<Record<string, unknown>>): void {
-  emitOccLogEvent(runtimeLogger, event);
-  const line = loggedLines.pop() ?? {};
-  const fields = Object.keys(event).filter((key) => !isDeepStrictEqual(line[key], event[key]));
+  const fields = unloggedFields(event);
   if (fields.length > 0) {
-    unloggedFields.push({ event: event.event, fields });
+    unloggedRuntimeFields.push({ event: event.event, fields });
   }
 }
 
 /** The runtime event fields the production logger dropped since the last call. */
 export function takeUnloggedRuntimeFields() {
-  return unloggedFields.splice(0);
+  return unloggedRuntimeFields.splice(0);
 }
 
 type Entry = NonNullable<Awaited<ReturnType<OpenShellGitRuntime["entries"]["get"]>>>;

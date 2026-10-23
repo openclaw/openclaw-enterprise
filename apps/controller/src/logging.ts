@@ -204,10 +204,25 @@ function safePath(value: unknown): string | undefined {
 }
 
 // Fields that name a fixed code, from any emitter: for example an OpenShell Git expiry check, a
-// failure class, the reason code an Agent is shown, or a Harness lifecycle state. Only a short
-// identifier passes, never free text.
-const CODE_FIELDS = new Set(["check", "failure", "harnessState", "reasonCode"]);
+// failure class, the reason code an Agent is shown, a Harness lifecycle state, an auth:maintain
+// command or the operator guidance a refusal names. Only a short identifier passes, never free
+// text.
+const CODE_FIELDS = new Set([
+  "check",
+  "command",
+  "failure",
+  "harnessState",
+  "hintCode",
+  "reasonCode",
+]);
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+// Identifiers OCC assigns, kept only in their own format: the Installation a bootstrap or
+// maintenance run names, and a Configuration a refused provisioning job left behind.
+const IDENTIFIER_FIELDS: ReadonlyMap<string, RegExp> = new Map([
+  ["installationId", new RegExp(`^ins_${UUID_V4}$`)],
+  ["orphanedConfigurationId", new RegExp(`^cfg_${UUID_V4}$`)],
+]);
 
 function safeCode(value: unknown): string | undefined {
   return typeof value === "string" && SAFE_CODE.test(value) && !resemblesToken(value)
@@ -342,6 +357,13 @@ function sanitizedEvent(
       const code = safeCode(value);
       if (code !== undefined) {
         result[key] = code;
+      }
+      continue;
+    }
+    const identifier = IDENTIFIER_FIELDS.get(key);
+    if (identifier !== undefined) {
+      if (typeof value === "string" && identifier.test(value)) {
+        result[key] = value;
       }
       continue;
     }

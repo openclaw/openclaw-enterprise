@@ -596,12 +596,24 @@ export function deploymentErrorForWork(
 }
 
 /**
- * The guidance for a refusal whose next step does not depend on the operation. A stop, deletion
- * or credential withdrawal the Sandbox gateway refused has no status of its own, so the worker
- * logs this with the failed work, as the deployment status shows it (finding 1694).
+ * The fixed codes that name the guidance for a refusal whose next step does not depend on the
+ * operation. A stop, deletion or credential withdrawal the Sandbox gateway refused has no status
+ * of its own, so the worker logs the code with the failed work (finding 1694); the deployment
+ * status shows the same guidance as text, and the Sandbox Driver reference spells it out. The
+ * log carries the code, not the sentence, because the log sanitizer keeps no free text.
  */
-export function operationRefusalHint(code: string): string | undefined {
-  return code === "SANDBOX_GATEWAY_UNAUTHORIZED" ? deploymentErrorMessage(code) : undefined;
+export const OPERATION_REFUSAL_HINT_CODES = Object.freeze({
+  SANDBOX_GATEWAY_UNAUTHORIZED: "sandbox-gateway-identity",
+} as const);
+
+export type OperationRefusalHintCode =
+  (typeof OPERATION_REFUSAL_HINT_CODES)[keyof typeof OPERATION_REFUSAL_HINT_CODES];
+
+/** The guidance code a refusal with this result code logs, if any. */
+export function operationRefusalHintCode(code: string): OperationRefusalHintCode | undefined {
+  return Object.hasOwn(OPERATION_REFUSAL_HINT_CODES, code)
+    ? OPERATION_REFUSAL_HINT_CODES[code as keyof typeof OPERATION_REFUSAL_HINT_CODES]
+    : undefined;
 }
 
 export function deploymentWarningsForWork(

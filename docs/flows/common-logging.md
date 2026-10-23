@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-16
-last_updated_session: authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2
+updated: 2026-10-23
+last_updated_session: fix-2245
 ---
 
 # Common Operational Logging Flow
@@ -92,6 +92,9 @@ For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harne
 only as short identifier codes, never free text, and `fence` only as a nonnegative safe
 integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
 classes, the reason code an Agent is shown, Harness state and route generations.
+`command` (an `auth:maintain` command) and `hintCode` (named refusal guidance) are
+codes too. `installationId` and `orphanedConfigurationId` are kept only as
+OCC-assigned `ins_` and `cfg_` UUIDs.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and a message of at most 256 characters. The worker never serializes the raw exception, and
@@ -292,6 +295,8 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 10:45: Keep the auth:maintain command, refusal guidance codes, OCC-assigned Installation and orphaned Configuration IDs, and the delivery-pending Sandbox Driver ID through the local logging sanitizer. (fix-2245)
 
 - 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244 - #3289)
 

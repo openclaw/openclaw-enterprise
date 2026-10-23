@@ -71,7 +71,8 @@ import {
   SandboxGatewayUnauthorizedError,
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
-  operationRefusalHint,
+  operationRefusalHintCode,
+  type OperationRefusalHintCode,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
@@ -625,10 +626,16 @@ function harnessExposureWithdrawalCode(error: unknown): string {
     : "HARNESS_EXPOSURE_WITHDRAWAL_FAILED";
 }
 
-/** The operator guidance a failed stop, deletion or withdrawal logs with its code (finding 1694). */
-function refusalHintField(terminal: boolean, code: string): { readonly hint?: string } {
-  const hint = terminal ? operationRefusalHint(code) : undefined;
-  return hint === undefined ? {} : { hint };
+/**
+ * The operator guidance a failed stop, deletion or withdrawal logs with its code, as a fixed code
+ * (findings 1694, 2245): the log sanitizer keeps no free text.
+ */
+function refusalHintField(
+  terminal: boolean,
+  code: string,
+): { readonly hintCode?: OperationRefusalHintCode } {
+  const hintCode = terminal ? operationRefusalHintCode(code) : undefined;
+  return hintCode === undefined ? {} : { hintCode };
 }
 
 /** A revision whose Sandbox Driver may hold a native Harness exposure for this Compute. */

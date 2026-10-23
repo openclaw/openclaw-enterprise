@@ -11,6 +11,7 @@ import {
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { occLogLine } from "../helpers/occ-log-line.ts";
 import { withNamespaceLockHeld } from "../helpers/postgres-namespace-lock.mjs";
 import {
   CREDENTIAL_GATEWAY_FIXTURE_ID,
@@ -890,11 +891,14 @@ test(
     const revoked = await withdrawal.read(fixture.actor.id);
     assert.equal(revoked.state, "revoked");
     assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
-    const completed = events.filter(
-      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
+    const completed = events
+      .filter(
+        ({ event, code }) =>
+          event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+      )
+      .map(occLogLine);
     assert.deepEqual(
-      completed.map(({ outcome, hint }) => [outcome, hint]),
+      completed.map(({ outcome, hintCode }) => [outcome, hintCode]),
       [["retry", undefined]],
     );
 
@@ -924,14 +928,17 @@ test(
     const recovery = await queuedWithdrawal(fixture, other.candidate);
     assert.equal(recovery.idempotencyKey, `${persistent.idempotencyKey}:recovery:1`);
     assertRetryDelay(recovery, 30_000);
-    const terminal = events.filter(
-      ({ event, code, hint }) =>
-        event === "worker.completed" &&
-        code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
-        hint !== undefined,
-    );
+    // The lines the worker log keeps (finding 2245).
+    const terminal = events
+      .map(occLogLine)
+      .filter(
+        ({ event, code, hintCode }) =>
+          event === "worker.completed" &&
+          code === "SANDBOX_GATEWAY_UNAUTHORIZED" &&
+          hintCode !== undefined,
+      );
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0].hint, /restore that identity's Workspace role/);
+    assert.equal(terminal[0].hintCode, "sandbox-gateway-identity");
     // The Driver's retry, the queue's permanent failure (with the recovery series queued).
     assert.deepEqual(
       [terminal[0].attempt, terminal[0].result, terminal[0].outcome],

@@ -30,6 +30,9 @@ const COMMANDS = {
   deactivate: { values: [], flags: ["--purge-disabled"], positional: false, mutating: true },
 };
 
+/** Every command, a fixed list: a failed run logs its command as a code. */
+export const AUTH_MAINTAIN_COMMANDS = Object.freeze(Object.keys(COMMANDS));
+
 function nonEmpty(value, name) {
   if (typeof value !== "string" || value.trim().length === 0 || value.startsWith("--")) {
     throw new AuthMaintainUsageError(`${name} requires a value.`);

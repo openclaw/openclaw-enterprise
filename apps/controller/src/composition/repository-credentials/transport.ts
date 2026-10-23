@@ -49,9 +49,11 @@ export async function bindRepositoryGitTransport(
         // The next pass must observe an uncertain effect, never repeat it.
         // The Driver retains the operation; request authorization remains fail-closed.
         if (!stop.signal.aborted) {
+          // The protected Git Driver is the selected Sandbox Driver's owner (installation-config),
+          // so its ID is the Sandbox Driver ID the log already keeps (finding 2245).
           emit?.({
             event: "worker.repository-delivery-pending",
-            driverId: repositoryGitDriver.ref.id,
+            sandboxDriverId: repositoryGitDriver.ref.id,
           });
         }
       } finally {

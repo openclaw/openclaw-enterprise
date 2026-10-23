@@ -13,6 +13,12 @@ import {
   skippedUserLogFields,
 } from "../../apps/controller/src/logging.ts";
 import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
+import { bindRepositoryGitTransport } from "../../apps/controller/src/composition/repository-credentials/transport.ts";
+import {
+  OPERATION_REFUSAL_HINT_CODES,
+  operationRefusalHintCode,
+} from "../../packages/occ/src/state/controller-work.ts";
+import { AUTH_MAINTAIN_COMMANDS } from "../../scripts/lib/auth-maintain-arguments.mjs";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -24,6 +30,7 @@ import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { occLogLine, unloggedFields } from "../helpers/occ-log-line.ts";
 
 async function fixture(t, contents) {
   const directory = await temporaryDirectory(t, "occ-common-logging-");
@@ -740,6 +747,99 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
   for (const [key, value] of rejected) {
     emit({ event: "worker.openshell-git-expiry", outcome: "pending", [key]: value });
     assert.equal(Object.hasOwn(output.lines.at(-1), key), false, `${key}: ${String(value)}`);
+  }
+});
+
+test("logs keep OCC-assigned IDs, maintenance commands and guidance codes, never other shapes", async () => {
+  // The shapes the bootstrap and auth:maintain scripts and the worker emit (finding 2245).
+  const installationId = `ins_${randomUUID()}`;
+  const configurationId = `cfg_${randomUUID()}`;
+  const kept = [
+    { event: "installation.bootstrapped", installationId },
+    { event: "installation.already-bootstrapped", installationId, step: "fast-path" },
+    { event: "auth-maintain.status", installationId },
+    ...AUTH_MAINTAIN_COMMANDS.map((command) => ({
+      event: "auth-maintain.failed",
+      code: "AUTH_MAINTENANCE_FAILED",
+      command,
+    })),
+    {
+      event: "worker.completed",
+      outcome: "permanent",
+      code: "PROVISIONING_REJECTED",
+      orphanedConfigurationId: configurationId,
+    },
+    ...Object.entries(OPERATION_REFUSAL_HINT_CODES).map(([code, hintCode]) => ({
+      event: "worker.completed",
+      outcome: "permanent",
+      code,
+      hintCode,
+    })),
+  ];
+  for (const event of kept) {
+    assert.deepEqual(unloggedFields(event), [], JSON.stringify(event));
+  }
+  // The guidance code names the gateway refusal's guidance; other refusals log none.
+  assert.equal(
+    operationRefusalHintCode("SANDBOX_GATEWAY_UNAUTHORIZED"),
+    "sandbox-gateway-identity",
+  );
+  for (const code of ["SANDBOX_DELETION_UNCONFIRMED", "DEPENDENCY_UNAVAILABLE", "toString"]) {
+    assert.equal(operationRefusalHintCode(code), undefined, code);
+  }
+
+  // The delivery-pending line names the protected Git Driver, which is the selected Sandbox
+  // Driver, by the Sandbox Driver ID the log keeps.
+  let emit;
+  const emitted = new Promise((resolve) => {
+    emit = resolve;
+  });
+  const driver = {
+    ref: { id: "openshell-sandbox", implementation: "openshell", configurationId: "c".repeat(64) },
+    requireRepositoryGitTransport: () => async () => ({
+      async reconcile() {
+        throw new Error("The gateway refused the reconcile.");
+      },
+      async close() {},
+    }),
+  };
+  const transport = await bindRepositoryGitTransport(
+    { repositoryGitDriver: driver, protectedDriver: driver },
+    { protectedGit: {} },
+    undefined,
+    emit,
+  );
+  const pending = await emitted;
+  await transport.close();
+  assert.deepEqual(pending, {
+    event: "worker.repository-delivery-pending",
+    sandboxDriverId: "openshell-sandbox",
+  });
+  assert.deepEqual(unloggedFields(pending), []);
+
+  // An ID passes only in its own OCC-assigned format; a command or guidance code only as a short
+  // identifier, never an argument, a path, a token shape or the guidance sentence itself.
+  const rejected = [
+    ["installationId", "ins_production"],
+    ["installationId", configurationId],
+    ["installationId", installationId.replace(/[a-f]/g, (digit) => digit.toUpperCase())],
+    ["installationId", `${installationId}\n`],
+    ["installationId", ` ${installationId}`],
+    ["installationId", { id: installationId }],
+    ["orphanedConfigurationId", installationId],
+    ["orphanedConfigurationId", "agent-config"],
+    ["orphanedConfigurationId", `${configurationId}-extra`],
+    ["orphanedConfigurationId", 7],
+    ["command", "status --writers-stopped"],
+    ["command", "reset-recovery-password /run/secrets/password"],
+    ["command", "ghp_abcdefghijklmnopqrstuvwxyz0123"],
+    ["command", `c${"x".repeat(64)}`],
+    ["hintCode", "Check the controller gateway identity's token file, then deploy again."],
+    ["hintCode", ["sandbox-gateway-identity"]],
+  ];
+  for (const [key, value] of rejected) {
+    const line = occLogLine({ event: "worker.completed", outcome: "permanent", [key]: value });
+    assert.equal(Object.hasOwn(line, key), false, `${key}: ${JSON.stringify(value)}`);
   }
 });
 
