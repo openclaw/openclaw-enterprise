@@ -1493,9 +1493,9 @@ test(
     // fixed operation horizons must release replay capacity during the same long-lived JWT.
     // One Sandbox at 40 requests/s holds about 1200 replay entries per 30 s horizon, under its
     // share. Its share is the first replay bound it meets, so each operation past the share
-    // needs an expired entry released. Each operation's slot must return well before that, at
-    // the operation share and capacity. "one Sandbox's replay share bounds it without refusing
-    // other Sandboxes" covers the installation-wide table's expiry.
+    // needs an expired entry released. Operation slots must also return on completion, or the
+    // loop stops at the operation share or capacity. "one Sandbox's replay share bounds it
+    // without refusing other Sandboxes" covers the installation-wide table's expiry.
     const step = 25;
     const operations = REPLAY_SANDBOX_SHARE + 64;
     assert.ok(30_000 / step < REPLAY_SANDBOX_SHARE);
