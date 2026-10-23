@@ -2542,7 +2542,7 @@ revisionTest(
       error: {
         code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
         message:
-          "Kubernetes refused a Secret write this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBinding grants get, create and update on secrets in the Agent's Kubernetes namespace, and that no admission policy or ResourceQuota refuses the write there, then deploy again.",
+          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
       },
     });
     assert.equal(preparations, 1);

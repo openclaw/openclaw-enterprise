@@ -753,7 +753,7 @@ function deploymentErrorMessage(code: string): string {
     case "KUBERNETES_API_UNAVAILABLE":
       return "The Kubernetes API was still unavailable at the deployment deadline.";
     case "KUBERNETES_SECRET_WRITE_FORBIDDEN":
-      return "Kubernetes refused a Secret write this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBinding grants get, create and update on secrets in the Agent's Kubernetes namespace, and that no admission policy or ResourceQuota refuses the write there, then deploy again.";
+      return "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.";
     case "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED":
       return SandboxRepositoryRecipientUnverifiedError.description;
     case "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED":

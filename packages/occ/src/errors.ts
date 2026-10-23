@@ -889,8 +889,8 @@ export class SandboxNamespaceRefusedError extends Error {
 }
 
 /**
- * The Kubernetes API answered 403 to a private Secret write that Compute needs for this
- * revision: an RBAC grant, an admission policy or a ResourceQuota refuses it. Unlike a 429 or
+ * The Kubernetes API answered 403 to a private Secret write, or its readback, that Compute
+ * needs for this revision: an RBAC grant, an admission policy or a ResourceQuota refuses it. Unlike a 429 or
  * 5xx it does not clear by itself, so the worker fails the deployment at once with `code`
  * instead of spending its attempt budget (finding 1770). Every other caller still sees an
  * unavailable dependency. The message is fixed text, and the cause keeps only the HTTP status

@@ -17695,6 +17695,8 @@ for (const embedded of [true, false]) {
         assert.equal(error.message, `The Kubernetes API answered HTTP ${status}.`);
       } else if (status === 403) {
         assert.equal(error.name, "KubernetesSecretWriteForbiddenError");
+        // Still an unavailable dependency for every caller but the revision worker.
+        assert.ok(error instanceof DependencyUnavailableError);
         assert.equal(error.code, "KUBERNETES_SECRET_WRITE_FORBIDDEN");
         assert.equal(
           error.message,
