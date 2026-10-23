@@ -9,8 +9,9 @@ import { authenticatedHeaders } from "./auth-session.mjs";
  * @param {any} app
  * @param {string} method
  * @param {string} url
- * @param {{ body?: unknown, session?: unknown, key?: string, headers?: Record<string, string>,
- *   host?: string, remoteAddress?: string }} [options]
+ * @param {{ body?: unknown, session?: string | { cookie: string, origin?: string },
+ *   key?: string, headers?: Record<string, string>, host?: string, remoteAddress?: string }}
+ *   [options]
  */
 export function injectJson(
   app,
