@@ -55,24 +55,33 @@ configuration, keep its other `network` settings, and upgrade again.
 
 ## 2026-10-22: Credential Proxy retires the repository broker selections
 
-**What breaks.** The Credential Proxy release (#2487) refuses at API and worker
-startup, and in the upgrade check:
+**What breaks.** The Credential Proxy release (#2487) refuses these at Helm
+render, or at API and worker startup and in the upgrade check:
 
+- Helm `repositoryCredentials` with the GitHub App signing broker:
+  `authority` must be `prepared-git` with `preparedCustodySecretName`; another
+  value fails with `GitHub App signing gateway retired: ...`. The broker's
+  service config refuses `backend.kind` `github-app` and `github-app-registry`.
 - Installation `drivers.repo`: configure `repository.nativeSender` with
   `repository.preparedGitHub`, or protected Git through `repository.openShell`.
   A Backend's own `drivers.repo` member stays.
-- `drivers.conduit`: select `drivers.credential_proxy` instead.
+- Installation or Backend `drivers.conduit`: select
+  `drivers.credential_proxy` instead.
 - Helm `openshellGit.mode: broker-trial`: only `protected` remains.
 
 The migrator also refuses a database from an earlier Credential Proxy preview.
 
-**Who is affected.** Installations that used the native repository broker or
-the broker trial, or that ran a preview build.
+**Who is affected.** Installations that used the native repository broker
+(Installation `drivers.repo`, Helm `repositoryCredentials.enabled`).
+`drivers.conduit`, `broker-trial` and the preview database refusal affect only
+Credential Proxy preview builds.
 
-**How to tell.** Helm refuses `broker-trial` when it renders. The upgrade
-check prints the other refusals, for example
-`drivers.repo native admission is retired. ...`, but the `startup-error` log
-shows only `STARTUP_FAILED` or `WORKER_STARTUP_FAILED`.
+**How to tell.** Helm render fails for `broker-trial` and the broker settings
+above. The upgrade check prints the startup refusals, for example
+`drivers.repo native admission is retired. ...`, but the `startup-error` and
+`worker.startup-error` logs show only `STARTUP_FAILED` or
+`WORKER_STARTUP_FAILED`. The migrator (`db:migrate --check`) names a preview
+history as unsupported.
 
 **Steps.** Before upgrading, drain accepted repository work on the original
 release, which alone can settle it, then follow the

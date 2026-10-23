@@ -31,7 +31,7 @@ backend:
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
-      credential_refresh: openshell-refresh # enables OAuth2 and Codex device types
+      credential_refresh: openshell-refresh # enables OAuth2; Codex also needs operatorTls
 drivers:
   sandbox:
     id: openshell-sandbox

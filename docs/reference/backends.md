@@ -130,8 +130,9 @@ Driver; admitted Agents must use a supported
 The OpenShell Backend holds the connection to one OpenShell gateway deployment.
 These paths are the files Helm `backend.openshell.clientSecretName` projects
 (`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
-mounts no bearer token file or separate `operatorTls` pair; packaging that uses
-those must mount them itself.
+mounts no bearer token file or separate `operatorTls` pair, so chart installs
+cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+itself.
 
 ```yaml
 backend:
