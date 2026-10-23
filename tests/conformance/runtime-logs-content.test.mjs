@@ -3004,13 +3004,11 @@ test("container checkpoint recovery discloses rows lost inside the frontier time
 test("container checkpoint recovery discloses a reordered changed window", async () => {
   const start = Date.now() - 120_000;
   // An undelivered row now dates before the frontier, so time resumption drops it.
-  const second = (
-    await rotatedWindow(
-      "wire-cut-reordered-window",
-      range(80).map((index) => ordinaryRow(start, index)),
-      (lines) => [...lines.slice(1, -1), { ...lines.at(-1), time: iso(start) }],
-    )
-  )[1];
+  const [, second] = await rotatedWindow(
+    "wire-cut-reordered-window",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => [...lines.slice(1, -1), { ...lines.at(-1), time: iso(start) }],
+  );
   assert.ok(gapCount(second, "window_exceeded") > 0);
 });
 
@@ -3028,5 +3026,17 @@ test("container checkpoint recovery discloses frontier rows its hash history can
     ],
   );
   assert.ok(rowIds(first).length > 3 + 16);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses a window whose clock stepped back", async () => {
+  const start = Date.now() - 120_000;
+  // Rotation dropped the delivered frontier and the rows after it, and the node
+  // clock stepped back: the new rows are ordered and all before the frontier.
+  const [, second] = await rotatedWindow(
+    "wire-cut-clock-step-back",
+    range(80).map((index) => ordinaryRow(start, index)),
+    () => range(6).map((index) => ordinaryRow(start, 40 + index, "after-step")),
+  );
   assert.ok(gapCount(second, "window_exceeded") > 0);
 });
