@@ -56,15 +56,13 @@ import type { EgressExchangeOwner, CapturedEgressUse } from "@openclaw-enterpris
 
 export type { AcceptedEgressAssociation, AuthorizedSend } from "@openclaw-enterprise/contracts";
 export {
-  CREDENTIAL_PROXY_CAPACITY_MAXIMUM,
   CredentialProxy,
-  DEFAULT_CREDENTIAL_PROXY_CAPACITY,
   resolveCredentialProxyCapacity,
   STREAM_LEASE_CEILING_MS,
   STREAM_LEASE_IDLE_MS,
   STREAM_LEASE_RECHECK_MS,
 } from "./credential-proxy.ts";
-export type { CredentialProxyCapacity, CredentialProxyCapacityFault } from "./credential-proxy.ts";
+export type { CredentialProxyCapacity } from "./credential-proxy.ts";
 export type {
   CapturedEgressUse,
   EgressExchangeOwner,

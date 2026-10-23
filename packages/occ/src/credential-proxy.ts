@@ -151,16 +151,18 @@ export const CREDENTIAL_PROXY_CAPACITY_MAXIMUM: CredentialProxyCapacity = Object
   sandboxRequestIds: 16 * REPLAY_TABLE_CAPACITY,
 });
 
-const capacityFields = Object.keys(
-  DEFAULT_CREDENTIAL_PROXY_CAPACITY,
-) as readonly (keyof CredentialProxyCapacity)[];
-
+/** Pools first: each share's default and bound read its pool's resolved value. */
+const capacityPools = ["operations", "requestIds"] as const;
 /** Each share is bounded by its pool, and an omitted share defaults to a quarter of it. */
-const capacityPools = {
-  authenticatingOperations: "operations",
-  sandboxOperations: "operations",
-  sandboxRequestIds: "requestIds",
-} as const satisfies Partial<Record<keyof CredentialProxyCapacity, keyof CredentialProxyCapacity>>;
+const capacityShares = [
+  ["authenticatingOperations", "operations"],
+  ["sandboxOperations", "operations"],
+  ["sandboxRequestIds", "requestIds"],
+] as const;
+const capacityFields: readonly (keyof CredentialProxyCapacity)[] = [
+  ...capacityPools,
+  ...capacityShares.map(([share]) => share),
+];
 
 /** One refused capacity field. The message names the field, never the configured value. */
 export interface CredentialProxyCapacityFault {
@@ -191,18 +193,11 @@ export function resolveCredentialProxyCapacity(
     });
   }
   const resolved: Partial<Record<keyof CredentialProxyCapacity, number>> = {};
-  for (const field of capacityFields) {
+  const configured = (
+    field: keyof CredentialProxyCapacity,
+    of?: keyof CredentialProxyCapacity,
+  ): void => {
     const value = input[field];
-    const pool = (capacityPools as Partial<Record<string, keyof CredentialProxyCapacity>>)[field];
-    if (value === undefined) {
-      const of = pool === undefined ? undefined : resolved[pool];
-      if (pool === undefined) {
-        resolved[field] = DEFAULT_CREDENTIAL_PROXY_CAPACITY[field];
-      } else if (of !== undefined) {
-        resolved[field] = Math.max(1, Math.floor(of / 4));
-      }
-      continue;
-    }
     const maximum = CREDENTIAL_PROXY_CAPACITY_MAXIMUM[field];
     if (typeof value !== "number" || !Number.isSafeInteger(value)) {
       faults.push({ field, code: "INVALID_TYPE", message: `${path}.${field} must be an integer.` });
@@ -212,18 +207,38 @@ export function resolveCredentialProxyCapacity(
         code: "INVALID_RANGE",
         message: `${path}.${field} must be from 1 to ${maximum}.`,
       });
-    } else if (pool !== undefined && resolved[pool] !== undefined && value > resolved[pool]) {
+    } else if (of !== undefined && value > resolved[of]!) {
       faults.push({
         field,
         code: "INVALID_RANGE",
-        message: `${path}.${field} must not exceed ${path}.${pool}.`,
+        message: `${path}.${field} must not exceed ${path}.${of}.`,
       });
     } else {
       resolved[field] = value;
     }
+  };
+  for (const field of capacityPools) {
+    if (input[field] === undefined) {
+      resolved[field] = DEFAULT_CREDENTIAL_PROXY_CAPACITY[field];
+    } else {
+      configured(field);
+    }
+  }
+  for (const [field, of] of capacityShares) {
+    const pool = resolved[of];
+    if (input[field] !== undefined) {
+      // A refused pool is already a fault: check the share's own type and range only.
+      configured(field, pool === undefined ? undefined : of);
+    } else if (pool !== undefined) {
+      resolved[field] = Math.max(1, Math.floor(pool / 4));
+    }
   }
   if (faults.length > 0) {
     return { faults: faults as [CredentialProxyCapacityFault, ...CredentialProxyCapacityFault[]] };
+  }
+  // Fail closed: a missing bound would compare as never reached.
+  if (capacityFields.some((field) => !Number.isSafeInteger(resolved[field]))) {
+    throw new Error("Credential Proxy capacity resolution left a bound unset.");
   }
   return { capacity: Object.freeze(resolved as Record<keyof CredentialProxyCapacity, number>) };
 }

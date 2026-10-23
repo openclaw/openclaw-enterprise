@@ -335,9 +335,8 @@ function credentialProxyCapacityConfiguration(input: unknown): CredentialProxyCa
   }
   const resolved = resolveCredentialProxyCapacity(value, path);
   if (resolved.faults) {
-    const [first, ...rest] = resolved.faults;
     throw new InstallationFieldError(
-      [first, ...rest].map((fault) => ({
+      resolved.faults.map((fault) => ({
         path: pointer(fault.field),
         code: fault.code,
         message: fault.message,
@@ -708,7 +707,9 @@ export async function loadInstallationConfiguration(options: {
     const selection = object(drivers.credential_proxy, "drivers.credential_proxy");
     closed(selection, ["id", "configuration", "requestCapacity"], "drivers.credential_proxy");
     // OCC's request registry, not the Driver, owns these bounds: they apply to any Driver.
-    credentialProxyCapacity = credentialProxyCapacityConfiguration(selection.requestCapacity ?? {});
+    credentialProxyCapacity = credentialProxyCapacityConfiguration(
+      selection.requestCapacity === undefined ? {} : selection.requestCapacity,
+    );
     const egress = object(selection.configuration, "drivers.credential_proxy.configuration");
     if (sandboxSelection?.package !== undefined) {
       const id = nonempty(selection.id, "drivers.credential_proxy.id");

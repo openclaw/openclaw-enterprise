@@ -195,7 +195,7 @@ applies to any selected Driver, bundled or packaged:
 drivers:
   credential_proxy:
     id: openshell-egress
-    configuration: {} # the selected Driver's own settings
+    configuration: # unchanged: the selected Driver's own settings
     requestCapacity:
       operations: 1024
       authenticatingOperations: 256
@@ -216,9 +216,9 @@ Each value is a count from 1 to its maximum. An omitted share is a quarter of
 its configured pool, rounded down and at least 1. A share above its pool, a
 value out of range, a non-integer or an unknown field stops API and worker
 startup, and the chart's upgrade check, with `DRIVER_CONFIGURATION_INVALID`
-naming the field. An operation in progress can hold its request body (up to 1
-MiB), so size the API Pod's memory before raising `operations`. Restart API Pods
-to apply a change.
+naming the field. Each operation in progress can hold its request body (up to 1
+MiB), about 8 GiB at the `operations` maximum, so size the API Pod's memory
+before raising it. Restart API Pods to apply a change.
 
 A ready handle holds its operation slot until it closes or its deadline (at most
 30 s) passes. Per-Sandbox shares are keyed on the verified sender and Sandbox, so

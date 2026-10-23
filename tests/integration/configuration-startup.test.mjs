@@ -2248,6 +2248,7 @@ test("Credential Proxy request capacity keeps today's bounds and refuses each ba
   );
   const cases = [
     [[], [[field, "INVALID_TYPE"]]],
+    [null, [[field, "INVALID_TYPE"]]],
     [7, [[field, "INVALID_TYPE"]]],
     // An unknown key is reported at the block: the key itself could be anything.
     [{ [`x${sentinel}/~`]: 1 }, [[field, "UNKNOWN_FIELD"]]],

@@ -1954,7 +1954,7 @@ test("request-time capacity defaults to today's bounds and is set once per contr
 
 test("configured operation bounds limit each Sandbox, the process and authentication", async (t) => {
   const f = await syntheticDispatchFixture(t);
-  const s = f.sandboxes(undefined, { operations: 6, sandboxOperations: 2 });
+  const s = f.sandboxes(undefined, { operations: 7, sandboxOperations: 2 });
   assert.equal(s.proxy.capacity.authenticatingOperations, 1, "a quarter of the configured pool");
   const held = new Map();
   const hold = async (name) => {
@@ -1968,6 +1968,8 @@ test("configured operation bounds limit each Sandbox, the process and authentica
     assert.equal(await hold(name), "ready");
     assert.deepEqual(await hold(name), saturated, `${name} holds at most its configured share`);
   }
+  // Three full shares leave one slot of the configured process bound.
+  assert.equal(await hold("d"), "ready");
   assert.deepEqual(await hold("d"), saturated, "the configured process bound holds");
   held.get("a").abort();
   assert.equal(await hold("d"), "ready", "a closed handle returns its slot");
