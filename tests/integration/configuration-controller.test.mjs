@@ -1051,45 +1051,45 @@ test("Preset save refuses an agents roster every deployment refuses, as Configur
   // An Agent ID or ownership that a filling can still make valid saves, and the launch's
   // Configuration is checked in full: two IDs that normalize alike, or an ownership filled with
   // anything but "explicit", are refused there with the Configuration save text.
-  await t.test(
-    "accepts a roster whose Agent ID, ownership or model waits on a variable",
-    async () => {
-      const accepted = [
-        withAgents({ ownership: "explicit", entries: { "{{ vars.id }}": {}, main: {} } }),
-        withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
-        withAgents({ ownership: "{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
-        withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
-        withAgents({
-          ownership: "ex{{ vars.ownership }}plicit",
-          entries: { main: {}, helper: {} },
-        }),
-        withAgents({ entries: { [`${"a".repeat(64)}{{ vars.id }}`]: {} } }),
-        withModel("{{ vars.id }}"),
-        withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai/{{ vars.id }}"] }),
-      ];
-      for (const [index, values] of accepted.entries()) {
-        const saved = await savePreset(context, template(values), `Templated-${index}`);
-        assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
-      }
-      for (const [values, inputs, message] of [
-        [
-          accepted[0],
-          { id: "Main" },
-          "The OpenClaw Gateway normalizes agents.entries.Main and agents.entries.main to the same Agent ID: rename one.",
-        ],
-        [accepted[2], { ownership: "shared" }, onlyExplicit],
-        [accepted[6], { id: "fast" }, providerModel("agents.defaults")],
-      ]) {
-        const launched = await request(context.app, "POST", context.collection, {
-          body: {
-            kind: "agent",
-            ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
-          },
-        });
-        assertRefused(launched, message);
-      }
-    },
-  );
+  await t.test("accepts a roster or model that waits on a variable", async () => {
+    const accepted = [
+      withAgents({ ownership: "explicit", entries: { "{{ vars.id }}": {}, main: {} } }),
+      withAgents({ entries: { "agent-{{ vars.id }}": {} } }),
+      withAgents({ ownership: "{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
+      withAgents({ ownership: "ex{{ vars.ownership }}", entries: { main: {}, helper: {} } }),
+      withAgents({ ownership: "ex{{ vars.ownership }}plicit", entries: { main: {}, helper: {} } }),
+      withAgents({ entries: { [`${"a".repeat(64)}{{ vars.id }}`]: {} } }),
+      withModel("{{ vars.id }}"),
+      withModel({ primary: "openai/gpt-4.1", fallbacks: ["openai/{{ vars.id }}"] }),
+      // A variable key that a filling can make `primary` supplies the primary model.
+      withModel({ "{{ vars.id }}": "openai/gpt-4.1" }),
+    ];
+    for (const [index, values] of accepted.entries()) {
+      const saved = await savePreset(context, template(values), `Templated-${index}`);
+      assert.equal(saved.status, 201, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+    }
+    const launch = (values, inputs) =>
+      request(context.app, "POST", context.collection, {
+        body: {
+          kind: "agent",
+          ...renderPresetTemplate(template(values), { count: 1, ...inputs }).configuration,
+        },
+      });
+    for (const [values, inputs, message] of [
+      [
+        accepted[0],
+        { id: "Main" },
+        "The OpenClaw Gateway normalizes agents.entries.Main and agents.entries.main to the same Agent ID: rename one.",
+      ],
+      [accepted[2], { ownership: "shared" }, onlyExplicit],
+      [accepted[6], { id: "fast" }, providerModel("agents.defaults")],
+      [accepted[8], { id: "other" }, providerModel("agents.defaults")],
+    ]) {
+      assertRefused(await launch(values, inputs), message);
+    }
+    const primary = await launch(accepted[8], { id: "primary" });
+    assert.equal(primary.status, 201, JSON.stringify(primary.body));
+  });
 });
 
 test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {

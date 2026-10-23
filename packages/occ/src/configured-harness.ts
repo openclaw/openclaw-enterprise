@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, splitModelRef } from "@openclaw-enterprise/utils";
 
+import { canSpell } from "./configuration-settings.ts";
 import { agentEntryMessage, ConfigurationHarnessError, modelProviderMessage } from "./errors.ts";
 import { providerModelsListError } from "./model-provider-settings.ts";
 
@@ -125,6 +126,19 @@ function selectedModelPath(
   return typeof value === "string" ? at : [...at, "primary"];
 }
 
+// On a Preset save, whether a key of the selection object waits on a variable that a filling can
+// make `primary`, as in {"{{ vars.key }}": "openai/gpt-5.1"}: its model is checked once filled.
+function primaryWaitsOnKey(
+  value: unknown,
+  at: readonly (string | number)[],
+  unresolved: NonNullable<ConfigurationValidationOptions["unresolved"]>,
+): boolean {
+  return Object.keys(asRecord(value) ?? {}).some((key) => {
+    const literals = unresolved([...at, key], true);
+    return literals !== undefined && canSpell(literals, "primary");
+  });
+}
+
 // On a Preset save, whether some filling of a model reference that waits on an unfilled variable
 // (`literals`, the text around each one) makes a <provider>/<model> reference: not when its
 // written text starts or ends with a slash, nor when a number or boolean variable is the whole
@@ -183,7 +197,7 @@ function requireSelectionFallbackProviders(
   }
 }
 
-/** requireSelectionFallbackProviders over every selection: Agent save's check of its Configuration. */
+// requireSelectionFallbackProviders over every selection: Agent save's check of its Configuration.
 export function requireFallbackProviders(
   values: Readonly<OpenClawConfigurationDocument>,
   options: ConfigurationValidationOptions = {},
@@ -196,11 +210,12 @@ export function requireFallbackProviders(
 /**
  * The model selection rules of resolveConfiguredHarnessId that hold for every topology, in its
  * order within each selection: its fallbacks are a list, each model a <provider>/<model>
- * reference, and each fallback on the primary model's provider. Every deployment refuses a selection that breaks
- * one, so Configuration save, Agent provisioning, Agent create preflight and Preset save refuse it
- * too, with the deployment's text (requireDeployableRoster; finding 1828). On a Preset save, a
- * model that waits on an unfilled variable is checked as far as its written text goes, and in
- * full on the Configuration a launch creates.
+ * reference, and each fallback on the primary model's provider. Every deployment refuses a
+ * selection that breaks one, so Configuration save, Agent provisioning, Agent create preflight
+ * and Preset save refuse it too, with the deployment's text (requireDeployableRoster; finding
+ * 1828). On a Preset save, a model that waits on an unfilled variable, or a primary that a
+ * variable key can supply, is checked as far as its written text goes, and in full on the
+ * Configuration a launch creates.
  */
 export function requireModelSelections(
   values: Readonly<OpenClawConfigurationDocument>,
@@ -213,9 +228,16 @@ export function requireModelSelections(
       selectedModels(value, setting, (selected, index) => {
         const path = selectedModelPath(value, at, index);
         const literals = unresolved?.(path);
-        return literals === undefined
-          ? isModelReference(selected)
-          : fillsAsModelReference(literals, unresolvedType?.(path));
+        if (literals !== undefined) {
+          return fillsAsModelReference(literals, unresolvedType?.(path));
+        }
+        return (
+          isModelReference(selected) ||
+          (index === 0 &&
+            selected === undefined &&
+            unresolved !== undefined &&
+            primaryWaitsOnKey(value, at, unresolved))
+        );
       });
     }
     requireSelectionFallbackProviders(selection, options);
