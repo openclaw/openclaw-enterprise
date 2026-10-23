@@ -1831,16 +1831,17 @@ test("a Driver refusal preserves field diagnostics before upgrade quiescence", a
 // writer stops instead of after (dogfood D525). The Pod carries the stored name as JSON,
 // so a trailing no-break space survives and a line break (a control character) gets the
 // same refusal rather than a parse failure. Each case reads a different component's Pod.
-for (const [name, installationName, component] of [
+for (const [name, installationName, component, ...flags] of [
   [
     "a stored Installation name that breaks the Name rule stops before any writer stops",
     "Production\u00a0",
     "api",
   ],
   [
-    "a stored Installation name with a line break gets the Name rule refusal",
+    "preflight-only refuses a stored Installation name with a line break",
     "Production\n",
     "worker",
+    "--preflight-only",
   ],
 ]) {
   test(name, async (t) => {
@@ -1853,7 +1854,7 @@ for (const [name, installationName, component] of [
       installationName,
       chart: { installation: (installation) => installation },
     });
-    await assert.rejects(f.run(), (error) => {
+    await assert.rejects(f.run(...flags), (error) => {
       for (const stopped of ["api", "worker"]) {
         assert.match(
           error.stderr,
@@ -2312,4 +2313,25 @@ test("an Installation the selected controller image loads passes the preflight a
   assert.ok(
     state.preflight.deleted.includes(`networkpolicy.networking.k8s.io/${policy.metadata.name}`),
   );
+});
+
+test("preflight-only checks the candidate without preparing or deploying it", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+  });
+  await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
+  assert.equal(existsSync(f.evidence), false);
+  assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+  assert.match(
+    await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+    /^installation-startup-ready$/m,
+  );
+  assert.equal(existsSync(join(f.evidence, "prepared")), false);
+  await assert.rejects(f.run("--resume"), /not a prepared deployment/);
+  await assertStoppedBeforeWriters(f);
 });
