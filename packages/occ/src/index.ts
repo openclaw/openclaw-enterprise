@@ -279,6 +279,7 @@ import {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
+  RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
   SandboxRepositoryRecipientUnverifiedError,
   ResourceConflictError,
@@ -433,6 +434,7 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   quotedSettingKey,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
   ResourceConflictError,
@@ -5624,6 +5626,13 @@ export class OpenClawController {
       owner.requireRepositoryGitTransport();
     }
     const gitProfile = repositoryGitDeliveryProfile(repositoryGit);
+    if (repositoryGit !== undefined && gitProfile === undefined) {
+      // Finding 2204: protected admission v4-v7 requires a mapped delivery profile, so
+      // git-read, git-full or several bindings could never start. Refuse them by name before
+      // reading the counterpart; its non-Git check would answer a generic 503 or admit a plan
+      // that assertExecutionAdmission then rejects as an internal error.
+      throw new RepositoryGitProfileUnsupportedError();
+    }
     const gitAuthorization = await repositoryGitAuthorization(
       driver.sourceControl,
       AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),

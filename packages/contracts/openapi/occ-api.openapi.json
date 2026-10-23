@@ -798,6 +798,11 @@
                     "type": "string"
                   },
                   {
+                    "const": "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+                    "description": "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
+                    "type": "string"
+                  },
+                  {
                     "const": "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
                     "description": "The Installation has no ChatGPT Backend, so service-account credentials cannot be issued, used for Harness authentication, or revoked to delete their account.",
                     "type": "string"

@@ -15,6 +15,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: the worker refuses an App key that cannot sign
+
+**What breaks.** With prepared repository Git, worker startup reads and parses
+`repository.preparedGitHub.privateKeyPath` and stops when the key cannot sign.
+Earlier builds started, logged `PREPARED_GITHUB_MAINTENANCE_FAILED` on every
+pass, and left revisions waiting for Git material. The worker now restarts
+until the key is fixed, so it also stops other work. The upgrade check mounts
+no private key and cannot catch this.
+
+**Who is affected.** Helm installs with `repositoryCredentials.authority:
+prepared-git` whose App-key Secret holds a missing, public, passphrase-protected
+or non-RSA key.
+
+**How to tell.** `worker.startup-error` shows
+`PREPARED_GITHUB_APP_KEY_INVALID` with `reason` `app_key_unreadable`,
+`app_key_unparsable` or `app_key_unsupported`.
+
+**Steps.** Before upgrading, put the App's RSA private key in the Secret named
+by `repositoryCredentials.appKeySecretName`; see
+[Replace a rejected App key](../repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
 ## 2026-10-23: Installation listeners must match the chart
 
 **What breaks.** API and worker startup and the chart's upgrade check refuse an

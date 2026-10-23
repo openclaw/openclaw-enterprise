@@ -27,6 +27,8 @@ export function createGitHubProtocol({
   beforeMetadataResponse,
   issueResponse = (response) => response,
   issueResponseGate,
+  /** Awaited after GitHub revokes a token, before its answer is sent. */
+  revokeResponseGate,
   draftResponse = (body) => body,
   revokeStatus = 204,
   issueStatus = 201,
@@ -132,6 +134,7 @@ export function createGitHubProtocol({
           return;
         }
         authority.revoke(request.headers.authorization);
+        await revokeResponseGate?.();
         if (!disconnect(request, response, url)) {
           response.writeHead(204).end();
         }

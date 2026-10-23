@@ -46,6 +46,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -215,6 +216,16 @@ const cases = [
       code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
       message:
         "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.",
+    },
+  ],
+  [
+    "a repository profile a Credential Proxy cannot deliver names the supported profiles",
+    new RepositoryGitProfileUnsupportedError(),
+    {
+      status: 409,
+      code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+      message:
+        "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.",
     },
   ],
   [

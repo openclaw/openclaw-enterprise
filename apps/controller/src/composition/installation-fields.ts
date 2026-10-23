@@ -39,36 +39,136 @@ export interface EgressAuthorityConfiguration {
   readonly keyId: string;
 }
 
+/** A dotted Installation setting as the JSON Pointer that startup diagnostics carry. */
+function settingPointer(setting: string): string {
+  return setting === ""
+    ? ""
+    : "/" +
+        setting
+          .split(".")
+          .map((part) => part.replaceAll("~", "~0").replaceAll("/", "~1"))
+          .join("/");
+}
+
+export interface InstallationFieldDetail {
+  readonly path: string;
+  readonly code:
+    | "REQUIRED"
+    | "UNKNOWN_FIELD"
+    | "INVALID_TYPE"
+    | "INVALID_FORMAT"
+    | "INVALID_RANGE"
+    | "INVALID_VALUE";
+  readonly message: string;
+}
+
+/**
+ * Refused Installation fields. Each detail holds the field's JSON Pointer, a schema error code
+ * and a message that names the field, never its value. Startup logs these details and the
+ * chart's upgrade check prints them, as for Driver configuration.
+ */
+export class InstallationFieldError extends Error {
+  override readonly name = "InstallationFieldError";
+  readonly details: readonly [InstallationFieldDetail, ...InstallationFieldDetail[]];
+  constructor(details: readonly [InstallationFieldDetail, ...InstallationFieldDetail[]]) {
+    // The same bound as ConfigurationValidationError and the startup log filter.
+    const bounded = details.slice(0, 32) as [InstallationFieldDetail, ...InstallationFieldDetail[]];
+    super(bounded.map((detail) => detail.message).join(" "));
+    this.details = bounded;
+  }
+}
+
+const egressAuthorityFiles = ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"];
+const egressAuthorityFields = [
+  "host",
+  "port",
+  ...egressAuthorityFiles,
+  "issuer",
+  "audience",
+  "keyId",
+] as const;
+
+/**
+ * Validate one TLS and issuer listener block, `drivers.credential_proxy.configuration.authority`
+ * or `repository.openShell.authority`. Each fault names its own field and never echoes a value,
+ * so startup logs and the chart's upgrade check say which key to fix (finding 2216).
+ */
 export function egressAuthorityConfiguration(
   input: unknown,
   mode: "development" | "production",
+  path: string,
 ): EgressAuthorityConfiguration {
+  const pointer = (field?: string) =>
+    settingPointer(field === undefined ? path : `${path}.${field}`);
   const value = asRecord(input);
-  const fields = [
-    "host",
-    "port",
-    "certificatePath",
-    "privateKeyPath",
-    "issuerPublicKeyPath",
-    "issuer",
-    "audience",
-    "keyId",
-  ];
+  if (!value) {
+    throw new InstallationFieldError([
+      {
+        path: pointer(),
+        code: input === undefined ? "REQUIRED" : "INVALID_TYPE",
+        message: `${path} must be one object.`,
+      },
+    ]);
+  }
+  const details: InstallationFieldDetail[] = [];
+  // The block's own pointer: an operator's key may be long, contain control characters or
+  // look like a credential, and the log filter would drop a detail that echoed it.
   if (
-    !value ||
-    Object.keys(value).some((key) => !fields.includes(key)) ||
-    fields.some((key) => key !== "port" && (typeof value[key] !== "string" || !value[key])) ||
-    !Number.isSafeInteger(value.port) ||
-    Number(value.port) < 1 ||
-    Number(value.port) > 65535 ||
-    !["certificatePath", "privateKeyPath", "issuerPublicKeyPath"].every((key) =>
-      isAbsolute(String(value[key])),
-    ) ||
-    (mode === "development" && !["127.0.0.1", "::1"].includes(String(value.host)))
+    Object.keys(value).some((key) => !(egressAuthorityFields as readonly string[]).includes(key))
   ) {
-    throw new Error(
-      "Protected egress requires explicit TLS, issuer identity and a loopback development listener.",
-    );
+    details.push({
+      path: pointer(),
+      code: "UNKNOWN_FIELD",
+      message: `${path} supports only ${egressAuthorityFields.join(", ")}.`,
+    });
+  }
+  for (const field of egressAuthorityFields) {
+    const entry = value[field];
+    if (field === "port") {
+      if (
+        entry === undefined ||
+        !Number.isSafeInteger(entry) ||
+        Number(entry) < 1 ||
+        Number(entry) > 65535
+      ) {
+        details.push({
+          path: pointer(field),
+          code:
+            entry === undefined
+              ? "REQUIRED"
+              : Number.isSafeInteger(entry)
+                ? "INVALID_RANGE"
+                : "INVALID_TYPE",
+          message: `${path}.port must be an integer TCP port from 1 to 65535.`,
+        });
+      }
+    } else if (typeof entry !== "string" || !entry) {
+      details.push({
+        path: pointer(field),
+        code: entry === undefined ? "REQUIRED" : entry === "" ? "INVALID_VALUE" : "INVALID_TYPE",
+        message: `${path}.${field} must be a nonempty string.`,
+      });
+    } else if (egressAuthorityFiles.includes(field) && !isAbsolute(entry)) {
+      details.push({
+        path: pointer(field),
+        code: "INVALID_FORMAT",
+        message: `${path}.${field} must be an absolute mounted-file path.`,
+      });
+    } else if (
+      field === "host" &&
+      mode === "development" &&
+      !["127.0.0.1", "::1"].includes(entry)
+    ) {
+      details.push({
+        path: pointer(field),
+        code: "INVALID_VALUE",
+        message: `${path}.host must be 127.0.0.1 or ::1 in development, a loopback listener.`,
+      });
+    }
+  }
+  const [first, ...rest] = details;
+  if (first) {
+    throw new InstallationFieldError([first, ...rest]);
   }
   return value as unknown as EgressAuthorityConfiguration;
 }
@@ -86,7 +186,7 @@ export class ChartListenerMismatchError extends Error {
   readonly path: string;
   constructor(message: string, setting: string) {
     super(message);
-    this.path = setting === "" ? "" : `/${setting.replaceAll(".", "/")}`;
+    this.path = settingPointer(setting);
   }
 }
 
@@ -163,6 +263,10 @@ export function openShellRepositoryConfiguration(
   closed(value, ["registrationName", "authority"], "repository.openShell");
   return {
     registrationName: nonempty(value.registrationName, "repository.openShell.registrationName"),
-    authority: egressAuthorityConfiguration(value.authority, mode),
+    authority: egressAuthorityConfiguration(
+      value.authority,
+      mode,
+      "repository.openShell.authority",
+    ),
   };
 }

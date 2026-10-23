@@ -184,6 +184,8 @@ worker does not expose an HTTP health endpoint. Driver startup schema or semanti
 refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
 JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
 names and runtime image settings. Submitted values and exception text are omitted.
+A prepared repository App key that cannot sign stops the worker with
+`PREPARED_GITHUB_APP_KEY_INVALID` and a fixed `reason`.
 
 ## Failures and diagnostics
 

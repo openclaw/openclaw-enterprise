@@ -72,6 +72,7 @@ import {
   SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
   operationRefusalHint,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxRevisionUnsupportedError,
   SandboxRepositoryRecipientUnverifiedError,
@@ -4540,6 +4541,8 @@ export class ControllerWorker {
           // Finding 2199: a revision admitted before deploy refused an unqualified Git sender
           // can never enroll, so it fails now instead of at the convergence deadline.
           error instanceof RepositoryGitSenderUnqualifiedError ||
+          // Finding 2204: a Git plan with no delivery profile can never start either.
+          error instanceof RepositoryGitProfileUnsupportedError ||
           error instanceof SandboxRevisionUnsupportedError ||
           error instanceof CredentialSourceRevisionError ||
           error instanceof ActivationFailedError

@@ -10,6 +10,7 @@ import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/g
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import { openShellExchangeCapabilities } from "../../apps/controller/src/drivers/egress-proxy/openshell-exchange-capabilities.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
 import { reconcileSandboxPolicy } from "../../apps/controller/src/worker/sandbox-policy.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -25,6 +26,7 @@ import {
   DriverConfigurationRegistry,
   InstalledDriver,
   OpenClawController,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
 } from "../../packages/occ/src/index.ts";
@@ -164,7 +166,7 @@ function sshCompute() {
   });
 }
 
-function registryFor(namespaceId) {
+function registryFor(namespaceId, extraRepositories = []) {
   return {
     version: 1,
     backendId,
@@ -185,6 +187,12 @@ function registryFor(namespaceId) {
         repository: "example/foreign-project",
         namespaces: [{ namespaceId: `ns_${randomUUID()}`, profiles: ["git-read", "git-write"] }],
       },
+      ...extraRepositories.map((repositoryRef, index) => ({
+        repositoryRef,
+        repositoryId: String(800 + index),
+        repository: `example/${repositoryRef}`,
+        namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+      })),
     ],
   };
 }
@@ -212,6 +220,7 @@ async function fixture(
     harness = "openclaw",
     configurationDriver = createTestConfigurationDriver(),
     controllerOptions = {},
+    extraRepositories = [],
   } = {},
 ) {
   const installation = {
@@ -296,7 +305,7 @@ async function fixture(
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
-  const registry = registryFor(namespace.id);
+  const registry = registryFor(namespace.id, extraRepositories);
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -1289,14 +1298,13 @@ test("OpenShell Git refuses an Agent network grant to the Git hosts at save, bin
   assert.equal((await f.request("GET", policyPath(bound))).data.policy.application, undefined);
 });
 
-test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified sender", async (t) => {
-  // Finding 2199: stock OpenShell registers oce-prepared-git, so admission accepted a git-write
-  // binding as protected online authorization. No release is qualified to enforce it, so the
-  // Harness waited at enrollment until the 15-minute convergence deadline. Deploy now refuses it
-  // with a stable code before contacting the gateway, and creates no revision.
+// Deploys a dedicated Codex Agent with `bindings` on the bundled OpenShell Credential Proxy.
+// `advertised` adds the execution profile to the stock 0.1.5 registration, as a gateway with a
+// stronger exchange would; the response and the number of gateway reads are returned.
+async function protectedOpenShellDeploy(t, bindings, { advertised = false } = {}) {
   class ProtectedGitComputeDriver extends OpenShellGitComputeDriver {
     // Stands in for Kubernetes Compute with its paired protected release, so only the Credential
-    // Proxy decides whether the git-write execution is admitted.
+    // Proxy and the contract decide whether the repository execution is admitted.
     validateExecutionAdmission(revision) {
       assertExecutionAdmission(revision);
     }
@@ -1307,6 +1315,10 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
     controllerOptions: {
       driverConfigurations: [sandboxRegistration("repository-admission-openshell")],
     },
+    // Every bound repository other than the fixture's own is approved for the Namespace too.
+    extraRepositories: bindings
+      .map(({ repositoryRef }) => repositoryRef)
+      .filter((repositoryRef) => repositoryRef !== "project"),
   });
   const sandbox = repositorySandbox(f.registry);
   const registration = "oce-prepared-git";
@@ -1317,7 +1329,17 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
       // What stock 0.1.5 reports once the request-phase service is registered.
       return {
         gateway_version: "0.1.5",
-        extensions: [{ configured_name: registration, kind: 4, protocol_major: 1 }],
+        extensions: [
+          {
+            configured_name: registration,
+            kind: 4,
+            protocol_major: 1,
+            ...(advertised && {
+              required_capabilities: [...openShellExchangeCapabilities],
+              supported_capabilities: [...openShellExchangeCapabilities],
+            }),
+          },
+        ],
       };
     },
   };
@@ -1338,15 +1360,54 @@ test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified se
   f.controller.registerDriver(owner);
   f.controller.selectDriver("sandbox", sandbox.id);
   f.controller.selectDriver("credential_proxy", proxy.id);
-  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: selection });
+  const agent = await f.createAgent({ executionMode: "dedicated", repositoryBindings: bindings });
   await f.prepareDeployment(agent);
   const path = `${f.collection}/${agent.id}`;
-  const refused = await f.request("POST", `${path}/deploy`);
-  assert.equal(refused.status, 409, JSON.stringify(refused));
-  assert.equal(refused.error.code, "REPOSITORY_GIT_SENDER_UNQUALIFIED");
-  assert.equal(refused.error.message, RepositoryGitSenderUnqualifiedError.description);
-  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
+  const response = await f.request("POST", `${path}/deploy`);
+  const revisions = (await f.request("GET", `${path}/revisions`)).data;
+  return { response, revisions, gatewayReads };
+}
+
+test("Deploy refuses OpenShell Git when its Credential Proxy has no qualified sender", async (t) => {
+  // Finding 2199: stock OpenShell registers oce-prepared-git, so admission accepted a git-write
+  // binding as protected online authorization. No release is qualified to enforce it, so the
+  // Harness waited at enrollment until the 15-minute convergence deadline. Deploy now refuses it
+  // with a stable code before contacting the gateway, and creates no revision.
+  const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(t, selection);
+  assert.equal(response.status, 409, JSON.stringify(response));
+  assert.equal(response.error.code, "REPOSITORY_GIT_SENDER_UNQUALIFIED");
+  assert.equal(response.error.message, RepositoryGitSenderUnqualifiedError.description);
+  assert.deepEqual(revisions, []);
   assert.equal(gatewayReads, 0, "the refusal needs no gateway read");
+});
+
+test("Deploy refuses a repository profile a Credential Proxy cannot deliver by name", async (t) => {
+  // Finding 2204: git-read and git-full map to no delivery profile, so admission checked the
+  // counterpart as an ordinary egress plan. Stock 0.1.5 answered a generic 503; a gateway that
+  // advertises the execution profile admitted a v4 plan that assertExecutionAdmission rejected
+  // as a 500. Deploy now names the supported profiles before contacting the gateway. Two
+  // bindings map to no profile either, even when one of them is git-write.
+  const several = [
+    { repositoryRef: "project", profile: "git-write" },
+    { repositoryRef: "second-project", profile: "git-read" },
+  ];
+  for (const [name, bindings] of [
+    ["git-read", [{ repositoryRef: "project", profile: "git-read" }]],
+    ["git-full", [{ repositoryRef: "project", profile: "git-full" }]],
+    ["two bindings", several],
+  ]) {
+    for (const advertised of [false, true]) {
+      const label = `${name}${advertised ? " with the execution profile" : ""}`;
+      const { response, revisions, gatewayReads } = await protectedOpenShellDeploy(t, bindings, {
+        advertised,
+      });
+      assert.equal(response.status, 409, `${label}: ${JSON.stringify(response)}`);
+      assert.equal(response.error.code, "REPOSITORY_GIT_PROFILE_UNSUPPORTED", label);
+      assert.equal(response.error.message, RepositoryGitProfileUnsupportedError.description);
+      assert.deepEqual(revisions, [], label);
+      assert.equal(gatewayReads, 0, `${label}: the refusal needs no gateway read`);
+    }
+  }
 });
 
 test("the policy worker fails a Driver's named policy refusal at once", async () => {

@@ -49,7 +49,9 @@ route set must still enforce deny-all.
 `repositoryGitDeliveryProfile` admits exactly one repository binding:
 `git-write` maps to `repository_git`; installation profiles map to
 `github_installation`. The latter requires positive counterpart confirmation;
-a Driver that ignores the profile argument does not qualify.
+a Driver that ignores the profile argument does not qualify. Deploy refuses any
+other binding (`git-read`, `git-full`, or more than one) before reading the
+counterpart, with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
 
 `repositoryGitAuthorization` distinguishes exact dispatch, `online-request`,
 `request-hook-observed` and unavailable. Admission versions 4, 5 and 6 preserve

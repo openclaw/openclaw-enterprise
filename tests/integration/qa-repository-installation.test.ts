@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { createPrivateKey, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, open, realpath, rm, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -145,20 +145,13 @@ test("QA repository inputs start the controller, worker owner and repository ser
     "git-write",
   );
 
+  // The owner refuses an App key it cannot sign with at startup (finding 2217).
+  assert.equal(
+    loaded.preparedRepositoryGit.privateKeyPath,
+    `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`,
+  );
   const owner = await startWorkerOwner(loaded);
   await owner.close();
-  // The owner reads the App key only when it first prepares a token: check the
-  // mounted file the way it will (a private regular file holding one private key).
-  const appKey = loaded.preparedRepositoryGit.privateKeyPath;
-  assert.equal(appKey, `${root}${PREPARED_REPOSITORY_DIRECTORY}/private-key.pem`);
-  const file = await open(appKey);
-  try {
-    const { mode } = await file.stat();
-    assert.ok((mode & 0o170000) === 0o100000 && (mode & 0o027) === 0);
-    createPrivateKey(await file.readFile());
-  } finally {
-    await file.close();
-  }
 
   const service = await loadConfiguration(join(root, "service-config.json"), createSystemClock());
   try {
