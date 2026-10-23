@@ -285,6 +285,36 @@ For interactive native testing, choose OpenAI, OpenClaw and Dedicated in
 [Create Agent](../reference/console/create-and-deploy.md#create-an-agent) and select
 an API-key Secret; the Codex PAT used by the starter is a separate credential.
 
+## Managed Compute prototype
+
+The [managed Compute selection](../reference/drivers/kubernetes-openshell-compute.md)
+requires rebuilt Harness images and the upstream OpenShell workload-update API
+specified in that reference. Its independent wire fixture records the upstream
+commit used for the lifecycle, workload-update and service-exposure messages.
+The user deferred image builds and live cluster proof for this local spike.
+No QA matrix scenario currently qualifies this path.
+
+Local checks cover launch inputs through Compute preparation, Kubernetes mounts,
+OpenShell rendering and real filesystem bootstrap. The launch refactor removed
+reverse-Deployment parser checks; identity, private setup delivery and retained
+storage assertions now inspect constructed requirements or rendered resources.
+These checks do not establish live managed-Workspace integration.
+
+Local checks:
+
+```sh
+node --test tests/conformance/openshell-managed-bootstrap.test.mjs tests/conformance/openshell-gateway-wire.test.mjs tests/conformance/kubernetes-provider-harness.test.mjs tests/conformance/kubernetes-harness-workspace-volume.test.mjs tests/conformance/kubernetes-compute.test.mjs tests/integration/sandbox-driver-startup.test.mjs
+```
+
+Before qualification, extend the QA matrix's regular Agent workflow on a disposable
+cluster. Deny OCE access to the managed namespace. Deploy, read/write an allowed
+workspace file, run a model/tool turn, replace the revision, stop/restart, then
+delete the Agent. Confirm stable Sandbox/PVC identity and retained files through
+replacement; confirm deletion only at final Agent removal. Exercise both Harnesses,
+rejected peers, failed bootstrap, unsupported updates and lost acknowledgments.
+Test delayed stop and credential-withdrawal requests explicitly: current OpenShell
+APIs cannot fence them by launch generation.
+
 ## Troubleshooting
 
 - If a Docker subnet overlaps, run `dev-down` for the owned partial setup and

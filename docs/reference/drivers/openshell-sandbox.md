@@ -20,10 +20,11 @@ Embedded OpenClaw is unsupported. See native OpenClaw
 [Kubernetes Compute](kubernetes-compute.md) retains baseline isolation, storage,
 routing, and the per-Agent Gateway. Sandbox owns:
 
-- `supportsHarnessExecutionMode` declares OpenClaw support at construction.
-  Dedicated needs `kubernetes.userNamespaces: false` and at most
+- `supportsHarnessExecutionMode` declares OpenClaw support.
+  Operator mode requires `kubernetes.userNamespaces: false` and at most
   one ServiceAccount in `gateway.operatorWorkspaceResources`. See the
-  [mode support contract](sandbox.md#harness-mode-support).
+  [mode support contract](sandbox.md#harness-mode-support) and
+  [managed-mode bootstrap](kubernetes-openshell-compute.md#lifecycle-and-retained-files).
 - `configureAgent` pins the main Agent workspace to the configured Sandbox data
   mount for both dedicated Harnesses before OCC saves the Agent revision. Codex retains
   app-server containment policy.
@@ -177,8 +178,8 @@ Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
 the 30-second `startupDelayMs`.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
-accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
-mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
+accepts `operator` or `managed`; managed mode selects the experimental
+[Kubernetes Harness runtime](kubernetes-openshell-compute.md). Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
 `app.kubernetes.io/managed-by`; otherwise deployment fails with
@@ -317,7 +318,7 @@ children, including a `control` directory retained after a failed setup.
 
 The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
 `tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
+a `1Gi` ephemeral-storage limit. Operator-mode native provisioning privatizes writable PVC
 subpaths, keeping retained entries, in a restricted per-revision Deployment;
 ownership/mode checks, foreground deletion and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,

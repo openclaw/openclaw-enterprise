@@ -15,8 +15,8 @@ initializes it before activation.
 Subsequent file operations authorize the exact active Agent and use its
 Compute-resolved private endpoint through Envoy Gateway.
 
-Dedicated execution initializes the Harness workspace for Codex and native
-OpenClaw; see [workspace and launcher boundaries](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
+See [Harness workspace initialization](../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation)
+for dedicated Codex and OpenClaw.
 
 See [two-cluster transport](../testing/kubernetes.md#two-cluster-validation) for CP/DP routing.
 
@@ -104,12 +104,12 @@ Harnesses require the Sandbox's `validateWorkspaceSetup(harness, configuration)`
 Compute delegates validation of the relocated workspace, or returns `409` before
 staging inputs. Preparation repeats this check.
 
-OpenShell separately prepares native OpenClaw's private writable PVC subpaths,
-preserving retained entries. Ownership/mode checks, UID-fenced deletion and writer
-termination precede Sandbox creation. This permission setup carries no documents;
-see [OpenShell preparation](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
+In operator mode, OpenShell prepares native Harness PVC subpaths without documents.
+It preserves entries and checks ownership/mode; UID-fenced preparer deletion and
+writer termination precede Sandbox creation. See
+[OpenShell preparation](openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox).
 
-`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessRequirementsFromDeployment`
+`apps/controller/src/drivers/compute/kubernetes/index.ts:harnessLaunch`
 hands Sandbox the [setup identity and exact Secret reference](../reference/drivers/sandbox.md#provisioning-inputs).
 After Sandbox readiness, `apps/controller/src/drivers/sandbox/openshell.ts:initializeWorkspace`
 verifies the Secret's Namespace, Agent and setup identity, then calls authenticated
@@ -376,6 +376,8 @@ replays it. Cleanup closes the native client.
 - 2026-10-26 22:29: Point workspace setup to the version and template digest it checks. (authoring-run/f4c463b0-af6d-4850-a166-c663a7e78c64 - 855eeed7cb66c8f85b0ad9672d561bf0a825e621)
 
 - 2026-10-26: An Agent with no running version answers `409` instead of `503`. (fix-dogfood-r51)
+
+- 2026-10-23 13:17: Describe direct Harness inputs. (authoring-run/2c3f5532-2023-4496-954f-df02d9be44c1 - bd4948208)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 

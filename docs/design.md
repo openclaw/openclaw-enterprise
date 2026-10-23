@@ -83,7 +83,10 @@ The API, console, durable worker, PostgreSQL persistence, and Kubernetes packagi
 are implemented. Single-cluster Kubernetes execution places Gateway and Harness in one tenant
 namespace with separate Pods, identities and storage. External access-gateway admission, workload
 token authentication to OCC, and general credential-free model inference remain
-planned. The two-cluster profile is experimental.
+planned. The two-cluster profile is experimental. The Kubernetes Compute Driver's experimental
+[managed OpenShell runtime](reference/drivers/kubernetes-openshell-compute.md)
+uses OpenShell-managed Harness namespaces and storage with a stable Sandbox per
+Agent. Its cluster integration and generation-fenced replacement remain unverified.
 
 <a id="current-limitations"></a>
 <a id="near-term-future-work"></a>

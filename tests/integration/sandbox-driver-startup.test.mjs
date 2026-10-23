@@ -26,7 +26,9 @@ import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/driv
 import {
   createKubernetesComputeDriver,
   KubernetesComputeDriver,
+  kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { ManagedOpenShellSandbox } from "../../apps/controller/src/drivers/sandbox/openshell/managed.ts";
 import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/drivers/credential-refresh/openshell.ts";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
@@ -74,7 +76,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
-import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { labelSelectorLabels, routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
   bindReservedPortInProcess,
   reservedPortArgs,
@@ -476,6 +478,14 @@ function codexRequirements(revision, environment = []) {
       path: "token",
       readOnly: true,
     },
+    retainedDirectories: [
+      {
+        purpose: "workspace",
+        name: "workspace",
+        path: "/home/node/workspace",
+        environment: "OPENCLAW_WORKSPACE_DIR",
+      },
+    ],
     workspaceMounts: [
       {
         claimName: "harness-workspace-codex",
@@ -549,6 +559,23 @@ function runtimeSandboxFixture(
     loginMode: "api_key",
     image: "openclaw-runtime@sha256:synthetic",
     command: harnessRuntimeCommand('console.error("harness runtime");'),
+    retainedDirectories: [
+      {
+        purpose: "workspace",
+        name: "workspace",
+        path: "/home/node/workspace",
+        environment: "OPENCLAW_WORKSPACE_DIR",
+      },
+      {
+        purpose: "node-state",
+        name: "workspace-node-codex",
+        path: "/home/node/.openclaw-node",
+        environment: "OPENCLAW_NODE_STATE_DIR",
+      },
+      ...(harnessId === "codex"
+        ? [{ purpose: "sessions", name: "codex-sessions", path: "/home/node/.codex/sessions" }]
+        : []),
+    ],
     workspaceMounts: [
       {
         claimName: "harness-workspace-codex",
@@ -623,6 +650,8 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   assert.equal(createdDriver.installation.drivers.sandbox.id, "openshell-sandbox");
   assert.equal(createdDriver.installation.drivers.sandbox.implementation, "openshell");
   assert.ok(createdDriver.sandboxDriver instanceof OpenShellSandboxDriver);
+  assert.equal(createdDriver.installation.drivers.compute.implementation, "occ/kubernetes");
+  assert.equal(createdDriver.computeDriver.constructor, KubernetesComputeDriver);
   assert.equal(createdDriver.sandboxDriver.id, "openshell-sandbox");
   assert.deepEqual(createdDriver.sandboxDriver.facets, ["networking", "filesystem", "process"]);
 
@@ -631,6 +660,489 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   assert.doesNotThrow(() =>
     createControllerWorker({ pool, mode: "production", drivers: createdDriver, emit: () => {} }),
   );
+});
+
+test("startup composes Kubernetes Compute with managed OpenShell and refuses embedded execution", async (t) => {
+  const configuration = sandboxInstallation();
+  configuration.drivers.compute.configuration.managedOpenShell = {
+    experimentalSingleWorker: true,
+    gatewayId: "managed-test",
+  };
+  configuration.drivers.sandbox.configuration.gateway = { workspaceMode: "managed" };
+  configuration.drivers.sandbox.configuration.kubernetes.sandboxDataMount.mountPath =
+    "/sandbox/oce/workspace";
+  const composed = await loadInstallationFile(t, configuration);
+  assert.equal(composed.installation.drivers.compute.id, "compute-kubernetes");
+  assert.equal(composed.computeDriver.id, "compute-kubernetes");
+  assert.ok(composed.sandboxDriver instanceof ManagedOpenShellSandbox);
+  assert.equal(composed.installation.drivers.compute.implementation, "occ/kubernetes");
+  assert.throws(
+    () => composed.computeDriver.validateHarnessAuth({ id: "openclaw", mode: "embedded" }),
+    /requires a dedicated Harness/,
+  );
+  // Managed bootstrap prepares storage inside the Sandbox. Operator-mode
+  // preparation requirements must not hide OpenClaw or reject Agent admission.
+  for (const userNamespaces of [undefined, true, false]) {
+    const settings = structuredClone(configuration);
+    if (userNamespaces === undefined) {
+      delete settings.drivers.sandbox.configuration.kubernetes.userNamespaces;
+    } else {
+      settings.drivers.sandbox.configuration.kubernetes.userNamespaces = userNamespaces;
+    }
+    const { sandboxDriver } = await loadInstallationFile(t, settings);
+    assert.deepEqual(sandboxDriver.supportsHarnessExecutionMode.openclaw, {
+      embedded: { supported: false },
+      dedicated: { supported: true },
+    });
+    assert.ok(
+      sandboxDriver.configureAgent(
+        { agents: { defaults: { model: "openai/gpt-5" } } },
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      ),
+    );
+  }
+  // Restart with the same Driver IDs but a different storage owner. Admission and
+  // lifecycle checks are real; Kubernetes must not be contacted on either mismatch.
+  const original = await loadInstallationFile(t, sandboxInstallation());
+  for (const [source, changed] of [
+    [original, composed],
+    [composed, original],
+  ]) {
+    assert.equal(source.computeDriver.id, changed.computeDriver.id);
+    assert.equal(source.sandboxDriver.id, changed.sandboxDriver.id);
+    const revision = routedRevision(source.computeDriver, {
+      sandboxDriverId: source.sandboxDriver.id,
+    });
+    revision.compute.admission = source.computeDriver.admitRevision(revision);
+    // A stored revision must retain its storage owner through serialization and retry.
+    const stored = JSON.parse(JSON.stringify(revision));
+    let reads = 0;
+    changed.computeDriver.apiClients = Promise.resolve({
+      core: {
+        async listNamespace() {
+          reads += 1;
+          throw new Error("Storage mismatch reached Kubernetes");
+        },
+      },
+    });
+    for (const operation of [
+      "stopRevision",
+      "retireRevision",
+      "prepareRevision",
+      "activateRevision",
+    ]) {
+      await assert.rejects(
+        changed.computeDriver[operation](stored),
+        /Harness storage mode differs from the Installation/,
+      );
+    }
+    assert.equal(reads, 0);
+    // The original Installation can still interpret the revision's launch admission.
+    assert.doesNotThrow(() => source.computeDriver.pluginRuntimeSnapshot(stored));
+  }
+  // A managed-only block must not silently survive a switch to operator storage.
+  const operator = structuredClone(configuration);
+  operator.drivers.sandbox.configuration.gateway.workspaceMode = "operator";
+  await assert.rejects(loadInstallationFile(t, operator), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.equal(error.error.details[0].code, "INVALID_VALUE");
+    assert.equal(error.error.details[0].path, "/drivers/compute/configuration/managedOpenShell");
+    return true;
+  });
+  // Automatic selection must still validate the managed path's required settings.
+  delete configuration.drivers.compute.configuration.managedOpenShell;
+  await assert.rejects(loadInstallationFile(t, configuration), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.ok(error.error.details.some((detail) => detail.code === "REQUIRED"));
+    return true;
+  });
+});
+
+test("Kubernetes final Agent cleanup deletes managed Sandbox state before shared resources and refuses foreign ownership", async (t) => {
+  for (const foreign of [false, true]) {
+    await t.test(foreign ? "foreign Sandbox" : "owned Sandbox and retry", async () => {
+      const configuration = sandboxInstallation();
+      const sandboxOptions = configuration.drivers.sandbox.configuration;
+      sandboxOptions.gateway.workspaceMode = "managed";
+      sandboxOptions.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+      configuration.drivers.compute.configuration.managedOpenShell = {
+        experimentalSingleWorker: true,
+        gatewayId: "managed-test",
+      };
+      const context = namespaceContext();
+      context.namespace.name = kubernetesNamespaceName(context.namespace.id);
+      const gateway = workspaceGatewayClient();
+      const sandbox = new ManagedOpenShellSandbox(sandboxOptions, {
+        id: "openshell-sandbox",
+        backend: backendFor(gateway),
+        gatewayId: "managed-test",
+      });
+      const compute = new KubernetesComputeDriver(configuration.drivers.compute.configuration, {
+        sandboxDriver: sandbox,
+      });
+      const revision = dedicatedRevision(sandbox, context, "000000000001");
+      const binding = {
+        namespace: context.namespace,
+        agent: {
+          id: revision.agentId,
+          namespaceId: context.namespace.id,
+          name: "Managed Agent",
+          configurationId: "cfg_00000000-0000-4000-8000-000000000001",
+          backendId: null,
+          executionMode: "dedicated",
+          servicePrincipalId: "sp_00000000-0000-4000-8000-000000000001",
+          createdAt: context.namespace.createdAt,
+        },
+      };
+      await sandbox.ensureNamespace(context);
+      const workspace = openShellWorkspaceName(context.namespace);
+      const hash = (length) =>
+        createHash("sha256").update(revision.agentId).digest("hex").slice(0, length);
+      const sandboxName = `oc-${hash(16)}`;
+      const providerName = `oce-runtime-${hash(24)}`;
+      gateway.sandboxes.set(sandboxName, {
+        ...sandboxRecord(sandboxName, workspace),
+        annotations: {
+          "openclaw.dev/namespace-id": context.namespace.id,
+          "openclaw.dev/agent-id": foreign ? "agt_other" : revision.agentId,
+        },
+        phase: "SANDBOX_PHASE_STOPPED",
+        spec: { providers: [providerName] },
+      });
+      gateway.providers.set(providerName, {
+        name: providerName,
+        labels: {
+          ...gateway.workspaces.get(workspace).labels,
+          "openclaw.dev/agent-id": revision.agentId,
+        },
+      });
+      let sharedReads = 0;
+      // Controlled API responses prove Driver ordering, not a live cluster. The
+      // Gateway namespace has already disappeared, but OpenShell state still exists.
+      compute.apiClients = Promise.resolve({
+        core: {
+          async listNamespace() {
+            return { items: [] };
+          },
+          async readNamespace() {
+            sharedReads += 1;
+            assert.equal(gateway.sandboxes.size, 0);
+            assert.equal(gateway.providers.size, 0);
+            throw Object.assign(new Error("Not found"), { statusCode: 404 });
+          },
+        },
+      });
+      if (foreign) {
+        await assert.rejects(
+          compute.deleteAgentRuntimeCredentials(binding),
+          /exact Agent ownership/,
+        );
+        assert.equal(sharedReads, 0);
+        assert.equal(gateway.sandboxes.size, 1);
+        assert.equal(gateway.providers.size, 1);
+      } else {
+        await compute.deleteAgentRuntimeCredentials(binding);
+        await compute.deleteAgentRuntimeCredentials(binding);
+        assert.ok(sharedReads > 0);
+        assert.equal(gateway.sandboxes.size, 0);
+        assert.equal(gateway.providers.size, 0);
+        assert.equal(gateway.workspaces.size, 1, "Agent deletion retains its Namespace Workspace");
+      }
+    });
+  }
+});
+
+test("managed Harness rendering submits no PVC and keeps the bootstrap outside persistent state", async (t) => {
+  const client = workspaceGatewayClient();
+  // Exercise the production client's config validation and protobuf encoding on
+  // replacement; the in-memory provider fixture alone accepts empty patch values.
+  const grpc = controllerRequire("@grpc/grpc-js");
+  const loader = controllerRequire("@grpc/proto-loader");
+  const definition = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.5-wire.proto"),
+    { keepCase: true, longs: String, defaults: false },
+  );
+  const server = new grpc.Server();
+  t.after(() => server.forceShutdown());
+  const updateProviderConfig = client.updateProviderConfig.bind(client);
+  server.addService(grpc.loadPackageDefinition(definition).openshell.v1.OpenShell.service, {
+    async UpdateProvider(call, callback) {
+      try {
+        const request = call.request.provider;
+        const provider = await updateProviderConfig(
+          call.request.workspace_scope.workspace,
+          request.metadata.name,
+          request.config,
+          request.metadata.resource_version,
+        );
+        callback(null, {
+          provider: {
+            metadata: {
+              name: provider.name,
+              labels: provider.labels,
+              resource_version: provider.resourceVersion,
+            },
+            type: provider.type,
+            config: provider.config,
+          },
+        });
+      } catch (error) {
+        callback(error);
+      }
+    },
+  });
+  const port = await new Promise((resolve, reject) => {
+    server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, port) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve(port);
+      }
+    });
+  });
+  const wireClient = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(() => wireClient.close());
+  client.updateProviderConfig = wireClient.updateProviderConfig.bind(wireClient);
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway = { workspaceMode: "managed" };
+  configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  const driver = new ManagedOpenShellSandbox(configuration, {
+    id: "openshell-sandbox",
+    backend: backendFor(client),
+    gatewayId: "test-gateway",
+  });
+  let request;
+  let phase = "SANDBOX_PHASE_PROVISIONING";
+  client.createSandbox = async (value) => {
+    request = value;
+    return storedSandbox(value, { phase: "SANDBOX_PHASE_PROVISIONING" });
+  };
+  client.getSandbox = async () =>
+    request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
+  client.getService = async () =>
+    harnessService(request.name, "", "http://codex.example.test:8080/");
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    nodeSetupUrl: () => "ws://gateway.example.test/node",
+  });
+  requirements.environment = requirements.environment.filter(
+    ({ name }) => name !== "OPENCLAW_NODE_CA_PEM",
+  );
+  requirements.workspaceMounts = [];
+  // Matching a directory path does not make an unrelated variable a storage binding.
+  requirements.environment.push({ name: "UNRELATED_PATH", value: "/home/node/.openclaw-node" });
+  await driver.ensureNamespace(context);
+  await driver.provisionHarness({ ...context, revision, requirements });
+  // This is outgoing workload-contract proof, with transport responses supplied
+  // by the fixture. Cluster storage and provider lifecycle remain a live proof.
+  assert.equal(JSON.stringify(request.spec).includes("persistent_volume_claim"), false);
+  assert.equal(JSON.stringify(request.spec).includes("harness-workspace-codex"), false);
+  assert.equal(request.spec.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/oce/workspace");
+  assert.equal(
+    request.spec.environment.OPENCLAW_NODE_STATE_DIR,
+    "/sandbox/oce/workspace-node-codex/state",
+  );
+  assert.equal(
+    request.spec.environment.UNRELATED_PATH,
+    "/sandbox/.openclaw-runtime/home/.openclaw-node",
+  );
+  assert.match(
+    request.spec.command[RUNTIME_WRAPPER_COMMAND.length],
+    /require\("\/opt\/oce\/runtime\/openshell-bootstrap.cjs"\)\.prepareManaged/,
+  );
+  const successor = { ...revision, id: "rev_00000000-0000-4000-8000-000000000004" };
+  assert.equal(
+    driver.harnessResource({ namespace: context.namespace, revision }).resourceName,
+    driver.harnessResource({ namespace: context.namespace, revision: successor }).resourceName,
+  );
+  // A server with the older image-only update contract can acknowledge an update
+  // while retaining command/environment/metadata. Readback must prevent StartSandbox.
+  phase = "SANDBOX_PHASE_STOPPED";
+  let attemptedUpdate;
+  client.updateSandbox = async (update) => {
+    attemptedUpdate = update;
+    return storedSandbox(request, { phase, resourceVersion: "8" });
+  };
+  client.startSandbox = async () => {
+    assert.fail("An incomplete workload update must never start");
+  };
+  await assert.rejects(
+    driver.provisionHarness({
+      ...context,
+      revision: successor,
+      requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
+    }),
+    /did not store the exact requested workload update/,
+  );
+  assert.equal(attemptedUpdate.expectedResourceVersion, "7");
+  assert.equal(attemptedUpdate.annotations["openclaw.dev/revision-id"], successor.id);
+  const configUpdate = client.calls.find(([operation]) => operation === "updateProviderConfig");
+  assert.deepEqual(configUpdate[2], { oce_revision_id: successor.id });
+  assert.equal(client.providers.get(configUpdate[1]).config.node_ca_pem, "");
+  // Retrying with a server that stores the complete update must finish the
+  // replacement, without resending the already committed Provider patch.
+  client.updateSandbox = async (value) => {
+    request = value;
+  };
+  client.startSandbox = async () => {
+    phase = "SANDBOX_PHASE_READY";
+  };
+  await driver.provisionHarness({
+    ...context,
+    revision: successor,
+    requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
+  });
+  assert.equal(phase, "SANDBOX_PHASE_READY");
+  assert.equal(request.annotations["openclaw.dev/revision-id"], successor.id);
+  assert.equal(
+    client.calls.filter(([operation]) => operation === "updateProviderConfig").length,
+    1,
+  );
+});
+
+test("managed native replacement restores its startup exposure and withdraws it after enrollment", async (t) => {
+  const client = workspaceGatewayClient();
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway = { workspaceMode: "managed" };
+  configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+  const driver = new ManagedOpenShellSandbox(configuration, {
+    id: "openshell-sandbox",
+    backend: backendFor(client),
+    gatewayId: "test-gateway",
+  });
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  requirements.workspaceMounts = [];
+  requirements.environment.push(
+    { name: "APP_SERVER_PORT", value: "8080" },
+    { name: "APP_TOKEN_SHA", value: "a".repeat(64) },
+    { name: "NODE_COMPILE_CACHE", value: "/home/node/.openclaw-node/.cache/node-compile" },
+  );
+  const root = await mkdtemp(join(tmpdir(), "oce-native-bootstrap-cache-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  // Run the rendered bootstrap with Node's real startup cache enabled. Only
+  // container paths are relocated; Gateway responses remain fixture transport.
+  const bootstrap = fileURLToPath(
+    new URL("../../deploy/runtime/openshell-bootstrap.cjs", import.meta.url),
+  );
+  const launchBootstrap = () => {
+    const program = request.spec.command[RUNTIME_WRAPPER_COMMAND.length]
+      .split("\n")[0]
+      .replaceAll("/opt/oce/runtime/openshell-bootstrap.cjs", bootstrap)
+      .replaceAll("/sandbox", root);
+    const environment = {
+      ...process.env,
+      NODE_COMPILE_CACHE: request.spec.environment.NODE_COMPILE_CACHE.replaceAll("/sandbox", root),
+    };
+    delete environment.NODE_DISABLE_COMPILE_CACHE;
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        program +
+          '\nrequire("node:assert/strict").ok(require("node:module").getCompileCacheDir());',
+      ],
+      {
+        encoding: "utf8",
+        env: environment,
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+  let request;
+  let phase = "SANDBOX_PHASE_READY";
+  let service;
+  let exposures = 0;
+  let starts = 0;
+  let exposureMode = "SERVICE_AUTHORIZATION_MODE_STRIP";
+  let loseExposureResponse = false;
+  client.createSandbox = async (value) => {
+    request = value;
+    service = harnessService(value.name, "", "http://native.example.test:8080/");
+    return storedSandbox(request, { phase });
+  };
+  client.getSandbox = async () =>
+    request === undefined ? undefined : storedSandbox(request, { phase, resourceVersion: "7" });
+  client.getService = async () => service;
+  client.deleteService = async () => {
+    service = undefined;
+  };
+  client.stopSandbox = async () => {
+    phase = "SANDBOX_PHASE_STOPPED";
+  };
+  client.updateSandbox = async (value) => {
+    request = value;
+  };
+  client.startSandbox = async () => {
+    assert.equal(service?.authorizationMode, "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH");
+    starts += 1;
+    phase = "SANDBOX_PHASE_READY";
+  };
+  client.exposeService = async (value) => {
+    exposures += 1;
+    service = {
+      ...harnessService(value.sandbox, value.service, "http://native.example.test:8080/"),
+      targetPort: value.targetPort,
+      authorizationMode: exposureMode,
+    };
+    if (loseExposureResponse) {
+      throw new Error("Lost exposure acknowledgement");
+    }
+  };
+  await driver.ensureNamespace(context);
+  await driver.provisionHarness({
+    ...context,
+    revision,
+    requirements,
+    workspaceNodeEnrolled: false,
+  });
+  launchBootstrap();
+  await writeFile(
+    join(root, ".openclaw-runtime/home/workspace/USER.md"),
+    "retained native workspace",
+  );
+  // Enrollment removes the first revision's diagnostic route while it runs.
+  await driver.withdrawHarnessExposure({ ...context, revision, workspaceNodeEnrolled: true });
+  assert.equal(service, undefined);
+  await driver.cleanup({ ...context, revision });
+  const successor = { ...revision, id: "rev_00000000-0000-4000-8000-000000000004" };
+  const next = {
+    ...context,
+    revision: successor,
+    requirements: { ...requirements, labels: { "openclaw.dev/revision": successor.id } },
+    workspaceNodeEnrolled: false,
+  };
+  // An acknowledgement alone is insufficient: refuse a route that strips the
+  // bearer token and keep the replacement stopped. Do not overwrite that route.
+  await assert.rejects(driver.provisionHarness(next), /no exact authenticated Harness service/);
+  await assert.rejects(driver.provisionHarness(next), /no exact authenticated Harness service/);
+  assert.equal(starts, 0);
+  assert.equal(exposures, 1);
+  service = undefined;
+  exposureMode = "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH";
+  loseExposureResponse = true;
+  await assert.rejects(driver.provisionHarness(next), /Lost exposure acknowledgement/);
+  assert.equal(starts, 0);
+  // The server persisted the route before the response was lost. Adoption must
+  // recover without issuing another exposure mutation.
+  loseExposureResponse = false;
+  await driver.provisionHarness(next);
+  assert.equal(starts, 1);
+  launchBootstrap();
+  assert.equal(
+    await readFile(join(root, ".openclaw-runtime/home/workspace/USER.md"), "utf8"),
+    "retained native workspace",
+  );
+  assert.equal(exposures, 2);
+  assert.equal(service.targetPort, 8080);
+  // Reconciliation must adopt the restored route, then leave it absent once
+  // this revision enrolls. Agent code must not inherit an unused inbound route.
+  await driver.provisionHarness(next);
+  assert.equal(exposures, 2);
+  await driver.provisionHarness({ ...next, workspaceNodeEnrolled: true });
+  await driver.provisionHarness({ ...next, workspaceNodeEnrolled: true });
+  assert.equal(service, undefined);
+  assert.equal(exposures, 2);
 });
 
 test("startup composes both OpenShell members from one Backend", async (t) => {
@@ -3175,8 +3687,13 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   // Each turn the Gateway writes a native hook credential through Codex into the directory
   // Compute renders, which the Harness entrypoint creates under its HOME. Hook commands
   // then call the Gateway route on the host and port the node rule above admits.
-  const relay = compute.gatewayNativeHookRelayConfiguration(revision, {}).plugins.entries.codex
-    .config.appServer.nativeHookRelay;
+  const relay = compute.gatewayNativeHookRelayConfiguration(
+    {
+      ...revision,
+      compute: { id: compute.id, implementation: compute.implementation },
+    },
+    {},
+  ).plugins.entries.codex.config.appServer.nativeHookRelay;
   assert.equal(relay.credentialDirectory, `${environment.HOME}/.oce-native-hooks`);
   const callback = new URL(relay.url);
   const [nodeEndpoint] = spec.policy.network_policies["workspace-node-enrollment"].endpoints;
@@ -3378,17 +3895,35 @@ test("OpenShell holds withdrawn Codex authentication after a Harness restart", a
   }
 });
 
-for (const harnessId of ["codex", "openclaw"]) {
-  test(`OpenShell delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
+for (const [harnessId, workspaceMode] of [
+  ["codex", "operator"],
+  ["openclaw", "operator"],
+  ["codex", "managed"],
+  ["openclaw", "managed"],
+]) {
+  test(`OpenShell ${workspaceMode} delivers ${harnessId} initial workspace files privately after supervisor readiness`, async (t) => {
     const gatewayClient = workspaceGatewayClient();
-    const driver = new OpenShellSandboxDriver(sandboxInstallation().drivers.sandbox.configuration, {
+    const configuration = sandboxInstallation().drivers.sandbox.configuration;
+    const managed = workspaceMode === "managed";
+    if (managed) {
+      configuration.gateway = { workspaceMode };
+      configuration.kubernetes.sandboxDataMount.mountPath = "/sandbox/oce/workspace";
+      delete configuration.kubernetes.userNamespaces;
+    }
+    const Driver = managed ? ManagedOpenShellSandbox : OpenShellSandboxDriver;
+    const driver = new Driver(configuration, {
       id: "openshell-sandbox",
       implementation: "openshell",
       backend: backendFor(gatewayClient),
+      gatewayId: "test-gateway",
     });
     const { context, revision, requirements, prepared } = runtimeSandboxFixture(driver, {
       harnessId,
     });
+    if (managed) {
+      // Managed storage has no approved PVC mounts, including on setup retries.
+      requirements.workspaceMounts = [];
+    }
     const setup = {
       id: "initial-workspace",
       namespaceId: revision.namespaceId,
@@ -3448,12 +3983,25 @@ for (const harnessId of ["codex", "openclaw"]) {
 
     await provision();
     assert.equal(executions.length, 0, "private initialization waits for supervisor readiness");
-    assert.equal(prepared.length, harnessId === "openclaw" ? 1 : 0);
+    assert.equal(prepared.length, harnessId === "openclaw" && !managed ? 1 : 0);
     sandbox.phase = "SANDBOX_PHASE_READY";
     await provision();
     const execution = executions[0];
     assert.deepEqual(JSON.parse(execution.stdin), setup);
-    assert.equal(execution.environment.OPENCLAW_WORKSPACE_DIR, "/sandbox/enterprise");
+    assert.equal(
+      execution.environment.OPENCLAW_WORKSPACE_DIR,
+      managed ? "/sandbox/oce/workspace" : "/sandbox/enterprise",
+    );
+    assert.equal(execution.environment.HOME, "/sandbox/.openclaw-runtime/home");
+    assert.equal(
+      execution.environment.OPENCLAW_STATE_DIR,
+      "/sandbox/.openclaw-runtime/home/.openclaw",
+    );
+    // Updates deliver the completed setup record again to verify retained files.
+    setup.completed = true;
+    await provision();
+    assert.equal(JSON.parse(executions.at(-1).stdin).completed, true);
+    setup.completed = false;
     assert.equal(JSON.stringify(execution.command).includes(setup.files["AGENTS.md"]), false);
     assert.equal(JSON.stringify(sandbox).includes(setup.files["AGENTS.md"]), false);
     assert.equal(
@@ -3579,7 +4127,7 @@ for (const harnessId of ["codex", "openclaw"]) {
                   `${process.getuid()}:${process.getgid()}`,
                   // The concurrent initializer containers share these test-owned mounts on SELinux.
                   "--volume",
-                  `${workspace}:/sandbox/enterprise:z`,
+                  `${workspace}:${execution.environment.OPENCLAW_WORKSPACE_DIR}:z`,
                   "--volume",
                   `${home}:/sandbox/.openclaw-runtime/home:z`,
                   ...Object.entries(execution.environment).flatMap(([key, value]) => [

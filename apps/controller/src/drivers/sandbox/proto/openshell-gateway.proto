@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Minimal OpenShell v0.1.5 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell gateway surface used by OpenClaw Enterprise.
+// Base: v0.1.5; managed workload RPCs: NVIDIA/OpenShell
+// 42671c2dd2c02b744850e0bda72b99d5509969c1.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only
@@ -18,6 +20,12 @@ import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
 service OpenShell {
+  // Stop a sandbox while retaining its persistent state.
+  // Upstream authorization: bearer, scope sandbox:write, workspace role user.
+  rpc StopSandbox(StopSandboxRequest) returns (SandboxResponse);
+  // Start a previously stopped sandbox.
+  // Upstream authorization: bearer, scope sandbox:write, workspace role user.
+  rpc StartSandbox(StartSandboxRequest) returns (SandboxResponse);
   // Config reads require config:read; mutation requires config:write and workspace admin.
   rpc GetDraftPolicy(GetDraftPolicyRequest) returns (GetDraftPolicyResponse);
   rpc GetSandboxPolicyStatus(GetSandboxPolicyStatusRequest) returns (GetSandboxPolicyStatusResponse);
@@ -35,6 +43,9 @@ service OpenShell {
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
   // Read-only. Recovers the stable create-time route without replaying CreateSandbox.
   rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
+  // Create or update a sandbox HTTP service endpoint for local routing.
+  // Upstream authorization: bearer, scope sandbox:write, workspace role user.
+  rpc ExposeService(ExposeServiceRequest) returns (ServiceEndpointResponse);
   rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
@@ -670,6 +681,23 @@ message GetSandboxRequest {
   WorkspaceSelector workspace_scope = 2;
 }
 
+message ExposeServiceRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 5;
+  // Service name within the sandbox.
+  string name = 2;
+  // Loopback TCP port inside the sandbox.
+  uint32 target_port = 3;
+  // Whether to print/use the browser-facing service URL.
+  bool domain = 4;
+  string sandbox = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 6;
+  // Application authorization behavior. Omission resolves to STRIP.
+  ServiceAuthorizationMode authorization_mode = 7;
+}
+
 message GetServiceRequest {
   string sandbox = 1;
   // Empty selects the unnamed endpoint.
@@ -1263,4 +1291,71 @@ message SandboxPolicyRevision {
 message CredentialConnector {
   string path = 1;
   string sha256 = 2;
+}
+
+// Managed workload RPCs from NVIDIA/OpenShell
+// 42671c2dd2c02b744850e0bda72b99d5509969c1 (proto/openshell.proto).
+// Optional sandbox mutations are separate from OpenShell so existing generated
+// OpenShell server implementations remain source-compatible.
+service SandboxUpdates {
+  // Update the workload image, command, environment, labels, or annotations of a
+  // stopped sandbox while preserving its identity and retained storage. Requires
+  // compute-driver support for the selected changes and explicit gateway activation
+  // of sandbox updates.
+  // Upstream authorization: bearer, scope sandbox:write, workspace role user.
+  rpc UpdateSandbox(UpdateSandboxRequest) returns (SandboxResponse);
+}
+
+// Stop sandbox request.
+message StopSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 2;
+  string name = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 3;
+}
+
+// Start sandbox request.
+message StartSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 2;
+  string name = 1;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 3;
+}
+
+// Update selected configuration of a stopped sandbox. Omitted fields are unchanged.
+// Start explicitly after a successful update. With no fields selected, resume
+// the pending operation stored by the gateway using the current resource version.
+message UpdateSandboxRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 1;
+  // Canonical name of the existing sandbox; this is not a rename or upsert.
+  string name = 2;
+  // Nonempty OCI workload image reference. This does not change trusted runtime
+  // images or reseed an existing workspace.
+  optional string image = 3;
+  // Replace workload argv; an empty list restores image-resolved default shell behavior.
+  SandboxCommandUpdate command = 6;
+  // Replace sandbox-level overrides. Empty clears overrides; template defaults remain.
+  SandboxMapUpdate environment = 7;
+  // Replace user metadata, preserving gateway-owned keys. These do not set pod metadata.
+  SandboxMapUpdate labels = 8;
+  SandboxMapUpdate annotations = 9;
+  // Required nonzero resource version read by the caller.
+  uint64 expected_resource_version = 4;
+  // Optional nonzero UUID for durable at-most-once admission.
+  string request_id = 5;
+}
+
+// Presence selects replacement, including an explicitly empty list.
+message SandboxCommandUpdate {
+  repeated string argv = 1;
+}
+
+// Presence selects replacement, including an explicitly empty map.
+message SandboxMapUpdate {
+  map<string, string> values = 1;
 }
