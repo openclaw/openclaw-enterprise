@@ -12,6 +12,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -209,22 +210,20 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // and returns to the button with the result, instead of falling to the page (finding 1705).
   const refreshRecord = versionRecord.getByRole("button", { name: "Refresh record" });
   const recordPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`;
-  const focused = (locator) =>
-    locator.evaluate((node) => node === globalThis.document.activeElement);
   await runDiagnostics.focus();
   await page.keyboard.press("Enter");
   try {
     await diagnosticsRequest.requested;
     await waiting.waitFor();
     assert.equal(await idle.isVisible(), false);
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     // A record read re-renders the panel (as each deployment poll does); the waiting line
     // keeps focus through it. A dispatched click leaves focus where it is.
     const recordReads = pathRequests(requests, "GET", recordPath).length;
     await refreshRecord.dispatchEvent("click");
     await refreshRecord.waitFor();
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     assert.deepEqual(await page.evaluate(() => globalThis.diagnosticsAnnouncements), [
       "Waiting for diagnostic results…",
     ]);
@@ -236,7 +235,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations.getByText("slack / authentication").waitFor();
   assert.equal(await waiting.isVisible(), false);
   await waitForEnabled(runDiagnostics);
-  assert.equal(await focused(runDiagnostics), true);
+  assert.equal(await hasFocus(runDiagnostics), true);
   const description = () =>
     runDiagnostics.evaluate(
       (node) =>
@@ -249,7 +248,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     await refreshRecord.dispatchEvent("click");
     await refreshRecord.waitFor();
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
-    assert.equal(await focused(runDiagnostics), true);
+    assert.equal(await hasFocus(runDiagnostics), true);
   };
   // The "Observed" line, not the whole check list.
   assert.match(await description(), /^Observed /);
@@ -273,7 +272,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .getByText(/Current-runtime diagnostics are unavailable/);
   await page.keyboard.press("Enter");
   await unavailableAlert.waitFor();
-  assert.equal(await focused(runDiagnostics), true);
+  assert.equal(await hasFocus(runDiagnostics), true);
   assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
   await pollPanel();
   assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
@@ -287,14 +286,14 @@ test("Agent detail separates the current version, viewed version, and latest dep
   try {
     await movedOnRequest.requested;
     await waiting.waitFor();
-    assert.equal(await focused(waiting), true);
+    assert.equal(await hasFocus(waiting), true);
     await page.keyboard.press("Shift+Tab");
-    assert.equal(await focused(refreshRecord), true);
+    assert.equal(await hasFocus(refreshRecord), true);
   } finally {
     movedOnRequest.release();
   }
   await unavailableAlert.waitFor();
-  assert.equal(await focused(refreshRecord), true);
+  assert.equal(await hasFocus(refreshRecord), true);
   // That run started by dropping the earlier result's description, and nothing described the
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
@@ -2081,60 +2080,120 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   await page.getByRole("dialog", { name: "Create harness authentication Secret" }).waitFor();
 });
 
-test("a Secret created before the picker's Secret list arrives stays staged and listed", async (t) => {
+test("Tab leaves a scrolling Secret list for the next control, and the list keeps focus in the picker", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slow Secret list", { ready: true });
-  const original = await fixture.createSecret(namespace.id, "Original binding", "original-value");
+  const namespace = await fixture.createNamespace("Scrolling Secret list", { ready: true });
+  const secrets = [];
+  // Nine readable Secrets overflow the open list, which then scrolls.
+  for (let index = 1; index <= 9; index += 1) {
+    secrets.push(
+      await fixture.createSecret(namespace.id, `Scrolling Secret ${index}`, `value-${index}`),
+    );
+  }
   const agent = await fixture.createAgent(
     namespace.id,
-    "Slow List Agent",
-    nativeValues("slow-secret-list", { harnessId: "codex" }),
-    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+    "Scrolling List Agent",
+    nativeValues("scrolling-secret-list", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: secrets[0].ref }, executionMode: "dedicated" },
   );
   const { page } = await newPage(t, fixture);
-  await trackSettledFetches(page);
-  const secretsPath = `/namespaces/${namespace.id}/secrets`;
-  // The API answers the list read; the page sees that answer only after the create.
-  let releaseList;
-  const listGate = new Promise((resolve) => {
-    releaseList = resolve;
-  });
-  t.after(releaseList);
-  let listReads = 0;
-  await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
-    if (route.request().method() !== "GET") {
-      await route.continue();
-      return;
-    }
-    listReads += 1;
-    const response = await route.fetch();
-    await listGate;
-    await route.fulfill({ response });
-  });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
-  await apiKeySecret.fill("no matching create target");
-  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
-  await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
-  await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
-  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
-  await dialog.waitFor({ state: "detached" });
-  const staged = page.getByText("Secret binding staged. Save changes to apply it.");
-  await staged.waitFor();
-  assert.ok(listReads > 0);
-  releaseList();
-  // Every held list read and the create have now reached the page's own code.
-  await waitForSettledFetches(page, secretsPath, listReads + 1);
-  assert.equal(await staged.count(), 1);
-  const created = (await fixture.request("GET", secretsPath)).data.find(
-    (secret) => secret.name === "Created while loading",
+  await page.getByText("Choose an existing Secret or create a new one.").waitFor();
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  const listbox = page.getByRole("listbox", { name: "Available Secrets" });
+  await picker.focus();
+  await listbox.waitFor();
+  assert.ok(await listbox.evaluate((node) => node.scrollHeight > node.clientHeight));
+
+  // The list is not a Tab stop: focus used to enter it, the list hid, and focus fell to the
+  // page (finding 1919).
+  await picker.fill("Scrolling");
+  await page.keyboard.press("Tab");
+  assert.equal(
+    await hasFocus(page.getByRole("link", { name: /View harness authentication Secret metadata/ })),
+    true,
   );
-  assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
-  await apiKeySecret.fill("Created while");
-  await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+  await listbox.waitFor({ state: "hidden" });
+  assert.equal(await picker.inputValue(), secrets[0].name);
+
+  // Focus that still reaches the list, as a press on its scrollbar can, returns to the input
+  // with the list and the search kept.
+  await page.keyboard.press("Shift+Tab");
+  await picker.fill("Secret 9");
+  await listbox.focus();
+  assert.equal(await hasFocus(picker), true);
+  assert.equal(await picker.inputValue(), "Secret 9");
+  assert.deepEqual(await listbox.getByRole("option").allTextContents(), [
+    secrets[8].name,
+    "Create new Secret...",
+  ]);
+  await page.keyboard.press("Escape");
+  await listbox.waitFor({ state: "hidden" });
 });
+
+// A failed list read must not replace the staged hint with an error either (finding 1748).
+for (const listOutcome of ["arrives", "fails"]) {
+  test(`a Secret created before the picker's Secret list ${listOutcome} stays staged and listed`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Slow Secret list", { ready: true });
+    const original = await fixture.createSecret(namespace.id, "Original binding", "original-value");
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Slow List Agent",
+      nativeValues("slow-secret-list", { harnessId: "codex" }),
+      { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+    );
+    const { page } = await newPage(t, fixture);
+    await trackSettledFetches(page);
+    const secretsPath = `/namespaces/${namespace.id}/secrets`;
+    // The API answers the list read; the page sees that answer only after the create.
+    let releaseList;
+    const listGate = new Promise((resolve) => {
+      releaseList = resolve;
+    });
+    t.after(releaseList);
+    let listReads = 0;
+    await page.route(`${fixture.origin}${secretsPath}`, async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      listReads += 1;
+      const response = await route.fetch();
+      await listGate;
+      await route.fulfill(
+        listOutcome === "arrives"
+          ? { response }
+          : { status: 500, contentType: "application/json", body: "{}" },
+      );
+    });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+    const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
+    await apiKeySecret.fill("no matching create target");
+    await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+    await dialog.getByLabel("Name", { exact: true }).fill("Created while loading");
+    await dialog.getByLabel("Value", { exact: true }).fill("created-while-loading");
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    const staged = page.getByText("Secret binding staged. Save changes to apply it.");
+    await staged.waitFor();
+    assert.ok(listReads > 0);
+    releaseList();
+    // Every held list read and the create have now reached the page's own code.
+    await waitForSettledFetches(page, secretsPath, listReads + 1);
+    assert.equal(await staged.count(), 1);
+    assert.deepEqual(await statusTone(staged), { className: "hint", tone: null, role: "status" });
+    const created = (await fixture.request("GET", secretsPath)).data.find(
+      (secret) => secret.name === "Created while loading",
+    );
+    assert.equal(await apiKeySecret.inputValue(), secretOptionLabel(created));
+    await apiKeySecret.fill("Created while");
+    await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
+  });
+}
 
 test("a different Secret in a create response cannot stage a binding or repeat the write", async (t) => {
   const fixture = await createConsoleAppFixture(t);
