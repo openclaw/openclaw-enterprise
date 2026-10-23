@@ -35,6 +35,7 @@ import {
   ResourceConflictError,
   ResourceStateConflictError,
   ProtectedExecutionNetworkPolicyError,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
@@ -828,6 +829,11 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(409, "RESOURCE_CONFLICT", error.message, [
       { path: "/expectedGeneration", code: "INVALID_VALUE" },
     ]);
+  }
+  if (error instanceof RepositoryGitProfileUnsupportedError) {
+    // Finding 2204: raised only after the deploy grant, with a fixed message naming the
+    // supported delivery profiles.
+    return failure(409, RepositoryGitProfileUnsupportedError.code, error.message);
   }
   if (error instanceof RepositoryGitSenderUnqualifiedError) {
     // Finding 2199: raised only after the deploy grant, with a fixed message naming the

@@ -17,6 +17,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: the worker refuses an App key that cannot sign
+
+**What breaks.** With prepared repository Git, worker startup reads and parses
+`repository.preparedGitHub.privateKeyPath` and stops when the key cannot sign.
+Earlier builds started, logged `PREPARED_GITHUB_MAINTENANCE_FAILED` on every
+pass, and left revisions waiting for Git material. The worker now restarts
+until the key is fixed, so it also stops other work. The upgrade check mounts
+no private key and cannot catch this.
+
+**Who is affected.** Helm installs with `repositoryCredentials.authority:
+prepared-git` whose App-key Secret holds a missing, public, passphrase-protected
+or non-RSA key.
+
+**How to tell.** `worker.startup-error` shows
+`PREPARED_GITHUB_APP_KEY_INVALID` with `reason` `app_key_unreadable`,
+`app_key_unparsable` or `app_key_unsupported`.
+
+**Steps.** Before upgrading, put the App's RSA private key in the Secret named
+by `repositoryCredentials.appKeySecretName`; see
+[Replace a rejected App key](../repository-credentials/team-runbook.md#replace-a-rejected-app-key).
+
 ## 2026-10-23: Installation listeners must match the chart
 
 **What breaks.** API and worker startup and the chart's upgrade check refuse an
@@ -26,6 +47,9 @@ Installation listener that the chart Service cannot reach. That is
 `egressAuthority.port` or `openshellGit.port`, on a host other than `0.0.0.0`
 or `::`, or with that chart listener disabled. Earlier builds started, or failed
 to bind, and then refused every protected request or Git call at first use.
+Since 2026-10-23 the check also refuses TLS or issuer file paths other than
+where the chart mounts them; a Recreate upgrade with such a path left the API
+or worker unable to start after the old Pod stopped.
 
 **Who is affected.** Helm installs with a Credential Proxy authority or
 protected OpenShell Git.
@@ -34,7 +58,8 @@ protected OpenShell Git.
 `CHART_LISTENER_MISMATCH` with the Installation and Helm settings and values.
 
 **Steps.** Set the authority `host` to `0.0.0.0` and its `port` to the Helm
-value, or enable the chart listener, then upgrade again.
+value, or enable the chart listener. Set `certificatePath`, `privateKeyPath`
+and `issuerPublicKeyPath` to the paths the refusal names. Then upgrade again.
 
 ## 2026-10-23: a repository broker peer needs the native sender
 

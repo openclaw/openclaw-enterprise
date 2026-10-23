@@ -107,6 +107,10 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
     }
     tokenService.register(this, postgresPreparedGitHubProof);
     this.maintenance = tokenService.ownFamilies({
+      discover: async (signal) => {
+        signal.throwIfAborted();
+        await this.db.withdrawEndedAgents();
+      },
       retire: async (signal) => {
         const result = await this.retire(null, signal);
         if (result === "issuer-mismatch") {
@@ -240,7 +244,17 @@ export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
         throw error;
       }
     }
-    const settlement = await db.withdrawalSettlement(source);
+    let settlement = await db.withdrawalSettlement(source);
+    // The worker may be revoking a token right now (for example after the Agent was deleted).
+    // Its answer arrives within the revocation budget: wait for it, never take it over.
+    const until = Date.now() + 25_000;
+    while (!settlement.settled && settlement.revoking && Date.now() < until && !signal.aborted) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (signal.aborted) {
+        break;
+      }
+      settlement = await db.withdrawalSettlement(source);
+    }
     if (!settlement.settled) {
       throw new CredentialTokenUnsettledError(settlement.settlesAt);
     }

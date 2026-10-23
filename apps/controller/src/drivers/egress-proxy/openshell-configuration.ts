@@ -46,7 +46,11 @@ export function openShellProxyConfiguration(
   const { authority, preparedGitHub, ...policy } = egress;
   return {
     policy,
-    authority: egressAuthorityConfiguration(authority, mode),
+    authority: egressAuthorityConfiguration(
+      authority,
+      mode,
+      "drivers.credential_proxy.configuration.authority",
+    ),
     prepared:
       preparedGitHub === undefined ? undefined : preparedGitHubConfiguration(preparedGitHub, false),
   };

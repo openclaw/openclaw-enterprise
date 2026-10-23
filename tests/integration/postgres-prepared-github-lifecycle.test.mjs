@@ -685,7 +685,9 @@ test(
       let bytes;
       t.mock.method(client, "query", async (sql, ...args) => {
         const result = await query(sql, ...args);
-        if (sql === "COMMIT") {
+        // The pass first commits its Agent discovery on this connection, which the one-connection
+        // pool hands back to the retirement claim; lose only the claim's acknowledgment.
+        if (sql === "COMMIT" && open.mock.callCount()) {
           bytes = open.mock.calls[0].result;
           assert.ok(
             bytes.some((byte) => byte !== 0),
@@ -870,6 +872,116 @@ test(
     assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
     // Settlement never rewrites the recorded outcome.
     assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+test(
+  "PostgreSQL prepared custody: deleting the bound Agent stops renewal and revokes its tokens",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2215: the worker renewed an Agent-bound source forever after its Agent was deleted.
+    // A nine-minute provider lifetime keeps renewal due on every pass of a live family.
+    let onIssue;
+    let onRevoke;
+    const { gh, f, lifecycle, source } = await preparedLifecycleFixture(t, {
+      tokenLifetimeMs: 9 * 60_000,
+      // GitHub has minted or revoked the token; its answer is still on the way.
+      issueResponseGate: () => onIssue?.(),
+      revokeResponseGate: () => onRevoke?.(),
+    });
+    const signal = new AbortController().signal;
+    const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
+    const due = () =>
+      f.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=now() WHERE source_id=$1",
+        [source.key.source.id],
+      );
+    const custody = async () =>
+      (
+        await f.pool.query(
+          `SELECT f.enabled, a.state, a.custody FROM occ.prepared_github_families f
+           JOIN occ.prepared_github_attempts a USING (source_id) WHERE source_id=$1 ORDER BY a.started_at`,
+          [source.key.source.id],
+        )
+      ).rows;
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    // Before deletion a signed metadata request reaches GitHub. A second one is resolved now
+    // and its selection retained, to be authorized only after the Agent is deleted.
+    const metadataReads = () => gh.trace.filter((entry) => entry.method === "GET").length;
+    const control = captureMetadata(f);
+    const allowed = await f.resolve(control);
+    assert.ok(allowed.ready, "signed resolve must select the prepared family");
+    assert.equal((await dispatchMetadata(f, gh, control, allowed.ready)).status, 200);
+    const reads = metadataReads();
+    const retained = captureMetadata(f);
+    const { ready } = await f.resolve(retained);
+    assert.ok(ready, "signed resolve must select the prepared family");
+    const evidence = JSON.parse(ready.evidence.authority_evidence);
+    const proveCurrent = () =>
+      f.state.transact((unit) =>
+        unit.preparedTokenProof.current(source, evidence, lifecycle.issuerAuthority, readWindow()),
+      );
+    assert.equal(await proveCurrent(), true);
+
+    // The Agent is deleted while a renewal is in flight: the token GitHub minted is never published.
+    onIssue = async () => {
+      onIssue = undefined;
+      const deleted = await f.request(
+        "DELETE",
+        `/namespaces/${f.namespace.id}/agents/${f.agent.id}`,
+      );
+      assert.equal(deleted.status, 202);
+    };
+    await due();
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.equal(onIssue, undefined, "the renewal reached GitHub");
+    assert.equal(gh.issuesOfTokens.length, 2);
+    // Use stops as deletion commits, before any worker pass.
+    assert.equal(await lifecycle.ready(source, signal), false);
+    assert.equal(await lifecycle.readWarm(source, readWindow()), undefined);
+    assert.equal(await proveCurrent(), false);
+    // The selection retained from before deletion is refused at send authorization, so its
+    // bytes never reach GitHub, while the token is still awaiting revocation.
+    const refused = await f.authorize(f.permitRequest(retained, ready));
+    assert.equal(refused.allowed, undefined, "a deleted Agent's retained selection was authorized");
+    assert.equal(refused.refused?.code, f.refusalCode("DENIED"));
+    assert.equal(metadataReads(), reads);
+
+    // The next passes withdraw the family and revoke both tokens; nothing is issued again.
+    await due();
+    assert.equal(await lifecycle.maintain(signal), "retired");
+    // Deleting the source while the worker's revocation is in flight waits for its answer,
+    // instead of reporting a token that may stay valid for an hour.
+    let release;
+    const answered = new Promise((resolve) => (release = resolve));
+    const revoking = new Promise((resolve) => {
+      onRevoke = () => {
+        onRevoke = undefined;
+        resolve();
+        return answered;
+      };
+    });
+    const pass = lifecycle.maintain(signal);
+    await revoking;
+    const settlement = t.mock.method(lifecycle.repository, "withdrawalSettlement");
+    const withdrawn = lifecycle.withdraw(source, AbortSignal.timeout(30_000));
+    // Answer only once the deletion has found the revocation unsettled and checked again.
+    await waitUntil("the deletion to recheck settlement", () => settlement.mock.callCount() >= 2);
+    release();
+    assert.equal(await pass, "retired");
+    await withdrawn;
+    await due();
+    assert.equal((await lifecycle.maintain(signal)) ?? "idle", "idle");
+    assert.equal(gh.issuesOfTokens.length, 2, "a deleted Agent's source was renewed");
+    assert.deepEqual(
+      gh.tokenState().map((token) => token.revoked),
+      [true, true],
+    );
+    assert.deepEqual(await custody(), [
+      { enabled: false, state: "committed", custody: "revoked" },
+      { enabled: false, state: "quarantined", custody: "revoked" },
+    ]);
     assert.deepEqual(gh.errors, []);
   },
 );

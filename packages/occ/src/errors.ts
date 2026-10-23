@@ -570,6 +570,28 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 }
 
 /**
+ * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
+ * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
+ * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
+ * several bindings, could never start. Deploy refuses it with 409
+ * REPOSITORY_GIT_PROFILE_UNSUPPORTED before reading the counterpart, instead of a generic 503 or
+ * 500. The bundled OpenShell `configureRevision` repeats it and the worker fails it at once; that
+ * is defence in depth, as PostgreSQL cannot read a stored revision of this shape. HTTP keeps
+ * messages under 256 characters.
+ */
+export class RepositoryGitProfileUnsupportedError extends ResourceStateConflictError {
+  static readonly code = "REPOSITORY_GIT_PROFILE_UNSUPPORTED";
+  static readonly description =
+    "A Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile, so this Agent's repository access can never start. Use one such binding or native prepared Git, or remove the bindings, then deploy again.";
+  readonly code = RepositoryGitProfileUnsupportedError.code;
+
+  constructor() {
+    super(RepositoryGitProfileUnsupportedError.description);
+    this.name = "RepositoryGitProfileUnsupportedError";
+  }
+}
+
+/**
  * The Configuration moved past the generation the update named. HTTP marks it with an
  * `/expectedGeneration` detail, so a caller can tell it from other Configuration conflicts,
  * such as one reserved for provisioning, and reread before saving again.

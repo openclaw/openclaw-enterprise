@@ -921,6 +921,7 @@ export const ERROR_CODES = Object.freeze([
   "CREDENTIAL_TOKEN_UNSETTLED",
   "SANDBOX_POLICY_PROTECTED_EXECUTION",
   "REPOSITORY_GIT_SENDER_UNQUALIFIED",
+  "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
   "SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED",
   "REPOSITORY_OPTIONS_UNAVAILABLE",
   "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
@@ -1015,6 +1016,10 @@ export const ErrorResponse = Type.Object(
           Type.Literal("REPOSITORY_GIT_SENDER_UNQUALIFIED", {
             description:
               "Deploy is refused because the selected Credential Proxy has no qualified enforcement for the Agent's git-write repository binding; the version could never start.",
+          }),
+          Type.Literal("REPOSITORY_GIT_PROFILE_UNSUPPORTED", {
+            description:
+              "Deploy is refused because the selected Credential Proxy delivers repository Git only for one binding with the git-write or github-installation profile; git-read, git-full or several bindings could never start.",
           }),
           Type.Literal("SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED", {
             description:

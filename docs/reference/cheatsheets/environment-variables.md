@@ -56,7 +56,7 @@ console uses the current origin and has no separate environment settings.
 - `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
 - `NODE_EXTRA_CA_CERTS` — Additional process-wide Node.js PEM trust, read at startup. The chart combines API roots ([OIDC CA settings](../settings/oidc.md)); Compute combines public [Sandbox endpoint](../drivers/sandbox.md#interface) and execution-cluster roots for the dedicated Gateway.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
-- `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, or a disabled listener. Not operator inputs.
+- `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
 
 ## PostgreSQL and migrations

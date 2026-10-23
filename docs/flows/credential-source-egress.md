@@ -69,10 +69,10 @@ Compute validates admission for OCC and rechecks it with the worker before launc
 PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Older workers refuse v3;
 upgrade all writers before admitting it. Qualify release and installed deny-all behavior.
 
-Bundled OpenShell qualifies no `git-write` sender:
+Deploy refuses Git that cannot start: no delivery profile in `admitProxyPlan`
+(409 `REPOSITORY_GIT_PROFILE_UNSUPPORTED`), bundled OpenShell `git-write` in
 `apps/controller/src/drivers/egress-proxy/openshell.ts:assertRepositoryGitProfileAvailable`
-refuses deploy (409 `REPOSITORY_GIT_SENDER_UNQUALIFIED`). Preparation repeats it, so
-older admitted revisions fail permanently.
+(409 `REPOSITORY_GIT_SENDER_UNQUALIFIED`). Bundled preparation repeats both, failing older `git-write` revisions.
 
 Compute passes Credential Proxy wiring to Sandbox provisioning. Protected sources
 require admission, API-key login, an exact plan source-key match and no Gateway

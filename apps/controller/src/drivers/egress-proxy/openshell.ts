@@ -22,6 +22,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   DependencyUnavailableError,
+  RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
 } from "@openclaw-enterprise/occ";
 import { asRecord, immutableCopy, sha256Hex } from "@openclaw-enterprise/utils";
@@ -403,10 +404,13 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
 
   async configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring> {
     this.assertPlan(context);
-    await this.sourceControl.assertAvailable(
-      context.signal,
-      repositoryGitDeliveryProfile(context.plan.repositoryGit),
-    );
+    const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
+    if (context.plan.repositoryGit !== undefined && profile === undefined) {
+      // Finding 2204: never check a Git plan's counterpart as an ordinary egress plan. Deploy
+      // refuses it first; preparation repeats the refusal so the worker fails it at once.
+      throw new RepositoryGitProfileUnsupportedError();
+    }
+    await this.sourceControl.assertAvailable(context.signal, profile);
     return immutableCopy({
       plan: context.plan,
       configuration: openShellEgressConfiguration(context.plan, this.options),

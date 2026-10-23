@@ -1,7 +1,10 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
-import { startPreparedGitHubGitOwner } from "./backends/repository-credentials/prepared-git-owner.ts";
+import {
+  PreparedGitHubAppKeyError,
+  startPreparedGitHubGitOwner,
+} from "./backends/repository-credentials/prepared-git-owner.ts";
 import {
   bindRepositoryGitTransport,
   repositoryGitAuthority,
@@ -293,7 +296,10 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ??
+    ...((error instanceof PreparedGitHubAppKeyError
+      ? { code: error.code, reason: error.reason }
+      : undefined) ??
+      startupDependencyFailure(error) ??
       startupConfigurationFailure(error) ??
       startupListenerFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });

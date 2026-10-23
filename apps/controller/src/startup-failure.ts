@@ -2,7 +2,10 @@ import { configurationLogDetails } from "./logging.ts";
 import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { PostgresCertificateRejectedError } from "@openclaw-enterprise/occ";
 import { KubernetesApiUnavailableError } from "./drivers/kubernetes/client.ts";
-import { ChartListenerMismatchError } from "./composition/installation-fields.ts";
+import {
+  ChartListenerMismatchError,
+  InstallationFieldError,
+} from "./composition/installation-fields.ts";
 
 /**
  * Log fields for a startup failure caused by an unreachable or untrusted dependency,
@@ -27,8 +30,8 @@ export function startupDependencyFailure(
 
 /**
  * Log fields for an Installation listener the chart cannot reach: the code and one detail
- * whose message names the Installation and Helm settings and values (ports, a bind host or
- * a flag; never a file path or secret).
+ * whose message names the Installation and Helm settings and values (ports, a bind host, a
+ * flag or the chart's fixed mount path; never a configured file path or secret).
  */
 export function startupListenerFailure(error: unknown) {
   return error instanceof ChartListenerMismatchError
@@ -39,11 +42,16 @@ export function startupListenerFailure(error: unknown) {
     : undefined;
 }
 
-/** Shared configuration failures contain only bounded, schema-owned diagnostics. */
+/**
+ * Shared configuration failures contain only bounded, schema-owned diagnostics. Installation
+ * field refusals (an authority block, finding 2216) use the same code and detail shape.
+ */
 export function startupConfigurationFailure(error: unknown) {
   return error instanceof ConfigurationValidationError
     ? { code: "DRIVER_CONFIGURATION_INVALID", details: error.error.details }
-    : undefined;
+    : error instanceof InstallationFieldError
+      ? { code: "DRIVER_CONFIGURATION_INVALID", details: error.details }
+      : undefined;
 }
 
 /** One-line operator diagnostics, with the same safe fields as API and worker logs. */

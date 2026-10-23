@@ -37,8 +37,9 @@ after(cleanup);
 // and re-prepared the refused candidate (on Kubernetes its route, Service, credentials and Gateway
 // Deployment). The stored refusal now retries only its stop. A refusal decided before Compute
 // (revoked) never prepared it again. Finding 2199: a revision admitted with an unqualified Git
-// sender (unqualified) fails at once, not at the convergence deadline.
-for (const refuse of ["revoked", "unsupported", "unqualified"]) {
+// sender (unqualified) fails at once, not at the convergence deadline; finding 2204: so does a
+// Git plan with no delivery profile (undeliverable).
+for (const refuse of ["revoked", "unsupported", "unqualified", "undeliverable"]) {
   revisionTest(
     `a ${refuse} candidate's stored refusal retries only its stop`,
     async (fixture) => {
@@ -52,8 +53,7 @@ for (const refuse of ["revoked", "unsupported", "unqualified"]) {
       assert.equal(stop.failed.length, 3);
       assert.equal(driver.count(replacement), 1, "the refused candidate was stopped");
       assert.deepEqual([...driver.running], []);
-      // The first pass started the runtime; an unsupported or unqualified one was refused by the
-      // second.
+      // The first pass started the runtime; any other refusal was decided by the second.
       assert.equal(driver.preparations(replacement), refuse === "revoked" ? 1 : 2);
       assert.equal(driver.count(first), 1, "the waits did not sweep the predecessor again");
     },

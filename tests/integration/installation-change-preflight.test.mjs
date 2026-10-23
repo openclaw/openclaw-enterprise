@@ -13,6 +13,10 @@ import {
   renderProductionChart,
 } from "../helpers/production-chart.mjs";
 import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
+import {
+  chartListeners,
+  requireChartListener,
+} from "../../apps/controller/src/composition/installation-fields.ts";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // An Installation change restarts the API with the Recreate strategy, so an Installation
@@ -284,6 +288,119 @@ test(
       assert.equal(refused.stdout, "");
       assert.equal(refused.stderr, `${prefix}: ${message}\n`);
     }
+  },
+);
+
+test(
+  "the upgrade hook check refuses authority files where the chart mounts none",
+  tooling,
+  async (t) => {
+    // The listener reads its TLS and issuer files only when it starts, which a Recreate
+    // upgrade does after stopping the old Pod: a wrong path was an outage, not a refusal.
+    const pod = async (values, name) =>
+      (await parseProductionChart((await renderProductionChart(values)).stdout)).find(
+        ({ kind, metadata }) => kind === "Deployment" && metadata.name === name,
+      ).spec.template.spec;
+    const mounted = (spec, container) =>
+      spec.containers
+        .find(({ name }) => name === container)
+        .volumeMounts.flatMap(({ name, mountPath }) => {
+          const volume = spec.volumes.find((candidate) => candidate.name === name);
+          const items = [
+            ...(volume.secret?.items ?? []),
+            ...(volume.projected?.sources ?? []).flatMap(
+              (source) => (source.secret ?? source.configMap)?.items ?? [],
+            ),
+          ];
+          return items.map(({ path }) => `${mountPath}/${path}`);
+        });
+    // The paths startup compares are the ones the chart renders, for both listeners.
+    const api = await pod(preparedGitHubValues, "openclaw-enterprise-api");
+    const worker = await pod(
+      {
+        ...repositoryCredentialValues,
+        "repositoryCredentials.enabled": "false",
+        "openshellGit.enabled": "true",
+        "openshellGit.tlsSecretName": "openshell-git-tls",
+        "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+          "openshell-system",
+        "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+      },
+      "openclaw-enterprise-worker",
+    );
+    for (const [listener, files] of [
+      [chartListeners.egressAuthority, mounted(api, "api")],
+      [chartListeners.openshellGit, mounted(worker, "worker")],
+    ]) {
+      for (const [path] of Object.values(listener.files)) {
+        assert.ok(files.includes(path), `${listener.chart}: ${path} in ${files.join(", ")}`);
+      }
+    }
+
+    const prefix =
+      "installation-check: API and worker startup would refuse the Installation (CHART_LISTENER_MISMATCH)";
+    const [check] = (await render(preparedGitHubValues, true)).hook.initContainers;
+    const environment = Object.fromEntries(
+      check.env
+        .filter(
+          ({ name }) => name === "OCC_EGRESS_AUTHORITY_PORT" || name === "OCC_OPENSHELL_GIT_PORT",
+        )
+        .map(({ name, value }) => [name, value]),
+    );
+    const authority = "drivers.credential_proxy.configuration.authority";
+    for (const [field, configured, message] of [
+      [
+        "certificatePath",
+        "/etc/openclaw/egress/tls/server.crt",
+        `${authority}.certificatePath must be /etc/openclaw/egress/tls/tls.crt, where the chart mounts the file from Helm egressAuthority.tlsSecretName.`,
+      ],
+      [
+        "privateKeyPath",
+        "/etc/openclaw/openshell/tls.key",
+        `${authority}.privateKeyPath must be /etc/openclaw/egress/tls/tls.key, where the chart mounts the file from Helm egressAuthority.tlsSecretName.`,
+      ],
+      [
+        "issuerPublicKeyPath",
+        "/etc/openclaw/egress/issuer/public.pem",
+        `${authority}.issuerPublicKeyPath must be /etc/openclaw/egress/issuer/issuer.pub, where the chart mounts the file from Helm egressAuthority.issuerSecretName.`,
+      ],
+    ]) {
+      const configuration = credentialProxyInstallation();
+      configuration.drivers.credential_proxy.configuration.authority.host = "0.0.0.0";
+      configuration.drivers.credential_proxy.configuration.authority[field] = configured;
+      const refused = await runCheck(t, configuration, {}, () => environment);
+      assert.equal(refused.status, 1, field);
+      assert.equal(refused.stdout, "");
+      // Only the chart's path is named; the configured path is the operator's layout.
+      assert.equal(refused.stderr, `${prefix}: ${message}\n`);
+    }
+
+    // The repository transport compares its own block with the openshellGit mounts.
+    const transport = {
+      ...credentialProxyInstallation().drivers.credential_proxy.configuration.authority,
+      host: "0.0.0.0",
+      port: 8445,
+      ...Object.fromEntries(
+        Object.entries(chartListeners.openshellGit.files).map(([key, [path]]) => [key, path]),
+      ),
+    };
+    const declared = { OCC_OPENSHELL_GIT_PORT: "8445" };
+    requireChartListener(transport, declared, chartListeners.openshellGit);
+    assert.throws(
+      () =>
+        requireChartListener(
+          { ...transport, issuerPublicKeyPath: "/etc/openclaw/openshell-git/issuer.pub" },
+          declared,
+          chartListeners.openshellGit,
+        ),
+      {
+        name: "ChartListenerMismatchError",
+        path: "/repository/openShell/authority/issuerPublicKeyPath",
+        message:
+          "repository.openShell.authority.issuerPublicKeyPath must be /etc/openclaw/openshell-git/gateway-public.pem, where the chart mounts the file from Helm openshellGit.issuerPublicKeyConfigMapName.",
+      },
+    );
   },
 );
 

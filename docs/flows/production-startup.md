@@ -137,8 +137,8 @@ replacement. The check uses `apps/controller/src/startup-failure.ts:formatStartu
 and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
 diagnostics, without submitted values, except
 `apps/controller/src/composition/installation-fields.ts:requireChartListener`:
-`CHART_LISTENER_MISMATCH` names ports or the host refused against
-`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT`.
+`CHART_LISTENER_MISMATCH` names ports, hosts or paths refused when
+`OCC_EGRESS_AUTHORITY_PORT`/`OCC_OPENSHELL_GIT_PORT` is set.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and

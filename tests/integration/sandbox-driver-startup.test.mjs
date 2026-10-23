@@ -5830,6 +5830,30 @@ test(
         await assert.rejects(proxy.configureRevision(ctx), {
           code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
         });
+        // Finding 2204: a git-read binding maps to no delivery profile. Preparation never checks
+        // its counterpart as an ordinary egress plan; it refuses the plan with its own code.
+        const readGit = {
+          ...revision.repositoryCredentials,
+          bindings: [{ ...revision.repositoryCredentials.bindings[0], profile: "git-read" }],
+        };
+        const { repositoryGitAuthorization: _online, ...readFields } = plan;
+        const readPlan = { ...readFields, repositoryGit: readGit };
+        const readRevision = {
+          ...rev,
+          repositoryCredentials: readGit,
+          egressPlan: readPlan,
+          executionAdmission: { version: 4, mode: "protected" },
+        };
+        const readCtx = { ...ctx, plan: readPlan, revision: readRevision };
+        for (const prepare of [
+          () => new ProtectedExecutionDriver(owner).configure(readCtx),
+          () => proxy.configureRevision(readCtx),
+        ]) {
+          await assert.rejects(prepare(), {
+            name: "RepositoryGitProfileUnsupportedError",
+            code: "REPOSITORY_GIT_PROFILE_UNSUPPORTED",
+          });
+        }
         const qualifiedWiring = (c) => ({
           plan: c.plan,
           configuration: openShellEgressConfiguration(c.plan, proxy.options),

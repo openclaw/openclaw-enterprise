@@ -175,6 +175,17 @@ App and platform Secrets while other Agents depend on them. For permanent
 offboarding, retire affected Agents, resolve cleanup, and then remove the
 repository from the App installation and publish a new immutable registry policy.
 
+## Fix an App key the worker refuses
+
+The worker reads and parses the mounted key at startup. A key that cannot sign stops it
+with `PREPARED_GITHUB_APP_KEY_INVALID` and a `reason`: `app_key_unreadable` (missing,
+empty, over 32 KiB, or open to group write or other users), `app_key_unparsable` (a
+public key, certificate or passphrase-protected key) or `app_key_unsupported` (not
+RSA of 2048 to 8192 bits). The log never includes key bytes. The worker restarts until
+the Secret holds a usable key; put one there as in the next section. A key that goes
+bad while the worker runs is read only at the next preparation, which logs
+`PREPARED_GITHUB_MAINTENANCE_FAILED`.
+
 ## Replace a rejected App key
 
 Check the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` reason (`quarantined`, then

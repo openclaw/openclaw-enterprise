@@ -73,8 +73,9 @@ its matching Credential Proxy selection has an empty `configuration`.
 The API owns the static authority listener. Development binds only to loopback.
 Production needs a reachable host and a certificate covering the Service DNS
 name. With Helm, use `host: 0.0.0.0` (or `::`) and the `egressAuthority.port`
-value. Startup and the upgrade check refuse another host or port, or a disabled
-`egressAuthority`, with `CHART_LISTENER_MISMATCH`. The Backend requires HTTPS
+value. Startup and the upgrade check refuse another host or port, a disabled
+`egressAuthority`, or file paths other than the chart mounts shown above, with
+`CHART_LISTENER_MISMATCH`. The Backend requires HTTPS
 with bearer-file or mutual TLS authentication. Register `oce-authority` under
 `[[openshell.supervisor.middleware]]` with its HTTPS `grpc_endpoint`, `audience`,
 `tls_ca_cert_path`, and `max_payload_bytes = 4194304`. Both peers must support

@@ -189,21 +189,48 @@ export class PreparedGitHubPostgres {
     });
   }
 
+  /** Withdraw this issuer's metadata families whose Agent is deleting or gone. Agent deletion
+   * is one-way and fences use at once (see the live predicate); retirement then revokes the
+   * current token. Agent deletion never waits on GitHub; deleting the source settles custody.
+   * A family locked by another transaction is skipped until the next pass. */
+  async withdrawEndedAgents() {
+    await this.transaction(async (c) => {
+      await c.query(
+        `WITH ended AS (SELECT source_id FROM ${families} f
+          WHERE enabled AND f.source->>'adoption'='prepared' AND admission->>'issuerAuthority'=$1
+          AND NOT EXISTS (SELECT 1 FROM occ.agents g WHERE g.status='active'
+            AND g.namespace_id=f.source #>> '{key,namespaceId}' AND g.id=f.source #>> '{grant,isolationId}')
+          FOR UPDATE OF f SKIP LOCKED),
+        stopped AS (UPDATE ${families} f SET enabled=false,worker_claim=NULL FROM ended e
+          WHERE f.source_id=e.source_id RETURNING f.source_id)
+        UPDATE ${attempts} a SET custody='retire' FROM stopped s
+        WHERE a.source_id=s.source_id AND a.custody='current'`,
+        [this.issuerAuthority],
+      );
+    });
+  }
+
   /** Settled, or the earliest time every unsettled attempt settles (none for live custody). */
   async withdrawalSettlement(source: Source) {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
         `SELECT count(*)::integer AS unsettled, CASE WHEN NOT bool_or(custody='current')
-          THEN max(${settledAfter("a")}) END AS "settlesAt"
+          THEN max(${settledAfter("a")}) END AS "settlesAt", bool_and(custody='revoking') AS revoking
         FROM ${attempts} a JOIN ${families} f USING (source_id)
         WHERE ${matching} AND NOT enabled AND NOT ${preparedAttemptSettled("a")}`,
         [source.key.source.id, source],
       );
-      const { unsettled, settlesAt } = rows[0] as { unsettled: number; settlesAt: Date | null };
+      const { unsettled, settlesAt, revoking } = rows[0] as {
+        unsettled: number;
+        settlesAt: Date | null;
+        revoking: boolean | null;
+      };
       return unsettled === 0
         ? { settled: true as const }
         : {
             settled: false as const,
+            // Every unsettled attempt is a revocation another owner has in flight.
+            revoking: revoking === true,
             ...(settlesAt instanceof Date && Number.isFinite(settlesAt.getTime()) && { settlesAt }),
           };
     });
