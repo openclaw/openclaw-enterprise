@@ -21305,6 +21305,10 @@
                         "activeRevisionId": { "type": "string" },
                         "host": { "type": "string" },
                         "origin": { "format": "uri", "type": "string" },
+                        "sessionMode": {
+                          "enum": ["shared-cookie", "host-only-exchange"],
+                          "type": "string"
+                        },
                         "status": {
                           "enum": [
                             "available",
@@ -21361,6 +21365,232 @@
         },
         "security": [{ "sessionCookie": [] }],
         "summary": "Resolve native admin UI launch availability for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm": {
+      "post": {
+        "description": "Requires `administer` permission on the exact requested Agent.",
+        "operationId": "confirmAgentNativeAdmin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "in": "header",
+            "name": "x-occ-session-key",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" }
+          },
+          { "in": "header", "name": "origin", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "challenge": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" },
+                  "intentId": { "format": "uuid", "type": "string" }
+                },
+                "required": ["intentId", "challenge"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "exchange": { "type": "string" },
+                        "intentId": { "type": "string" },
+                        "landingUrl": { "type": "string" },
+                        "origin": { "type": "string" },
+                        "redeemUrl": { "type": "string" }
+                      },
+                      "required": ["intentId", "exchange", "redeemUrl"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Conflict"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Confirm a native Agent browser challenge",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/native-admin/launch": {
+      "post": {
+        "description": "Requires `administer` permission on the exact requested Agent.",
+        "operationId": "launchAgentNativeAdmin",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": { "maxLength": 200, "minLength": 1, "type": "string" }
+          },
+          {
+            "in": "header",
+            "name": "x-occ-session-key",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9_-]{43}$", "type": "string" }
+          },
+          { "in": "header", "name": "origin", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": { "additionalProperties": false, "properties": {}, "type": "object" }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "properties": {
+                        "exchange": { "type": "string" },
+                        "intentId": { "type": "string" },
+                        "landingUrl": { "type": "string" },
+                        "origin": { "type": "string" },
+                        "redeemUrl": { "type": "string" }
+                      },
+                      "required": ["intentId", "origin", "landingUrl"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Bad Request"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Unauthorized"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Forbidden"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Conflict"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "security": [{ "sessionCookie": [] }],
+        "summary": "Create a browser-bound native Agent launch",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "agent", "scope": "requested" }

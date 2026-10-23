@@ -40,7 +40,7 @@ above. The helper refuses to reuse its Agent after outside Configuration edits.
 - Private workspace routing already works for the target Agents. Helm rejects `agentNativeAdmin.enabled: true` unless `gatewayRouting.enabled: true` is also set.
 - A public wildcard DNS name and HTTPS certificate route traffic to the OCC API Service, not to Envoy. Use a previously unused `agentNativeAdmin.domain` for the first pilot rollout; do not reuse a domain from prior native UI experiments because OCC does not evict already registered browser service workers.
 - The configured Agent domain is separate from the console host and does not include a wildcard, scheme, port, or path.
-- The configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
+- In shared-cookie mode, the configured `agentNativeAdmin.sharedCookieDomain` is the shared OCE session cookie parent domain. The console host and Agent domain must both be inside it on DNS-label boundaries, for example `console.oce.example.com`, `agents.oce.example.com`, and cookie domain `oce.example.com`. All matching subdomains that can receive the OCE session cookie must be trusted OCE ingress endpoints.
 - Each pilot Agent uses native trusted-proxy authentication with `occ-workspace-files` granted `operator.admin`, native `controlUi.enabled: true`, the derived Agent origin in `controlUi.allowedOrigins`, and trusted-proxy admin device auto-approval.
 - Operators who use the console have exact Agent `administer` permission.
 
@@ -60,6 +60,23 @@ agentNativeAdmin:
   domain: agents.oce.example.com
   sharedCookieDomain: oce.example.com
 ```
+
+For an installation that already uses guarded GitHub sign-in, select host-only
+exchange explicitly to keep the Console cookie off Agent hosts:
+
+```yaml
+agentNativeAdmin:
+  enabled: true
+  sessionMode: host-only-exchange
+  domain: agents.oce.example.com
+  sharedCookieDomain: ""
+```
+
+Keep the existing GitHub sign-in and recovery-user settings. Console and Agent
+hosts must use HTTPS on the same registrable site. Google sign-in, OIDC and
+sandbox preview cannot be combined with this mode. The exchange creates no user
+or grant; the signed-in person must already administer the exact Agent. See the
+[session boundary](../../reference/agent-native-admin.md#host-only-session-exchange).
 
 Expose the API Service through your existing public ingress layer. The chart does not create this route. This example shows the required shape; adapt the Ingress class, certificate, and selectors to your cluster:
 

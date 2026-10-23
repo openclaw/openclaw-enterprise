@@ -121,6 +121,8 @@ auth:
 
 agentNativeAdmin:
   enabled: false
+  # host-only-exchange is an explicit opt-in for guarded GitHub sign-in.
+  sessionMode: shared-cookie
   domain: ""
   # Must not be a public suffix such as co.uk or github.io. Helm has no public suffix
   # list: the installation profile renderer and API startup refuse one.

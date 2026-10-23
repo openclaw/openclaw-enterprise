@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { PostgresNativeBrowserAccess } from "./native-browser-access.ts";
 import {
   AuthorizationDeniedError,
   ResourceConflictError,
@@ -213,6 +214,7 @@ export interface PostgresHumanAuthenticationOptions {
 
 /** Authentication persistence shares the original State transaction and audit writer. */
 export class PostgresHumanAuthentication {
+  readonly nativeBrowser: PostgresNativeBrowserAccess;
   private readonly state: PostgresPlatformState;
   private readonly installationId: string;
   private readonly issuer: string;
@@ -224,6 +226,33 @@ export class PostgresHumanAuthentication {
     issuer: string,
     options: PostgresHumanAuthenticationOptions = {},
   ) {
+    this.nativeBrowser = new PostgresNativeBrowserAccess(
+      state,
+      installationId,
+      async (unit, id) => {
+        // Match logout and account mutations: user, session, then dependent
+        // browser rows. These parents protect the immutable session binding.
+        // Reread authority only after the locks hold.
+        const [found] = await this.query(unit, "SELECT user_id FROM occ.session WHERE id = $1", [
+          id,
+        ]);
+        if (!found) {
+          return undefined;
+        }
+        await this.lockUser(unit, found.user_id as string);
+        await this.query(unit, "SELECT id FROM occ.session WHERE id = $1 FOR UPDATE", [id]);
+        const session = await this.currentSessionInUnit(unit, "id", id);
+        if (!session) {
+          return undefined;
+        }
+        return {
+          id: session.id,
+          userId: session.userId,
+          expiresAt: session.expiresAt,
+          principalId: session.principalId,
+        };
+      },
+    );
     this.state = state;
     this.installationId = installationId;
     this.issuer = issuer;
@@ -778,10 +807,14 @@ export class PostgresHumanAuthentication {
   async currentSession(
     token: string,
   ): Promise<(HumanAuthenticationSession & { user: HumanAuthenticationUser }) | undefined> {
-    return this.state.transact(async (unit) => {
-      const [row] = await this.query(
-        unit,
-        `SELECT s.*, ${userColumns}, h.principal_id AS session_principal_id,
+    return this.state.transact((unit) => this.currentSessionInUnit(unit, "token", token));
+  }
+
+  /** Canonical currentness checks shared by cookie and dependent Agent access. */
+  private async currentSessionInUnit(unit: PlatformUnitOfWork, key: "token" | "id", value: string) {
+    const [row] = await this.query(
+      unit,
+      `SELECT s.*, ${userColumns}, h.principal_id AS session_principal_id,
            m.id AS session_method_id, m.provider_id AS session_provider_id,
            (NOT m.identity_only OR m.provider_id = ANY($4::text[])) AS provider_configured
          FROM occ.session s
@@ -790,19 +823,22 @@ export class PostgresHumanAuthentication {
          JOIN occ.account m ON m.id = b.method_id AND m.user_id = s.user_id AND m.authentication_version = b.method_version
          JOIN occ."user" u ON u.id = s.user_id
          JOIN occ.iam_identities p ON p.id = h.principal_id AND p.kind = 'principal' AND p.issuer = $2 AND p.subject = s.user_id
-         WHERE s.token = $1 AND s.expires_at > clock_timestamp() AND NOT h.disabled AND h.installation_id = $3
+         WHERE s.${key} = $1 AND s.expires_at > clock_timestamp() AND NOT h.disabled AND h.installation_id = $3
          AND ((m.provider_id = 'credential' AND m.password IS NOT NULL AND m.password <> '') OR m.identity_only)`,
-        [token, this.issuer, this.installationId, this.externalProviderIds],
-      );
-      if (row === undefined) {
-        return undefined;
-      }
-      if (row.provider_configured !== true) {
-        await this.endUnconfiguredSession(unit, row);
-        return undefined;
-      }
-      return { ...sessionFromRow(row), user: userFromRow(row) };
-    });
+      [value, this.issuer, this.installationId, this.externalProviderIds],
+    );
+    if (row === undefined) {
+      return undefined;
+    }
+    if (row.provider_configured !== true) {
+      await this.endUnconfiguredSession(unit, row);
+      return undefined;
+    }
+    return {
+      ...sessionFromRow(row),
+      user: userFromRow(row),
+      principalId: row.session_principal_id as string,
+    };
   }
 
   /** Ends one session whose sign-in provider instance is gone; only the deleting call audits. */

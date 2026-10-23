@@ -7,6 +7,7 @@ export { deriveNativeAdminHost } from "./native-admin-host.mjs";
 
 export interface NativeAdminAccessConfig {
   readonly enabled: boolean;
+  readonly sessionMode?: "shared-cookie" | "host-only-exchange";
   readonly domain?: string;
   readonly sharedCookieDomain?: string;
 }

@@ -8,6 +8,7 @@
     "tests/integration/postgres-github-outage.test.mjs",
     "tests/integration/postgres-github-sign-in.test.mjs",
     "tests/integration/native-admin-session-postgres.test.mjs",
+    "tests/integration/postgres-native-host-only-browser.test.ts",
     "tests/integration/postgres-google-sign-in.test.mjs",
     "tests/integration/postgres-external-session-provider.test.mjs",
     "tests/integration/postgres-human-authentication.test.mjs",
@@ -41,6 +42,12 @@
         "PostgreSQL native admin WebSocket lease closes at the next renewal after Agent stop",
         "PostgreSQL native admin WebSocket lease closes at the next renewal after active revision replacement",
         "PostgreSQL native admin WebSocket closes on API shutdown and disabled redeploy denies reuse"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-native-host-only-browser.test.ts",
+      "expectedTests": [
+        "a guarded Console opens host-only Agent sessions bound to the browser, live parent and exact revision"
       ]
     },
     {

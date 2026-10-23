@@ -50,13 +50,14 @@ lookup and credential validation require another approved network route.
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
 `501`. The chart sets it from `agentRuntimeLogs.enabled`.
 
-When the native admin pilot is enabled, the API also requires:
+When the native admin pilot is enabled, configure the API session mode:
 
-| Variable                         | Required value or format                                                                                                                                     | Behavior                                                                                                    |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `OCC_AGENT_NATIVE_ADMIN_ENABLED` | `true`.                                                                                                                                                      | Enables the trusted-operator Agent native admin UI path.                                                    |
-| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`  | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path.                                                                | Derives stable per-Agent browser hosts.                                                                     |
-| `OCC_AUTH_COOKIE_DOMAIN`         | Shared OCE session cookie parent, such as `oce.example.com`; not a public suffix and must contain the console host and Agent suffix on DNS-label boundaries. | Scopes the ordinary Better Auth session cookie to the console and Agent hosts when native admin is enabled. |
+| Variable                              | Required value or format                                                                                                                                                                                                  | Behavior                                                                                                                              |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_AGENT_NATIVE_ADMIN_ENABLED`      | `true`.                                                                                                                                                                                                                   | Enables the trusted-operator Agent native admin UI path.                                                                              |
+| `OCC_AGENT_NATIVE_ADMIN_DOMAIN`       | Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path.                                                                                                                             | Derives stable per-Agent browser hosts.                                                                                               |
+| `OCC_AGENT_NATIVE_ADMIN_SESSION_MODE` | `shared-cookie` (default) or explicit `host-only-exchange`.                                                                                                                                                               | Host-only exchange requires guarded GitHub sign-in; see [native admin sessions](../agent-native-admin.md#host-only-session-exchange). |
+| `OCC_AUTH_COOKIE_DOMAIN`              | Required only in shared-cookie mode; omit in host-only mode. Shared OCE session cookie parent, such as `oce.example.com`; not a public suffix and must contain the console host and Agent suffix on DNS-label boundaries. | Scopes the ordinary Better Auth session cookie to the console and Agent hosts when native admin is enabled.                           |
 
 For changes to startup `logging.level`, follow the
 [log-level procedure](../../guides/observability.md#1-choose-the-log-level).
@@ -168,7 +169,7 @@ The API and chart refuse entries covering every IPv4 or IPv6 address, including
 
 Rendering fails on incomplete GitHub values, an allowlist entry that is
 not an organization login or `org/team-slug`, more than 10 allowlist entries, a shared Secret,
-`agentNativeAdmin.enabled` with GitHub, refused proxy CIDRs, another header with a
+`agentNativeAdmin.enabled` with GitHub unless `sessionMode: host-only-exchange`, refused proxy CIDRs, another header with a
 named preset, or credential, routing and internal headers such as `cookie`.
 
 ### Google sign-in

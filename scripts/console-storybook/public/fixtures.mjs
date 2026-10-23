@@ -1681,9 +1681,19 @@ export function installFixture(scenario, evidence) {
           }
           return response(saved, 202);
         }
+        if (
+          suffix === "/native-admin/launch" &&
+          method === "POST" &&
+          scenario.nativeAdminSessionMode === "host-only-exchange"
+        ) {
+          return error(503, "DEPENDENCY_UNAVAILABLE");
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
+            ...(scenario.nativeAdminSessionMode
+              ? { sessionMode: scenario.nativeAdminSessionMode }
+              : {}),
             url:
               (id === agent.id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",

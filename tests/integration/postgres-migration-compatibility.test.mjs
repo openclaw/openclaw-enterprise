@@ -1317,7 +1317,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 62);
+  assert.equal(receipts.length, 63);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1987,13 +1987,14 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "preNativeBrowserAccess"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
         const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
           computeAdmission: prefix >= 55,
-          executionAdmission: false,
+          executionAdmission: prefix >= 62,
         });
         const assertSourceOwners =
           prefix === 59
@@ -2399,6 +2400,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "preNativeBrowserAccess"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2487,6 +2489,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
+      [62, "preNativeBrowserAccess"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2494,7 +2497,7 @@ test(
           await seedCanonicalData(db, {
             preset: prefix >= 25,
             computeAdmission: prefix >= 55,
-            executionAdmission: false,
+            executionAdmission: prefix >= 62,
           });
         }
         const before = await historySnapshot(db);
@@ -2508,6 +2511,7 @@ test(
         // Fail the common reduction grant after admission backfill and repository authority.
         // All three pending receipts, schema changes and main-row annotations roll back.
         const rollbackTag = [
+          [62, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2580,9 +2584,8 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 62);
     assert.deepEqual(
-      manifest.entries.slice(58).map(({ tag }) => tag),
+      manifest.entries.slice(58, 62).map(({ tag }) => tag),
       [
         "0059_administrator_sandbox_policy_grants",
         "0060_credential_proxy_admission",
@@ -2665,7 +2668,7 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-2);
+    const middle = completed.receipts[60];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [

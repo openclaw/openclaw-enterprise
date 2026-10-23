@@ -992,7 +992,9 @@ function renderExternalSignIn(controlPlane, github, google, oidc, authBaseUrl, d
   if (!URL.canParse(authBaseUrl) || new URL(authBaseUrl).protocol !== "https:") {
     diagnostics.errors.push("controlPlane.authBaseUrl must use HTTPS with external sign-in.");
   }
-  for (const key of ["agentNativeAdminDomain", "sharedCookieDomain"]) {
+  for (const key of controlPlane.agentNativeAdminSessionMode === "host-only-exchange"
+    ? []
+    : ["agentNativeAdminDomain", "sharedCookieDomain"]) {
     if (controlPlane[key] !== undefined) {
       diagnostics.errors.push(
         `controlPlane.${key} is not consumed with external sign-in: GitHub, Google and OIDC sign-in disable native admin.`,
@@ -1162,6 +1164,7 @@ function buildInput(rawInput, diagnostics) {
       "gatewayClassName",
       "gatewayApiKeySecretName",
       "agentNativeAdminDomain",
+      "agentNativeAdminSessionMode",
       "sharedCookieDomain",
       "gatewayTrustedProxyCidrs",
       "pluginStatusProxySourceCidrs",
@@ -1520,9 +1523,59 @@ function buildRendered(profile, parsed, diagnostics) {
       "controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc.",
     );
   }
-  // Helm refuses native admin with external sign-in (host-only cookies only).
+  const sessionMode =
+    optionalString(controlPlane, ["controlPlane", "agentNativeAdminSessionMode"], diagnostics, {
+      validate: (value) => ["shared-cookie", "host-only-exchange"].includes(value),
+      description: "shared-cookie or host-only-exchange",
+    }) ?? "shared-cookie";
   let agentNativeAdmin = { enabled: false };
-  if (!externalSignIn) {
+  if (sessionMode === "host-only-exchange") {
+    if (
+      controlPlane.github === undefined ||
+      controlPlane.google !== undefined ||
+      controlPlane.oidc !== undefined
+    ) {
+      diagnostics.errors.push(
+        "controlPlane.agentNativeAdminSessionMode host-only-exchange requires GitHub sign-in without Google or OIDC.",
+      );
+    }
+    const domain = asString(
+      controlPlane,
+      ["controlPlane", "agentNativeAdminDomain"],
+      diagnostics,
+    ).toLowerCase();
+    if (controlPlane.sharedCookieDomain !== undefined) {
+      diagnostics.errors.push(
+        "controlPlane.sharedCookieDomain must be omitted with host-only-exchange.",
+      );
+    }
+    if (!dnsHostname.test(domain)) {
+      diagnostics.errors.push(
+        "controlPlane.agentNativeAdminDomain must be a DNS hostname without a wildcard, port, scheme, or path.",
+      );
+    }
+    try {
+      const require = createRequire(new URL("../apps/controller/package.json", import.meta.url));
+      const { getDomain } = require("tldts");
+      const options = { allowPrivateDomains: true, validateHostname: true };
+      const site = getDomain(domain, options);
+      const consoleUrl = new URL(authBaseUrl);
+      if (
+        consoleUrl.protocol !== "https:" ||
+        !site ||
+        site !== getDomain(consoleUrl.hostname, options)
+      ) {
+        diagnostics.errors.push(
+          "Host-only native admin requires HTTPS and the same registrable site for Console and Agent hosts.",
+        );
+      }
+    } catch {
+      diagnostics.errors.push(
+        "Host-only native admin needs a valid authBaseUrl and the public suffix list: run pnpm install first.",
+      );
+    }
+    agentNativeAdmin = { enabled: true, sessionMode, domain, sharedCookieDomain: "" };
+  } else if (!externalSignIn) {
     const agentNativeAdminDomain = asString(
       controlPlane,
       ["controlPlane", "agentNativeAdminDomain"],
@@ -2164,9 +2217,12 @@ function buildRendered(profile, parsed, diagnostics) {
   );
   if (agentNativeAdmin.enabled) {
     diagnostics.prerequisites.push(
-      "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
+      sessionMode === "host-only-exchange"
+        ? "Wildcard DNS and TLS configured for the native admin domain, with Console and Agent origins routed to OCC on the same site."
+        : "Wildcard DNS and TLS configured for the native admin domain and shared cookie parent.",
     );
-  } else {
+  }
+  if (externalSignIn) {
     diagnostics.prerequisites.push(
       "External sign-in Secrets created, and controlPlane.recoveryUserId read from a verified password administrator's session, before the first helm upgrade that renders them.",
     );

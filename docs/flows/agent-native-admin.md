@@ -8,15 +8,15 @@ last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d982056
 
 ## Overview
 
-The console checks exact-Agent `administer` access and returns a stable native admin URL for the selected gateway version. The Agent host uses the OCE session cookie; OCC rechecks access before proxying HTTP and WebSocket traffic.
+The console checks exact-Agent `administer` access and returns a stable native admin URL for the selected gateway version. In shared-cookie mode the Agent host uses the OCE session cookie. In host-only exchange mode the Console keeps that cookie and the Agent receives a separate, revocable handle; OCC rechecks access before proxying HTTP and WebSocket traffic.
 
 ## Entry Points
 
 - Trigger: Console opens an Agent native admin URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
-- Source: `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+- Source: `apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
-- Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getGatewayEndpoint` value.
+- Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and the [browser session mode](../reference/agent-native-admin.md#host-only-session-exchange) are configured, and private Agent gateway routing can return a `ComputeDriver.getGatewayEndpoint` value.
 
 ## Flow
 
@@ -46,7 +46,7 @@ graph TD
   CO -->|yes| EP{"Private gateway endpoint supported?"}
   EP -->|no| N
   EP -->|yes| O["Return available Agent URL"]
-  O --> P["Browser opens derived Agent host with shared OCE session cookie"]
+  O --> P["Browser opens derived Agent host with shared session cookie or exchanges a one-use challenge for a host-only handle"]
   P -->|HTTP| Q["OCC resolves host to exact Agent using platform state"]
   P -->|WebSocket| V["OCC guards client socket during admission"]
   V --> Q
@@ -78,11 +78,15 @@ An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
 
-`apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
+`apps/controller/src/console/agents/native-admin.mts:renderNativeAdminAccess`
 
 Agent detail reads `${path}/native-admin`. Disabled or denied access stays hidden;
-other refusals explain why. Only `available` shows **Open admin console**, opening
-with `noopener noreferrer`. An audited `403` in the session owner’s tab
+other refusals explain why. Only `available` shows **Open admin console**.
+Shared-cookie mode opens the link with `noopener noreferrer`. Host-only exchange
+opens a window, requests an intent, and navigates to the Agent landing origin.
+It accepts challenges only from that window and origin. The Console confirms
+and POSTs the exchange. Redemption clears `window.opener` and opens the native
+UI; launch errors close the pending window. An audited `403` in the session owner’s tab
 `sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
 `activeRevisionId` or `desiredRuntimeState` refresh access, coalescing concurrent
 requests into one follow-up.

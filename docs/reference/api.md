@@ -68,7 +68,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 5 operations |
-| [Agents](#agents) | 47 operations |
+| [Agents](#agents) | 49 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -1850,6 +1850,8 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`](#post-namespacesnamespaceidagentsagentidnativeadminconfirm) | Confirm a native Agent browser challenge |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`](#post-namespacesnamespaceidagentsagentidnativeadminlaunch) | Create a browser-bound native Agent launch |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
@@ -3467,8 +3469,124 @@ Resolve native admin UI launch availability for one Agent
 | `data.activeRevisionId` | `string` | No | — |
 | `data.host` | `string` | No | — |
 | `data.origin` | `string (uri)` | No | — |
+| `data.sessionMode` | `"shared-cookie" or "host-only-exchange"` | No | — |
 | `data.status` | `"available" or "disabled" or "stopped" or "unavailable" or "unsupported"` | Yes | — |
 | `data.url` | `string (uri)` | No | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/confirm`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminconfirm"></span>
+
+Confirm a native Agent browser challenge
+
+**Operation ID:** `confirmAgentNativeAdmin`
+
+**Permissions:** Requires `administer` permission on the exact requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `origin` | header | `string` | Yes | — |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `challenge` | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `intentId` | `string (uuid)` | Yes | — |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | Yes | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | No | — |
+| `data.origin` | `string` | No | — |
+| `data.redeemUrl` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/native-admin/launch`
+
+<span id="post-namespacesnamespaceidagentsagentidnativeadminlaunch"></span>
+
+Create a browser-bound native Agent launch
+
+**Operation ID:** `launchAgentNativeAdmin`
+
+**Permissions:** Requires `administer` permission on the exact requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `agentId` | path | `string` | Yes | min length: 1; max length: 200 |
+| `x-occ-session-key` | header | `string` | Yes | pattern: `^[A-Za-z0-9_-]{43}$` |
+| `origin` | header | `string` | Yes | — |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object`.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.exchange` | `string` | No | — |
+| `data.intentId` | `string` | Yes | — |
+| `data.landingUrl` | `string` | Yes | — |
+| `data.origin` | `string` | Yes | — |
+| `data.redeemUrl` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | — |
 

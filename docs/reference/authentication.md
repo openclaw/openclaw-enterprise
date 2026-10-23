@@ -224,7 +224,7 @@ See [session and recovery controls](authentication/external-sign-in.md#session-a
 ## Native admin shared sessions
 
 Agent native admin UI access starts from an ordinary controller browser session.
-With the trusted-operator pilot enabled, the session cookie is scoped to the
+With the trusted-operator pilot enabled in the default shared-cookie mode, the session cookie is scoped to the
 explicit `nativeAdmin.sharedCookieDomain` parent so the console and derived Agent
 hosts share one human session. Service API keys cannot open native admin UI.
 When native admin is disabled, leftover shared-cookie-domain configuration is

@@ -13911,3 +13911,4 @@ function credentialWithdrawalStatus(
     withdrawalInProgress,
   });
 }
+export type { NativeBrowserAccess } from "./state/native-browser-access.ts";

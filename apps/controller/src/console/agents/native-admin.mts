@@ -7,15 +7,15 @@ const warning =
   "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions and can be overwritten by deployment.";
 
 type Availability =
-  | { status: "available"; url: string }
+  | { status: "available"; url: string; sessionMode?: "host-only-exchange" }
   | { status: "disabled" | "denied" | "stopped" | "unsupported" | "unavailable" };
 
 function readAvailability(value: unknown): Availability {
-  const { status, url } = responseFields(value);
+  const { status, url, sessionMode } = responseFields(value);
   switch (status) {
     case "available":
       if (typeof url === "string" && url) {
-        return { status, url };
+        return { status, url, ...(sessionMode === "host-only-exchange" ? { sessionMode } : {}) };
       }
       break;
     case "disabled":
@@ -86,6 +86,131 @@ export function renderNativeAdminAccess(
   );
 
   let current: Availability | undefined;
+  let launching = false;
+  launch.addEventListener("click", (event) => {
+    if (current?.status !== "available" || current.sessionMode !== "host-only-exchange") {
+      return;
+    }
+    event.preventDefault();
+    if (!launching) {
+      void openBoundSession();
+    }
+  });
+
+  async function openBoundSession() {
+    const target = `occ-native-${crypto.randomUUID()}`;
+    const popup = window.open("about:blank", target);
+    if (!popup) {
+      error.textContent = "Allow popups for this console, then open the Agent again.";
+      return;
+    }
+    launching = true;
+    error.textContent = "";
+    status.hidden = false;
+    status.textContent = "Opening a secure Agent session…";
+    let receive: ((event: MessageEvent) => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const intent = responseFields(
+        await context.request(`${statusPath}/launch`, { method: "POST", body: {} }),
+      );
+      const { origin, intentId, landingUrl } = intent;
+      if (
+        typeof origin !== "string" ||
+        typeof intentId !== "string" ||
+        typeof landingUrl !== "string" ||
+        new URL(landingUrl).origin !== origin
+      ) {
+        throw new Error("Invalid native administration launch response");
+      }
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const challenge = await new Promise<string>((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Launch expired. Open the Agent again.")), 60000);
+        receive = (event) => {
+          if (
+            event.origin !== origin ||
+            event.source !== popup ||
+            event.data?.intentId !== intentId
+          ) {
+            return;
+          }
+          if (event.data.type === "occ-native-ready") {
+            popup.postMessage({ type: "occ-native-challenge", intentId }, origin);
+          } else if (
+            event.data.type === "occ-native-bound" &&
+            typeof event.data.challenge === "string" &&
+            /^[A-Za-z0-9_-]{43}$/.test(event.data.challenge)
+          ) {
+            resolve(event.data.challenge);
+          }
+        };
+        window.addEventListener("message", receive);
+        popup.location.replace(landingUrl);
+      });
+      if (receive) {
+        window.removeEventListener("message", receive);
+      }
+      clearTimeout(timer);
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const exchange = responseFields(
+        await context.request(`${statusPath}/confirm`, {
+          method: "POST",
+          body: { intentId, challenge },
+        }),
+      );
+      if (!context.isCurrent()) {
+        popup.close();
+        return;
+      }
+      const redemption = new URL(String(exchange.redeemUrl));
+      if (
+        exchange.intentId !== intentId ||
+        typeof exchange.exchange !== "string" ||
+        redemption.origin !== origin ||
+        redemption.pathname !== "/__occ/native-admin/redeem" ||
+        redemption.search ||
+        redemption.hash
+      ) {
+        throw new Error("Launch could not be confirmed. Open the Agent again.");
+      }
+      const form = element("form", {
+        method: "POST",
+        action: redemption.href,
+        target,
+        hidden: true,
+      });
+      for (const [name, value] of Object.entries({
+        intentId,
+        exchange: exchange.exchange,
+      })) {
+        form.append(element("input", { type: "hidden", name, value }));
+      }
+      document.body.append(form);
+      form.submit();
+      form.remove();
+      status.textContent =
+        "Agent session opened. If access expires, open it again from this console.";
+    } catch (cause) {
+      popup.close();
+      if (context.isCurrent()) {
+        error.textContent = message(requestFailure(cause));
+        status.textContent = "Open the Agent again to start a fresh launch.";
+      }
+    } finally {
+      clearTimeout(timer);
+      if (receive) {
+        window.removeEventListener("message", receive);
+      }
+      launching = false;
+    }
+  }
+
   // A failed read other than a denial keeps the card, its error and Refresh visible.
   let failed = false;
   let pending = false;
@@ -99,7 +224,8 @@ export function renderNativeAdminAccess(
     if (url === undefined) {
       launch.removeAttribute("href");
     } else {
-      launch.href = url;
+      launch.href =
+        current?.status === "available" && current.sessionMode === "host-only-exchange" ? "#" : url;
     }
     scope.hidden = launch.hidden;
     caution.hidden = launch.hidden;

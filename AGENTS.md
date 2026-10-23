@@ -486,6 +486,11 @@ controls:
 
 ## TypeScript style and verification
 
+- Write new JavaScript-ecosystem code, tests, and helpers in TypeScript. Keep
+  integration tests in normal test discovery and include helpers in
+  `tests/tsconfig.json` so the standard CI typecheck checks them. Existing
+  JavaScript can stay in place; no unrelated migration is required.
+
 - Separate imports from following code with a blank line, declare one variable
   per declaration, and use braces for control-flow bodies. Apply these rules with
   `pnpm lint:fix`, then run `pnpm format:fix` for Prettier layout.

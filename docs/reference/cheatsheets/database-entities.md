@@ -537,6 +537,24 @@ provider token. Consumed attempts are deleted before exchange.
 - `created_at`
 - `expires_at`
 
+### `native_browser_intents`
+
+Short-lived, browser-bound [native Agent launches](../agent-native-admin.md#host-only-session-exchange).
+Consumed atomically; deleted with the parent session or revision.
+
+- `id`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `challenge_hash`, `exchange_hash`
+- `created_at`, `expires_at`
+
+### `native_browser_handles`
+
+Hashed Agent access handles dependent on a live parent human session.
+
+- `handle_hash`, `installation_id`, `parent_session_id`, `principal_id`
+- `namespace_id`, `agent_id`, `revision_id`, `origin`
+- `created_at`, `expires_at`
+
 ### `verification`
 
 Stores expiring verification records managed by Better Auth.

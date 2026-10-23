@@ -226,11 +226,18 @@ function configuration(env) {
       ? true
       : optionalBooleanEnvironment(env, "OCC_AGENT_RUNTIME_LOGS_ENABLED");
   const nativeAdminDomain = env.OCC_AGENT_NATIVE_ADMIN_DOMAIN;
+  const sessionMode = env.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE ?? "shared-cookie";
+  if (nativeAdminEnabled && !["shared-cookie", "host-only-exchange"].includes(sessionMode)) {
+    throw new Error(
+      "OCC_AGENT_NATIVE_ADMIN_SESSION_MODE must be shared-cookie or host-only-exchange.",
+    );
+  }
   const authCookieDomain = env.OCC_AUTH_COOKIE_DOMAIN;
   const nativeAdmin =
     nativeAdminEnabled || (nativeAdminDomain !== undefined && nativeAdminDomain.trim().length > 0)
       ? {
           enabled: nativeAdminEnabled,
+          sessionMode,
           ...(nativeAdminDomain === undefined ? {} : { domain: nativeAdminDomain }),
           ...(authCookieDomain === undefined ? {} : { sharedCookieDomain: authCookieDomain }),
         }

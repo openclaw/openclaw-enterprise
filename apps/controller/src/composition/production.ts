@@ -118,7 +118,11 @@ export async function composeProduction(
   }
 
   const driverId = installation.drivers.iam.id;
-  if (config.github !== undefined && config.nativeAdmin?.enabled === true) {
+  if (
+    config.github !== undefined &&
+    config.nativeAdmin?.enabled === true &&
+    config.nativeAdmin.sessionMode !== "host-only-exchange"
+  ) {
     throw new Error("GitHub sign-in does not support native administration.");
   }
   if (config.google !== undefined && config.nativeAdmin?.enabled === true) {
@@ -157,7 +161,8 @@ export async function composeProduction(
       installationId: persistedInstallation.id,
       secret: config.authSecret,
       baseURL: config.authBaseURL,
-      ...(config.nativeAdmin?.enabled === true
+      ...(config.nativeAdmin?.enabled === true &&
+      config.nativeAdmin.sessionMode !== "host-only-exchange"
         ? { sharedCookieDomain: config.nativeAdmin.sharedCookieDomain }
         : {}),
       pool,

@@ -2272,3 +2272,97 @@ export const sandboxPolicies = occSchema.table(
     ),
   ],
 );
+
+function nativeBrowserColumns() {
+  return {
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => installation.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    parentSessionId: text("parent_session_id")
+      .notNull()
+      .references(() => humanAuthenticationSessions.sessionId, {
+        onDelete: "cascade",
+        onUpdate: "restrict",
+      }),
+    principalId: text("principal_id")
+      .notNull()
+      .references(() => iamIdentities.id, { onDelete: "cascade", onUpdate: "restrict" }),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    origin: text("origin").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  };
+}
+
+export const nativeBrowserIntents = occSchema.table(
+  "native_browser_intents",
+  {
+    id: uuid("id").primaryKey(),
+    ...nativeBrowserColumns(),
+    challengeHash: text("challenge_hash"),
+    exchangeHash: text("exchange_hash").unique(),
+  },
+  (table) => [
+    foreignKey({
+      name: "native_browser_intent_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    check(
+      "native_browser_intents_origin_check",
+      sql`char_length(${table.origin}) BETWEEN 1 AND 512 AND ${table.origin} ~ '^https://[^/]+$'`,
+    ),
+    check(
+      "native_browser_intents_challenge_hash_check",
+      sql`${table.challengeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "native_browser_intents_exchange_hash_check",
+      sql`${table.exchangeHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "native_browser_intent_exchange",
+      sql`${table.exchangeHash} IS NULL OR ${table.challengeHash} IS NOT NULL`,
+    ),
+    check(
+      "native_browser_intent_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '60 seconds'`,
+    ),
+    index("native_browser_intent_parent").on(table.parentSessionId),
+    index("native_browser_intent_expiry").on(table.installationId, table.expiresAt),
+  ],
+);
+
+export const nativeBrowserHandles = occSchema.table(
+  "native_browser_handles",
+  {
+    handleHash: text("handle_hash").primaryKey(),
+    ...nativeBrowserColumns(),
+  },
+  (table) => [
+    foreignKey({
+      name: "native_browser_handle_revision",
+      columns: [table.namespaceId, table.agentId, table.revisionId],
+      foreignColumns: [agentRevisions.namespaceId, agentRevisions.agentId, agentRevisions.id],
+    })
+      .onDelete("cascade")
+      .onUpdate("restrict"),
+    check(
+      "native_browser_handles_origin_check",
+      sql`char_length(${table.origin}) BETWEEN 1 AND 512 AND ${table.origin} ~ '^https://[^/]+$'`,
+    ),
+    check("native_browser_handles_handle_hash_check", sql`${table.handleHash} ~ '^[a-f0-9]{64}$'`),
+    check(
+      "native_browser_handle_lifetime",
+      sql`${table.expiresAt} > ${table.createdAt} AND ${table.expiresAt} <= ${table.createdAt} + interval '8 hours'`,
+    ),
+    index("native_browser_handle_parent").on(table.parentSessionId),
+    index("native_browser_handle_expiry").on(table.installationId, table.expiresAt),
+  ],
+);

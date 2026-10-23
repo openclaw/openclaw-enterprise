@@ -6733,6 +6733,22 @@ export const scenarios = {
       "Expand Deployment details, then open the admin console. Compare Denied and hidden: there is no launch or access warning there.",
     ],
   },
+  nativeHostOnlyUnavailable: {
+    group: "Components/Native admin",
+    name: "Host-only launch unavailable",
+    path: revision,
+    deployed: true,
+    nativeAdmin: "available",
+    nativeAdminSessionMode: "host-only-exchange",
+    description:
+      "A simulated launch failure closes the pending Agent window and lets the operator try again.",
+    gap: "This fixture does not perform the browser exchange or prove backend authorization. The PostgreSQL browser integration owns that proof.",
+    steps: [
+      "Open admin console. Confirm the pending window closes and the panel reports the launch error.",
+      "Block popups for the Console and open again. Confirm the panel asks to allow popups, without sending a launch request.",
+      "Refresh access and confirm the Agent remains available; a failed launch does not alter the Agent or its Configuration.",
+    ],
+  },
   nativeStopped: {
     group: "Components/Native admin",
     name: "Stopped",

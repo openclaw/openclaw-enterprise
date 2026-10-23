@@ -474,8 +474,14 @@ spec:
             {{- if $.Values.agentNativeAdmin.enabled }}
             - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
               value: {{ $.Values.agentNativeAdmin.domain | quote }}
+            {{- if eq ($.Values.agentNativeAdmin.sessionMode) "host-only-exchange" }}
+            - name: OCC_AGENT_NATIVE_ADMIN_SESSION_MODE
+              value: "host-only-exchange"
+            {{- end }}
+            {{- if eq ($.Values.agentNativeAdmin.sessionMode) "shared-cookie" }}
             - name: OCC_AUTH_COOKIE_DOMAIN
               value: {{ $.Values.agentNativeAdmin.sharedCookieDomain | quote }}
+            {{- end }}
             {{- end }}
             {{- else }}
             - name: OCC_WORKER_READINESS_PATH

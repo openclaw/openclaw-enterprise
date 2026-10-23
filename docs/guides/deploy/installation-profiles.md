@@ -210,17 +210,20 @@ refresh itself.
 
 ### External sign-in and trusted proxies
 
-Activation of GitHub, Google or OIDC sign-in is one-way, so keep these inputs in every
-later rerender. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
+GitHub, Google and OIDC activation is one-way. Keep these inputs when rerendering. Adding `controlPlane.github` or `controlPlane.google` (`{}` uses
 the chart's Secret defaults), or `controlPlane.oidc` with its `issuer`,
 `authorizationUrl`, `tokenUrl` and `jwksUrl` ([OIDC sign-in](oidc-sign-in.md)), renders
 `auth.github`, `auth.google` or `auth.oidc` with
-`enabled: true` and `agentNativeAdmin.enabled: false`; remove
+`enabled: true` and, by default, `agentNativeAdmin.enabled: false`; remove
 `agentNativeAdminDomain` and `sharedCookieDomain`. `recoveryUserId` and an HTTPS
 `authBaseUrl` are required. Optional `passwordSignIn: "recovery-only"` renders
 [`auth.passwordSignIn`](../../reference/authentication/external-sign-in.md#recovery-only-password-sign-in);
 preflight lists attaching every ordinary account's identity first. Follow
 [Enable GitHub browser sign-in](production-installation.md#enable-github-browser-sign-in).
+For [GitHub-only native admin](native-admin.md#install-on-an-existing-cluster),
+set `controlPlane.agentNativeAdminSessionMode: "host-only-exchange"` and
+`controlPlane.agentNativeAdminDomain`; omit `controlPlane.sharedCookieDomain`.
+
 Behind a proxy that adds forwarded headers, such as ingress-nginx, set
 `trustedProxy` ([presets](../../reference/settings/production.md#github-sign-in-and-trusted-proxies));
 it works with or without external sign-in. Without it, preflight warns (it does

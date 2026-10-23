@@ -1726,3 +1726,39 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     await settle([...refusals, ...accepted]);
   });
 });
+
+test(
+  "chart host-only native admin is explicit and preserves guarded cookie scope",
+  tooling,
+  async () => {
+    const values = {
+      ...githubUpgradeValues(recoveryUserId),
+      "agentNativeAdmin.enabled": "true",
+      "agentNativeAdmin.sessionMode": "host-only-exchange",
+      "agentNativeAdmin.domain": "agents.oce.example.com",
+      "agentNativeAdmin.sharedCookieDomain": "",
+      "gatewayRouting.enabled": "true",
+    };
+    const objects = await renderChart(values);
+    const settings = signInSettings(deploymentEnv(objects, "api"));
+    assert.equal(settings.OCC_AGENT_NATIVE_ADMIN_SESSION_MODE, "host-only-exchange");
+    assert.equal(settings.OCC_AUTH_COOKIE_DOMAIN, undefined);
+    assert.equal(
+      signInSettings(deploymentEnv(objects, "worker")).OCC_AGENT_NATIVE_ADMIN_SESSION_MODE,
+      undefined,
+    );
+    for (const [overrides, message] of [
+      [{ "agentNativeAdmin.sessionMode": "unknown" }, /sessionMode must be/],
+      [{ "agentNativeAdmin.sessionMode": "" }, /sessionMode must be/],
+      [{ "auth.github.enabled": "false", "auth.recoveryUserId": "" }, /requires guarded GitHub/],
+      [
+        { "agentNativeAdmin.sharedCookieDomain": "example.com" },
+        /requires an empty sharedCookieDomain/,
+      ],
+      [{ "gatewayRouting.sandbox.enabled": "true" }, /does not support sandbox preview/],
+      [{ "gatewayRouting.enabled": "false" }, /requires gatewayRouting.enabled/],
+    ]) {
+      assert.match(await chartRefusal({ ...values, ...overrides }), message);
+    }
+  },
+);
