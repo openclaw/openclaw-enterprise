@@ -914,7 +914,7 @@ for (const shown of ["is loading", "has loaded"]) {
     assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "H1");
     // Every node that holds focus from Back until the Agent's link has it, numbered so a replaced
     // heading counts as a new one.
-    await recordFocusTrail(page);
+    await recordFocusTrail(page, [], { until: "^A#" });
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await page.goBack();
@@ -925,7 +925,7 @@ for (const shown of ["is loading", "has loaded"]) {
     recheck.release();
     const link = page.locator(settledView).getByRole("link", { name: agent.name });
     await link.waitFor();
-    await page.waitForFunction(() => globalThis.focusFrames.trail.at(-1)?.startsWith("A#"));
+    await page.waitForFunction(() => globalThis.focusFrames.stopped);
     const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(link), true, trail.join(" | "));
     const heading = shown === "is loading" ? "Agent details" : agent.name;
@@ -1013,7 +1013,8 @@ for (const how of ["Enter", "a click"]) {
     await agentShown(page);
     const sidebar = page.getByRole("link", { name: "Agents", exact: true });
     await sidebar.focus();
-    await recordFocusTrail(page);
+    // Every node that holds focus from here until the Agent's link has it.
+    await recordFocusTrail(page, [], { until: `^A#\\d+: ${agent.name}$` });
     // The list's recheck takes a while, as on a slow link.
     const recheck = await holdOnce(t, page, agentsRead(namespace));
     await (how === "Enter" ? sidebar.press("Enter") : sidebar.click());
@@ -1023,7 +1024,7 @@ for (const how of ["Enter", "a click"]) {
     await page.waitForFunction((frames) => globalThis.focusFrames.frames >= frames + 12, held);
     recheck.release();
     await agentLink.waitFor();
-    await page.waitForFunction(() => globalThis.focusFrames.trail.at(-1)?.startsWith("A#"));
+    await page.waitForFunction(() => globalThis.focusFrames.stopped);
     const { trail } = await stopFocusTrail(page);
     assert.equal(await hasFocus(agentLink), true, trail.join(" | "));
     // The pressed link, the held page's heading, then the Agent's link in the list.

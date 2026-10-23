@@ -656,46 +656,61 @@ export const nextFrames = (page) =>
 // globalThis.focusFrames.trail: the focused node at every frame and the target of every focusin,
 // so a node that holds focus for less than a frame (a busy page paints late) still shows. Nodes
 // are numbered, so a replaced heading is a new entry. `loadingShown` turns true once the content
-// shows one of `loadingTexts`; `frames` counts sampled frames.
-export const recordFocusTrail = (page, loadingTexts = []) =>
-  page.evaluate((loadingTexts) => {
-    const ids = new WeakMap();
-    let next = 0;
-    const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
-    const record = (node) => {
-      if (node && node !== globalThis.document.body && !ids.has(node)) {
-        ids.set(node, ++next);
-      }
-      const entry =
-        !node || node === globalThis.document.body
-          ? "BODY"
-          : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
-      if (state.trail.at(-1) !== entry) {
-        state.trail.push(entry);
-      }
-    };
-    const focused = (event) => {
-      if (!state.stopped) {
-        record(event.target);
-      }
-    };
-    const sample = () => {
-      if (state.stopped) {
-        globalThis.document.removeEventListener("focusin", focused, true);
-        return;
-      }
-      state.frames += 1;
-      record(globalThis.document.activeElement);
-      const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
-      state.loadingShown ||= loadingTexts.some((text) => shown.includes(text));
-      globalThis.requestAnimationFrame(sample);
-    };
-    globalThis.document.addEventListener("focusin", focused, true);
-    globalThis.focusFrames = state;
-    sample();
-  }, loadingTexts);
+// shows one of `loadingTexts`; `frames` counts sampled frames. With `until` (a regular
+// expression source), recording stops at the first entry it matches, so the trail ends there and
+// `stopped` turns true.
+/**
+ * @param {import("playwright").Page} page
+ * @param {string[]} [loadingTexts]
+ * @param {{ until?: string | null }} [options]
+ */
+export const recordFocusTrail = (page, loadingTexts = [], { until = null } = {}) =>
+  page.evaluate(
+    ({ loadingTexts, until }) => {
+      const ids = new WeakMap();
+      let next = 0;
+      const state = { trail: [], loadingShown: false, stopped: false, frames: 0 };
+      const record = (node) => {
+        if (node && node !== globalThis.document.body && !ids.has(node)) {
+          ids.set(node, ++next);
+        }
+        const entry =
+          !node || node === globalThis.document.body
+            ? "BODY"
+            : `${node.tagName}#${ids.get(node)}: ${node.textContent.trim()}`;
+        if (state.trail.at(-1) !== entry) {
+          state.trail.push(entry);
+          state.stopped ||= until !== null && new RegExp(until).test(entry);
+        }
+      };
+      const focused = (event) => {
+        if (!state.stopped) {
+          record(event.target);
+        }
+      };
+      const sample = () => {
+        if (state.stopped) {
+          globalThis.document.removeEventListener("focusin", focused, true);
+          return;
+        }
+        state.frames += 1;
+        record(globalThis.document.activeElement);
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||= loadingTexts.some((text) => shown.includes(text));
+        globalThis.requestAnimationFrame(sample);
+      };
+      globalThis.document.addEventListener("focusin", focused, true);
+      globalThis.focusFrames = state;
+      sample();
+    },
+    { loadingTexts, until },
+  );
 
 // Stops the focus trail recordFocusTrail() started and returns it.
+/**
+ * @param {import("playwright").Page} page
+ * @returns {Promise<{ trail: string[], frames: number, loadingShown: boolean, stopped: boolean }>}
+ */
 export const stopFocusTrail = (page) =>
   page.evaluate(() => {
     globalThis.focusFrames.stopped = true;

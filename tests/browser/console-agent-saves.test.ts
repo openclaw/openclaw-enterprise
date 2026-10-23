@@ -1879,16 +1879,14 @@ test("a keyboard Configuration save keeps focus on its status while the save is 
   const save = page.getByRole("button", { name: "Save Configuration" });
   await save.focus();
   // Every node that holds focus from here until Edit Configuration has it.
-  await recordFocusTrail(page);
+  await recordFocusTrail(page, [], { until: "^BUTTON#\\d+: Edit Configuration$" });
   await page.keyboard.press("Enter");
   await reread.requested;
   const held = await page.evaluate(() => globalThis.focusFrames.frames);
   await page.waitForFunction((held) => globalThis.focusFrames.frames >= held + 12, held);
   reread.release();
-  await page.waitForFunction(() =>
-    /^BUTTON#\d+: Edit Configuration$/.test(globalThis.focusFrames.trail.at(-1) ?? ""),
-  );
-  const { trail }: { trail: string[] } = await stopFocusTrail(page);
+  await page.waitForFunction(() => globalThis.focusFrames.stopped);
+  const { trail } = await stopFocusTrail(page);
   assert.deepEqual(
     trail.map((entry) => entry.replace(/#\d+/, "")),
     ["BUTTON: Save Configuration", "P: Checking Configuration…", "BUTTON: Edit Configuration"],
