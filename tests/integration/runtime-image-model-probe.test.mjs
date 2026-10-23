@@ -11,7 +11,6 @@ import {
   docker,
   execute,
   imageTestOptions,
-  jsonLines,
   observed,
   phaseAt,
   productionGatewayMemoryLimit,
@@ -19,6 +18,7 @@ import {
   runEmbeddedGatewayProbe,
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
 
 // The embedded Gateway's startup model probe on the real runtime image under CPU
 // contention (setup: tests/helpers/runtime-image-model-probe.mjs). Its other
@@ -72,7 +72,9 @@ test(
     const { events, phases, output } = run.snapshot;
     const detail = `\n${output}\n${JSON.stringify(events)}`;
     // CI keeps only a failed assertion's location: each cause fails on its own line.
-    const probe = jsonLines(output).find(({ event }) => event === "openclaw.model_probe");
+    const probe = jsonLines(output, { lenient: true }).find(
+      ({ event }) => event === "openclaw.model_probe",
+    );
     recordModelProbeMeasurement(t, "gateway-500m-contended", run);
     try {
       assert.equal(stress.started, 8, "all eight owned CPU hogs reached their loops");

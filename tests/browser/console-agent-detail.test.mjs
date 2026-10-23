@@ -25,19 +25,29 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledFetches,
   settledView,
   takeLayoutShifts,
   trackSettledFetches,
+  waitForEnabled,
+  waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
   statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
+  deploymentRecordUrl,
+  expectDeploymentOutcome,
+  expectVersionRecord,
+  openFailureDetails,
+} from "./console-deployment-activity-helpers.mjs";
+import {
   openAdvancedSettings,
   withholdPermissionSummary,
   assertRevisionUrl,
   agentStopRequests,
+  replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
   waitForLiveControls,
@@ -65,7 +75,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     [pending.id, "queued"],
   ]) {
     await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revisionId}`,
+      deploymentRecordUrl(fixture, namespace.id, agent.id, revisionId),
       async (route) => {
         await route.fulfill({
           status: 200,
@@ -119,9 +129,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(0).getByText("v1", { exact: true }).waitFor();
   await overview.nth(1).getByText("v2 · Queued").waitFor();
   await overview.nth(2).getByText("Not verified").waitFor();
-  const activity = page.locator(".deployment-status");
+  const activity = await expectDeploymentOutcome(page, "Queued");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
-  await activity.getByText("Recorded status: Queued").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
   await activity.getByText("No reconciliation result is available yet.").waitFor();
   // Simulate a subsequent status read. Persistence and attribution are proved
@@ -140,9 +149,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByText("Since", { exact: true }).waitFor();
   assert.equal(await activity.getByText("Waiting for a worker claim.").count(), 0);
   await activity.getByText("Successful completion is not recorded yet.").waitFor();
-  const versionRecord = page.locator(".version-deployment-record");
+  const versionRecord = await expectVersionRecord(page, "Completed");
   await versionRecord.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
-  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
   // D331: a startup warning says what happened to the plugin, not only its code.
   await versionRecord
     .getByText(
@@ -227,7 +235,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations.getByText(/Observed /).waitFor();
   await observations.getByText("slack / authentication").waitFor();
   assert.equal(await waiting.isVisible(), false);
-  assert.equal(await runDiagnostics.isEnabled(), true);
+  await waitForEnabled(runDiagnostics);
   assert.equal(await focused(runDiagnostics), true);
   const description = () =>
     runDiagnostics.evaluate(
@@ -290,8 +298,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // That run started by dropping the earlier result's description, and nothing described the
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
-  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
-  await activity.getByText("Recorded status: Queued").waitFor();
+  await expectVersionRecord(page, "Completed");
+  await expectDeploymentOutcome(page, "Queued", { folded: false });
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
   assert.ok(
     pathRequests(
@@ -311,7 +319,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   const newer = await fixture.deployAgent(namespace.id, agent.id);
   let newerStatus = "queued";
   await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${newer.id}`,
+    deploymentRecordUrl(fixture, namespace.id, agent.id, newer.id),
     async (route) => {
       await route.fulfill({
         status: 200,
@@ -346,10 +354,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await overview.nth(0).getByText("v3", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Failed").waitFor();
-  // The failure's card leads the page and folds Deployment details (finding 2094); open them.
-  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
-  await activity.getByText("Deployment details", { exact: true }).click();
-  await activity.getByText("Recorded status: Failed").waitFor();
+  await openFailureDetails(page);
+  await expectDeploymentOutcome(page, "Failed", { folded: false });
   await activity
     .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
     .waitFor();
@@ -520,6 +526,22 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await page.getByText(/Saved plugin selections could not be read/).waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // Another Agent in this Namespace may use this very Configuration. A successful read of
+  // that Agent is not preflight for saving this one, even when the generation still matches.
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.unroute(agentUrl);
+  await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  const refused = page.getByText(
+    "Service unavailable. The read could not be completed. Try again.",
+    {
+      exact: true,
+    },
+  );
+  const incorrectlySaved = page.getByText("Configuration saved.", { exact: true });
+  await refused.or(incorrectlySaved).first().waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await refused.isVisible(), true);
   const saved = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -612,7 +634,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   assert.deepEqual(revisions.data, []);
 });
 
-test("Plugin save shows the API's reason when it rejects the selections, else the plugin text", async (t) => {
+test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed success", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
@@ -633,7 +655,9 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
   await page
     .getByLabel("Plugin selections JSON", { exact: true })
     .fill(JSON.stringify({ [pluginId]: { enabled: "yes" } }));
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const agentPath = `${collection}/${agent.id}`;
+  const agentUrl = `${fixture.origin}${agentPath}`;
   const patched = (response) =>
     response.request().method() === "PATCH" && response.url() === agentUrl;
   const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
@@ -678,8 +702,111 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
     await page.getByText("Plugin selections were rejected.", { exact: false }).count(),
     0,
   );
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const saved = await fixture.request("GET", agentPath);
   assert.deepEqual(saved.data.plugins ?? {}, {});
+
+  // Two real Agents can share a Configuration and the same saved selections. Substitute only
+  // the response data: before a write it must stop the save; after one it cannot confirm it.
+  const other = await fixture.request("POST", collection, {
+    body: {
+      name: "Other plugin Agent",
+      configurationId: agent.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: null,
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  assert.notEqual(other.data.id, agent.id);
+  for (const field of ["namespaceId", "configurationId", "plugins", "pluginApprovers"]) {
+    assert.deepEqual(other.data[field], saved.data[field]);
+  }
+  const policy = { toolDefaults: { approval: "all_actions" }, enabled: true };
+  const edits = { [pluginId]: policy };
+  const editor = page.getByLabel("Plugin selections JSON", { exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  for (const [method, replyData] of [
+    ["GET", () => other.data],
+    [
+      "PATCH",
+      async (data) => {
+        const otherAgent = await fixture.updateAgent(namespace.id, other.data.id, {
+          configurationId: agent.configurationId,
+          plugins: edits,
+        });
+        assert.deepEqual(data.plugins, otherAgent.plugins);
+        return otherAgent;
+      },
+    ],
+    ["PATCH", ({ id, namespaceId, configurationId }) => ({ id, namespaceId, configurationId })],
+    ["PATCH", (data) => ({ ...data, plugins: {} })],
+    ["PATCH", (data) => ({ ...data, pluginApprovers: [] })],
+    // The last reply confirms the exact settings with a different object key order. The plugin
+    // editor must not replace the rest of the Agent (represented here by its name) from that reply.
+    ["PATCH", null],
+  ]) {
+    const beforeWrite = method === "GET";
+    const expected = beforeWrite ? {} : edits;
+    const confirmed = replyData === null;
+    requests.length = 0;
+    if (!(await editor.isVisible())) {
+      await page.getByText("Plugin selections JSON", { exact: true }).click();
+    }
+    await page.route(agentUrl, async (route) => {
+      if (route.request().method() !== method) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body = await response.json();
+      assert.equal(body.data.id, agent.id);
+      assert.deepEqual(body.data.plugins ?? {}, expected);
+      const data = confirmed
+        ? {
+            ...body.data,
+            name: "Unrelated acknowledgement field",
+            plugins: { [pluginId]: { enabled: true, toolDefaults: policy.toolDefaults } },
+          }
+        : await replyData(body.data);
+      await route.fulfill({ response, json: { ...body, data } });
+    });
+    await editor.fill(JSON.stringify(edits));
+    const previous = await editor.elementHandle();
+    await save.click();
+    if (confirmed) {
+      // Wait for the rebuilt editor, not the first confirmation on the editor being replaced.
+      await page.waitForFunction((node) => !node.isConnected, previous);
+    }
+    const message = beforeWrite
+      ? "Plugin selections changed. Reload this Agent before saving again."
+      : "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
+    const outcome = page
+      .getByText(message, { exact: true })
+      .or(page.getByText("Plugin selections saved.", { exact: true }));
+    await outcome.waitFor();
+    assert.equal(await outcome.textContent(), confirmed ? "Plugin selections saved." : message);
+    if (!confirmed) {
+      assert.equal(await editor.inputValue(), JSON.stringify(edits));
+    }
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(
+      await page.getByRole("heading", { name: agent.name, exact: true }).isVisible(),
+      true,
+    );
+    await page.unroute(agentUrl);
+
+    // Reconcile an unconfirmed result by reading, never by repeating the PATCH.
+    if (!confirmed) {
+      await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
+      await page.getByText("Plugin selections reloaded.", { exact: true }).waitFor();
+    }
+    assert.deepEqual(JSON.parse(await editor.inputValue()), expected);
+    assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins ?? {}, expected);
+    assert.deepEqual(
+      pathRequests(requests, "PATCH", agentPath).map(({ body }) => body.plugins),
+      beforeWrite ? [] : [edits],
+    );
+  }
 });
 
 test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {
@@ -1458,6 +1585,56 @@ test("Agent detail saves plugin changes for the next revision without changing a
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
+// A plugin save rebuilds the page. Rebuilding from the Agent the draft loaded, instead of the save
+// response, showed a Stop requested on the same page as running again. A deployment that finished
+// since page load takes the same path; this case covers Stop.
+test("Plugin save keeps a Stop requested on the same page", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Plugin save after stop");
+  const pluginDriver = new CodexPluginDriver();
+  fixture.controller.registerDriver(pluginDriver);
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const agent = await fixture.createAgent(namespace.id, "Stopped Plugins", nativeValues("stop"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
+  await page.getByRole("heading", { name: "Stopped Plugins", exact: true }).waitFor();
+
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  const stop = stopRegion.getByRole("button", { name: "Stop Agent", exact: true });
+  await waitForEnabled(stop);
+  await stop.click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const repeat = stopRegion.getByRole("button", { name: "Request Stop again", exact: true });
+  await repeat.waitFor();
+
+  const plugins = { "codex-plugin:linear@openai-curated-remote": { enabled: false } };
+  await page.locator("summary").filter({ hasText: "Plugin selections JSON" }).click();
+  await page.getByLabel("Plugin selections JSON", { exact: true }).fill(JSON.stringify(plugins));
+  await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Plugin selections saved." }).waitFor();
+  // The save rereads permissions and the draft, then rebuilds the tab.
+  await waitForIdleFetches(page);
+
+  const saved = (await fixture.request("GET", path)).data;
+  assert.deepEqual(saved.plugins, plugins);
+  assert.equal(saved.desiredRuntimeState, "stopped");
+  assert.equal(saved.activeRevisionId, active.revision.id);
+  // The rebuilt page still shows the stop request instead of offering a first Stop again.
+  await repeat.waitFor();
+  assert.equal(await stop.count(), 0);
+  await page
+    .getByRole("region", { name: "Agent state at a glance" })
+    .getByText("Stop requested", { exact: true })
+    .waitFor();
+});
+
 test("Plugin picker clears tab memory when its catalog or credential scope is reset", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1686,7 +1863,7 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
     await page.getByLabel("Authentication source").locator('option[value="codex_pat"]').count(),
     0,
   );
-  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isEnabled(), true);
+  await waitForEnabled(page.getByLabel("API key Secret", { exact: true }));
 
   // A credentialless Codex catalog does not make an OpenClaw harness compatible with its plugins.
   const capabilities = page.waitForResponse(
@@ -1959,6 +2136,94 @@ test("a Secret created before the picker's Secret list arrives stays staged and 
   await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
 });
 
+test("a different Secret in a create response cannot stage a binding or repeat the write", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfirmed Secret", { ready: true });
+  const original = await fixture.createSecret(namespace.id, "Original picker Secret", "synthetic");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unconfirmed picker Agent",
+    nativeValues("unconfirmed-picker", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await waitForInputValue(picker, original.name);
+  const path = `/namespaces/${namespace.id}/secrets`;
+  const name = "New picker Secret";
+  await page.route(`**${path}`, async (route, request) => {
+    if (request.method() !== "POST") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const body = await response.json();
+    assert.equal(body.data.name, name);
+    // The create succeeded. Substitute valid metadata for a different Secret in its reply.
+    await route.fulfill({ response, json: { ...body, data: original } });
+  });
+  await picker.fill("no matching Secret");
+  const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
+  await create.click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.getByLabel("Name", { exact: true }).fill(name);
+  const value = dialog.getByLabel("Value", { exact: true });
+  await value.fill("synthetic-new-value");
+  const submit = dialog.getByRole("button", { name: "Create Secret", exact: true });
+  await submit.click();
+  await dialog
+    .getByText("Secret creation outcome could not be confirmed.", { exact: false })
+    .waitFor({ timeout: 5_000 });
+  assert.equal(await value.inputValue(), "");
+  assert.equal(await submit.isDisabled(), true);
+  await submit.evaluate((button) => button.form.requestSubmit());
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await waitForInputValue(picker, original.name);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+});
+
+test("session expiry clears the unsent value in the Secret picker dialog", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret picker session expiry", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Expiring picker Agent",
+    nativeValues("expiring-picker", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // Let the picker open before its list read discovers the session has expired.
+  const path = `/namespaces/${namespace.id}/secrets`;
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  await page.route(`**${path}`, async (route) => {
+    await release.promise;
+    await route.continue();
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  const field = dialog.getByLabel("Value", { exact: true });
+  await field.fill("synthetic-unsent-value");
+  const input = await field.evaluateHandle((node) => node);
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
+  release.resolve();
+  assert.equal((await refused).status(), 401);
+  await page.getByText("Your session has expired").waitFor();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await input.evaluate((node) => node.value === ""), true);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+});
+
 test("Agent credential Secret picker searches, validates, and preserves duplicate create input", async (t) => {
   const secretDriver = createTestSecretDriver();
   const fixture = await createConsoleAppFixture(t, { secretDriver });
@@ -2116,15 +2381,12 @@ test("Agent credential Secret picker searches, validates, and preserves duplicat
       hasText: "Access denied. You do not have permission to manage this Secret binding.",
     })
     .waitFor();
-  assert.equal(await dialog.getByLabel("Name", { exact: true }).isDisabled(), false);
+  await waitForEnabled(dialog.getByLabel("Name", { exact: true }));
   assert.equal(
     await dialog.getByLabel("Value", { exact: true }).inputValue(),
     "synthetic-duplicate-value",
   );
-  assert.equal(
-    await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
-    false,
-  );
+  await waitForEnabled(dialog.getByRole("button", { name: "Create Secret", exact: true }));
   await page.unroute(`**/namespaces/${namespace.id}/secrets`, failSecretCreate);
 
   const distinctName = "Combobox Agent corrected service account token";
@@ -2193,10 +2455,7 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     .getByText(/Authentication source saved, but this Agent's Secret access could not be confirmed/)
     .waitFor();
   assert.equal(await page.getByLabel("Authentication source").isDisabled(), true);
-  assert.equal(
-    await page.getByRole("button", { name: "Retry credential access" }).isDisabled(),
-    false,
-  );
+  await waitForEnabled(page.getByRole("button", { name: "Retry credential access" }));
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
 
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -2205,9 +2464,36 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     source: replacementSecret.ref,
   });
   assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
-    [replacementSecret.id],
+    accessBindingPostRequests(requests, namespace.id).map(({ body }) => [
+      body.subjectId,
+      body.resourceId,
+    ]),
+    [[agent.servicePrincipalId, replacementSecret.id]],
   );
+
+  // A retry after this denial must not grant the Secret to a different service principal.
+  const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+  assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.route(agentUrl, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const { data, meta } = await response.json();
+    assert.equal(data.servicePrincipalId, agent.servicePrincipalId);
+    await route.fulfill({
+      response,
+      json: { data: { ...data, servicePrincipalId: other.servicePrincipalId }, meta },
+    });
+  });
+  requests.length = 0;
+  const reread = page.waitForResponse(agentUrl);
+  const retry = page.getByRole("button", { name: "Retry credential access" });
+  await retry.click();
+  assert.equal((await reread).status(), 200);
+  await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isDisabled(), true);
+  await page.getByText(/Agent identity changed. Reload authentication source/).waitFor();
 });
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
@@ -2285,6 +2571,37 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "after-unknown"').waitFor();
   assert.equal(interceptedPatches, 1);
+
+  // The controller accepts this next edit, but the 200 describes another Configuration.
+  // Require the same no-repeat recovery as a lost reply; confirm exactly one write reached OCC.
+  const otherValues = nativeValues("after-unconfirmed-success");
+  await page.unroute(`**${configurationPath}`);
+  await page.route(`**${configurationPath}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const { data, meta } = await response.json();
+    assert.equal(data.id, agent.configurationId);
+    assert.deepEqual(data.values, otherValues);
+    await route.fulfill({ response, json: { data: { ...data, id: `cfg_${randomUUID()}` }, meta } });
+  });
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const editor = page.getByLabel("Configuration JSON");
+  requests.length = 0;
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await editor.fill(JSON.stringify(otherValues));
+  await save.click();
+  const unknown = page.getByText("Outcome unknown. Configuration may have been saved.");
+  const incorrectlySaved = page.getByText("Configuration saved.", { exact: true });
+  await unknown.or(incorrectlySaved).first().waitFor();
+  assert.equal(await unknown.isVisible(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(configurationPatchRequests(requests, namespace.id, agent.configurationId).length, 1);
+  const confirmed = await fixture.request("GET", configurationPath);
+  assert.equal(confirmed.data.generation, saved.data.generation + 1);
+  assert.deepEqual(confirmed.data.values, otherValues);
 });
 
 test("Agent stop confirmation uses the real API, preserves Agent state, and deploy resumes", async (t) => {
@@ -2694,7 +3011,9 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const stopPath = `/namespaces/${namespace.id}/agents/${agent.id}/stop`;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopPath = `${agentPath}/stop`;
+  await trackSettledFetches(page);
   let interceptedStops = 0;
   await page.route(`**${stopPath}`, async (route, request) => {
     if (request.method() !== "POST") {
@@ -2702,15 +3021,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
       return;
     }
     interceptedStops += 1;
-    await route.fetch();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked stop response" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000503" },
-      }),
-    });
+    await replyWithDifferentAgentId(route, agent.id, 202);
   });
 
   await login(
@@ -2728,17 +3039,47 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
     .click();
   await page.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
   // Only Refresh is offered until a readback settles the outcome.
-  assert.deepEqual(
-    await page
-      .getByRole("region", { name: "Stop Agent", exact: true })
-      .getByRole("button")
-      .allTextContents(),
-    ["Refresh stop status"],
-  );
+  const stopControls = page
+    .getByRole("region", { name: "Stop Agent", exact: true })
+    .getByRole("button");
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(stopped.data.desiredRuntimeState, "stopped");
+
+  // A read for a different Agent cannot unlock another destructive request either.
+  await page.route(
+    fixture.origin + agentPath,
+    (route) => replyWithDifferentAgentId(route, agent.id, 200),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page.getByText("Could not refresh stop status.").waitFor();
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
+
+  // Even this Agent's active status cannot tell us whether it is requested to run or stop.
+  // Omit only the desired state from the controller's real, committed Stop readback.
+  await page.route(
+    fixture.origin + agentPath,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const { data, meta } = await response.json();
+      const { desiredRuntimeState, ...rest } = data;
+      assert.equal(rest.id, agent.id);
+      assert.equal(rest.namespaceId, namespace.id);
+      assert.equal(rest.status, "active");
+      assert.equal(desiredRuntimeState, "stopped");
+      await route.fulfill({ response, json: { data: rest, meta } });
+    },
+    { times: 1 },
+  );
+  const reads = await settledFetches(page, agentPath);
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await waitForSettledFetches(page, agentPath, reads + 1);
+  assert.deepEqual(await stopControls.allTextContents(), ["Refresh stop status"]);
+  assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
 
   const refresh = page.waitForResponse(
     (response) =>
@@ -2751,7 +3092,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   // Readback permits an explicit new intent; it never resends the masked request.
-  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).isEnabled(), true);
+  await waitForEnabled(page.getByRole("button", { name: "Request Stop again" }));
 });
 
 test("An uncertain repeated Stop offers only Refresh stop status", async (t) => {
@@ -2831,10 +3172,7 @@ test("an uncertain Stop the API never received reads back as still requested to 
   const notice = stopRegion.getByText("The Agent is still requested to run.", { exact: true });
   await notice.waitFor();
   assert.deepEqual(await statusTone(notice), { className: "status", tone: "info", role: "status" });
-  assert.equal(
-    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isEnabled(),
-    true,
-  );
+  await waitForEnabled(stopRegion.getByRole("button", { name: "Stop Agent", exact: true }));
 });
 
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
@@ -2894,7 +3232,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
 
   await page.getByText("You do not have permission to stop this Agent").waitFor();
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
-  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), false);
+  await waitForEnabled(page.getByRole("button", { name: "Stop Agent" }));
   const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(current.data.desiredRuntimeState, "running");
   assert.equal(current.data.activeRevisionId, active.revision.id);
@@ -2940,7 +3278,7 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
     .locator(".agent-toolbar-actions")
     .getByRole("button", { name: "Open version draft" });
   await openDraft.waitFor();
-  assert.equal(await openDraft.isEnabled(), true);
+  await waitForEnabled(openDraft);
   // The answer denies operate and delete, so the page has no danger zone at all (UX spec 3.9):
   // a reader is not offered Stop or Delete, disabled or not.
   await waitForDangerZoneRows(page, { stop: false, delete: false });

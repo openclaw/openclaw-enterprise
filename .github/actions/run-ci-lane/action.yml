@@ -130,13 +130,12 @@ runs:
       shell: bash
       run: pnpm cli:check && pnpm cli:test
     - name: Typecheck and build workspace output
-      # The only typecheck: `pnpm build` and `pnpm typecheck` are the same
-      # `tsc --build`, which fails on a type error. Some part 2 tests read
-      # apps/controller/dist; part 1 reads no tsc output. Every mode that
-      # can change TypeScript sources runs both parts (CI Impact).
+      # This one compiler run builds the workspace (some part 2 tests read
+      # apps/controller/dist) and checks TypeScript tests without emitting them.
+      # CI Impact also selects part 2 for a change confined to a TypeScript test.
       if: inputs.lane == 'checks-baseline-2'
       shell: bash
-      run: pnpm build
+      run: pnpm typecheck
     - name: Build Go CLI for development installation proof
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash

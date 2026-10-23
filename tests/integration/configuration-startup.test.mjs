@@ -16,7 +16,10 @@ import {
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -235,6 +238,116 @@ test("Installation startup validates the optional external observability URL", a
   );
 });
 
+test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
+  for (const [mutate, details] of [
+    [
+      (configuration) => {
+        configuration.drivers.compute.configuration.authentication = {
+          mode: "kubeconfig",
+          kubeconfigPath: "/etc/kube/config",
+        };
+      },
+      [
+        {
+          path: "/authentication/context",
+          code: "REQUIRED",
+          message: "Explicit Kubernetes context must be explicitly configured.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+      },
+      [
+        {
+          path: "/runtime/gatewayStorageClassName",
+          code: "INVALID_FORMAT",
+          message:
+            "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.sandboxNetworkPolicyCeiling = {};
+      },
+      [
+        {
+          path: "/sandboxNetworkPolicyCeiling",
+          code: "INVALID_TYPE",
+          message: "Configuration does not satisfy type.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.sandboxNetworkPolicyCeiling = [
+          {
+            id: "ceiling-control",
+            binary: "/usr/bin/python3.11",
+            host: "ceiling.example.test",
+            ports: [{ from: 444, to: 443 }],
+          },
+        ];
+      },
+      [
+        {
+          path: "/sandboxNetworkPolicyCeiling/0/ports/0/to",
+          code: "INVALID_RANGE",
+          message: "The end port must be at least the start port.",
+        },
+      ],
+    ],
+  ]) {
+    const configuration = installation();
+    configuration.occ.cluster = "production-west";
+    mutate(configuration);
+    const path = await fixture(t, configuration);
+    const environment = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      OCC_HOST: "192.0.2.10",
+      OCC_PORT: "8080",
+      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+      OCC_AUTH_BASE_URL: "https://console.example.test",
+    };
+    // All three entrypoints reject before persistence. Ceiling errors must name
+    // the Installation input, including its array index, rather than the Agent wrapper.
+    await settled(
+      [
+        ["apps/controller/src/server.mjs", "startup-error"],
+        ["apps/controller/src/worker.mjs", "worker.startup-error"],
+        ["deploy/helm/openclaw-enterprise/files/check-installation.mjs", null],
+      ].map(async ([script, event]) => {
+        const result = await boot(script, environment, 15_000);
+        assert.equal(result.status, 1);
+        if (event === null) {
+          assert.match(result.stderr, /^installation-check:.*DRIVER_CONFIGURATION_INVALID: /);
+        }
+        const diagnostic =
+          event === null
+            ? {
+                code: "DRIVER_CONFIGURATION_INVALID",
+                details: JSON.parse(
+                  result.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1],
+                ),
+              }
+            : startupDiagnostic(result.stderr, event);
+        assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID");
+        assert.deepEqual(diagnostic.details, details);
+        assert.ok(!result.stderr.includes(path));
+        assert.doesNotMatch(
+          result.stderr,
+          /Bad_Class|ceiling\.example\.test|\/additions|PERSISTENCE_UNAVAILABLE/,
+        );
+      }),
+    );
+  }
+});
+
 test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
   const configuration = installation();
   configuration.occ.cluster = "production-west";
@@ -286,13 +399,22 @@ test("API and worker refuse a bad observability host or runtime image before ope
                 mode: "production",
                 environment: { OCC_CONFIG_PATH: copy },
               }),
-              message,
+              Array.isArray(message)
+                ? (error) => {
+                    assert.ok(error instanceof ConfigurationValidationError, label);
+                    assert.deepEqual(error.error.details, message, label);
+                    return true;
+                  }
+                : message,
               label,
             );
             return;
           }
           for (const diagnostic of await refuses(copy, code, label)) {
             assert.equal(diagnostic.message, undefined, label);
+            if (Array.isArray(message)) {
+              assert.deepEqual(diagnostic.details, message, label);
+            }
           }
         }),
       );
@@ -349,20 +471,36 @@ test("API and worker refuse a bad observability host or runtime image before ope
   const dotted = (image) => image.replace(/^([^/]*\/)/, "$1re..po/");
   const refusedImage = (role, refuse, message) => [
     `${role} ${refuse(original[role])}`,
-    message,
+    [{ path: `/images/${role}`, code: "INVALID_FORMAT", message }],
     () => {
       Object.assign(images, original);
       images[role] = refuse(original[role]);
       assert.notEqual(images[role], original[role]);
     },
   ];
-  check("RUNTIME_IMAGE_INVALID", [
-    refusedImage("gateway", uppercase, /Gateway image repository path must be lowercase/),
-    refusedImage("agent", uppercase, /Agent image repository path must be lowercase/),
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "gateway",
+      uppercase,
+      "Gateway image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
+    refusedImage(
+      "agent",
+      uppercase,
+      "Agent image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
   ]);
-  check("RUNTIME_IMAGE_INVALID", [
-    refusedImage("agent", dotted, /Agent image must be a container image reference/),
-    refusedImage("gateway", dotted, /Gateway image must be a container image reference/),
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "agent",
+      dotted,
+      "Agent image must be a container image reference Kubernetes can pull.",
+    ),
+    refusedImage(
+      "gateway",
+      dotted,
+      "Gateway image must be a container image reference Kubernetes can pull.",
+    ),
   ]);
   Object.assign(images, original);
   configuration.observability = { url: "http://192.168.1.1" };
@@ -1293,6 +1431,9 @@ test("startup rejects caller-selected Installation IDs and obsolete Driver selec
 });
 
 test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
+  const refusal = (path, code, message) => [{ path, code, message }];
+  const structural = (path, keyword, code = "INVALID_VALUE") =>
+    refusal(path, code, `Configuration does not satisfy ${keyword}.`);
   for (const [mutate, expected] of [
     [(value) => (value.drivers.compute.configuration.apiKey = "plaintext"), /plaintext credential/],
     [
@@ -1302,12 +1443,24 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.configuration.configuration.authentication = { mode: "kubeconfig" }),
-      /schema|authentication/,
+      [
+        ...structural("/authentication/mode", "const"),
+        ...refusal(
+          "/authentication/kubeconfigPath",
+          "REQUIRED",
+          "This configuration field is required.",
+        ),
+        ...refusal("/authentication/context", "REQUIRED", "This configuration field is required."),
+        ...structural("/authentication", "oneOf"),
+      ],
     ],
-    [(value) => (value.drivers.iam.configuration.unexpected = true), /schema|unsupported option/],
+    [
+      (value) => (value.drivers.iam.configuration.unexpected = true),
+      structural("", "additionalProperties", "UNKNOWN_FIELD"),
+    ],
     [
       (value) => (value.drivers.compute.configuration.resources.gateway.unexpected = true),
-      /schema|unsupported option/,
+      structural("/resources/gateway", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     [
       (value) => (value.drivers.compute.configuration.images.requireImmutableDigest = false),
@@ -1316,17 +1469,25 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.compute.configuration.network.gatewayPort = Number.MAX_SAFE_INTEGER + 1),
-      /schema|integer|port/,
+      /network\.gatewayPort must be a safe integer\.$/,
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/gateway",
+        "INVALID_FORMAT",
+        "Gateway image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/agent",
+        "INVALID_FORMAT",
+        "Agent image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) => delete value.drivers.compute.configuration.runtime,
@@ -1336,7 +1497,7 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
       (value) =>
         (value.drivers.compute.configuration.runtime.modelSecretPrefix =
           value.drivers.compute.configuration.runtime.transportSecretPrefix),
-      /schema|unsupported option/,
+      structural("/runtime", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     // The reader refuses these anywhere in the file, before any Driver schema runs.
     [
@@ -1359,7 +1520,15 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
         mode: "production",
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
-      expected,
+      (error) => {
+        if (expected instanceof RegExp) {
+          assert.match(error.message, expected);
+        } else {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.deepEqual(error.error.details, expected);
+        }
+        return true;
+      },
     );
   }
 });

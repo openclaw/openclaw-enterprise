@@ -26,6 +26,7 @@ export function persistedDeploymentError(code, data) {
 }
 
 export function apiRequests(page, origin) {
+  /** @type {{ method: string, path: string, body: unknown }[]} */
   const requests = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
@@ -119,6 +120,7 @@ export function fileBrowser() {
   return sharedBrowser;
 }
 
+/** @returns {Promise<{ page: import("playwright").Page, artifacts: string }>} */
 export async function newPage(t, fixture, options = {}) {
   const artifacts = await artifactDirectory(t);
   assert.ok(
@@ -163,7 +165,7 @@ export async function newPage(t, fixture, options = {}) {
   return { page, artifacts };
 }
 
-const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
+const signedInPath = /\/console\/(agents|backends|namespaces|settings|secrets)/;
 
 // Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
 // Better Auth password request the form sends, made in the page's own browser context so the
@@ -175,6 +177,7 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
 // keeps that tab's session storage and history across the sign-in. So does a fixture served
 // over TLS or under another host name, whose cookies are what such a test checks. Tests about
 // the sign-in page itself use the form directly or loginThroughForm.
+/** @param {string | URL} [path] */
 export async function login(
   page,
   fixture,
@@ -271,6 +274,7 @@ export async function consoleStorage(page) {
   });
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
   return requests.filter(
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
@@ -310,6 +314,7 @@ export function detailUrl(fixture, namespaceId, agentId, revision, tab) {
   return url;
 }
 
+/** @param {ReturnType<typeof apiRequests>} requests */
 export function pathRequests(requests, method, path) {
   return requests.filter((request) => request.method === method && request.path === path);
 }
@@ -335,6 +340,20 @@ export async function waitForInputValue(locator, expected, timeoutMs = 10_000) {
     value,
     expected,
     `input value was ${JSON.stringify(value)}, not ${JSON.stringify(expected)}, after ${timeoutMs} ms`,
+  );
+}
+
+// A control becomes enabled when the page state behind it settles, which can be a task or more
+// after the text a test waits for (finding 2116). A test that expects a control to be usable
+// waits through this; one isEnabled() read can see the earlier state. A check that a control is
+// disabled at a given moment still reads isDisabled() once.
+export async function waitForEnabled(locator, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  await locator.waitFor({ state: "attached", timeout: timeoutMs });
+  await waitForCondition(
+    () => locator.isEnabled(),
+    `${locator} stayed disabled for ${timeoutMs} ms`,
+    Math.max(1, deadline - Date.now()),
   );
 }
 
@@ -431,7 +450,7 @@ export async function waitForIdleFetches(page) {
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) {
+    if (await predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -485,6 +504,7 @@ export async function slackSelectionValue(input) {
     .evaluateAll((chips) => chips.map((chip) => chip.getAttribute("title")).join(", "));
 }
 
+/** @param {import("playwright").Page} page @param {string} name */
 export function repositoryCheckbox(page, name) {
   return page
     .locator("#repository-results .repository-result-row")
@@ -501,6 +521,13 @@ export function repositoryCheckbox(page, name) {
 // With `afterServer`, the server answers first and the page gets that answer on release (a
 // write that landed while the page waits); if that answer is lost, the page's request fails
 // rather than being sent again. With `fulfill`, the held request gets that response.
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {import("playwright").Page} page
+ * @param {Parameters<import("playwright").Page["route"]>[0]} url
+ * @param {{ once?: boolean, method?: string, afterServer?: boolean, fulfill?: Parameters<import("playwright").Route["fulfill"]>[0] | null }} [options]
+ * @returns {Promise<{ requested: Promise<void>, release: () => void, wasRequested: () => boolean }>}
+ */
 export async function holdRequests(
   t,
   page,
@@ -590,9 +617,22 @@ export function recordLayoutShifts() {
 
 // Returns the layout shifts recorded since the last call, and their total.
 export async function takeLayoutShifts(page) {
+  /** @type {{ value: number, sources: { node: string, text?: string, from: number[], to: number[] }[] }[]} */
   const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
+
+// Resolves after the page has painted twice more and run a task after that, so work that has
+// already settled has rendered and any layout shift from it has been reported.
+export const nextFrames = (page) =>
+  page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() =>
+          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
+        );
+      }),
+  );
 
 // The page's main view once its reads have settled and nothing holds it inert.
 export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
@@ -728,6 +768,34 @@ export function statusTone(locator, { text = false } = {}) {
     }),
     text,
   );
+}
+
+// Whether a reload or tab close would ask first: the console cancels beforeunload.
+export function asksBeforeUnload(page) {
+  return page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    globalThis.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
+// Checks that a write which holds the page also makes a reload or tab close ask first, only while
+// it is in flight (finding 2181). It holds the next `method` request to `url`, which `start`
+// sends, until the page is shown to ask; then it lets the answer through, waits for `settled`
+// and checks the page no longer asks. The real server answers the write; only its answer waits.
+export async function expectWriteAsksBeforeUnload(t, page, url, { method, start, settled }) {
+  assert.equal(await asksBeforeUnload(page), false, "the page asked before the write started");
+  const held = await holdRequests(t, page, url, {
+    method,
+    once: true,
+    afterServer: true,
+  });
+  await start();
+  await held.requested;
+  assert.equal(await asksBeforeUnload(page), true, "a reload during the write would not ask");
+  held.release();
+  await settled();
+  assert.equal(await asksBeforeUnload(page), false, "the page still asks after the write");
 }
 
 // Whether the locator's element holds focus.

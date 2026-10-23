@@ -28,8 +28,13 @@ Missing prerequisites fail rather than skip.
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
-and real OpenShell policy RPCs. It exercises a Python denial, an explicitly
-applied grant, removal, and isolation from a second Agent. Denial logs and native
+and real OpenShell policy RPCs. Trusted Installation defaults allow its Python
+control request on port 8082; the target on port 8083 requires a runtime grant.
+Both listeners are separate from the echo Service's credential-injection port.
+The fixture proves target reachability independently, then exercises the actual
+Agent's Python denial, descriptor discovery, write-free preview, save, confirmed
+application, removal, and isolation from a second Agent. The allowed default
+control remains reachable after revocation. Denial logs and native
 recommendations are checked separately.
 
 It revokes each required permission after work is queued and checks failure
@@ -39,7 +44,7 @@ succeeds but before OCC records its receipt. A restarted worker must confirm
 the loaded policy without issuing the write again. These cases require the
 real runtime; local wire fixtures do not establish their outcomes.
 
-The scope check temporarily enables OIDC on the real Namespace gateway using
+The full scenario's scope check temporarily enables OIDC on the real Namespace gateway using
 the disposable HTTPS Keycloak issuer. Signed identities with `sandbox:read`,
 `config:read`, `config:write`, or no scope exercise policy status, recommendations,
 and `UpdateConfig`. Missing authentication and insufficient scopes must fail;
@@ -128,3 +133,27 @@ same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
 [complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
 trusted pull requests when a maintainer requests it with the `full-qa` label.
+
+### QA matrix selector
+
+The explicit `sandbox-policy` scenario runs the complete network-policy lifecycle
+with this real OpenShell setup and production API/worker. It selects
+`OCC_TEST_OPENSHELL_SCENARIO=network-policy`, which provisions no unrelated OAuth
+refresh sources and excludes the separate filesystem, credential rotation, and
+outage qualification phases. The default `full` scenario retains those phases
+and the policy lifecycle. This selector is separate from the matrix's default
+Sandbox-free installations. Prepare the
+OpenShell lane and its Sandbox test file first, then provide that file's private
+`--github-env` output as `OCC_TEST_QA_SANDBOX_ENV` and the authorized token file as
+`OCC_TEST_QA_CODEX_TOKEN_FILE`:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=sandbox-policy \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The selected workflow must pass without skips. Its sanitized runtime log is
+written to the matrix artifacts directory. Cleanup remains with the owner of the
+prepared OpenShell lane; run the documented cleanup even on failure. The existing
+OpenShell advisory job exercises this workflow with the rest of its runtime suite.

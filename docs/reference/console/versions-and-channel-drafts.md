@@ -25,12 +25,20 @@ requires caller and Agent ServicePrincipal Secret `operate`.
 **Access and credential setup** expands the Driver guidance and help links;
 the compact reminder stays visible. Search and pagination remain reachable
 while the catalog list and plugin details scroll within the picker.
-**Save plugin selections** updates the Agent; deployment snapshots them.
+**Save plugin selections** updates the Agent. Deployment snapshots the saved settings.
+The Console confirms a save only when the response identifies the same Agent,
+Namespace, and Configuration and matches the submitted selections and approvers.
+An incomplete or mismatched success response leaves the draft visible and blocks
+saving and deployment until you can [reload the saved settings](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
+
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment details** follows the newest readable deployment. Routine completion
-starts folded; pending work, warnings, and cleanup are expanded.
+starts folded; pending work, warnings, and cleanup are expanded. When the page shows
+before the first record arrives (a read slower than about 2 s), that record fills the
+folded row instead, and the summary above shows its outcome; cleanup and warnings still
+expand it, as does every later change.
 The viewed version retains its own result. Unreadable outcomes remain unknown.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 

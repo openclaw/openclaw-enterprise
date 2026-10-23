@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("Filesystem Configuration cleans its temporary file after a failed rename and can retry", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-configuration-write-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-configuration-write-");
   const driver = new FilesystemConfigurationDriver(root);
   const configuration = {
     id: `cfg_${randomUUID()}`,
@@ -46,8 +45,7 @@ test("Filesystem Configuration cleans its temporary file after a failed rename a
 });
 
 test("Filesystem Configuration shares the URL credential check work budget across a document", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-configuration-url-check-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-configuration-url-check-");
   const driver = new FilesystemConfigurationDriver(root);
   const namespaceId = `ns_${randomUUID()}`;
   const configuration = (values) => ({

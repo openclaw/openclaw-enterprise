@@ -392,7 +392,17 @@ test("Agent create admits private workspace files through the OpenShell initiali
     },
     { id: "workspace-openshell-sandbox", backend },
   );
-  const f = await setup(t, { sandboxDriver });
+  const f = await setup(t, {
+    sandboxDriver,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+    ],
+  });
   for (const [runtime, model] of [
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
