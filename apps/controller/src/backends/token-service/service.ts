@@ -60,7 +60,8 @@ export class TokenService implements PreparedTokenService {
       signal: AbortSignal,
       run: (preparation: Preparation) => ReturnType<Preparation["run"]>,
     ): Promise<void | string>;
-    /** Called with the pass's error so an owner can name a known refusal. */
+    /** Called with the pass's error so an owner can name a known refusal. Map it to a fixed
+     * code and reason; never log the error or its message. */
     failed(error: unknown): void;
   }) {
     const stop = new AbortController();

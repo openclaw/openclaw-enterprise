@@ -6,8 +6,8 @@ import test from "node:test";
 import { isDeepStrictEqual } from "node:util";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   admitProtectedVersion,
   disposeBrokerSession,
@@ -730,7 +730,7 @@ test(
     // A rotated Secret with an unusable key used to log only PREPARED_GITHUB_MAINTENANCE_FAILED
     // on each pass. The pass now reports the startup refusal's code and fixed reason.
     const f = await fixture(t);
-    const directory = await socketDirectory(t, "pgit-key-");
+    const directory = await temporaryDirectory(t, "pgit-key-");
     const privateKeyPath = join(directory, "rotated.pem");
     await writeFile(privateKeyPath, f.gh.privateKey.export({ type: "pkcs8", format: "pem" }), {
       mode: 0o600,
@@ -760,6 +760,7 @@ test(
       createPublicKey(f.gh.privateKey).export({ type: "spki", format: "pem" }),
     );
     loop.start();
+    // A pass that finds no source yet retries after 5 s; the test timeout bounds the wait.
     await firstReport;
     assert.deepEqual(reports[0], {
       code: "PREPARED_GITHUB_APP_KEY_INVALID",
