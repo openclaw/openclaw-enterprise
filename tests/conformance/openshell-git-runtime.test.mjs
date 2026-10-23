@@ -50,6 +50,17 @@ const restorations = (f) =>
 const warnings = (f) =>
   f.events.filter((event) => event.event === "worker.openshell-git-route-warning");
 const retained = (f) => warnings(f).filter((event) => event.status === "retained");
+// Each Git expiry pass logs the revision identity, its outcome and step, and for a pending
+// pass one constant failure. Nothing else: no error text, Sandbox name or gateway detail.
+const expiries = (f) => {
+  const events = f.events.filter((event) => event.event === "worker.openshell-git-expiry");
+  const identity = ["event", "namespaceId", "agentId", "revisionId", "repositoryRef"];
+  for (const event of events) {
+    const fields = ["outcome", "check", ...(event.outcome === "pending" ? ["failure"] : [])];
+    assert.deepEqual(Object.keys(event).sort(), [...identity, ...fields].sort());
+  }
+  return events;
+};
 
 async function expectDenied(f, reason, message) {
   assert.equal(await f.lookup(), undefined, message);
@@ -2000,6 +2011,10 @@ test("Git expiry observes the original model in the reduced stock installation, 
         // The send never reached the gateway: still attached, nothing admitted.
         throw Object.assign(Error("connection refused"), { grpcStatus: 14 });
       }
+      if (sends === 1 && fault === "pass ran out of time") {
+        // The pass's own deadline aborted the send before it left: nothing admitted.
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
       if (fault === "Sandbox moved before send") {
         box.resourceVersion = "14";
       }
@@ -2039,7 +2054,25 @@ test("Git expiry observes the original model in the reduced stock installation, 
       fault === "replacement Pod" ? { ...owner, workload: async () => "other-pod" } : owner,
     );
     assert.equal(first, expectedFirst, fault);
+    // Every pending pass says why, from the fixed set (finding 2230).
+    const failures = () =>
+      expiries(f)
+        .filter((event) => event.outcome === "pending")
+        .map((event) => event.failure);
+    const expectedFailures = {
+      "version churn": ["unconfirmed"],
+      "lost reply": ["failed"],
+      "intent without effect": ["unavailable"],
+      "outcome uncertain at gateway": ["deadline"],
+      "first send still applying": ["deadline"],
+      "pass ran out of time": ["deadline"],
+      "admission limit": ["admission_limit", "admission_limit"],
+      "Sandbox moved after intent": ["unavailable"],
+      "profile unavailable": ["unavailable"],
+      "model rotates during profile check": ["unconfirmed"],
+    }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
+      assert.deepEqual(failures(), expectedFailures);
       if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
         assert.equal(sends, 0);
       }
@@ -2072,21 +2105,21 @@ test("Git expiry observes the original model in the reduced stock installation, 
       // detach pending and logged, Git still fenced; the next pass after slots free converges
       // (finding 2228).
       assert.deepEqual(
-        f.events
-          .filter((event) => event.event === "worker.openshell-git-expiry")
-          .map(({ outcome, check }) => [outcome, check]),
+        expiries(f).map(({ outcome, check, failure }) => [outcome, check, failure]),
         [
-          ["pending", "conditional-detach"],
-          ["pending", "repeated-conditional-detach"],
-          ["withdrawn", "record-reduced-generation"],
+          ["pending", "conditional-detach", "admission_limit"],
+          ["pending", "repeated-conditional-detach", "admission_limit"],
+          ["withdrawn", "record-reduced-generation", undefined],
         ],
       );
     }
     // A detach that took effect is observed, never sent again. An intent that left the provider
     // attached is sent again as the same request until it converges (finding 2219): withdrawn,
     // or the runtime retired when the gateway cannot tell the outcome or the Sandbox moved.
+    assert.deepEqual(failures(), expectedFailures);
     const repeated = {
       "intent without effect": 2,
+      "pass ran out of time": 2,
       "outcome uncertain at gateway": 3,
       "first send still applying": 2,
       "admission limit": 3,
@@ -2102,6 +2135,7 @@ test("Git expiry observes the original model in the reduced stock installation, 
     ["lost reply", "pending"],
     ["pending", "withdrawn"],
     ["intent without effect", "pending", "withdrawn"],
+    ["pass ran out of time", "pending", "withdrawn"],
     ["outcome uncertain at gateway", "pending", "retire-runtime"],
     ["first send still applying", "pending", "withdrawn"],
     ["admission limit", "pending", ["pending", "withdrawn"]],

@@ -1309,12 +1309,13 @@ export class OpenShellGitRuntime {
           throw error; // a failed read is not a finding about the retained authority
         }
       },
-      (outcome, check) =>
+      (outcome, check, failure) =>
         this.emit?.({
           event: "worker.openshell-git-expiry",
           ...revisionIdentity(revision),
           outcome,
           check,
+          ...(failure === undefined ? {} : { failure }),
         }),
     );
   }

@@ -7,10 +7,23 @@ import type {
   OpenShellSandboxProviderStatus,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
+import { OpenShellAdmissionLimitError } from "../sandbox/openshell-gateway-errors.ts";
 import type { OpenShellPreparedGitInstalled as Git } from "./openshell-prepared-git-provider.ts";
 import type { OpenShellGitExpiry, OpenShellGitRouteStore } from "./openshell-git-route-store.ts";
 
 export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime";
+/**
+ * Why an expiry pass stayed pending, from a fixed set (never error text or gateway detail):
+ * OpenShell has not confirmed the step `check` names yet, the gateway's durable admission limit
+ * refused a request (one that never clears points at unresolved admissions in its store), the
+ * gateway did not answer, a request or the pass ran out of time, or another request failed.
+ */
+export type OpenShellGitExpiryPendingFailure =
+  | "unconfirmed"
+  | "admission_limit"
+  | "unavailable"
+  | "deadline"
+  | "failed";
 type Client = Pick<
   OpenShellGatewayClient,
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
@@ -30,6 +43,20 @@ class Unsafe extends Error {}
 function grpcCode(error: unknown): number {
   const failure = error as { grpcStatus?: number; code?: number } | null;
   return Number(failure?.grpcStatus ?? failure?.code);
+}
+function pendingFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiryPendingFailure {
+  if (error instanceof OpenShellAdmissionLimitError) {
+    return "admission_limit";
+  }
+  const code = grpcCode(error);
+  if (
+    signal.aborted ||
+    code === 4 ||
+    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+  ) {
+    return "deadline";
+  }
+  return code === 14 ? "unavailable" : "failed";
 }
 function requireIdentity(condition: unknown): asserts condition {
   if (!condition) {
@@ -271,13 +298,21 @@ export async function subtractExpiredOpenShellGit(
   owner: OpenShellGitContinuity,
   signal: AbortSignal,
   verifyRetainedProviders: (providers: readonly string[]) => Promise<boolean>,
-  report?: (outcome: OpenShellGitExpiryResult, check: string) => void,
+  report?: (
+    outcome: OpenShellGitExpiryResult,
+    check: string,
+    failure?: OpenShellGitExpiryPendingFailure,
+  ) => void,
 ): Promise<OpenShellGitExpiryResult> {
   const { observed: git, retainedLaunchHash, detach } = saved;
   const { workspace, sandbox: name, provider, executionId } = git;
   let check = "model-provider";
-  const result = (outcome: OpenShellGitExpiryResult, step = check) => {
-    report?.(outcome, step);
+  const result = (
+    outcome: OpenShellGitExpiryResult,
+    step = check,
+    failure: OpenShellGitExpiryPendingFailure = "unconfirmed",
+  ) => {
+    report?.(outcome, step, outcome === "pending" ? failure : undefined);
     return outcome;
   };
   try {
@@ -425,6 +460,6 @@ export async function subtractExpiredOpenShellGit(
     // In particular UNIMPLEMENTED must not become pending.
     return error instanceof Unsafe || [3, 5, 7, 9, 10, 12, 16].includes(grpcCode(error))
       ? result("retire-runtime")
-      : result("pending");
+      : result("pending", check, pendingFailure(error, signal));
   }
 }
