@@ -56,6 +56,9 @@ const openDialog = (page: Page) =>
       box: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
       viewport,
       focusInside: dialog !== document.activeElement && dialog.contains(document.activeElement),
+      actions: Array.from(dialog.querySelectorAll(".dialog-actions button"), (button) =>
+        button.textContent.trim(),
+      ),
     };
   });
 
@@ -153,6 +156,12 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
       await page.screenshot({ path: join(artifacts, `dialog-${name}-${viewport.width}.png`) });
       seen.set(`${name} ${viewport.width}`, state);
       assert.equal(state.focusInside, true, `${name}: focus moves into the dialog`);
+      // Every confirming dialog shares one action row, Cancel first (finding 1942: Delete kept
+      // the page's form-actions row).
+      if (name !== "plugins") {
+        assert.equal(state.actions.length, 2, `${name}: ${JSON.stringify(state.actions)}`);
+        assert.equal(state.actions[0], "Cancel", `${name}: Cancel comes first`);
+      }
       // Escape keeps today's rule (it closes an idle dialog), and focus returns to the opener.
       await page.keyboard.press("Escape");
       await page.waitForFunction(() => !globalThis.document.querySelector("dialog:modal"));

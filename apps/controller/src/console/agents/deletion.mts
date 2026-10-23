@@ -412,7 +412,7 @@ export function createAgentDeletion(
       ),
       description,
       element("p", { id: "agent-delete-confirm-kept" }, keptResourcesText(agent)),
-      element("div", { className: "form-actions" }, cancel, confirm),
+      element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
       if ((state.pending && !state.polling) || queuedDelete?.dialog === dialog) {

@@ -2681,8 +2681,7 @@ select:not([multiple])[size="1"] {
   animation: dialog-backdrop-open var(--duration-base) var(--ease);
 }
 /* Cancel first (left), the confirming action last (right). */
-.dialog-actions,
-.dialog > .form-actions {
+.dialog-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
