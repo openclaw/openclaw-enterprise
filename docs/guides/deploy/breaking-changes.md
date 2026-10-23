@@ -17,28 +17,6 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-23: the Codex model endpoint must be reachable through model egress
-
-**What breaks.** Kubernetes Compute startup and the `codex` profile preflight
-refuse a `runtime.codexModelBaseUrl` that the Harness model egress policy
-blocks: a port other than 443, an IPv6 address, or an IPv4 address in
-`10.0.0.0/8`, `100.64.0.0/10`, `172.16.0.0/12`, `192.168.0.0/16` or
-`169.254.0.0/16`. Such an endpoint used to start, and then every dedicated
-Codex `api_key` Agent failed its model authentication check.
-
-**Who is affected.** Installations that set `runtime.codexModelBaseUrl` to such
-an endpoint. Compute's model egress policy blocked it for every `api_key`
-Agent, and OpenShell installs, whose Sandbox fences egress, run no `api_key`
-Agents, so no Agent could use it.
-
-**How to tell.** Compute startup refuses `/runtime/codexModelBaseUrl` with
-`Codex model endpoint must use port 443`, `must not be an IPv6 address` or
-`IPv4 host must be outside`.
-
-**Steps.** Serve the endpoint on port 443 at a public IPv4 address or a host
-name, or remove the setting, then start again. _untested_ against a live
-Installation.
-
 ## 2026-10-23: existing-namespace deletion lists ConfigMaps and ServiceAccounts
 
 **What breaks.** Deleting a Namespace placed in an existing Kubernetes

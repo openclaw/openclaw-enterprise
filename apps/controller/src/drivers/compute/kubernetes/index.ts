@@ -45,7 +45,7 @@ import { isKubernetesNamespaceName, isKubernetesResourceName } from "./resource-
 import {
   MODEL_EGRESS_EXCLUDED_IPV4_CIDRS,
   MODEL_EGRESS_PORT,
-  modelEgressRefusal,
+  modelEgressWarning,
 } from "./model-egress.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -3747,21 +3747,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
             "/runtime/codexModelBaseUrl",
           );
         }
-        // Fail at startup, not at the first Codex auth probe: the Harness reaches the endpoint
-        // only through its model egress policy (finding 1740).
-        const unreachableModelEndpoint =
-          options.runtime.codexModelBaseUrl === undefined
-            ? undefined
-            : modelEgressRefusal(
-                "Codex model endpoint",
-                normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl)!,
-              );
-        if (unreachableModelEndpoint !== undefined) {
-          throw configurationConstraintFailure(
-            unreachableModelEndpoint,
-            "/runtime/codexModelBaseUrl",
-          );
-        }
         if (options.runtime.codexSeccompProfile !== undefined) {
           validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
         }
@@ -4055,7 +4040,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   async preflight(): Promise<ComputePreflightResult> {
     const warnings: {
-      code: "KUBERNETES_VERSION_BELOW_MINIMUM" | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD";
+      code:
+        | "KUBERNETES_VERSION_BELOW_MINIMUM"
+        | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD"
+        | "KUBERNETES_MODEL_EGRESS_BLOCKED";
       message: string;
     }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
       code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
@@ -4064,6 +4052,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
         "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
     }));
+    // A Codex model endpoint the generated model egress policy does not admit still starts: an
+    // operator's own NetworkPolicy can open it (finding 2284). Startup validated the URL.
+    const codexModelBaseUrl = this.options.runtime?.codexModelBaseUrl;
+    const modelEgress =
+      codexModelBaseUrl === undefined
+        ? undefined
+        : modelEgressWarning("Codex model endpoint", normalizeOpenAiBaseUrl(codexModelBaseUrl)!);
+    if (modelEgress !== undefined) {
+      warnings.push({ code: "KUBERNETES_MODEL_EGRESS_BLOCKED", message: modelEgress });
+    }
     let controlIdentity: string | undefined;
     const planes =
       this.options.executionCluster === undefined

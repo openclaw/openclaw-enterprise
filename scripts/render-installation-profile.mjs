@@ -11,7 +11,7 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
-import { modelEgressRefusal } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
+import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
   normalizeOpenAiBaseUrl,
@@ -318,9 +318,10 @@ function codexModelBaseUrl(runtime, diagnostics) {
         `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
     );
   }
-  const unreachable = url === undefined ? undefined : modelEgressRefusal(field, url);
-  if (unreachable !== undefined) {
-    diagnostics.errors.push(unreachable);
+  // Compute startup warns too: an operator's own NetworkPolicy can admit it (finding 2284).
+  const blocked = url === undefined ? undefined : modelEgressWarning(field, url);
+  if (blocked !== undefined) {
+    diagnostics.warnings.push(blocked);
   }
   return url ?? value;
 }
