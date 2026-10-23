@@ -6489,7 +6489,7 @@ export const scenarios = {
     group: "Components/Credentials",
     name: "Scrolling Secret list",
     path: `${draft}&tab=credentials`,
-    extraSecrets: [1, 2, 3, 4].map((index) => ({
+    extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
       id: `sec_story_scroll_${index}`,
       name: `Scrolling Secret ${index} (simulated)`,
     })),
