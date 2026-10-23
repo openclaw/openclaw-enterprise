@@ -117,19 +117,20 @@ the gateway-signed `exchange_key` and the supervisor’s Ed25519 signature over
 Request JSON cannot supply a key; bearer-only RPCs refuse.
 
 Before awaiting work, the adapter copies the request and binds a private capability to the stream.
-Credential Proxy bounds body size and capacity, reserves a slot and snapshots headers and body.
+Credential Proxy bounds body size, reserves an authentication slot and snapshots headers and body.
 The stream owns the response. OCC copies each authenticated peer descriptor before
 awaiting more work. Send and response require the captured sender, Sandbox,
 instance, exchange, installation and optional peer key. Adding, changing or removing the key
 refuses; peer expiry must be valid and future at resolution, send and response lookup. A bearer
 or handle cannot transfer custody. Closing the stream cancels it. Cancellation or expiry
-releases material; pending policy or receipt work retains its slot until settled. No pipelining.
+releases material; pending policy or receipt work keeps its slot. No pipelining.
 
-`packages/occ/src/credential-proxy.ts:resolve` maps the peer to persisted installation state and classifies one exact
-route through its registered provider. Only then, before capture or policy I/O, it reserves
-the UUIDv7 request ID; its creation time fixes the 30-second replay horizon. Pending
-resolution and per-Sandbox replay state are [bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
-unsupported or ambiguous operations refuse before reserving it.
+`packages/occ/src/credential-proxy.ts:resolve` then moves the slot to the verified Sandbox's share,
+maps the peer to persisted installation state and classifies one exact route through its
+provider. Before capture or policy I/O, it reserves the UUIDv7 request ID; its creation time
+fixes the 30-second replay horizon. Slots and IDs are
+[bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
+unsupported or ambiguous operations refuse before reserving one.
 
 Supplier enrollment starts at its authenticated current supervisor hello, not the first
 exchange. The supplier must keep the corresponding private key outside the Agent and
