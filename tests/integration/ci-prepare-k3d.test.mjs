@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
@@ -14,16 +15,7 @@ import {
   immutableImage,
   nodeBaseImage,
 } from "../helpers/ci-prepare-fixture.mjs";
-
-// Like Promise.all over a case's scenarios, but waits for every one so no process
-// outlives the test's temporary directories, then rethrows the first failure.
-async function eachSettled(items, each) {
-  const results = await Promise.allSettled(items.map(each));
-  const failed = results.find(({ status }) => status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-}
+import { eachSettled } from "../helpers/child-processes.mjs";
 
 // Each case waits on its own fake k3d and container engine processes, mostly for
 // deliberate timeouts, so the cases run concurrently.
@@ -36,13 +28,79 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       result.stderr,
       /Unable to determine the cross-node plugin status proxy source/,
     );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     assert.equal(state.env, undefined);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
     // Failed preparation retains ownership so cleanup can remove the partial cluster.
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
+  });
+
+  test("fixture preparation retries a failed worker Pod CIDR read and waits for assignment", async (t) => {
+    const commands = await fixtureImageCommands(t, "late-pod-cidr");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const calls = await commands.commands();
+    const reads = calls.filter(
+      ({ command, args }) =>
+        command === "kubectl" &&
+        args.slice(4, 6).join(" ") === "get node" &&
+        args[6].endsWith("-agent-0") &&
+        args.slice(7).join(" ") === "-o json",
+    );
+    // A refused read, a Ready node without a Pod CIDR, then the assigned CIDR.
+    assert.equal(reads.length, 3);
+    for (let index = 1; index < reads.length; index += 1) {
+      const gap = reads[index].at - reads[index - 1].at;
+      assert.ok(gap >= 245, `read ${index + 1} started ${gap} ms after the one before it`);
+    }
+    assertStderrMatch(result.stderr, /waiting for k3d-\S+-agent-0 to get its Pod CIDR/);
+    // The wait is announced once, not on every read.
+    assert.equal(result.stderr.match(/to get its Pod CIDR/g)?.length, 1);
+    await commands.cleanupSuccessfully();
+  });
+
+  test("fixture preparation names the worker that never gets a Pod CIDR", async (t) => {
+    const commands = await fixtureImageCommands(t, "no-pod-cidr", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 1000 ms\./);
+    const state = await commands.readState();
+    assert.equal(state.env, undefined);
+    await commands.cleanupSuccessfully();
+  });
+
+  // The deadline error names the last read's outcome: a refused read followed by reads that
+  // answer without a Pod CIDR reports the missing CIDR, not the earlier refusal (finding 1699).
+  // The wait only has to outlast one refused read (it fails only if that fake kubectl read takes
+  // 2 s or more), so no read count or pacing is asserted.
+  test("fixture preparation reports the last Pod CIDR read, not an earlier refusal", async (t) => {
+    const commands = await fixtureImageCommands(t, "refused-then-no-pod-cidr", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "2000",
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 2000 ms\./);
+    assert.doesNotMatch(result.stderr, /synthetic node read refusal/);
+    await commands.cleanupSuccessfully();
+  });
+
+  test("fixture preparation bounds a hung Pod CIDR read and reports its failure", async (t) => {
+    // A wait shorter than the one-second read floor makes the first hung read decisive.
+    const commands = await fixtureImageCommands(t, "hung-pod-cidr-read", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "100",
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assertStderrMatch(
+      result.stderr,
+      /Unable to read k3d node k3d-\S+-agent-0 within 100 ms: .*timed out after 1000ms/,
+    );
+    const state = await commands.readState();
+    assert.equal(state.env, undefined);
+    await commands.cleanupSuccessfully();
   });
 
   for (const { scenario, stage, error } of [
@@ -124,14 +182,13 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       }
 
       // Failure must retain owned cleanup state without admitting workload execution.
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
       assert.equal(evidence.cluster, cluster.name);
       assert.equal(cluster.status, "planned");
       assert.equal(state.env, undefined);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-      const cleanup = await commands.cleanup();
-      assert.equal(cleanup.status, 0, cleanup.stderr);
+      await commands.cleanupSuccessfully();
       await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
       await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
       assert.equal(await readFile(artifactPath, "utf8"), artifactText);
@@ -202,12 +259,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     );
     assert.match(evidence.containers[0].processes.value, /kubectl uncordon/);
 
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     const clusters = state.resources.filter(({ kind }) => kind === "k3d-cluster");
     assert.equal(clusters.length, 1);
     assert.equal(clusters[0].status, "ready");
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
@@ -251,8 +307,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     for (const pid of await hungK3dProcesses(commands)) {
       assert.equal(processRunning(pid), false, `hung k3d process ${pid} must not survive`);
     }
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("k3d preparation fails clearly when every cluster create attempt hangs", async (t) => {
@@ -278,13 +333,12 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     assert.equal(evidence.containers.length, 2);
 
     // The partial cluster stays registered for cleanup; nothing is published.
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
     assert.equal(cluster.status, "planned");
     assert.equal(state.env, undefined);
     await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
     await assert.rejects(() => stat(cluster.directory), { code: "ENOENT" });
   });
@@ -390,10 +444,9 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       assertStderrMatch(result.stderr, /KubeletHasDiskPressure/);
       assert.doesNotMatch(result.stderr, /do-not-publish-pod-spec/);
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       assert.equal(state.env, undefined);
-      const cleanup = await commands.cleanup();
-      assert.equal(cleanup.status, 0, cleanup.stderr);
+      await commands.cleanupSuccessfully();
     });
   }
 
@@ -431,7 +484,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           ["local-digest", "inspect-failed"].includes(scenario) ? 0 : 1,
           scenario,
         );
-        const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+        const state = await commands.readState();
         const imported = state.resources.filter(({ kind }) => kind === "k3d-image");
         if (scenario === "pull-mismatch") {
           assertStderrMatch(
@@ -449,8 +502,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           assert.equal(imported[0].sourceImage, immutableImage);
           assert.equal(imported[0].hostImageId, `sha256:${"b".repeat(64)}`);
         }
-        const cleanup = await commands.cleanup();
-        assert.equal(cleanup.status, 0, cleanup.stderr);
+        await commands.cleanupSuccessfully();
         assert.ok(
           !(await commands.commands()).some(
             ({ args }) => args[0] === "image" && args[1] === "rm" && args.includes(immutableImage),
@@ -509,14 +561,13 @@ describe("CI k3d preparation", { concurrency: true }, () => {
           false,
           scenario,
         );
-        const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+        const state = await commands.readState();
         assert.equal(
           state.resources.some(({ kind, status }) => kind === "k3d-image" && status === "ready"),
           false,
           scenario,
         );
-        const cleanup = await commands.cleanup();
-        assert.equal(cleanup.status, 0, cleanup.stderr);
+        await commands.cleanupSuccessfully();
       },
     );
   });
@@ -531,8 +582,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       result.stderr,
       /The container engine did not answer within 3000 ms \(image inspect localhost\/\S+\/fixture:local\)\./,
     );
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("ordinary k3d preparation forwards an immutable K3s override and retains the server version gate", async (t) => {
@@ -543,7 +593,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       });
       const result = await commands.prepare();
       assert.equal(result.status, scenario === "success" ? 0 : 1, result.stderr);
-      const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+      const state = await commands.readState();
       const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
       assert.equal(cluster.nodeImage, image);
       if (scenario === "success") {
@@ -561,8 +611,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         );
         assert.equal(state.env, undefined);
       }
-      const cleanup = await commands.cleanup();
-      assert.equal(cleanup.status, 0, cleanup.stderr);
+      await commands.cleanupSuccessfully();
     });
   });
 
@@ -572,7 +621,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     const commands = await fixtureImageCommands(t, "success", "k3d-fixture-configuration");
     const result = await commands.prepare();
     assert.equal(result.status, 0, result.stderr);
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
     assert.deepEqual(cluster.disabledK3sAddons, ["traefik", "servicelb", "metrics-server"]);
     await assert.rejects(
@@ -583,8 +632,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       { message: /Gateway routing needs K3s's Traefik add-on/ },
     );
     await assert.rejects(stat(join(cluster.directory, "gateway-routing")), { code: "ENOENT" });
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("fixture preparation waits for a late worker and its containerd before importing", async (t) => {
@@ -614,8 +662,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       ({ args }) => args[0] === "exec" && args[1] === "-i" && args[2].endsWith("-agent-0"),
     );
     assert.ok(agentProbe >= 0 && agentImport > agentProbe);
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("fixture preparation names the node whose containerd never answers and imports nothing", async (t) => {
@@ -632,7 +679,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
       false,
     );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    const state = await commands.readState();
     assert.equal(state.env, undefined);
     // The failure keeps node diagnostics for the outage.
     const evidence = JSON.parse(await readFile(`${commands.statePath}.diagnostics.json`, "utf8"));
@@ -640,8 +687,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       evidence.failure,
       /image import into k3d nodes failed: containerd on k3d-\S+-agent-0 did not answer/,
     );
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   test("fixture preparation fails on a hung containerd probe without polling again", async (t) => {
@@ -667,8 +713,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       calls.some(({ args }) => args[0] === "exec" && args[1] === "-i"),
       false,
     );
-    const cleanup = await commands.cleanup();
-    assert.equal(cleanup.status, 0, cleanup.stderr);
+    await commands.cleanupSuccessfully();
   });
 
   // Only the node's own containerd socket (refused or missing) gets the one retry.
@@ -723,8 +768,86 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         );
         assert.match(evidence.failure, /image import into k3d nodes failed/);
       }
-      const cleanup = await commands.cleanup();
-      assert.equal(cleanup.status, 0, cleanup.stderr);
+      await commands.cleanupSuccessfully();
     });
+  }
+});
+
+test("node log excerpts retain sub-millisecond order across Docker streams", () => {
+  const stdout = [
+    "2026-10-21T00:00:00.123900000Z later stdout",
+    "2026-10-21T00:00:00.123100002Z second nanosecond",
+    "2026-10-21T00:00:01.000000001Z after whole second",
+    "2026-10-21T00:00:02.1Z tied stdout",
+  ].join("\n");
+  const stderr = [
+    "2026-10-21T00:00:00.123100000Z earlier stderr",
+    "2026-10-21T00:00:00.123100001Z first nanosecond",
+    "2026-10-21T00:00:01Z whole second",
+    "2026-10-21T00:00:02.100000000Z tied stderr",
+  ].join("\n");
+  assert.deepEqual(nodeLogExcerpt(stdout, stderr).split("\n"), [
+    "2026-10-21T00:00:00.123100000Z earlier stderr",
+    "2026-10-21T00:00:00.123100001Z first nanosecond",
+    "2026-10-21T00:00:00.123100002Z second nanosecond",
+    "2026-10-21T00:00:00.123900000Z later stdout",
+    "2026-10-21T00:00:01Z whole second",
+    "2026-10-21T00:00:01.000000001Z after whole second",
+    "2026-10-21T00:00:02.1Z tied stdout",
+    "2026-10-21T00:00:02.100000000Z tied stderr",
+  ]);
+});
+
+test("node log retry summaries retain the latest kinds within one millisecond", () => {
+  const retries = Array.from(
+    { length: 13 },
+    (_, index) =>
+      `2026-10-21T00:00:00.123${String(index + 1).padStart(6, "0")}Z The connection to the server 127.0.0.1:${2000 + index} was refused`,
+  );
+  const excerpt = nodeLogExcerpt(retries.join("\n"), "");
+  assert.doesNotMatch(excerpt, /against 127\.0\.0\.1:2000 /u);
+  assert.match(excerpt, /against 127\.0\.0\.1:2012 /u);
+  assert.match(excerpt, /omitted 1 earlier kinds of kubectl retry lines/u);
+});
+
+test("node log chronology and retry retention do not depend on the process locale", () => {
+  const moduleUrl = new URL("../../scripts/ci/k3d-diagnostics.mjs", import.meta.url).href;
+  const script = `
+    import { nodeLogExcerpt } from ${JSON.stringify(moduleUrl)};
+    const early = "2026-10-21T00:00:00.020000000Z early stderr";
+    const later = "2026-10-21T00:00:00.100000000Z later stdout";
+    const tied = "2026-10-21T00:00:00.1Z tied stderr";
+    const retries = ["020000000", "100000000", ...Array.from({ length: 11 }, (_, i) => String(i + 20) + "0000000")]
+      .map((fraction, i) => "2026-10-21T00:00:00." + fraction + "Z The connection to the server 127.0.0.1:" + (2000 + i) + " was refused");
+    console.log(JSON.stringify({
+      numeric: new Intl.Collator().resolvedOptions().numeric,
+      events: nodeLogExcerpt(later, early + "\\n" + tied).split("\\n"),
+      retries: nodeLogExcerpt(retries.join("\\n"), ""),
+    }));
+  `;
+  for (const [locale, numeric] of [
+    ["en-US", false],
+    ["en-US-u-kn-true", true],
+  ]) {
+    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+      encoding: "utf8",
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+      timeout: 10_000,
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout);
+    assert.equal(result.numeric, numeric, locale);
+    assert.deepEqual(
+      result.events,
+      [
+        "2026-10-21T00:00:00.020000000Z early stderr",
+        "2026-10-21T00:00:00.100000000Z later stdout",
+        "2026-10-21T00:00:00.1Z tied stderr",
+      ],
+      locale,
+    );
+    assert.doesNotMatch(result.retries, /against 127\.0\.0\.1:2000 /u, locale);
+    assert.match(result.retries, /against 127\.0\.0\.1:2001 /u, locale);
+    assert.match(result.retries, /omitted 1 earlier kinds of kubectl retry lines/u, locale);
   }
 });

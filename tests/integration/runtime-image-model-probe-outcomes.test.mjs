@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   constrainedGatewayCpuLimit,
   imageTestOptions,
-  jsonLines,
   observed,
   phaseAt,
   probeApiKey,
@@ -11,6 +10,7 @@ import {
   runEmbeddedGatewayProbe,
   runtimeFailure,
 } from "../helpers/runtime-image-model-probe.mjs";
+import { jsonLines } from "../helpers/json-lines.mjs";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
 
 // The embedded Gateway's startup model probe on the real runtime image at a 500m
@@ -43,7 +43,9 @@ test(
       events.some((event) => event.event === "turn-answered"),
       detail,
     );
-    const probe = jsonLines(output).find(({ event }) => event === "openclaw.model_probe");
+    const probe = jsonLines(output, { lenient: true }).find(
+      ({ event }) => event === "openclaw.model_probe",
+    );
     t.diagnostic(
       `embedded Gateway at --cpus ${constrainedGatewayCpuLimit}, ${delayMs} ms model turn: ` +
         JSON.stringify({
@@ -80,7 +82,9 @@ test(
     assert.equal(runtimeFailure(events), "MODEL_PROBE_TIMEOUT", detail);
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "failed", detail);
     assert.equal(phaseAt(phases, "native-spawn"), undefined, detail);
-    const probe = jsonLines(output).find(({ event }) => event === "openclaw.model_probe");
+    const probe = jsonLines(output, { lenient: true }).find(
+      ({ event }) => event === "openclaw.model_probe",
+    );
     assert.equal(probe?.code, "MODEL_PROBE_TIMEOUT", detail);
     assert.ok(probe.elapsedMs < probe.capMs, detail);
     assert.doesNotMatch(output, new RegExp(probeApiKey));

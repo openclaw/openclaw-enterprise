@@ -8,6 +8,22 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-20 08:40: Create Agent sends no IAM grant a session knows is refused; a failed permission read offers Retry permission check. (fix-1020c)
+
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
+
+- 2026-10-18 10:30: Count the row loading text's 150 ms from the frame it shows in. (lows-1018f)
+
+- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
+- 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
+
+- 2026-10-17 10:50: Delay row loading text 250 ms; keep focus through sidebar navigation and list refocus. (lows-1017m)
+- 2026-10-17 10:36: Restore the reader’s focus when a tab recheck reuses the same view.
+- 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
+- 2026-10-16 22:40: Hold loading 300 ms; open recovery links in view; reread status on a log refusal. (ui-jank-code-12)
+- 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
+- 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
+- 2026-10-16 14:45: Keep the startup status on a fresh Agent load until the overview reveals; leave tab moves to a full load until then. (lows-1016k)
 - 2026-10-16 14:30: Scroll a Logs view that loads before its Agent page shows to its newest output. (flake-fix-1016)
 - 2026-10-16 13:00: Keep the shown page until an entered Agent reveals; keep a held page's selector disabled on the way to another page. (ui-jank-code-10)
 - 2026-10-16 12:00: Paint Create Agent with its permission answer; keep a clicked Logs tab's strip in place. (ui-jank-code-9)

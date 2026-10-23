@@ -75,6 +75,12 @@ export function requireWorkspaceSetupConfiguration(
   return workspace;
 }
 
+/**
+ * The setup runner's exit status for a refusal no retry can change; any other failure exits 1.
+ * Kubernetes Compute reports it as WORKSPACE_SETUP_REFUSED (finding 1677).
+ */
+export const WORKSPACE_SETUP_REFUSED_EXIT_STATUS = 2;
+
 /** Shared, non-executing setup entrypoint. Drivers own private delivery and exclusive startup. */
 export const WORKSPACE_SETUP_RUNTIME = String.raw`
 const fs = require("node:fs");
@@ -85,7 +91,10 @@ const { spawnSync } = require("node:child_process");
 
 const names = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 const markerName = ".oce-workspace-setup.json";
-function fail() { throw new Error("WORKSPACE_SETUP_FAILED"); }
+// A refusal: the delivery, the image's defaults or the workspace's own state disagree, so no
+// retry can change the outcome. Any other error (native setup, I/O) may pass on a retry.
+class Refusal extends Error {}
+function fail() { throw new Refusal("WORKSPACE_SETUP_FAILED"); }
 function inspect(file) {
   try { return fs.lstatSync(file); }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
@@ -157,7 +166,8 @@ function main() {
     ...(setup.defaultsId === undefined ? {} : { defaultsId: setup.defaultsId }) };
   const marker = readRegular(markerPath, 4096);
   if (marker !== undefined) {
-    const saved = JSON.parse(marker);
+    let saved;
+    try { saved = JSON.parse(marker); } catch { fail(); }
     if (JSON.stringify(saved) !== JSON.stringify(identity)) fail();
   } else {
     if (setup.completed) fail();
@@ -197,7 +207,7 @@ function main() {
           env: { ...process.env, OPENCLAW_CONFIG_PATH: configPath },
           stdio: ["ignore", "pipe", "pipe"], timeout: 120000, maxBuffer: 1048576,
         });
-        if (result.error || result.status !== 0) fail();
+        if (result.error || result.status !== 0) throw new Error("WORKSPACE_SETUP_FAILED");
       };
       nativeSetup();
       for (const [name, value] of Object.entries(files)) {
@@ -223,7 +233,10 @@ function main() {
   process.stdout.write(JSON.stringify({ completed: true, id: setup.id }) + "\n");
 }
 try { main(); }
-catch { process.stderr.write("WORKSPACE_SETUP_FAILED\n"); process.exitCode = 1; }
+catch (error) {
+  process.stderr.write("WORKSPACE_SETUP_FAILED\n");
+  process.exitCode = error instanceof Refusal ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : 1;
+}
 `;
 
 /** Metadata-only guard for Harness processes that share the initialized workspace. */

@@ -5,31 +5,25 @@
 import { plaintextGatewayComputeDrivers } from "../helpers/plaintext-gateway-compute.mjs";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import {
   image,
   imageTestOptions,
   runDocker,
   commandOutput,
+  failureTail,
   createAdmittedRuntimeImageConfiguration,
   runGatewaySmoke,
-  eachSettled,
 } from "../helpers/runtime-image-startup.mjs";
+import { eachSettled } from "../helpers/child-processes.mjs";
 
-test(
-  "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
-  imageTestOptions,
-  async (t) => {
-    const drivers = plaintextGatewayComputeDrivers();
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-listener-tls-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    // The loopback provider owns all possible requests; no model turn is sent.
-    const provider = String.raw`
+// The loopback provider owns all possible requests; no model turn is sent.
+const countingProvider = String.raw`
 const http = require("node:http");
 let modelCalls = 0;
 http.createServer((req, res) => {
@@ -38,6 +32,44 @@ http.createServer((req, res) => {
   res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
 }).listen(18880, "127.0.0.1");
 `;
+
+async function waitForListenerReady(containerName, probe) {
+  let lastReadinessFailure = "No readiness probe ran.";
+  for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
+    try {
+      await runDocker(["exec", containerName, "node", "-e", probe]);
+      return;
+    } catch (error) {
+      lastReadinessFailure = failureTail(error.message, 2048);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  const logs = await runDocker(["logs", containerName]).then(
+    (result) => failureTail(commandOutput(result)),
+    () => "Docker logs unavailable.",
+  );
+  throw new Error(
+    `Listener readiness timed out.\nLast readiness failure: ${lastReadinessFailure}\nContainer logs:\n${logs}`,
+  );
+}
+
+async function assertNoModelRequests(containerName) {
+  const counter = await runDocker([
+    "exec",
+    containerName,
+    "node",
+    "-e",
+    'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
+  ]);
+  assert.equal(counter.stdout.trim(), "0");
+}
+
+test(
+  "runtime image refuses native listener TLS that cannot satisfy Compute HTTP readiness",
+  imageTestOptions,
+  async (t) => {
+    const drivers = plaintextGatewayComputeDrivers();
+    const directory = await temporaryDirectory(t, "oce-native-listener-tls-");
     // Each case owns its container and configuration file, so both run at once.
     await eachSettled([true, false], async (enabled) => {
       const configuration = drivers[0][1].kubernetesGatewayConfigurationDocument(
@@ -59,7 +91,7 @@ http.createServer((req, res) => {
       // why Compute refuses it; this is not a supported TLS deployment fixture.
       const { containerName } = await runGatewaySmoke(t, "openclaw", {
         configurationPath: "/etc/openclaw/openclaw.json",
-        entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+        entrypoint: countingProvider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
         volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
         waitUntilReady: false,
         withAppServer: false,
@@ -73,17 +105,7 @@ http.createServer((req, res) => {
       const nativeProbe = enabled
         ? `require("https").get({hostname:"127.0.0.1",port:8080,path:"/readyz",servername:"openclaw-gateway",ca:require("fs").readFileSync("/home/node/tls/cert.pem")},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on("error",()=>process.exit(1));`
         : `fetch("http://127.0.0.1:8080/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));`;
-      let ready = false;
-      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-        try {
-          await runDocker(["exec", containerName, "node", "-e", nativeProbe]);
-          ready = true;
-          break;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
+      await waitForListenerReady(containerName, nativeProbe);
       const readiness = () =>
         runDocker([
           "exec",
@@ -110,14 +132,7 @@ http.createServer((req, res) => {
           assert.doesNotThrow(() => driver.validateGatewaySettings(configuration));
         }
       }
-      const counter = await runDocker([
-        "exec",
-        containerName,
-        "node",
-        "-e",
-        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
-      ]);
-      assert.equal(Number(counter.stdout.trim()), 0);
+      await assertNoModelRequests(containerName);
       t.diagnostic(
         `native TLS enabled=${enabled}: native ready, Compute readiness ${enabled ? "refused" : "passed"}, modelCalls=0`,
       );
@@ -140,17 +155,7 @@ test(
       }
       await runDocker(["network", "rm", network]);
     });
-    const directory = await mkdtemp(join(tmpdir(), "oce-native-bind-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
-    const provider = String.raw`
-const http = require("node:http");
-let modelCalls = 0;
-http.createServer((req, res) => {
-  if (req.method === "POST") modelCalls++;
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify(req.url === "/counter" ? { modelCalls } : { data: [{ id: "fixture" }] }));
-}).listen(18880, "127.0.0.1");
-`;
+    const directory = await temporaryDirectory(t, "oce-native-bind-");
     // Each case owns its container and configuration file, so the cases run
     // concurrently on the shared internal network.
     const bindCases = [
@@ -180,7 +185,7 @@ http.createServer((req, res) => {
         "openclaw",
         {
           configurationPath: "/etc/openclaw/openclaw.json",
-          entrypoint: provider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
+          entrypoint: countingProvider + KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
           network,
           volumes: [`${path}:/etc/openclaw/openclaw.json:ro`],
           waitUntilReady: false,
@@ -193,23 +198,10 @@ http.createServer((req, res) => {
           ],
         },
       );
-      let ready = false;
-      for (let attempt = 0; attempt < 80 * imageSmokeTimeoutMultiplier; attempt++) {
-        try {
-          await runDocker([
-            "exec",
-            containerName,
-            "node",
-            "-e",
-            'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
-          ]);
-          ready = true;
-          break;
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-      assert.equal(ready, true, commandOutput(await runDocker(["logs", containerName])));
+      await waitForListenerReady(
+        containerName,
+        'fetch("http://127.0.0.1:18791/readyz").then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1));',
+      );
       const inspected = JSON.parse((await runDocker(["inspect", containerName])).stdout)[0];
       const address = inspected.NetworkSettings.Networks[network].IPAddress;
       assert.ok(address);
@@ -237,14 +229,7 @@ http.createServer((req, res) => {
           /gateway\.(bind|customBindHost)/,
         );
       }
-      const counter = await runDocker([
-        "exec",
-        containerName,
-        "node",
-        "-e",
-        'fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));',
-      ]);
-      assert.equal(Number(counter.stdout.trim()), 0);
+      await assertNoModelRequests(containerName);
       t.diagnostic(
         `native bind=${gateway.bind ?? "omitted"} host=${gateway.customBindHost ?? "default"}: private ready=200, Pod-IP ${reachable ? "ready=200" : "ECONNREFUSED"}, modelCalls=0`,
       );

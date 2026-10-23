@@ -58,7 +58,7 @@ for both the caller and the Agent's ServicePrincipal. OCC derives the `codex_pat
 source from the Agent rather than accepting a Secret ID from the browser. It
 rechecks those grants and the binding after the backend read, before sending
 the value to the selected Plugin Driver. Never expose values in responses,
-configuration documents, audit, or logs. A running revision may still use an
+configuration documents, audit, or logs. A running version may still use an
 older projected value.
 For channel directory lookup, the caller selects an existing same-Namespace
 Secret while creating an Agent or editing an Agent or Configuration. OCC requires
@@ -81,7 +81,7 @@ OCC registers backend deletion for a known failed transaction; it does not do
 so when the commit outcome is unknown. Updates overwrite the backend value: OCC
 keeps no prior value for rollback, and success means stored, not delivered.
 Deletion is refused with `409` while a Configuration, credential source, Agent
-draft, active revision, pending deployment, or queued or running Agent
+draft, selected version, pending deployment, or queued or running Agent
 provisioning request still references the Secret. The message names each
 referencing resource the caller may read, by kind and ID, as many as fit the
 256-character message, and only counts the others. The exact Secret read lists
@@ -109,7 +109,7 @@ has already read the prior value. See
 [plugin discovery](plugin.md#selection-and-catalogs).
 
 During deployment admission, the API asks `resolve` to verify that the current
-backend identity still matches OCC's record. The revision pins the Driver ID
+backend identity still matches OCC's record. The Agent revision pins the Driver ID
 and normalized binding, not the backend locator or secret bytes. The worker
 later rechecks permissions and loads current OCC metadata; it does not call the
 Secret Driver. Compute receives a temporary delivery reference. In the current
@@ -122,7 +122,7 @@ model API keys go only to the Harness that executes the model.
   per-access broker. Environment projection is the supported workload delivery
   mechanism; plugin discovery uses the transient server-side callback.
 - Updating a Secret does not restart workloads. Redeploy consumers through OCE
-  to refresh revision projections before expecting a new environment value.
+  to refresh projections for the Agent revision before expecting a new environment value.
 - Kubernetes is the only selectable implementation. Arbitrary installed Secret
   packages and SSH delivery are unsupported; selection alone does not enable them.
 

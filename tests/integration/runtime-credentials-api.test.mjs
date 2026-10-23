@@ -11,7 +11,7 @@ import {
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
@@ -84,6 +84,14 @@ function createRuntimeCredentialComputeDriver(options = {}) {
         revisionId: binding.revision.id,
         observedAt: diagnosticObservedAt,
         checks: [
+          {
+            component: "gateway",
+            check: "connectivity",
+            state: "failed",
+            checkedAt: diagnosticCheckedAt,
+            code: "DISCONNECTED",
+          },
+          // Compute reads checks from the runtime, which can serve anything of this shape.
           {
             component: "runtime",
             check: "gateway",
@@ -794,11 +802,19 @@ test("deployment diagnostics require exact revision read and Agent operate autho
     observedAt: "2026-01-02T03:04:05.000Z",
     checks: [
       {
-        component: "runtime",
-        check: "gateway",
+        component: "gateway",
+        check: "connectivity",
+        state: "failed",
+        checkedAt: "2026-01-02T03:04:04.000Z",
+        code: "DISCONNECTED",
+      },
+      // Values outside the runtime's vocabulary are not returned as served (finding 1673).
+      {
+        component: "UNRECOGNIZED",
+        check: "UNRECOGNIZED",
         state: "succeeded",
         checkedAt: "2026-01-02T03:04:04.000Z",
-        code: "gateway_ready",
+        code: "UNRECOGNIZED",
       },
     ],
   });

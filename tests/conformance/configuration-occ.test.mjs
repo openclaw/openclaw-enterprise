@@ -1475,10 +1475,18 @@ for (const scope of ["primary", "default-fallback", "entry-fallback", "provider-
 test("OCC rejects alternate selectable runtimes and unsupported Codex providers before admitting work", async () => {
   const defaultFallbackRefusal =
     "Configuration setting agents.defaults.model.fallbacks must use the primary model's provider.";
+  const selectedModelDefaults = (model, runtimeId) => ({
+    model,
+    models: { [model]: { agentRuntime: { id: runtimeId } } },
+  });
   const scenarios = [
+    // Every deployment refuses these too, so save refuses them first with its text (finding 1828).
     ...[null, "openai/gpt-4.1-mini", [42], ["/missing-provider"]].map((fallbacks) => ({
       name: `malformed fallback selection ${JSON.stringify(fallbacks)} cannot be admitted`,
       executionMode: "embedded",
+      saveRefusal: Array.isArray(fallbacks)
+        ? "Configuration setting agents.defaults.model must name each model as <provider>/<model>, such as openai/gpt-5.1 or codex/gpt-5.1."
+        : "Configuration setting agents.defaults.model.fallbacks must be an array.",
       values: {
         agents: {
           defaults: {
@@ -1578,10 +1586,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
         "Configuration setting agents.entries.primary.model.fallbacks must use the primary model's provider.",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
           entries: {
             primary: {
               model: { primary: "openai/gpt-4.1", fallbacks: ["codex/gpt-4.1"] },
@@ -1595,10 +1600,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
           entries: {
             primary: {
               models: {
@@ -1615,10 +1617,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
         },
         models: {
           providers: {
@@ -1637,10 +1636,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
         },
         models: { providers: { openai: { agentRuntime: { id: "codex" } } } },
       },
@@ -1650,10 +1646,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
         },
         models: {
           providers: {
@@ -1668,10 +1661,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/vendor/model",
-            models: { "openai/vendor/model": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/vendor/model", "openclaw"),
         },
         models: {
           providers: {
@@ -1685,10 +1675,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "embedded",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "openclaw"),
           entries: {
             primary: {
               models: { "openai/gpt-4.1": { agentRuntime: { id: "codex" } } },
@@ -1702,10 +1689,7 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
       executionMode: "dedicated",
       values: {
         agents: {
-          defaults: {
-            model: "openai/gpt-4.1",
-            models: { "openai/gpt-4.1": { agentRuntime: { id: "codex" } } },
-          },
+          defaults: selectedModelDefaults("openai/gpt-4.1", "codex"),
         },
       },
     },
@@ -1714,8 +1698,8 @@ test("OCC rejects alternate selectable runtimes and unsupported Codex providers 
   for (const { name, executionMode, values, saveRefusal } of scenarios) {
     const { agent, controller, namespace } = await fixture();
     if (saveRefusal !== undefined) {
-      // Every deployment refuses a fallback on another provider, so Configuration save refuses
-      // it first, naming the setting (finding 1298).
+      // Every deployment refuses a fallback on another provider or a malformed selection, so
+      // Configuration save refuses it first, naming the setting (findings 1298 and 1828).
       await assert.rejects(
         controller.createConfiguration(administrator, {
           namespaceId: namespace.id,

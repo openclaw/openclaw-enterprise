@@ -97,8 +97,11 @@ async function waitFor(description, read) {
     }
     await delay(100);
   }
+  const models = requests
+    .filter(({ method }) => method === "thread/start")
+    .map(({ params }) => params?.model);
   throw new Error(
-    `Timed out waiting for ${description}; methods=${requests.map(({ method }) => method).join(",")}`,
+    `Timed out waiting for ${description}; methods=${requests.map(({ method }) => method).join(",")}; thread/start models=${JSON.stringify(models)}`,
   );
 }
 
@@ -152,16 +155,36 @@ try {
     assert.equal(result.ok, true, JSON.stringify(result));
     const receipt = result.result.details;
     assert.equal(receipt.status, "accepted", JSON.stringify(result));
-    const native = await waitFor("native child thread/start", () =>
-      requests.slice(offset).find(({ method }) => method === "thread/start"),
+    // Every Agent maps to the same remote root, so cwd cannot tell this child from
+    // other native turns on the parent route. The upstream subagent prompt names
+    // the child's own session; a missing marker times out naming the child.
+    const childMarker = `- Your session: ${receipt.childSessionKey}.`;
+    const ownedByChild = ({ params }) =>
+      typeof params?.developerInstructions === "string" &&
+      params.developerInstructions.includes(childMarker);
+    const nativeStarts = () =>
+      requests
+        .slice(offset)
+        .filter(({ method }) => method === "thread/start")
+        .map((request) => ({
+          model: request.params?.model,
+          cwd: request.params?.cwd,
+          child: ownedByChild(request),
+        }));
+    const native = await waitFor(
+      `native thread/start whose prompt names ${receipt.childSessionKey}`,
+      () =>
+        requests
+          .slice(offset)
+          .find((request) => request.method === "thread/start" && ownedByChild(request)),
     );
     assert.equal(native.params.cwd, scenario.cwd, "Native execution uses the Harness workspace.");
     assert.deepEqual(
       { modelProvider: native.params.modelProvider, model: native.params.model },
       { modelProvider: "openai-compatible", model: scenario.model },
+      `${scenario.agentId} thread/starts since its spawn: ${JSON.stringify(nativeStarts())}`,
     );
-    // Every Agent maps to the same remote root. Settle this run, including its
-    // configured fallbacks, before the next case observes native requests.
+    // Settle this run, including its configured fallbacks, before the next case.
     const completed = await callGatewayFromCli(
       "agent.wait",
       {

@@ -7,19 +7,27 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { redactFailure } from "../../scripts/ci/failure-redaction.mjs";
 import { selectFirstAgentModel, verifyFirstAgentModel } from "../../scripts/first-agent-model.mjs";
 import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
+  assertNativeWorkNotFailed,
   assertNativeWorkerProofInController,
   failNativeProvisioningDeadline,
   nativeFirstAgentProofTimeout,
   nativeProvisioningPath,
+  runtimeLogSources,
+  waitForNativeRedeploy,
 } from "../helpers/local-first-agent-native.mjs";
 import { localFirstAgentStack } from "../helpers/local-first-agent-stack.mjs";
+import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { availablePort } from "../helpers/available-port.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const firstAgentScript = fileURLToPath(new URL("../../scripts/first-agent.mjs", import.meta.url));
@@ -401,7 +409,440 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
 });
 
-test("the missed native handoff deadline reports only Pod readiness for its exact revision", async () => {
+test("native terminal failures report only fixed failure codes", async (t) => {
+  const namespaceId = `ns_${randomUUID()}`;
+  const agentId = `agt_${randomUUID()}`;
+  const revisionId = `rev_${randomUUID()}`;
+  const provisioningPath = `/namespaces/${namespaceId}/agents/provision/work`;
+  const deploymentPath = `/namespaces/${namespaceId}/agents/${agentId}/deployments/${revisionId}`;
+  const logPath = `${deploymentPath}/runtime/logs?source=agent&tailLines=1000`;
+  const expectation = "Guided native provisioning must succeed";
+  const failure = (code) => ({ code, message: "private-sentinel" });
+  const handoff = {
+    workId: "work",
+    url: provisioningPath,
+    phase: "handoff",
+    status: "failed",
+    attemptCount: 1,
+    agentId,
+    configurationId: "private-sentinel",
+    revisionId,
+    error: failure("RUNTIME_AUTHENTICATION_FAILED"),
+  };
+  const deployment = {
+    namespaceId,
+    agentId,
+    deploymentId: revisionId,
+    status: "failed",
+    progress: null,
+    error: failure("RUNTIME_AUTHENTICATION_FAILED"),
+  };
+  const probeLog = (fields) =>
+    sanitizeRuntimeLogChunk({
+      stream: { source: "agent", container: "agent" },
+      lines: [
+        { raw: JSON.stringify({ event: "openclaw.model_probe", elapsedMs: 5, ...fields }) },
+        { raw: "private-sentinel" },
+      ],
+      truncated: false,
+    }).records;
+  const page = (records) => ({ revisionId, source: "agent", records });
+
+  function reportedFailure(message) {
+    assert.doesNotMatch(message, /sentinel|ns_|agt_|rev_/i);
+    const [, category, json] = message.match(/: (\S+) (\{.*\})$/) ?? [];
+    assert.ok(json, message);
+    const observation = JSON.parse(json);
+    // The CI result can clip the assertion even after the runtime log was sanitized.
+    if (typeof observation.modelProbe === "object") {
+      const { message: retained } = redactFailure({ message }, [], repoRoot);
+      assert.ok(retained.includes(category), retained);
+      for (const [key, value] of Object.entries(observation.modelProbe)) {
+        assert.ok(retained.includes(`"${key}":${JSON.stringify(value)}`), retained);
+      }
+      if (observation.modelProbe.providerStatus === 401) {
+        assert.match(retained, /"credentialAttachment":"not observed"/);
+      }
+    }
+    return { category, ...observation };
+  }
+
+  async function observe(response, provisioned, responses, expectedPaths) {
+    const calls = [];
+    const request = async (method, path, body, signal) => {
+      calls.push({ method, path, body, signal });
+      return responses[calls.length - 1];
+    };
+    let message;
+    const signal = AbortSignal.timeout(30_000);
+    await assert.rejects(
+      assertNativeWorkNotFailed(response, expectation, {
+        request,
+        namespaceId,
+        provisioningPath,
+        provisioned,
+        signal,
+      }),
+      (error) => {
+        assert.equal(error.name, "AssertionError");
+        message = error.message;
+        return true;
+      },
+    );
+    assert.deepEqual(
+      calls.map(({ path }) => path),
+      expectedPaths,
+    );
+    for (const call of calls) {
+      assert.ok(call.signal instanceof AbortSignal && call.signal !== signal);
+      assert.equal(call.signal, calls[0].signal, "all reads must share one diagnostic budget");
+      assert.equal(call.method, "GET");
+      assert.equal(call.body, undefined);
+    }
+    return reportedFailure(message);
+  }
+
+  await t.test("name the held failure and its provider response", async () => {
+    const provider = {
+      providerStatus: 401,
+      providerCode: "invalid_api_key",
+      responseHeaderMarker: "provider-like",
+      bodyShape: "json-error-code",
+      providerErrorCode: "invalid_api_key",
+      providerErrorType: "invalid_request_error",
+    };
+    const records = probeLog({ code: "AUTHENTICATION_FAILED", ...provider });
+    // The provider fields reach the assertion's input through the production sanitizer.
+    for (const [name, value] of Object.entries(provider)) {
+      assert.equal(records[0]?.fields?.[name], value, name);
+    }
+    const observed = await observe(
+      handoff,
+      handoff,
+      [deployment, page(records)],
+      [deploymentPath, logPath],
+    );
+    assert.deepEqual(observed, {
+      category: "RUNTIME_AUTHENTICATION_FAILED",
+      provisioning: {
+        status: "failed",
+        phase: "handoff",
+        attemptCount: 1,
+        agentIdPresent: true,
+        configurationIdPresent: true,
+        revisionIdPresent: true,
+        errorCode: "RUNTIME_AUTHENTICATION_FAILED",
+      },
+      deployment: {
+        status: "failed",
+        errorCode: "RUNTIME_AUTHENTICATION_FAILED",
+        lastAttemptCode: "none",
+      },
+      modelProbe: { probes: 1, code: "AUTHENTICATION_FAILED", ...provider },
+      credentialAttachment: "not observed",
+    });
+  });
+
+  await t.test("print other for values outside the fixed vocabularies", async () => {
+    const records = probeLog({
+      code: "PRIVATE_SENTINEL",
+      providerStatus: 200,
+      providerCode: "private-sentinel",
+      responseHeaderMarker: "private-sentinel-source",
+      bodyShape: "private-sentinel-shape",
+      providerErrorCode: "private-sentinel-code",
+      providerErrorType: "private-sentinel-type",
+    });
+    assert.equal(records[0]?.fields?.providerCode, "private-sentinel");
+    assert.equal(records[0]?.fields?.responseHeaderMarker, "private-sentinel-source");
+    assert.equal(records[0]?.fields?.bodyShape, "private-sentinel-shape");
+    assert.equal(records[0]?.fields?.providerErrorCode, "private-sentinel-code");
+    assert.equal(records[0]?.fields?.providerErrorType, "private-sentinel-type");
+    const failed = { ...deployment, error: failure("RUNTIME_MODEL_PROBE_FAILED") };
+    const observed = await observe(
+      failed,
+      { ...handoff, status: "succeeded", error: undefined },
+      [failed, page([...records, ...probeLog({ providerStatus: "401 private-sentinel" })])],
+      [deploymentPath, logPath],
+    );
+    assert.equal(observed.category, "RUNTIME_MODEL_PROBE_FAILED");
+    assert.equal(observed.provisioning.errorCode, "none");
+    assert.deepEqual(observed.modelProbe, {
+      probes: 2,
+      code: "none",
+      providerStatus: "other",
+      providerCode: "none",
+      responseHeaderMarker: "absent",
+      bodyShape: "absent",
+      providerErrorCode: "absent",
+      providerErrorType: "absent",
+    });
+    const single = await observe(
+      failed,
+      handoff,
+      [failed, page(records)],
+      [deploymentPath, logPath],
+    );
+    assert.deepEqual(single.modelProbe, {
+      probes: 1,
+      code: "other",
+      providerStatus: "other",
+      providerCode: "other",
+      responseHeaderMarker: "other",
+      bodyShape: "other",
+      providerErrorCode: "other",
+      providerErrorType: "other",
+    });
+    for (const providerStatus of [399, 401.5, 600]) {
+      const statusPage = page(probeLog({ providerStatus }));
+      const { modelProbe } = await observe(
+        failed,
+        handoff,
+        [failed, statusPage],
+        [deploymentPath, logPath],
+      );
+      assert.equal(modelProbe.providerStatus, "other");
+    }
+  });
+
+  await t.test("read no provider response without a held model-check failure", async () => {
+    const unknown = { ...handoff, error: failure("RUNTIME_PRIVATE_SENTINEL") };
+    const pending = {
+      ...deployment,
+      status: "running",
+      error: null,
+      progress: { lastAttempt: { code: "PRIVATE_SENTINEL", message: "private-sentinel" } },
+    };
+    const observed = await observe(unknown, unknown, [pending], [deploymentPath]);
+    assert.equal(observed.category, "unrecognized");
+    assert.equal(observed.provisioning.errorCode, "unrecognized");
+    assert.deepEqual(observed.deployment, {
+      status: "running",
+      errorCode: "none",
+      lastAttemptCode: "unknown",
+    });
+    assert.equal(observed.modelProbe, undefined);
+    const starved = { ...deployment, error: failure("RUNTIME_CPU_STARVED") };
+    const running = { ...deployment, status: "running" };
+    for (const current of [starved, running]) {
+      assert.equal(
+        (await observe(handoff, handoff, [current], [deploymentPath])).modelProbe,
+        undefined,
+      );
+    }
+  });
+
+  await t.test("bind every read to the exact revision", async () => {
+    const wrongPage = { ...page(probeLog({ providerStatus: 401 })), revisionId: "another" };
+    assert.equal(
+      (await observe(handoff, handoff, [deployment, wrongPage], [deploymentPath, logPath]))
+        .modelProbe,
+      "unavailable",
+    );
+    const gatewayPage = { ...page(probeLog({ providerStatus: 401 })), source: "gateway" };
+    assert.equal(
+      (await observe(handoff, handoff, [deployment, gatewayPage], [deploymentPath, logPath]))
+        .modelProbe,
+      "unavailable",
+    );
+    // Runtime output that merely names the event is not the wrapper's model check.
+    const echoed = { type: "line", kind: "openclaw", message: "openclaw.model_probe" };
+    const unechoed = await observe(
+      handoff,
+      handoff,
+      [deployment, page([{ ...echoed, fields: { providerStatus: 401 } }])],
+      [deploymentPath, logPath],
+    );
+    assert.deepEqual(unechoed.modelProbe, {
+      probes: 0,
+      code: "none",
+      providerStatus: "none",
+      providerCode: "none",
+      responseHeaderMarker: "absent",
+      bodyShape: "absent",
+      providerErrorCode: "absent",
+      providerErrorType: "absent",
+    });
+    for (const other of [
+      { ...deployment, deploymentId: "another-revision" },
+      { ...deployment, agentId: `agt_${randomUUID()}` },
+      { ...deployment, namespaceId: `ns_${randomUUID()}` },
+    ]) {
+      assert.equal(
+        (await observe(handoff, handoff, [other], [deploymentPath])).deployment,
+        "unavailable",
+      );
+    }
+    const early = { ...handoff, phase: "configuration", agentId: undefined, revisionId: undefined };
+    const observed = await observe(early, early, [], []);
+    assert.equal(observed.deployment, undefined);
+    assert.equal(observed.provisioning.phase, "configuration");
+    const unbound = { ...handoff, revisionId: "private-sentinel" };
+    assert.equal((await observe(unbound, unbound, [], [])).deployment, "unavailable");
+  });
+
+  await t.test("pass work that has not failed", async () => {
+    for (const status of ["queued", "running", "succeeded"]) {
+      await assertNativeWorkNotFailed({ status }, expectation);
+    }
+    await assert.rejects(assertNativeWorkNotFailed({ status: "failed" }, expectation), {
+      name: "AssertionError",
+      message: /^Guided native provisioning must succeed: unrecognized \{"provisioning":/,
+    });
+  });
+
+  await t.test("name a failed redeploy's code and model check without peer text", async () => {
+    const replacementId = `rev_${randomUUID()}`;
+    const agentPath = `/namespaces/${namespaceId}/agents/${agentId}`;
+    const replacementPath = `${agentPath}/deployments/${replacementId}`;
+    const replacementLogPath = `${replacementPath}/runtime/logs?source=agent&tailLines=1000`;
+    const failed = { ...deployment, deploymentId: replacementId };
+    const replacementPage = (records) => ({ ...page(records), revisionId: replacementId });
+    async function redeploy(responses, expectedPaths) {
+      const calls = [];
+      const request = async (method, path, body, signal) => {
+        calls.push({ method, path, body, signal });
+        return responses[calls.length - 1];
+      };
+      const signal = AbortSignal.timeout(30_000);
+      const wait = waitForNativeRedeploy({
+        request,
+        namespaceId,
+        agentId,
+        revisionId: replacementId,
+        signal,
+      });
+      let message;
+      await assert.rejects(wait, (error) => {
+        assert.equal(error.name, "AssertionError");
+        message = error.message;
+        return true;
+      });
+      assert.deepEqual(
+        calls.map(({ path }) => path),
+        expectedPaths,
+      );
+      for (const call of calls.slice(1)) {
+        assert.ok(call.signal instanceof AbortSignal && call.signal !== signal);
+      }
+      return reportedFailure(message);
+    }
+
+    const provider = { providerStatus: 429, providerCode: "rate_limit_exceeded" };
+    const records = probeLog({ code: "MODEL_PROBE_FAILED", ...provider });
+    const probeFailed = { ...failed, error: failure("RUNTIME_MODEL_PROBE_FAILED") };
+    assert.deepEqual(
+      await redeploy(
+        [probeFailed, replacementPage(records)],
+        [replacementPath, replacementLogPath],
+      ),
+      {
+        category: "RUNTIME_MODEL_PROBE_FAILED",
+        deployment: {
+          status: "failed",
+          errorCode: "RUNTIME_MODEL_PROBE_FAILED",
+          lastAttemptCode: "none",
+        },
+        // The full probe's provider summary names no responder.
+        modelProbe: {
+          probes: 1,
+          code: "MODEL_PROBE_FAILED",
+          ...provider,
+          responseHeaderMarker: "absent",
+          bodyShape: "absent",
+          providerErrorCode: "absent",
+          providerErrorType: "absent",
+        },
+      },
+    );
+    // Codes outside the closed vocabulary print as unrecognized, with no log read.
+    const unknown = {
+      ...failed,
+      error: failure("RUNTIME_PRIVATE_SENTINEL"),
+      progress: { lastAttempt: { code: "PRIVATE_SENTINEL", message: "private-sentinel" } },
+    };
+    assert.deepEqual(await redeploy([unknown], [replacementPath]), {
+      category: "unrecognized",
+      deployment: { status: "failed", errorCode: "unrecognized", lastAttemptCode: "unknown" },
+    });
+    // A different binding is rejected before status, diagnostics or an agent read.
+    const otherBinding = {
+      namespaceId: `ns_${randomUUID()}`,
+      agentId: `agt_${randomUUID()}`,
+      deploymentId: revisionId,
+    };
+    for (const [field, otherId] of Object.entries(otherBinding)) {
+      for (const status of ["failed", "succeeded", "queued", "running"]) {
+        const mismatched = {
+          ...failed,
+          [field]: otherId,
+          status,
+          error: status === "failed" ? failed.error : null,
+        };
+        const calls = [];
+        await assert.rejects(
+          waitForNativeRedeploy({
+            request: async (method, path) => {
+              calls.push(path);
+              // Even an active replacement cannot legitimize the mismatched record.
+              return calls.length === 1 ? mismatched : { activeRevisionId: replacementId };
+            },
+            namespaceId,
+            agentId,
+            revisionId: replacementId,
+            signal: AbortSignal.timeout(30_000),
+            timeoutMs: 100,
+            pollMs: 1,
+          }),
+          {
+            name: "AssertionError",
+            message: "The native redeploy returned a mismatched deployment binding",
+          },
+          `${field} mismatch in a ${status} deployment must stop the poll`,
+        );
+        assert.deepEqual(calls, [replacementPath]);
+      }
+    }
+    // Only the replacement revision's own log page is reported.
+    const firstPage = page(probeLog({ providerStatus: 401 }));
+    const stale = await redeploy([failed, firstPage], [replacementPath, replacementLogPath]);
+    assert.equal(stale.modelProbe, "unavailable");
+
+    // A redeploy returns once it succeeded and is active, without diagnostic reads.
+    const ready = { ...failed, status: "succeeded", error: null };
+    const calls = [];
+    const responses = [
+      { ...ready, status: "running" },
+      { activeRevisionId: revisionId },
+      ready,
+      { activeRevisionId: revisionId },
+      ready,
+      { activeRevisionId: replacementId },
+    ];
+    const active = await waitForNativeRedeploy({
+      request: async (method, path) => {
+        calls.push(path);
+        return responses[calls.length - 1];
+      },
+      namespaceId,
+      agentId,
+      revisionId: replacementId,
+      signal: AbortSignal.timeout(30_000),
+      pollMs: 1,
+    });
+    assert.deepEqual(active, { deployment: ready, agent: { activeRevisionId: replacementId } });
+    assert.deepEqual(calls, [
+      replacementPath,
+      agentPath,
+      replacementPath,
+      agentPath,
+      replacementPath,
+      agentPath,
+    ]);
+  });
+});
+
+test("the missed native handoff deadline reports only Pod readiness and fixed runtime output for its exact revision", async (t) => {
   const namespaceId = `ns_${randomUUID()}`;
   const agentId = `agt_${randomUUID()}`;
   const revisionId = `rev_${randomUUID()}`;
@@ -449,15 +890,15 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
     );
     const signal = calls[0]?.signal;
     assert.ok(signal instanceof AbortSignal);
+    assert.deepEqual(
+      calls.map(({ path }) => path),
+      expectedPaths,
+    );
     for (const call of calls) {
       assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
       assert.equal(call.method, "GET");
       assert.equal(call.body, undefined);
     }
-    assert.deepEqual(
-      calls.map(({ path }) => path),
-      expectedPaths,
-    );
     return observation;
   }
 
@@ -468,24 +909,99 @@ test("the missed native handoff deadline reports only Pod readiness for its exac
     ready: true,
     events: [{ message: "private-sentinel" }],
   };
+  const logPaths = runtimeLogSources.map(
+    (source) => `${deploymentPath}/runtime/logs?source=${source}&tailLines=1000`,
+  );
   const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`];
-  async function sample(pods, revision = revisionId) {
-    const observation = await observe([deployment, { revisionId: revision, pods }], runtimePaths);
-    return observation.runtimeAfterDeadline;
-  }
-  // A dedicated Harness may not exist yet while its Gateway starts. Neither sample is acceptance.
-  assert.deepEqual(await sample([gateway]), {
-    gateway: { count: "one", phase: "Running", ready: false },
-    agent: { count: "zero" },
+  const readyPods = [{ ...gateway, ready: true }, agent];
+  const readyRuntime = { revisionId, pods: readyPods };
+  const pendingPaths = [...runtimePaths, ...logPaths];
+
+  await t.test("count known events without publishing values retained by the log API", async () => {
+    const phase = "private-sentinel-phase";
+    const event = "runtime.startup_phase";
+    const raw = JSON.stringify({ event, phase, code: "SYNTHETIC_SENTINEL", ms: 987654 });
+    const { records } = sanitizeRuntimeLogChunk({
+      stream: { source: "agent", container: "agent" },
+      lines: [{ raw, time: "2026-01-02T03:04:05Z" }],
+      truncated: false,
+    });
+    // Prove that the marker reaches the assertion's input through the production sanitizer.
+    assert.equal(records[0]?.fields?.phase, phase);
+    const sandbox = ["DENIED", "ALLOWED", "SENTINEL"].map((action) => ({
+      type: "line",
+      kind: "sandbox",
+      message: "private-sentinel",
+      fields: { action, rule_type: "private-sentinel" },
+    }));
+    const logged = await observe(
+      [
+        deployment,
+        readyRuntime,
+        { revisionId, source: "agent", records },
+        { revisionId, source: "sandbox", records: sandbox },
+        { revisionId: "another-revision", source: "gateway", records },
+      ],
+      pendingPaths,
+    );
+    assert.deepEqual(logged.runtimeOutput, {
+      agent: { records: 1, events: { [event]: 1 }, decisions: {} },
+      sandbox: { records: 3, events: {}, decisions: { DENIED: 1, ALLOWED: 1, other: 1 } },
+      gateway: "unavailable",
+    });
   });
-  const oneReady = { count: "one", phase: "Running", ready: true };
-  assert.deepEqual(await sample([{ ...gateway, ready: true }, agent]), {
-    gateway: oneReady,
-    agent: oneReady,
+
+  await t.test("request no log pages without exactly one ready Pod per role", async () => {
+    for (const pods of [
+      undefined,
+      [],
+      [gateway],
+      [gateway, agent],
+      [readyPods[0], { ...agent, role: "private-sentinel" }],
+      [{ ...gateway, phase: "private-sentinel" }, agent],
+      [readyPods[0], { ...agent, ready: false }],
+      [readyPods[0], readyPods[0], agent],
+      [...readyPods, agent],
+    ]) {
+      const observed = await observe([deployment, { revisionId, pods }], runtimePaths);
+      assert.equal(observed.runtimeOutput, undefined);
+      if (pods?.length === 1) {
+        assert.deepEqual(observed.runtimeAfterDeadline, {
+          gateway: { count: "one", phase: "Running", ready: false },
+          agent: { count: "zero" },
+        });
+      }
+    }
+    const observed = await observe(
+      [deployment, { ...readyRuntime, revisionId: "another-revision" }],
+      runtimePaths,
+    );
+    assert.equal(observed.runtimeAfterDeadline, "unavailable");
+    assert.equal(observed.runtimeOutput, undefined);
   });
-  assert.equal(await sample([{ ...agent, role: "private-sentinel" }]), "unavailable");
-  assert.equal(await sample([{ ...gateway, phase: "private-sentinel" }]), "unavailable");
-  assert.equal(await sample([gateway], "another-revision"), "unavailable");
+
+  await t.test(
+    "keep workspace-node pending and exclude a log page with the wrong source",
+    async () => {
+      const lastAttempt = { code: "WORKSPACE_NODE_PENDING" };
+      const observed = await observe(
+        [
+          { ...deployment, progress: { lastAttempt } },
+          readyRuntime,
+          { revisionId, source: "gateway", records: [] },
+        ],
+        pendingPaths,
+      );
+      const ready = { count: "one", phase: "Running", ready: true };
+      assert.deepEqual(observed.runtimeAfterDeadline, { gateway: ready, agent: ready });
+      assert.equal(observed.deployment.lastAttemptCode, lastAttempt.code);
+      assert.deepEqual(observed.runtimeOutput, {
+        agent: "unavailable",
+        sandbox: "unavailable",
+        gateway: "unavailable",
+      });
+    },
+  );
 
   await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
   const late = { ...provisioned, status: "succeeded" };
@@ -637,6 +1153,69 @@ test(
         namespaces.items[0].metadata.name,
         "the dedicated Gateway must share the single-cluster tenant namespace",
       );
+      if (recorded.sandboxNetworkPolicies?.some(({ name: rule }) => rule === "python-web")) {
+        // Read the actual provider-created Sandbox after normal Agent deployment:
+        // a rendered Installation alone would not prove delivery to OpenShell.
+        const port = await availablePort();
+        const safeEnvironment = { ...env };
+        delete safeEnvironment.OPENAI_API_KEY;
+        delete safeEnvironment.OPENAI_API_KEY_FILE;
+        const forward = spawn(
+          "kubectl",
+          [
+            "--kubeconfig",
+            join(stateDirectory, "kubeconfig"),
+            "--context",
+            `k3d-${recorded.cluster}`,
+            "port-forward",
+            "--namespace",
+            openShellNamespace,
+            "service/openshell-gateway",
+            `${port}:8080`,
+          ],
+          { env: safeEnvironment, stdio: "ignore" },
+        );
+        context.after(() => stopProcess(forward));
+        const client = new GrpcOpenShellGatewayClient({
+          endpoint: `http://127.0.0.1:${port}`,
+          auth: { mode: "unauthenticated" },
+        });
+        try {
+          const sandboxName = new URL(appServerUrl).hostname.split("--")[1].split(".")[0];
+          const deadline = Date.now() + 30_000;
+          let sandbox;
+          while (Date.now() < deadline && sandbox === undefined) {
+            try {
+              sandbox = await client.getSandbox(
+                { name: sandboxName, workspace: namespaces.items[0].metadata.name },
+                AbortSignal.timeout(2_000),
+              );
+            } catch {
+              // The owned port-forward may still be opening its listener.
+              await new Promise((resolve) => setTimeout(resolve, 100));
+            }
+          }
+          const rule = sandbox?.spec?.policy?.network_policies?.["python-web"];
+          assert.ok(rule, "the startup rule must reach the deployed Agent's actual Sandbox");
+          assert.deepEqual(
+            rule.binaries.map(({ path }) => path),
+            ["/usr/bin/python3.11"],
+          );
+          assert.deepEqual(
+            rule.endpoints.map(({ host, ports }) => ({ host, ports })),
+            [{ host: "example.com", ports: [443] }],
+          );
+          assert.ok(sandbox.spec.policy.network_policies["source-control"]);
+          assert.ok(sandbox.spec.policy.network_policies["workspace-node-enrollment"]);
+        } finally {
+          client.close();
+          await stopProcess(forward);
+        }
+      } else {
+        context.diagnostic(
+          "Existing stack has no python-web startup rule; override delivery was not exercised.",
+        );
+      }
       const services = await readKubernetesJson(
         kube,
         [
@@ -805,10 +1384,17 @@ test(
           while (Date.now() < deadline) {
             nativeContext.signal.throwIfAborted();
             provisioned = await request("GET", provisioningPath);
-            assert.notEqual(
-              provisioned.status,
-              "failed",
+            const failureDiagnostics = {
+              request,
+              namespaceId: first.namespaceId,
+              provisioningPath,
+              provisioned,
+              signal: nativeContext.signal,
+            };
+            await assertNativeWorkNotFailed(
+              provisioned,
               "Guided native provisioning must succeed",
+              failureDiagnostics,
             );
             if (provisioned.status === "succeeded") {
               assert.ok(provisioned.agentId && provisioned.revisionId);
@@ -817,10 +1403,10 @@ test(
                 "GET",
                 `${nativePath}/deployments/${provisioned.revisionId}`,
               );
-              assert.notEqual(
-                deployment.status,
-                "failed",
+              await assertNativeWorkNotFailed(
+                deployment,
                 "The admitted native revision must become ready",
+                failureDiagnostics,
               );
               nativeAgent = await request("GET", nativePath);
               if (
@@ -979,31 +1565,14 @@ test(
           assert.notEqual(replacement.id, provisioned.revisionId);
           assert.equal(replacement.harness.id, "openclaw");
           assert.equal(replacement.harness.mode, "dedicated");
-          const replacementDeadline = Date.now() + 8 * 60_000;
-          let replacementDeployment;
-          let replacementAgent;
-          while (Date.now() < replacementDeadline) {
-            nativeContext.signal.throwIfAborted();
-            replacementDeployment = await request(
-              "GET",
-              `${nativePath}/deployments/${replacement.id}`,
-            );
-            assert.notEqual(
-              replacementDeployment.status,
-              "failed",
-              "Redeployment with the retained native workspace must succeed",
-            );
-            replacementAgent = await request("GET", nativePath);
-            if (
-              replacementDeployment.status === "succeeded" &&
-              replacementAgent.activeRevisionId === replacement.id
-            ) {
-              break;
-            }
-            await new Promise((resolve) =>
-              setTimeout(resolve, Math.min(2_000, Math.max(1, replacementDeadline - Date.now()))),
-            );
-          }
+          const { deployment: replacementDeployment, agent: replacementAgent } =
+            await waitForNativeRedeploy({
+              request,
+              namespaceId: first.namespaceId,
+              agentId: nativeAgent.id,
+              revisionId: replacement.id,
+              signal: nativeContext.signal,
+            });
           assert.equal(replacementDeployment?.status, "succeeded");
           assert.equal(replacementAgent?.activeRevisionId, replacement.id);
           const replacementProvider = await readProviderRevision(replacement.id);

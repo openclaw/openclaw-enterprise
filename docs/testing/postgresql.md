@@ -6,7 +6,9 @@ Run database tests against disposable PostgreSQL databases. Use the migrator
 role for migrations and the less-privileged application role for tests. Missing
 URLs skip cases, so check the test results for skips.
 
-## Revision-worker tests
+<a id="revision-worker-tests" class="anchor-alias"></a>
+
+## Version-worker tests
 
 The application lane prepares isolated databases and removes its resources on
 exit. Each run needs its own state file. With Docker Compose available, run:
@@ -25,7 +27,7 @@ exit. Each run needs its own state file. With Docker Compose available, run:
 )
 ```
 
-For one revision-worker file, replace the `run-tests` command above with:
+For one Agent revision worker file, replace the `run-tests` command above with:
 
 ```sh
 node scripts/ci/prepare.mjs --lane postgres-application \
@@ -79,7 +81,7 @@ The bootstrap test uses passive Compute and test Drivers: it does not prove a
 live gateway. Four optional Configuration cases also require
 `OCC_TEST_KUBERNETES_CONFIGURATION=1` and a configured live Kubernetes Driver.
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
-revision-worker tests and therefore require prepared ownership.
+version-worker tests and therefore require prepared ownership.
 
 ## GitHub human sign-in
 
@@ -122,7 +124,8 @@ OCC_MIGRATION_HISTORY_DATABASE_PREFIX=openclaw_migration_test_local \
 
 All three selectors are required. The prefix must start with `openclaw_`, use
 only lowercase letters, digits, and underscores, and contain at most 50
-characters. The test uses `docker exec` and drops only databases it created.
+characters. The test reads the container's administrator password with `docker inspect`,
+connects through the selected port, and drops only databases it created.
 See [migration recovery](../reference/settings/operations.md#migration-history).
 
 ## Azure workload-identity connections

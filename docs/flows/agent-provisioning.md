@@ -14,7 +14,7 @@ The original provisioning handle follows the first deployment to activation or f
 
 ## Entry Points
 
-- Console: `apps/controller/src/console/agents/create.mjs`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
+- Console: `apps/controller/src/console/agents/create.mts`, with the shared Slack Secret select/create modal in `apps/controller/src/console/channels/slack.mjs`.
 - API: `packages/contracts/src/api/routes.ts:provisionAgent`, `apps/controller/src/http/agents.ts:createAgentHandlers`, and `packages/occ/src/index.ts:OpenClawController.provisionAgent`.
 - Preconditions: a ready Namespace, Dedicated runtime and selected Drivers, PostgreSQL-backed work storage, required Agent/Configuration/deploy permissions, exact Secret access and existing transactional IAM authority. No provisioning-input keyring is required.
 
@@ -29,11 +29,11 @@ graph TD
   Claim --> Config["<b>Create Configuration</b><br/>Record completed identity"]
   Config --> Agent["<b>Create Agent</b><br/>Grant exact credential access"]
   Agent --> Transport["<b>Compute Driver</b><br/>Trusted-proxy credentials"]
-  Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first revision"]
-  Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe admitted revision"]
+  Transport --> Deploy["<b>Ordinary deploy</b><br/>Record first version"]
+  Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
   Observe -->|Pending| Observe
-  Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing revision"]
-  Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and revision"]
+  Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
 
@@ -49,7 +49,7 @@ graph TD
 
 ### 1. Console saves credentials and freezes a provisioning request
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent`
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
 Console keeps the configured Harness separate from execution mode: dedicated
 OpenClaw retains its native provider/model and uses the same provisioning,
@@ -67,9 +67,9 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
+Create Agent sends a stable request ID, inline Configuration, Secret and model-auth references, Agent options, and repository bindings with an explicit access profile. The worker grants Secret access, including Slack. After uncertain admission, Retry sends the same ID and inputs without saving Secrets again.
 
-On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers Retry credential access on that Agent, without repeating creation.
+For a draft, Console creates the Configuration and Agent, then grants access to selected Slack Secrets. Retry credential access keeps that Agent.
 
 ### 2. OCC admits one job
 
@@ -93,20 +93,37 @@ The `202` response contains `data.provisioning`, with the work ID and status URL
 
 `packages/occ/src/index.ts:OpenClawController.processAgentProvisioning`
 
-The existing worker dispatches the job under its queue claim. Before effects and result commits, OCC verifies current ownership, Namespace readiness and exact authority. Completed outputs are reused on retry. Configuration creation uses the accepted inline values and existing bindings. Once that Configuration exists, OCC creates a stopped Agent, persists its auth/provider/plugin/repository/workspace selections and grants its service principal exact Secret permissions. Source-backed provisioning records the canonical model source and grants only
-source `operate`. Admission, replay, retry and worker execution recheck caller
-authority, source readiness and Gateway ownership. Queued/running work prevents
-source deletion.
+Under its queue claim, the worker verifies ownership, Namespace readiness and authority before
+effects and result commits. Retries reuse completed outputs. It creates the Configuration from the accepted inline
+values and bindings, then creates a stopped Agent, records the auth, provider, plugin, repository and
+workspace selections, and grants its service principal the exact Secret permissions.
 
-The Compute Driver prepares runtime credentials through the existing credential path, without a loopback HTTP call. The Kubernetes Driver owns trusted-proxy configuration and generated credential protection; provisioning carries no gateway token or trust override.
+Source-backed provisioning records the canonical model source and grants only source `operate`.
+Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
+ownership. Queued or running work prevents source deletion.
 
-Kubernetes Configuration requests inherit the provisioning claim cancellation signal. Losing the claim stops an outstanding configuration request instead of holding the serial worker after its owner is gone.
+Compute prepares runtime credentials without loopback HTTP. Kubernetes owns trusted-proxy
+configuration and credential protection; provisioning supplies neither gateway token nor trust
+override. Losing the provisioning claim cancels outstanding Kubernetes Configuration requests,
+freeing the serial worker.
 
 ### 4. Deployment becomes the lifecycle owner
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job admits one first revision and records its ID. `packages/occ/src/index.ts:observeProvisioningDeployment` defers the original work without spending its retry budget until that exact revision activates or fails. Success completes provisioning; failure records the deployment's safe code and message on the same handle. A Stop during the first rollout records `REVISION_STOPPED`. A Stop or deletion before handoff records `PROVISIONING_CANCELLED`, and its message names which one; the status keeps the Agent's ID. Agent and revision identities remain unchanged across restart. `apps/controller/src/console/agents/create.mjs:waitForProvisioning` stays pending through activation; a failed initial deployment links to the existing Agent for a new deployment, asking for repair only for other failures. It does not retry creation. Ordinary reconciliation owns startup and activation; later deployments use the regular Deploy API.
+The job records its first Agent revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
+defers work without consuming retries until that version activates or fails. The same handle reports
+success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
+before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
+
+Create Agent (`apps/controller/src/console/agents/create.mts:waitForProvisioning`) shows the job's named
+wait and waits one second between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
+at the next poll. Admission, status and retry report the stored client `requestId`.
+If absent or different, Create keeps the original request and any confirmed job.
+`meta.requestId` identifies each HTTP request. Leaving stops polling, not provisioning.
+If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
+After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;
+subsequent deployments use Deploy.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
@@ -153,6 +170,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 

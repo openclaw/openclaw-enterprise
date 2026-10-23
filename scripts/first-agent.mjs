@@ -15,6 +15,7 @@ import {
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
+  reuseFirstAgentRecord,
   selectFirstAgentModel,
   verifyFirstAgentModel,
 } from "./first-agent-model.mjs";
@@ -190,13 +191,14 @@ async function loadLocalInstallation(harness, controlUi) {
       state.sandboxDriver !== "openshell" ||
       browserOrigin.protocol !== "https:" ||
       browserOrigin.hostname !== expectedBrowserHost ||
-      !browserOrigin.port ||
       browserOrigin.pathname !== "/" ||
       browserOrigin.username ||
       browserOrigin.password ||
       browserOrigin.search ||
       browserOrigin.hash ||
-      state.browserOrigin !== browserOrigin.origin ||
+      // URL drops the default port. Older Local Setup recorded port 443 explicitly.
+      (state.browserOrigin !== browserOrigin.origin &&
+        state.browserOrigin !== `${browserOrigin.origin}:443`) ||
       state.nativeAdminDomain !== expectedNativeAdminDomain
     ) {
       throw new Error("The recorded Local Setup native admin endpoint is invalid.");
@@ -857,21 +859,18 @@ async function main(options) {
 
   await withRecord(local.directory, options.name, async (existing, save) => {
     const configuredModel = process.env.OPENCLAW_FIRST_AGENT_MODEL;
-    const model = selectFirstAgentModel(configuredModel, existing);
-    if (
+    // Refuse an older helper's record before the model check reads it.
+    const reused =
       existing &&
-      (existing.version !== 3 ||
-        existing.name !== options.name ||
-        existing.namespaceId !== namespace.id ||
-        existing.harness !== options.harness ||
-        existing.sandboxDriver !== local.sandboxDriver ||
-        existing.controlUi !== options.controlUi)
-    ) {
-      throw new Error(
-        "This Agent's recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs. Reuse its recorded selection or choose a new Agent name.",
-      );
-    }
-    const record = existing ?? {
+      reuseFirstAgentRecord(existing, {
+        name: options.name,
+        namespaceId: namespace.id,
+        harness: options.harness,
+        sandboxDriver: local.sandboxDriver,
+        controlUi: options.controlUi,
+      });
+    const model = selectFirstAgentModel(configuredModel, existing);
+    const record = reused ?? {
       version: 3,
       authMethod:
         process.env.CODEX_ACCESS_TOKEN || process.env.CODEX_ACCESS_TOKEN_FILE

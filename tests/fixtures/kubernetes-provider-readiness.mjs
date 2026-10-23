@@ -10,6 +10,7 @@ import {
   preparedAuth,
   routedOptions,
   routedRevision,
+  labelSelectorLabels,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 
 /** What an OpenShell-like Driver labels a revision's workspace-node relay Pod with. */
@@ -147,11 +148,18 @@ export function providerReadinessFixture({
         };
       }
       assert.equal(name, driver.workspaceNodeName(revision));
+      const nodeSecret = driver.manifest(
+        "v1",
+        "Secret",
+        name,
+        driver.pluginRuntimeOwnership(revision),
+        { name: namespace, plane: "execution" },
+      );
+      // Like the API server, the stored object carries a resource version.
+      nodeSecret.metadata.uid = "workspace-node-secret-uid";
+      nodeSecret.metadata.resourceVersion = "1";
       return {
-        ...driver.manifest("v1", "Secret", name, driver.pluginRuntimeOwnership(revision), {
-          name: namespace,
-          plane: "execution",
-        }),
+        ...nodeSecret,
         data: {
           deviceId: Buffer.from("provider-node").toString("base64"),
           // A current setup code, as preparation keeps renewing it.
@@ -162,6 +170,10 @@ export function providerReadinessFixture({
     async listNamespace() {
       return { items: [] };
     },
+    // The connected readiness check records the enrolled revision in the node Secret.
+    async replaceNamespacedSecret({ body }) {
+      return body;
+    },
     async listNamespacedPod(request) {
       if (request.labelSelector.includes("openclaw.dev/workload-role=gateway")) {
         // The workspace node binding nudge: the Gateway Pod is not modeled here.
@@ -170,14 +182,11 @@ export function providerReadinessFixture({
       }
       requests.push(request);
       assert.equal(request.namespace, namespace);
-      assert.deepEqual(
-        Object.fromEntries(request.labelSelector.split(",").map((entry) => entry.split("="))),
-        {
-          "openclaw.dev/agent": revision.agentId,
-          "openclaw.dev/revision": revision.id,
-          "openclaw.dev/workload-role": "agent",
-        },
-      );
+      assert.deepEqual(labelSelectorLabels(request.labelSelector), {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      });
       assert.equal(request.timeoutSeconds, 10);
       return observe();
     },

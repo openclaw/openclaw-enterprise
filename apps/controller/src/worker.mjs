@@ -2,16 +2,29 @@ import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
+  PreparedGitHubAppKeyError,
+  startPreparedGitHubGitOwner,
+} from "./backends/repository-credentials/prepared-git-owner.ts";
+import {
+  bindRepositoryGitTransport,
+  repositoryGitAuthority,
+} from "./composition/repository-credentials/transport.ts";
+import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
   loadStartupConfigurationSnapshot,
+  readPublicCaBundle,
 } from "./composition/installation-config.ts";
 import { PresetFileError } from "./composition/installation-presets.ts";
 import { createOccLogger, createWorkerLogEmitter, emitOccLogEvent } from "./logging.ts";
 import { createControllerWorker, workerDatabasePoolOptions } from "./worker.ts";
 import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
+import {
+  startupDependencyFailure,
+  startupConfigurationFailure,
+  startupListenerFailure,
+} from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 function positiveEnvironment(name, fallback) {
@@ -96,6 +109,9 @@ let metricsPool;
 let metricsListener;
 let metricsClosing;
 let receiptServer;
+let repositoryGitTransport;
+let preparedRepositoryGit;
+let preparedGitHub;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -148,11 +164,33 @@ try {
     }
   }
   pool = await createPostgresPool(databaseUrl, workerDatabasePoolOptions(databaseTimeoutMs));
-  if (drivers?.repositoryReceipt !== undefined) {
+  const repositoryOwner = drivers?.repositoryOwner;
+  if (repositoryOwner?.controlSocket !== undefined) {
     receiptServer = await startRepositoryReceiptServer({
-      ...drivers.repositoryReceipt,
+      ...repositoryOwner,
       state: new PostgresPlatformState(pool),
     });
+  }
+  if (repositoryOwner && drivers.preparedRepositoryGit) {
+    const { issuerCaPath, ...owner } = drivers.preparedRepositoryGit;
+    preparedRepositoryGit = await startPreparedGitHubGitOwner({
+      ...repositoryOwner,
+      ...owner,
+      ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
+      pool,
+      registry: drivers.repositoryRegistry,
+      ...repositoryGitAuthority(drivers),
+      report: (code, context) =>
+        emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
+    });
+    repositoryGitTransport = await bindRepositoryGitTransport(
+      drivers,
+      preparedRepositoryGit,
+      pool,
+      (event) => emitOccLogEvent(logger, event),
+    );
+  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+    throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
   if (metricsSettings !== undefined) {
@@ -190,7 +228,10 @@ try {
             writeFile(livenessPath, `${Date.now()}\n`, { encoding: "utf8", mode: 0o600 }),
         }),
   });
+  preparedGitHub = drivers?.preparedGitHub;
+  await preparedGitHub?.connect(pool);
   await worker.start();
+  preparedGitHub?.startWorker((code) => emitOccLogEvent(logger, { event: "worker.error", code }));
 
   let closing = false;
   async function shutdown() {
@@ -204,11 +245,17 @@ try {
       }
       try {
         try {
+          try {
+            await repositoryGitTransport?.close();
+          } finally {
+            await preparedRepositoryGit?.close();
+          }
           await receiptServer?.close();
         } finally {
           await closeMetrics();
         }
       } finally {
+        await preparedGitHub?.close();
         await worker.stop();
       }
       process.exitCode = 0;
@@ -220,6 +267,9 @@ try {
   process.once("SIGTERM", shutdown);
   process.once("SIGINT", shutdown);
 } catch (error) {
+  await preparedGitHub?.close().catch(() => {});
+  await repositoryGitTransport?.close().catch(() => {});
+  await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});
   if (readinessPath !== undefined) {
@@ -246,8 +296,12 @@ try {
   }
   emitOccLogEvent(logger, {
     event: "worker.startup-error",
-    ...(startupDependencyFailure(error) ??
-      startupPolicyNameFailure(error) ?? { code: workerStartupFailureCode(error) }),
+    ...((error instanceof PreparedGitHubAppKeyError
+      ? { code: error.code, reason: error.reason }
+      : undefined) ??
+      startupDependencyFailure(error) ??
+      startupConfigurationFailure(error) ??
+      startupListenerFailure(error) ?? { code: workerStartupFailureCode(error) }),
   });
   process.exitCode = 1;
 }

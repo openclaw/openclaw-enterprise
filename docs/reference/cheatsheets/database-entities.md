@@ -36,7 +36,7 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 
 ### `agents`
 
-Stores Agent drafts, their desired runtime state, and the active revision reference.
+Stores Agent drafts, their desired runtime state, and the selected version reference.
 
 - `id`
 - `namespace_id`
@@ -56,12 +56,26 @@ Stores Agent drafts, their desired runtime state, and the active revision refere
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
 - `desired_runtime_state`
+- `sandbox_policy_editing`
 - `status`
 - `created_at`
+
+### `sandbox_policies`
+
+Stores one Agent-owned desired network policy with versioned application evidence.
+See [per-Agent policies](../sandbox-policies.md).
+
+- `id`
+- `namespace_id`
+- `agent_id`
+- `version`
+- `document` (additions, pending/latest application, last confirmed live version)
 
 ### `agent_revisions`
 
 Stores numbered, immutable snapshots of Agent settings accepted for deployment.
+`admitted_spec` includes the explicit v2
+[execution admission decision](../credential-sources/protected-inference.md#execution-admission-cutoff).
 
 - `id`
 - `namespace_id`
@@ -121,16 +135,107 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 
 ### `credential_sources`
 
-Stores credential sources registered with the selected Credential Gateway; the gateway holds the values.
+Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
 
 - `id`
 - `namespace_id`
 - `name`
 - `type`
 - `config`
+- `egress` (optional admitted source and versioned resolver references)
+- `owner_capability` (`credential_gateway` or `credential_proxy`)
 - `driver_id`
 - `state`
 - `created_at`
+
+### `egress_installations`
+
+Binds authenticated supervisor/Sandbox identity and an immutable loaded-enforcement
+instance/configuration fingerprint to the exact admitted revision plan.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sandbox_id`
+- `namespace_id`, `agent_id`, `revision_id`
+- `installation`
+
+### `credential_deliveries`
+
+Tracks delivery custody for the exact Namespace, Agent and revision. See the
+[repository flow](../../flows/agent-repository-credentials.md).
+
+- `revision_id`, `live_revision_id`, `binding_id`, `namespace_id`, `agent_id`, `target`
+- `fence`, `operation_fence`, `settlement`, `worker_instance`, `adopted_at`, `updated_at`
+- `desired`, `observed`, `write_pending`, `blocked`, `retained_policy_hash`
+- `material_version`, `preparation_attempt_id`
+- `target_material_version`, `target_preparation_attempt_id`
+
+### `credential_delivery_reductions`
+
+Retains material-delivery and execution-policy reduction requests for static and
+repository bindings. An unobserved request cannot be sent again. See the
+[policy reduction flow](../../flows/credential-source-egress.md#6-reduce-the-live-credential-policy).
+
+- `revision_id`, `binding_id`, `fence`, `recipient`, `material_version`, `retained_policy_hash`
+- `request_id`, `expected_version`, `observed_generation`
+- `policy_request`, `policy_observed`, `delivery_binding_id`
+
+### `prepared_github_families`
+
+Owns prepared token issuance and renewal for an explicitly admitted source.
+
+- `source_id`, `source`, `issuer`, `admission`
+- `enabled`, `next_check_at`, `worker_claim`
+
+### `prepared_github_attempts`
+
+Retains issuance and disposal custody, including unknown outcomes. Authenticated
+expiry is distinct from confirmed revocation. A refusal with no token is `not_issued`.
+An unknown outcome settles after GitHub's maximum token lifetime from `started_at`.
+
+- `id`, `source_id`, `admission`, `state`, `custody`, `started_at`
+- `material_version`, `provider_expires_at`, `usable_until`, `sealed`
+
+### `prepared_repository_git_uses`
+
+Append-only records of possible disclosure, bound to the exact attempt and material version.
+
+- `exchange_id`, `admission_id`, `attempt_id`, `material_version`
+- `operation`, `recipient_fence`, `request_digest_sha256`
+- `send_start_by`, `authorization_reply_by` (exactly one deadline)
+
+### `prepared_repository_draft_pulls`
+
+Retains the single draft-creation allowance for a grant, independently of later PR updates.
+
+- `grant_id`, `operation_id`, `receipt_id`, `admission_id`, `attempt_id`, `material_version`
+- `request_digest_sha256`, `scope`, `admitted_at`, `send_start_by`, `authorization_reply_by`
+- `settled_at`, `outcome`, `projection`
+
+### `protected_repository_git_recipients`
+
+Records where the selected Driver observed the protected Git recipient and which token version it installed.
+If the installation result is unknown, `state` stays `installing`. The sender must still get permission for each Git request.
+
+- `revision_id`, `installation` (the exact installation OCC recorded for this Agent revision)
+- `fence` (advances before each attempt to install a token), `state` (`observed`, `installing`, or `installed`)
+- `attempt_id`, `material_version` (identify the prepared token without storing its value here)
+
+### `egress_send_receipts`
+
+Retains exact sender attempts and safe observations independently of final delivery proof.
+See [protected inference](../credential-sources/protected-inference.md).
+
+- `sender_id`, `sender_generation`, `instance_id`, `use_id`, `attempt_id`
+- `binding` (selected material evidence and original deadline)
+- `authorized_dispatch` (accepted execution, installation and custody, digests and send-start bound)
+- `outcome`, `observation`, `settled`, `feedback`
+
+### `egress_rejected_material`
+
+Fences a provider-rejected version independently of later authoritative rereads.
+
+- `namespace_id`, `secret_driver_id`
+- `material_id`, `material_version`
 
 ### `agent_credential_sources`
 
@@ -198,7 +303,7 @@ Retains repository-session identity and cleanup context after AgentRevision dele
 - `admission_id`
 - `duration_seconds`
 - `deadline_wall_ms`
-- `broker_protocol`
+- `broker_protocol` (0/1: historical native; 2: protected; 3: prepared native)
 - `phase`
 - `session_id`
 - `created_at`
@@ -296,7 +401,7 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 
 ### `controller_work`
 
-Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and revision deployments.
+Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.
 
 - `work_kind`
 - `idempotency_key`

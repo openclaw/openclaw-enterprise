@@ -3,51 +3,8 @@ import { chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { appModule } from "./runtime.mjs";
 import { temporaryDirectory } from "./process.mjs";
-import { githubConfigurationData, githubTokenConfigurationData } from "./builders.mjs";
-import {
-  fixtureAppId,
-  fixtureInstallationId,
-  fixtureRepositoryId,
-  fixtureRepository,
-} from "./github.mjs";
-
-export async function createGitHubServiceFactory(
-  resources,
-  {
-    config,
-    clock,
-    privateKey,
-    key: borrowedKey,
-    repository = fixtureRepository,
-    repositoryId = fixtureRepositoryId,
-    trustedEndpoints,
-    providerInstanceId = "github-fixture",
-  },
-) {
-  const [{ createGitHubDriverFactory }, { createGitHubKeyOwner }] = await Promise.all([
-    appModule("drivers/repo/github/credentials/index"),
-    appModule("drivers/repo/github/credentials/material"),
-  ]);
-  const key = borrowedKey ?? createGitHubKeyOwner({ privateKey, appId: fixtureAppId, clock });
-  if (!borrowedKey) {
-    resources.after(() => key.close());
-  }
-  return createGitHubDriverFactory({
-    configuration: githubConfigurationData({
-      providerInstanceId,
-      appId: fixtureAppId,
-      installationId: fixtureInstallationId,
-      repositoryId,
-      repository,
-      privateKeyFile: "/unused-fixture-key.pem",
-    }),
-    authority: key,
-    gatewayOrigin: config.gateway.publicOrigin,
-    limits: config.limits,
-    clock,
-    trustedEndpoints,
-  });
-}
+import { githubTokenConfigurationData } from "./builders.mjs";
+import { fixtureRepositoryId, fixtureRepository } from "./github.mjs";
 
 /** Development token authority: the service owns `token`; GitHub never issues one. */
 export async function createGitHubTokenServiceFactory(
@@ -63,9 +20,10 @@ export async function createGitHubTokenServiceFactory(
     providerInstanceId = "github-fixture",
   },
 ) {
-  const { createGitHubDriverFactory, createGitHubStaticTokenOwner } = await appModule(
-    "drivers/repo/github/credentials/index",
-  );
+  const [{ createGitHubDriverFactory }, { createGitHubStaticTokenOwner }] = await Promise.all([
+    appModule("drivers/repo/github/credentials/factory"),
+    appModule("drivers/repo/github/credentials/static-token"),
+  ]);
   const owner = createGitHubStaticTokenOwner({ token: Buffer.from(token) });
   resources.after(() => owner.close());
   return createGitHubDriverFactory({
@@ -116,7 +74,6 @@ export async function startServiceListeners(
     upstreamOrigins,
     trustedUpstreamOrigins = new Set(upstreamOrigins),
     providerQueue,
-    repositoryDescriptions,
   },
 ) {
   const [{ createCredentialService }, { startListeners }] = await Promise.all([
@@ -137,7 +94,6 @@ export async function startServiceListeners(
     trustedUpstreamOrigins,
     clock,
     upstreamCa: tls.ca,
-    ...(repositoryDescriptions === undefined ? {} : { repositoryDescriptions }),
   });
   return { service, listeners };
 }

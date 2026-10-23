@@ -7,7 +7,9 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
+    "tests/integration/repository-native-cutover.test.ts",
     "tests/conformance/ssh-compute.test.mjs",
     "tests/conformance/module-boundaries.test.mjs",
     "tests/integration/repository-credentials-router.test.mjs",
@@ -17,13 +19,15 @@
     "tests/integration/cli-release.test.mjs",
     "tests/integration/container-resume.test.mjs",
     "tests/integration/metrics-monitoring-readiness.test.mjs",
-    "tests/integration/repository-credentials-descriptions.test.mjs",
     "tests/integration/repository-credentials-control.test.mjs",
     "tests/integration/codex-plugin-startup-reads.test.mjs",
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/console-provisioning-request.test.ts",
+    "tests/integration/console-theme.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
+    "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
     "tests/integration/ci-runner.test.mjs",
     "tests/integration/k3d-launcher.test.mjs",
@@ -41,6 +45,7 @@
     "tests/integration/ci-image-reconciliation.test.mjs",
     "tests/conformance/repository-runtime-material.test.mjs",
     "tests/integration/repository-credentials-server-timeout.test.mjs",
+    "tests/integration/protected-repository-metadata-read.test.mjs",
     "tests/integration/repository-credentials-http.test.mjs",
     "tests/integration/public-github-read-http.test.mjs",
     "tests/conformance/repository-credentials-fixture-ownership.test.mjs",
@@ -50,6 +55,7 @@
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
+    "tests/integration/qa-repository-installation.test.ts",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.mjs",
     "tests/integration/plugin-driver-startup.test.mjs",
@@ -71,7 +77,6 @@
     "tests/conformance/postgres-transaction-unknown-commit.test.mjs",
     "tests/integration/oidc-id-token.test.mjs",
     "tests/integration/repository-credentials-shutdown.test.mjs",
-    "tests/integration/repository-credentials-descriptions-uncertain.test.mjs",
     "tests/conformance/repository-transactions.test.mjs",
     "tests/integration/google-id-token.test.mjs",
     "tests/integration/first-agent-startup.test.mjs",
@@ -96,10 +101,11 @@
     "tests/conformance/repository-credentials-tool-evidence.test.mjs",
     "tests/integration/client-address.test.mjs",
     "tests/integration/full-integration-preflight.test.mjs",
-    "tests/conformance/repository-material-expiry-probe.test.mjs",
     "tests/integration/container-promote.test.mjs",
     "tests/conformance/controller-stop-yields.test.mjs",
-    "tests/integration/dev-up-model-provider.test.mjs"
+    "tests/integration/dev-up-model-provider.test.mjs",
+    "tests/integration/egress-connected-preflight.test.mjs",
+    "tests/integration/credential-proxy-configuration.test.ts"
   ],
   "serialFiles": {
     "tests/conformance/postgres-auth-binding.test.mjs": "tsc --build of a fixture project that references packages/occ; if that output is stale, it rebuilds workspace output that other files read",
@@ -111,6 +117,9 @@
     },
     {
       "path": "tests/integration/qa-fixture-inputs.test.mjs"
+    },
+    {
+      "path": "tests/integration/qa-repository-installation.test.ts"
     },
     {
       "path": "tests/integration/github-app-observer.test.mjs"
@@ -192,6 +201,12 @@
     },
     {
       "path": "tests/integration/ci-image-pull.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-image-config-digest.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-credentials-draft-pr-cli.test.mjs"
     },
     {
       "path": "tests/integration/ci-keycloak.test.mjs"
@@ -297,10 +312,22 @@
       ]
     },
     {
+      "path": "tests/integration/console-provisioning-request.test.ts"
+    },
+    {
+      "path": "tests/integration/console-theme.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
+      "path": "tests/integration/agent-create-validate-api.test.mjs"
+    },
+    {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/startup-environment-boundary.test.mjs"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"
@@ -344,6 +371,9 @@
       "path": "tests/integration/repository-credentials-config.test.mjs"
     },
     {
+      "path": "tests/integration/protected-repository-metadata-read.test.mjs"
+    },
+    {
       "path": "tests/integration/repository-credentials-http.test.mjs"
     },
     {
@@ -359,12 +389,6 @@
       "path": "tests/integration/repository-credentials-control.test.mjs"
     },
     {
-      "path": "tests/integration/repository-credentials-descriptions.test.mjs"
-    },
-    {
-      "path": "tests/integration/repository-credentials-descriptions-uncertain.test.mjs"
-    },
-    {
       "path": "tests/integration/repository-credentials-shutdown.test.mjs"
     },
     {
@@ -375,23 +399,13 @@
     },
     {
       "path": "tests/integration/repository-credentials-service-loss.test.mjs",
-      "expectedTests": [
-        "TEST-001: SIGKILL after confirmed GitHub issuance loses session inventory",
-        "TEST-002: lost GitHub issuance response stays charged while service survives",
-        "TEST-002: SIGKILL before GitHub issuance response loses local reservation",
-        "a lost revocation response is not proof of disposal across broker loss",
-        "captured GitHub authority expires by elapsed time when revocation is unconfirmed",
-        "a broker restart cannot accept bound admissions without durable fencing"
-      ]
+      "expectedTests": ["a broker restart cannot accept bound admissions without durable fencing"]
     },
     {
       "path": "tests/conformance/repository-credentials-registry.test.mjs"
     },
     {
       "path": "tests/conformance/repository-client-environment.test.mjs"
-    },
-    {
-      "path": "tests/conformance/repository-material-expiry-probe.test.mjs"
     },
     {
       "path": "tests/conformance/repository-material-store.test.mjs",
@@ -411,6 +425,9 @@
     },
     {
       "path": "tests/integration/repository-credentials-admission.test.mjs"
+    },
+    {
+      "path": "tests/integration/repository-native-cutover.test.ts"
     },
     {
       "path": "tests/integration/repository-credentials-driver.test.mjs"
@@ -487,6 +504,28 @@
     },
     {
       "path": "tests/integration/dev-up-model-provider.test.mjs"
+    },
+    {
+      "path": "tests/integration/egress-connected-preflight.test.mjs",
+      "expectedTests": [
+        "connected database selection rejects missing, remote and redirected observers before effects",
+        "connected receipt observation preserves proto3 zero and uint64 precision",
+        "connected failed-turn observation rejects partial text without a completed message",
+        "connected adversarial wire carries split and nested-JSON material without raw reflection",
+        "connected request bytes pass the real Fastify parser and preserve missing-capability refusals",
+        "failed custody deployment preserves worker event order across a reused attempt budget"
+      ]
+    },
+    {
+      "path": "tests/integration/credential-proxy-configuration.test.ts",
+      "expectedTests": [
+        "external fixture factories enforce structured validation before any peer or file access",
+        "external-release-fixture registers its real structured validator and rejects malformed input safely",
+        "external-repository-fixture registers its real structured validator and rejects malformed input safely",
+        "github registers its real structured validator and rejects malformed input safely",
+        "openshell registers its real structured validator and rejects malformed input safely",
+        "OpenShell direct construction and policy rendering still enforce configuration validation"
+      ]
     }
   ]
 }

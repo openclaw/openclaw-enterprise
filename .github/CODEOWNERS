@@ -46,6 +46,7 @@
 # /packages/contracts/src/secret-bindings.ts @openclaw/openclaw-secops
 # /packages/contracts/src/api/ @openclaw/openclaw-secops
 # /scripts/bootstrap-installation.mjs @openclaw/openclaw-secops
+# /scripts/lib/bootstrap-configuration.mjs @openclaw/openclaw-secops
 # /scripts/prepare-bootstrap-volume @openclaw/openclaw-secops
 
 # Living security contracts and deployment procedures.

@@ -144,6 +144,7 @@ function revision(overrides = {}) {
   delete native.gateway.auth;
   return {
     id: "revision-plugin-compute-1",
+    executionAdmission: { version: 2, mode: "unprotected" },
     namespaceId: tenant.id,
     agentId: agent.id,
     revision: 1,
@@ -2379,14 +2380,17 @@ function useRoutedGateway(candidate) {
 }
 
 function enrolledNodeSecret(driver, candidate, namespace) {
+  const manifest = driver.manifest(
+    "v1",
+    "Secret",
+    driver.workspaceNodeName(candidate),
+    driver.pluginRuntimeOwnership(candidate),
+    { name: namespace, plane: "execution" },
+  );
   return {
-    ...driver.manifest(
-      "v1",
-      "Secret",
-      driver.workspaceNodeName(candidate),
-      driver.pluginRuntimeOwnership(candidate),
-      { name: namespace, plane: "execution" },
-    ),
+    ...manifest,
+    // Like the API server, the stored object carries a resource version.
+    metadata: { ...manifest.metadata, uid: "workspace-node-secret-uid", resourceVersion: "1" },
     data: {
       deviceId: Buffer.from("fixture-node").toString("base64"),
       // A current setup code, as preparation keeps renewing it.
@@ -2437,6 +2441,8 @@ test("embedded plugin preparation applies runtime egress before gateway readines
         credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, observed);
         return observed;
       },
+      // The connected readiness check records the enrolled revision in the node Secret.
+      replaceNamespacedSecret: async ({ body }) => body,
       createNamespacedConfigMap: async ({ body }) => {
         configMaps.set(body.metadata.name, {
           ...structuredClone(body),
@@ -2919,7 +2925,8 @@ test("gateway runtime status maps native Slack channel status without provider d
   let holdChannelStatusResponse = false;
   let pendingChannelSignal;
   let rpcTimeout;
-  let gatewayReadyStatus = 503;
+  // Native /startupz and /readyz answers.
+  const nativeProbeStatus = { "/startupz": 503, "/readyz": 503 };
   const sandbox = {
     AbortController,
     AbortSignal,
@@ -2957,8 +2964,8 @@ test("gateway runtime status maps native Slack channel status without provider d
             statusHandler = handler;
             return { listen() {} };
           },
-          get(_options, callback) {
-            callback({ statusCode: gatewayReadyStatus, resume() {} });
+          get(options, callback) {
+            callback({ statusCode: nativeProbeStatus[options.path], resume() {} });
             return { on() {}, destroy() {} };
           },
         };
@@ -3028,7 +3035,11 @@ test("gateway runtime status maps native Slack channel status without provider d
   assert.equal(ready.revisionId, revisionId);
   assert.equal(channelStatusCalls, 0);
   assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
-  gatewayReadyStatus = 200;
+  // Native /readyz admits a Gateway while its agent databases are still in
+  // startup inspection, when turns fail (finding 2185): /startupz holds it.
+  nativeProbeStatus["/readyz"] = 200;
+  assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 503, body: "" });
+  nativeProbeStatus["/startupz"] = 200;
   assert.deepEqual(await readReadyStatusFromHandler(statusHandler), { status: 200, body: "" });
   const assertSlackDiagnostics = async (status, expected, description) => {
     channelStatus = status;
@@ -4960,6 +4971,8 @@ test("Kubernetes dedicated successor readiness preserves the stable Agent Servic
         credentialObjects.set(`${body.metadata.namespace}:${body.metadata.name}`, observed);
         return observed;
       },
+      // The connected readiness check records the enrolled revision in the node Secret.
+      replaceNamespacedSecret: async ({ body }) => body,
       createNamespacedConfigMap: async () => ({}),
       patchNamespacedConfigMap: async () => ({}),
       listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [] }),

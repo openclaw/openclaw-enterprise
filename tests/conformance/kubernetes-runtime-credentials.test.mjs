@@ -87,7 +87,10 @@ function credentialFixture({
   secretCreateStatus = undefined,
   deploymentListStatus = undefined,
 } = {}) {
-  const configured = options(runtime ? {} : { runtime: undefined });
+  const configured = options();
+  if (!runtime) {
+    delete configured.runtime;
+  }
   if (twoCluster) {
     delete configured.network.gatewayClients;
     configured.gatewayRouting = {
@@ -403,7 +406,16 @@ test("concurrent legacy password delivery accepts only an identical owned source
         "gateway-password": original.data["gateway-password"],
       });
     } else {
-      await assert.rejects(delivery());
+      const refusal = {
+        different: ResourceConflictError,
+        foreign: {
+          message: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+        },
+        disappeared: { message: "HTTP 409", statusCode: 409 },
+        unavailable: { message: "HTTP 503", statusCode: 503 },
+      }[outcome];
+      assert.ok(refusal, `${outcome}: name its refusal`);
+      await assert.rejects(delivery(), refusal, outcome);
     }
     assert.deepEqual(secrets[name], original, `${outcome}: preserve the serving Gateway source`);
   }

@@ -1032,7 +1032,7 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         options.nativeAdmin?.enabled === true &&
         publicOrigin !== undefined &&
         request.method === "GET" &&
-        /^\/chat\/main(?:\/[0-9a-f]{32})?$/.test(nativeAdminPathname(request.url)) &&
+        /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(nativeAdminPathname(request.url)) &&
         request.headers["sec-fetch-mode"] === "navigate" &&
         request.headers["sec-fetch-dest"] === "document" &&
         request.headers["sec-fetch-user"] === "?1" &&
