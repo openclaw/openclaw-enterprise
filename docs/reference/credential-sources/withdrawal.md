@@ -45,8 +45,9 @@ failed or is still deploying, ends with this reason. The withdrawal stays
 `pending`, so that version cannot use the source, and the read can report it with
 that version's `revisionId` and `withdrawalInProgress: false`. The next
 deployment that succeeds retires every earlier version, including that one, and
-the read then stops reporting it. If that version becomes selected instead,
-send the request again.
+the read then stops reporting it. If that version's own deployment selects it
+instead, the deployment queues one more attempt as it completes, so its policy
+is reduced without a new request.
 
 The worker retries an unconfirmed withdrawal a few times with backoff
 (`OCC_WORKER_MAX_ATTEMPTS`; by default about 12 seconds). If those attempts run

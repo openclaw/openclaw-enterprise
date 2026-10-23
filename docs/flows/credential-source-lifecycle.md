@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
 updated: 2026-10-23
-last_updated_session: fix-2235
+last_updated_session: fix-2242
 ---
 
 # Credential source lifecycle Flow
@@ -238,12 +238,12 @@ The worker rechecks `agent:operate` for each pending withdrawal's
 `requested_by` and calls Compute's
 `withdrawCredentialSource` for each authorized one in admission order. The work retries while an authorized withdrawal is unconfirmed;
 otherwise a denied requester fails it after the others are revoked, unless a
-replay reassigned it. Each
-revocation is audited for its requester in the pass that confirms it; each
-denial or failure, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
+replay reassigned it. Revocations are audited per requester when confirmed;
+denials and failures, once when the claim ends. The OpenShell Driver calls `DetachSandboxProvider`
 on the `harnessResource` Sandbox and reads the receipt's status.
 `packages/occ/src/credential-policy-reduction.ts:reduceCredentialPolicy` reduces protected
-sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay. Each
+sources only on the selected version; elsewhere it sends nothing, and the refusal awaits a replay
+or that candidate's activation, which queues one attempt. Each
 attempt records `last_reason` and `last_attempt_at` when its claim ends. `revoked` or `absent`
 also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
@@ -255,8 +255,8 @@ work; `false` means replay or maintenance must queue another attempt.
 
 Maintenance runs only with a Compute or repository credential interval. It stops
 preparing the selected version after its Harness source is withdrawn
-(`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
-any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
+(`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). The chain
+continues until every withdrawal is `revoked`. Deploy and repair work never re-attach a withdrawn source:
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
 pending withdrawals with no work outstanding, the other versions' too
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
