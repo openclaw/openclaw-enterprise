@@ -792,7 +792,8 @@ for (const mode of ["embedded", "dedicated"]) {
         true,
         "the candidate takes the Agent's only gateway, so Docker must declare exclusive replacement",
       );
-      // The worker's exclusive replacement: stop every predecessor, then prepare the candidate.
+      // The worker sequence is simulated here (the postgres worker suites cover the worker's
+      // side): exclusive replacement stops every predecessor, then prepares the candidate.
       await driver.stopRevision(active);
       assert.deepEqual(serving(), []);
       assert.equal((await driver.prepareRevision(candidate)).ready, true);
