@@ -150,6 +150,20 @@ the native test and builds the sibling `../openclaw` checkout. Set
 ./scripts/k3d demo --harness openclaw
 ```
 
+For a custom OpenAI-compatible Responses endpoint, bind the model catalog and
+CredentialSource to the same URL:
+
+```sh
+OCC_K3D_CONTAINER_ENGINE=podman ./scripts/k3d test --harness openclaw \
+  --base-url https://models.example.com/v1 --model-id vendor/model
+```
+
+Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
+use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
+its namespace. Both `test` and `demo` accept these flags. Without flags,
+`OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
+and model. Explicit flags override inherited and prepared settings.
+
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.

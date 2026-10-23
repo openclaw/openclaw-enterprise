@@ -413,6 +413,7 @@ function nativeCodexConfiguration(gatewayAuth) {
 
 function nativeOpenClawConfiguration(gatewayAuth, controlUiOrigins = []) {
   const configuration = createHarnessConfiguration("openclaw", providerModel);
+  configuration.models.providers.openai.baseUrl = modelBaseUrl;
   configuration.models.providers.openai.models[0].input = ["text", "image"];
   configuration.secrets = {
     providers: {
@@ -1517,7 +1518,8 @@ function assertBridgedNativeStateMount(pod) {
   const nativeInference = JSON.parse(
     environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG")?.value,
   );
-  assert.ok(nativeInference.models.providers.openai.models.length > 0);
+  assert.equal(nativeInference.models.providers.openai.baseUrl, modelBaseUrl);
+  assert.equal(nativeInference.models.providers.openai.models[0].id, providerModel);
   assert.deepEqual(nativeInference.models.providers.openai.apiKey, {
     source: "env",
     provider: "model",
