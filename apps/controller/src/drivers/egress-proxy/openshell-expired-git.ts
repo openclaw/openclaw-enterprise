@@ -14,12 +14,15 @@ import type { OpenShellGitExpiry, OpenShellGitRouteStore } from "./openshell-git
 export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime";
 /**
  * Why an expiry pass stayed pending, from a fixed set (never error text or gateway detail):
- * OpenShell has not confirmed the step `check` names yet, the gateway's durable admission limit
- * refused a request (one that never clears points at unresolved admissions in its store), the
- * gateway did not answer, a request or the pass ran out of time, or another request failed.
+ * nothing failed but the step `check` names is not confirmed yet or moved during the pass
+ * (`unconfirmed`), the gateway's durable admission limit refused a request (one that never
+ * clears points at unresolved admissions in its store), the gateway answered UNAVAILABLE or not
+ * at all, a request ran out of time or the pass was aborted (its deadline or the worker
+ * stopping), or another request failed, including a route store write. `gateway_unavailable`
+ * and `timeout` mean what they mean in `OpenShellGitObservationFailure`.
  */
 export type OpenShellGitExpiryPendingFailure =
-  "unconfirmed" | "admission_limit" | "unavailable" | "deadline" | "failed";
+  "unconfirmed" | "admission_limit" | "gateway_unavailable" | "timeout" | "failed";
 type Client = Pick<
   OpenShellGatewayClient,
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
@@ -44,15 +47,13 @@ function pendingFailure(error: unknown, signal: AbortSignal): OpenShellGitExpiry
   if (error instanceof OpenShellAdmissionLimitError) {
     return "admission_limit";
   }
+  // The gateway client wraps UNAVAILABLE and DEADLINE_EXCEEDED with their grpcStatus; an aborted
+  // pass rejects with the signal's own reason.
   const code = grpcCode(error);
-  if (
-    signal.aborted ||
-    code === 4 ||
-    (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
-  ) {
-    return "deadline";
+  if (signal.aborted || code === 4) {
+    return "timeout";
   }
-  return code === 14 ? "unavailable" : "failed";
+  return code === 14 ? "gateway_unavailable" : "failed";
 }
 function requireIdentity(condition: unknown): asserts condition {
   if (!condition) {

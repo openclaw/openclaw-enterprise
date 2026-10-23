@@ -1825,6 +1825,8 @@ test("Git expiry observes the original model in the reduced stock installation, 
     let expiry = false;
     let state = "";
     let trace = [];
+    // Each cleanup pass's own signal, so a fault can abort the pass it runs in.
+    let pass;
     const owner = { model, workload: async () => "original-pod-and-container" };
     await f.runtime.bind(r.id, entry.verify, owner);
     const original = f.provider.observe;
@@ -2012,8 +2014,10 @@ test("Git expiry observes the original model in the reduced stock installation, 
         throw Object.assign(Error("connection refused"), { grpcStatus: 14 });
       }
       if (sends === 1 && fault === "pass ran out of time") {
-        // The pass's own deadline aborted the send before it left: nothing admitted.
-        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        // The pass's deadline fires during the send, which rejects with the signal's reason
+        // before it left: nothing admitted.
+        pass.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+        throw pass.signal.reason;
       }
       if (fault === "Sandbox moved before send") {
         box.resourceVersion = "14";
@@ -2040,15 +2044,17 @@ test("Git expiry observes the original model in the reduced stock installation, 
     f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
     await f.reconcile();
     assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
-    const cleanup = (runtime, observer = owner) =>
-      runtime.retireExpiredRepositoryAccess(
+    const cleanup = (runtime, observer = owner) => {
+      pass = new AbortController();
+      return runtime.retireExpiredRepositoryAccess(
         r,
         client,
         box.workspace,
         box.name,
         observer,
-        AbortSignal.timeout(5_000),
+        AbortSignal.any([pass.signal, AbortSignal.timeout(5_000)]),
       );
+    };
     const first = await cleanup(
       f.runtime,
       fault === "replacement Pod" ? { ...owner, workload: async () => "other-pod" } : owner,
@@ -2063,13 +2069,13 @@ test("Git expiry observes the original model in the reduced stock installation, 
       {
         "version churn": ["unconfirmed"],
         "lost reply": ["failed"],
-        "intent without effect": ["unavailable"],
-        "outcome uncertain at gateway": ["deadline"],
-        "first send still applying": ["deadline"],
-        "pass ran out of time": ["deadline"],
+        "intent without effect": ["gateway_unavailable"],
+        "outcome uncertain at gateway": ["timeout"],
+        "first send still applying": ["timeout"],
+        "pass ran out of time": ["timeout"],
         "admission limit": ["admission_limit", "admission_limit"],
-        "Sandbox moved after intent": ["unavailable"],
-        "profile unavailable": ["unavailable"],
+        "Sandbox moved after intent": ["gateway_unavailable"],
+        "profile unavailable": ["gateway_unavailable"],
         "model rotates during profile check": ["unconfirmed"],
       }[fault] ?? [];
     if (expectedFirst === "retire-runtime") {
