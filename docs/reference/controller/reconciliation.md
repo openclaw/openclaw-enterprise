@@ -205,6 +205,9 @@ connection, a dropped one, or a Harness status read left unanswered; an
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
+When a Compute Driver's cleanup after a failed preparation or activation fails
+too, the pass is decided by the operation's own failure, as if it came alone,
+and `worker.completed` adds the cleanup failure's class as `cleanupCause`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
 measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
