@@ -31,8 +31,8 @@ function rfc3339Instant(value) {
 
 /**
  * Orders two event times, oldest first. A missing or unreadable time sorts before every
- * readable one (two of them compare as text); equal instants compare as 0, so a stable sort keeps
- * the API's order for them.
+ * readable one, and two of them are ordered by their text. Equal instants compare as 0, so a
+ * stable sort keeps the API's order for them.
  */
 export function compareEventTimes(left, right) {
   const leftText = String(left ?? "");

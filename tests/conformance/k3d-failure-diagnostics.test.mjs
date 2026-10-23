@@ -411,8 +411,8 @@ test("events are ordered by when they were last observed, across timestamp preci
     .split("\n")
     .filter((line) => / Normal /.test(line));
   assert.deepEqual(lines, [
-    " Normal Undated Pod/postgres: Undated",
-    "2026-10-16T18:15:04.900000Z Normal SeriesLatest Pod/postgres: SeriesLatest",
+    "unknown-time Normal Undated Pod/postgres: Undated",
+    "2026-10-16T18:15:04.900000Z Normal SeriesLatest Pod/postgres x2: SeriesLatest",
     "2026-10-16T18:15:05Z Normal WholeSecond Pod/postgres: WholeSecond",
     "2026-10-16T18:15:05.400000Z Normal FractionalSameSecond Pod/postgres: FractionalSameSecond",
   ]);

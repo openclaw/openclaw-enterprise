@@ -448,7 +448,7 @@ function podStatus(type, pod) {
   };
 }
 
-// Projected events keep their newest time as lastTimestamp (eventStatus).
+// Projected events carry lastTimestamp, else eventTime, as lastTimestamp (eventStatus).
 function compareEventTimestamps(left, right) {
   return compareEventTimes(left.lastTimestamp, right.lastTimestamp);
 }

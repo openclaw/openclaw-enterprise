@@ -188,9 +188,11 @@ export async function podFailureDiagnostic({
     let length = 0;
     for (const event of events.reverse()) {
       const object = event.involvedObject ?? {};
-      const count = (event.count ?? 1) > 1 ? ` x${event.count}` : "";
+      // events.k8s.io writers keep a repeat count in the series.
+      const repeats = event.series?.count ?? event.count ?? 1;
+      const count = repeats > 1 ? ` x${repeats}` : "";
       const line = redactedLine(
-        `${eventObservedTime(event) ?? ""} ${event.type} ${event.reason} ${object.kind}/${object.name}${count}: ${event.message ?? ""}`,
+        `${eventObservedTime(event) ?? "unknown-time"} ${event.type} ${event.reason} ${object.kind}/${object.name}${count}: ${event.message ?? ""}`,
         secrets,
         fieldChars,
       );
