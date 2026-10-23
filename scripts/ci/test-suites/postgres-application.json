@@ -59,7 +59,8 @@
         "api_key revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "codex_pat revision dispatch rechecks Configuration and exact harness Secret grants without backend Secret reads",
         "revision dispatch refuses a different selected Secret Driver before binding or activating the Agent",
-        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot"
+        "revision dispatch never substitutes a later ChatGPT credential or reconfigured Backend for its admitted snapshot",
+        "a Kubernetes 403 on a private Secret write fails deployment on the first attempt"
       ]
     },
     {
