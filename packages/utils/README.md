@@ -13,7 +13,7 @@ grouped by purpose under `src/`; `src/index.ts` exports the public surface.
 | `models.ts`     | `splitModelRef`                             | Splits a native model ref at its first slash into provider and model ID; the ID may contain slashes. It does not validate either part.               |
 | `validation.ts` | `isNonEmptyString`, `isPositiveSafeInteger` | Predicates only. Callers keep their error classes, messages, and stricter domain validation. String checks do not trim or normalize values.          |
 | `hashing.ts`    | `sha256Hex`                                 | SHA-256 hex with an optional slice length. Resource owners choose prefix lengths and naming rules.                                                   |
-| `errors.ts`     | `numericErrorStatus`                        | Reads numeric `code`, `statusCode`, `response.statusCode`, then `response.status`. Callers decide whether the result is retryable or permanent.      |
+| `errors.ts`     | `numericErrorStatus`                        | Reads an HTTP status (100-599) from `code`, `statusCode`, `response.statusCode`, then `response.status`; skips gRPC and DOMException codes.          |
 | `http.ts`       | `cookieHeaderFromSetCookie`                 | Converts separate Set-Cookie fields to a Cookie header, stripping attributes without splitting Expires commas. It does not authenticate requests.    |
 | `text.ts`       | `hasControlCharacter`                       | Detects C0 controls and DEL only. C1 controls, U+2028/U+2029 and other Unicode pass; callers add stricter rules.                                     |
 

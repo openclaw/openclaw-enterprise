@@ -27,8 +27,10 @@ export function isTransientPullFailure(error) {
   return !permanentPullFailure.test(output) && transientPullFailure.test(output);
 }
 
-// Worst case: no retry starts after budgetMs, and one attempt can then run for
-// attemptTimeoutMs more, so a pull gives up within about 15 minutes.
+// Worst case: four attempts of attemptTimeoutMs plus 35 s of backoff, about 9
+// minutes; no retry starts after budgetMs. The slowest healthy CI pulls (Grafana,
+// Keycloak) finish within about 45 s, so a stalled attempt is retried after 2
+// minutes instead of 5.
 export async function pullImage(
   image,
   {
@@ -36,7 +38,7 @@ export async function pullImage(
     docker = "docker",
     attempts = 4,
     firstDelayMs = 5_000,
-    attemptTimeoutMs = 300_000,
+    attemptTimeoutMs = 120_000,
     budgetMs = 600_000,
     sleep = delay,
     log = (message) => process.stderr.write(`${message}\n`),
@@ -68,4 +70,55 @@ export async function pullImage(
       delayMs *= 2;
     }
   }
+}
+
+// True when the local engine already holds `image`, an image@sha256 reference, under
+// that repository digest. The digest names the content, so the local copy is what a
+// pull would fetch. A missing image or unreadable output is false, and the caller
+// pulls; any other inspect failure, a timeout included, is thrown rather than read as
+// an absent image.
+export async function hasLocalRepoDigest(image, { execFile, docker = "docker" } = {}) {
+  const digest = /@sha256:([a-f0-9]{64})$/i.exec(image ?? "")?.[1]?.toLowerCase();
+  if (!digest) {
+    return false;
+  }
+  let stdout;
+  try {
+    ({ stdout } = await execFile(
+      docker,
+      ["image", "inspect", "--format", "{{json .RepoDigests}}", image],
+      { timeoutMs: 60_000 },
+    ));
+  } catch (error) {
+    if (
+      error?.timedOut !== true &&
+      /No such (?:image|object)|image not known/i.test(String(error?.stderr ?? ""))
+    ) {
+      return false;
+    }
+    throw error;
+  }
+  let repoDigests;
+  try {
+    repoDigests = JSON.parse(String(stdout).trim() || "[]");
+  } catch {
+    return false;
+  }
+  return (
+    Array.isArray(repoDigests) &&
+    repoDigests.some(
+      (reference) =>
+        typeof reference === "string" && reference.toLowerCase().endsWith(`@sha256:${digest}`),
+    )
+  );
+}
+
+// pullImage, skipped when hasLocalRepoDigest finds the pinned image. `docker pull`
+// asks the registry again even for a digest the engine holds, so a stalled registry
+// would otherwise delay a step whose image a lane already pulled.
+export async function ensureImage(image, options = {}) {
+  if (await hasLocalRepoDigest(image, options)) {
+    return undefined;
+  }
+  return pullImage(image, options);
 }

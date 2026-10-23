@@ -1,25 +1,23 @@
 ---
 created: 2026-09-21
-updated: 2026-09-28
-last_updated_session: authoring-run/c140c47a-799b-48c8-929a-5d1a37eb31d1
+updated: 2026-10-15
+last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The console reads a Namespace-owned Preset, renders its variables, and saves an
-independent Configuration and Agent through the existing APIs. This flow starts
-with Preset CRUD or selection and stops at a saved Agent draft. Deployment
-continues through [revision admission](configuration-driver/persistence-and-revisions.md).
+The Console renders a Namespace Preset and saves an independent Configuration
+and Agent through existing APIs. This flow stops at the draft; deployment follows
+[version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
-- [Installation loader](../../apps/controller/src/composition/installation-config.ts):
-  `loadInstallationConfiguration` reads `presets.includeDefaults` and `presets.files`.
+- [Preset file loader](../../apps/controller/src/composition/installation-presets.ts):
+  `loadInstallationPresets` reads `presets.includeDefaults` and `presets.files` before Driver composition.
   Bundled defaults are `default-codex`, **Standard Codex**, and **Standard OpenClaw**; the custom SWE Agent
-  file is loaded only when explicitly listed. Production and PostgreSQL development composition pass generic
-  name/template definitions to OCC and call `initializeDefaultPresets`.
+  file is loaded only when explicitly listed.
 
 - Source: `packages/contracts/src/api/routes.ts:occApiRoutes`.
 - [Preset routes](../../packages/contracts/src/api/routes.ts): authenticated
@@ -28,7 +26,7 @@ continues through [revision admission](configuration-driver/persistence-and-revi
   `updatePreset`, `listPresets`, `getPreset`, and `deletePreset` own lifecycle.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
-- [Console selector](../../apps/controller/src/console/agents/presets.mjs):
+- [Console selector](../../apps/controller/src/console/agents/presets.mts):
   `createPresetFields` requires a selected Namespace and an authenticated user.
   Saving also needs the existing Configuration, Agent, and credential grants.
 
@@ -58,7 +56,7 @@ graph TD
   O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and revision admission"]
+  J --> L["Credential preparation and version admission"]
 ```
 
 ## Execution Trace
@@ -70,12 +68,11 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 ### 1. Include configured defaults
 
-`apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
+`apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates the opt-in boolean and file list. It loads bundled JSON
-when enabled, resolves explicit JSON paths beside the startup YAML, validates
-each name/template definition, and rejects missing, malformed, invalid, or
-duplicate-name files before composition; a file named like a bundled default
+The loader validates the opt-in boolean and file list, reads bundled JSON, and
+resolves explicit paths beside the startup YAML. It validates names/templates and rejects missing,
+malformed, invalid, or duplicate-name files; a file named like a bundled default
 replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
 snapshot and source path (files are not watched), but only the API applies
 defaults and logs Preset warnings. [Production composition](../../apps/controller/src/composition/production.ts)
@@ -119,6 +116,11 @@ the new Namespace. Disabling defaults leaves persisted copies alone.
 
 ### 2. Admit and store a template
 
+`apps/controller/src/index.ts:createFastifyApp` gives Preset POST/PATCH a
+transport budget for 1 MiB templates, JSON escapes and the envelope; overflow
+returns 413. Their `onRequest` hook runs `authorizePresetWrite`: callers without
+the grant get 403 before any body is read.
+
 `packages/occ/src/index.ts:OpenClawController.createPreset`
 
 [`OpenClawController.createPreset` and `admitPresetTemplate`](../../packages/occ/src/index.ts)
@@ -144,73 +146,67 @@ path records mutations and denials without template or variable contents.
 
 ### 3. Read and render the selected copy
 
-`apps/controller/src/console/agents/presets.mjs:createPresetFields`
+`apps/controller/src/console/agents/presets.mts:createPresetFields`
 
-[`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists only readable Presets (the list requires Namespace read), then reads the
-selected resource once. The **Start with default Preset** button uses the listed
-`default-codex` ID through that same exact-resource read. It applies
-variable-free templates immediately; customized variable definitions retain the
-ordinary chooser. If that chooser is
-restored, it preserves the shortcut origin for the eventual form. Missing defaults or
-failed list/read requests cannot open a hidden hardcoded starter. Other readable
-Presets remain selectable. The separate **Start without Preset** action opens
-the ordinary form without reading a Namespace Preset; it does not automatically
-replace a denied selection. Normal creation authorization still applies.
+[`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
+lists readable Preset summaries, requiring Namespace read, then reads the selection
+once. **Start with default Preset** reads the listed `default-codex` resource.
+Variable-free templates apply immediately; customized variables keep the chooser
+and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
+starter; other readable Presets remain selectable. **Start without Preset** opens
+the form without a Preset read, not as a fallback for a denied selection. Normal
+creation authorization applies.
 
-The shipped `deploy/presets/default-codex.json` also supplies the public
-`/console/default-codex-preset.mjs` module through
-`apps/controller/src/console-assets.ts:readConsoleAsset`. The form's
-`configurationTemplate` reads that base for empty templates, explicit reset, and
-Harness transitions, then adds model routing. The module contains only the public
-bundled definition; it does not expose installed Namespace templates.
+`console-assets.ts:readConsoleAsset` serves the public
+[`default-codex`](../../deploy/presets/default-codex.json) as
+`/console/default-codex-preset.mjs`. `configurationTemplate` uses this base for
+empty templates, reset and Harness transitions, adding model routing. Installed
+Namespace templates are never exposed by that module.
 
-The user
-reviews prefilled scalar defaults and fills typed inputs. Inputs for referenced
-variables without defaults are required, so the browser flags an empty one
-before rendering; defaulted or unreferenced variables stay optional. The bound password
-variable offers a new masked token or an existing same-Namespace Secret. The
-chooser fetches only Secret metadata, validates the original template, and replaces
-the password token with the selected reference in a temporary copy. Mode changes
-clear discarded tokens; stale catalog responses cannot replace a later selection.
+The chooser prefills typed defaults. String controls accept multiple lines;
+untouched defaults and restored drafts retain exact line endings, while edits use
+browser LF. Empty strings override defaults. Referenced variables without defaults
+are required; defaulted or unused variables are optional. The password variable
+offers a masked new token or an existing same-Namespace Secret. The chooser reads
+Secret metadata, validates the original template, then substitutes the selected
+reference in a temporary copy. Changing mode discards tokens; stale catalog
+responses cannot replace a later selection.
 The user then selects **Use Preset**. The shared
 [`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
-Rendering makes no requests and fetches no credentials. On success, the chooser
-is replaced by the ordinary Agent form; the form keeps only the rendered
-settings and, when selected, ephemeral existing-Secret metadata for access grants.
-The chooser lists Presets alphabetically by display name.
-Password values move into the ordinary masked credential input; the
-chooser clears its detached password controls. Preset updates or deletion cannot alter them. Before saving,
-**Start over** discards the unsaved draft after confirmation and opens a fresh
-chooser. After a save succeeds or its outcome becomes uncertain, restart is
-disabled so the user follows ordinary creation recovery.
+Rendering makes no requests. Success opens the Agent form with rendered settings
+and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
+password values into the masked credential input and clears detached controls;
+later Preset changes cannot alter the form. Before saving, **Start over** confirms
+discard and opens a fresh chooser. A successful or uncertain save disables restart
+and uses ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting the view, Console captures the unsaved form's raw editor text,
-model controls, workspace files, repository selections, and staged Secret
-references. The in-memory map is scoped to the signed-in user and Namespace.
-Returning to an explicitly selected Preset form through navigation or browser history reconstructs it
-from that copy; capability and repository discovery run again against current
-access. A form started through the default Preset shortcut or without a Preset
-registers for discard on exit. After
-flushing captures, `loadPage` removes its creation and channel snapshots and its
-retained view when navigation leaves creation or changes Namespace. Re-entry
-opens the initial choices; resources already saved through the API remain.
-Invalid JSON survives as text. Password controls and plugin discovery results
-are excluded. Start over removes the copy; session loss, logout, a different
-signed-in user, and page exit clear the map. Starting a save removes its capture
-before any mutation, so a later route return cannot replay a pre-save copy as a
-new Agent. Existing partial-save recovery remains local to its form.
+Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
+files, repositories and staged Secret references per user and Namespace. Explicit
+Preset, default-shortcut and bare forms all return from this copy with fresh
+capability and repository discovery. A confirmed **Cancel** removes creation and
+channel snapshots and the retained view; re-entry opens the chooser and preserves
+saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
+and discovery results are excluded. Start over, session loss, logout, user change or
+page exit clears captures, not a failed `/namespaces` read. A known Create refusal keeps
+the capture and its saved resources, unless repository policy refused it or an Agent,
+provisioning job or credential registration exists.
+
+`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
+model metadata referenced by defaults or entries. Only an unreferenced replaced
+primary is retired. Temporary clearing retains fallback entries and transport.
+The saved Configuration goes through the existing configured-Harness resolver;
+model execution remains a later boundary.
 
 ### 4. Save an independent draft
 
-`apps/controller/src/console/agents/create.mjs:renderCreateAgent`
+`apps/controller/src/console/agents/create.mts:renderCreateAgent`
 
-[The creation form](../../apps/controller/src/console/agents/create.mjs) copies
+[The creation form](../../apps/controller/src/console/agents/create.mts) copies
 rendered settings into editable fields and checks their form representation.
 A method-only Preset authentication default selects API key or Service Accounts
 without binding a Secret. The shared Secret picker requires a same-Namespace
@@ -222,6 +218,9 @@ inherits the form default, an empty array keeps the explicit no-approver default
 and selected channel identities are submitted through the normal Agent create
 body. The Agent API and selected Plugin Driver validate the concrete approvers
 after variable rendering.
+The approver finder uses the staged Slack bot binding or a separately selected
+same-Namespace Secret, held only for search. OCC authorizes Agent creation and
+`operate` on the exact Secret per lookup. Results add workspace-qualified IDs.
 Preset `agent.initialWorkspaceFiles` override matching workspace defaults,
 including explicit empty strings. The shared Preset validator checks supported
 filenames, Unicode, NUL, and byte limits before and after expansion; password
@@ -229,22 +228,17 @@ variables remain confined to the credential field. User-edited workspace bytes
 follow the existing private workspace setup path in both regular and provisioning
 creation. The form keeps Secret bindings internally and exposes channel-specific
 Secret controls rather than a raw bindings editor.
-Selected model Secret metadata and references survive draft navigation; raw
-passwords do not. Provider or authentication-method changes clear the selection.
-For an existing selection or a Secret reference already bound in the Preset,
-Save uses the reference without creating another Secret. Ordinary creation grants
-the new Agent's service principal exact Secret `operate` access and retains the
-reference through Agent-conflict and grant retries. The caller needs permission to
-manage the grant; if it fails, the saved Agent remains and the form offers a retry.
-Provisioning derives the grant from `harnessAuth.source`.
-For a password input, Save first creates a same-Namespace Secret, clears the
-credential input, and retains the returned reference. It then creates a
-Configuration and an Agent that refers to the Configuration and Secret, and
-grants the Agent access. Dedicated provisioning uses the existing provisioning
-flow after Secret creation. Password bytes are sent only to the Secret creation
-endpoint, never as Agent or Configuration fields. Each server
-request owns full schema, native credential, and authorization admission before
-its persistence boundary; browser validation is not that boundary.
+Model Secret references survive draft navigation; passwords do not. Provider or
+authentication-method changes clear the selection. Existing or Preset-bound
+references are reused. Ordinary creation grants the Agent service principal
+exact Secret `operate` access; Agent-conflict and grant retries retain the
+reference. The caller needs grant-management permission. A failed grant keeps
+the saved Agent and offers retry. Provisioning derives it from `harnessAuth.source`.
+Password inputs first create a same-Namespace Secret, clear the input, and
+retain the reference. Save then creates Configuration and Agent resources and
+grants access; dedicated provisioning follows its existing flow. Password bytes
+reach only Secret creation. Each API request performs schema, native credential
+and authorization admission before persistence.
 
 If Secret creation fails, the masked input remains for correction or retry.
 If a later save fails, its saved Secret reference is reused.
@@ -259,9 +253,9 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [revision admission](configuration-driver/persistence-and-revisions.md)
+settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
 read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable admitted revision.
+or an immutable saved version.
 
 ## Debugging and Verification
 
@@ -273,7 +267,7 @@ or an immutable admitted revision.
 - [Controller integration coverage](../../tests/integration/presets-controller.test.mjs)
   exercises the HTTP workflow, admission, isolation, and copy independence.
   [PostgreSQL coverage](../../tests/integration/postgres-presets.test.mjs) exercises
-  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.mjs)
+  persistence; [browser coverage](../../tests/browser/console-agent-presets.test.ts)
   exercises the real selection form. Coverage names are not proof of a live model response.
 - The standard Preset's [clean-build network trace](../guides/topics/standard-codex-preset.md#build-network-allowlist)
   covers source builds with cold dependency caches behind an enforcing HTTPS
@@ -294,6 +288,21 @@ or an immutable admitted revision.
 
 ## Changelog
 
+- 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
+
+- 2026-10-14: The Preset list returns summaries. (fix-1323-lists)
+
+- 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
+
+- 2026-10-10 06:42: Preserve referenced fallback model metadata and retire obsolete primary catalog entries during Console selection. (authoring-run/d6d98411-224c-4a17-8bb9-5bd060b1dd59 - f27f55ce2bfb3d54b8e95c8c3f0f670425717a52)
+
+- 2026-10-10 04:52: Preserve multiline strings and exact restored defaults in the Preset chooser. (authoring-run/0f2600bb-f524-4114-9ba6-7ff3cbee3d29 - 64dff25990334c8cf1e9372d5452c38cdcadfa61)
+
+- 2026-10-09 19:46: Authorize Preset writes before reading the body. (authoring-run/5b89726f-4b6c-43e9-8cfb-ad77c9f3a320 - deeb84b5e)
+
+- 2026-10-10 02:23: Admit contract-sized Preset writes at the HTTP boundary; template limits and mutation checks remain unchanged. (authoring-run/6f54c753-eb8a-4e11-b078-b178ba613240 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
+
+- 2026-10-06 22:22: Locate Preset file loading in its adjacent composition module; initialization remains unchanged. (authoring-run/a45c48cd-bde3-41b1-8e3d-57bf774df237 - 17e10b6d34cc2c805b3910fddfef191d3dd1b3f8)
 - 2026-10-05 05:30: Only the API logs Preset warnings.
 - 2026-10-05 03:30: A file named like a bundled default replaces it and warns.
 - 2026-10-05 02:30: Skip and warn on a default creation a deny Restriction refuses.

@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "fileDurations": "./test-suites/file-durations.json",
   "lanes": {
     "checks-baseline-1": "./test-suites/checks-baseline-1.json",
     "checks-baseline-2": "./test-suites/checks-baseline-2.json",
@@ -14,6 +15,7 @@
     "images-model-probes": "./test-suites/images-model-probes.json",
     "images-runtime-startup": "./test-suites/images-runtime-startup.json",
     "images-runtime-startup-2": "./test-suites/images-runtime-startup-2.json",
+    "images-runtime-startup-3": "./test-suites/images-runtime-startup-3.json",
     "image-pair-qualification": "./test-suites/image-pair-qualification.json",
     "k3d-fixture-configuration": "./test-suites/k3d-fixture-configuration.json",
     "k3d-fixture-state": "./test-suites/k3d-fixture-state.json",
@@ -26,6 +28,7 @@
     "slack": "./test-suites/slack.json",
     "provider-account": "./test-suites/provider-account.json",
     "openshell": "./test-suites/openshell.json",
+    "openshell-oauth": "./test-suites/openshell-oauth.json",
     "helper-timeout": "./test-suites/helper-timeout.json",
     "logging-collector": "./test-suites/logging-collector.json",
     "k3d-otel": "./test-suites/k3d-otel.json",
@@ -33,12 +36,16 @@
     "plugin-model": "./test-suites/plugin-model.json",
     "repository-credentials-container": "./test-suites/repository-credentials-container.json",
     "repository-credentials-live": "./test-suites/repository-credentials-live.json",
-    "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",
     "repository-credentials-installed": "./test-suites/repository-credentials-installed.json",
     "k3d-two-cluster": "./test-suites/k3d-two-cluster.json",
     "k3d-observability": "./test-suites/k3d-observability.json",
     "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
-    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json"
+    "runtime-image-fixture": "./test-suites/runtime-image-fixture.json",
+    "qa-matrix": "./test-suites/qa-matrix.json",
+    "keycloak-oidc": "./test-suites/keycloak-oidc.json",
+    "egress-connected": "./test-suites/egress-connected.json",
+    "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
   },
   "groups": {
     "ci": [
@@ -54,14 +61,15 @@
       "images-model-probes",
       "images-runtime-startup",
       "images-runtime-startup-2",
+      "images-runtime-startup-3",
       "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
       "k3d-fixture-plugins",
       "logging-collector",
       "repository-credentials-container",
-      "repository-credentials-platform",
-      "k3d-observability"
+      "k3d-observability",
+      "keycloak-oidc"
     ],
     "full": [
       "checks-baseline-1",
@@ -76,6 +84,7 @@
       "images-model-probes",
       "images-runtime-startup",
       "images-runtime-startup-2",
+      "images-runtime-startup-3",
       "runtime-image-fixture",
       "k3d-fixture-configuration",
       "k3d-fixture-state",
@@ -91,9 +100,12 @@
       "logging-collector",
       "k3d-otel",
       "repository-credentials-container",
-      "repository-credentials-platform",
       "k3d-observability",
-      "k3d-observability-demo"
+      "k3d-observability-demo",
+      "keycloak-oidc",
+      "qa-matrix",
+      "dev-up-k3d",
+      "skipper-prepared-git-installed"
     ]
   }
 }

@@ -28,6 +28,13 @@ You need:
 - Your Helm values (`helm get values`), which list the extra egress the chart
   grants the control plane.
 
+Production Helm checks label maps used in peer `matchLabels` before submission.
+Use Kubernetes label keys and values, and quote boolean-looking or numeric
+strings in values files. Empty strings remain valid. Existing null map/value
+semantics are preserved; the chart does not normalize accepted selectors or
+validate inactive maps. Raw sandbox peers keep native `matchExpressions` and
+`ipBlock` handling. These render checks do not prove traffic enforcement.
+
 The probe runs with `node`, which the OCC controller image, the OpenClaw gateway
 and the dedicated Codex Harness provide. Harness Pods that a SandboxDriver
 such as OpenShell provisions are outside this check: their provider fences
@@ -250,4 +257,9 @@ kc -n "$TENANT_NAMESPACE" delete pod netcheck-profile-missing netcheck-profile-u
   [network profile](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   and the model egress exclusions.
 - The status proxy fails for every Pod: set `network.pluginStatusProxySourceCidrs`
-  to the API server's source addresses on each node.
+  to the API server's source addresses on each node. It never reaches an
+  OpenShell Harness Pod, whose provider fence admits only its Gateway; Compute
+  does not try, and OpenShell reports that Harness's status.
+- The worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`: a status source wider
+  than one address, such as the Pod CIDR, lets every Pod in it reach each
+  Agent's status port. List only the API server's `/32` or `/128` sources.

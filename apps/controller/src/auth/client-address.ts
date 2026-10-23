@@ -37,28 +37,64 @@ const refusedHeaders = new Set([
 const headerToken = /^[a-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 const maximumHops = 32;
 
+/** Expands an address already validated by isIP, including dotted tails and zone IDs. */
+function ipv6Groups(address: string): number[] {
+  const hex = address.split("%")[0]!.replace(/\d+\.\d+\.\d+\.\d+$/, (tail) => {
+    const octets = tail.split(".").map(Number);
+    return `${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`;
+  });
+  const [head, tail] = hex.split("::");
+  const left = head === "" ? [] : head!.split(":");
+  const right = tail === undefined || tail === "" ? [] : tail.split(":");
+  const zeros = tail === undefined ? [] : Array<string>(8 - left.length - right.length).fill("0");
+  return [...left, ...zeros, ...right].map((group) => parseInt(group, 16));
+}
+
 function normalizeAddress(value: string): string {
   const trimmed = value.trim();
-  const lower = trimmed.toLowerCase();
-  return lower.startsWith("::ffff:") && isIP(trimmed.slice(7)) === 4 ? trimmed.slice(7) : trimmed;
+  if (isIP(trimmed) === 6) {
+    const groups = ipv6Groups(trimmed);
+    if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
+      return [groups[6]! >> 8, groups[6]! & 255, groups[7]! >> 8, groups[7]! & 255].join(".");
+    }
+  }
+  return trimmed;
 }
 
 function parseCidr(entry: string): { address: string; prefix: number; family: "ipv4" | "ipv6" } {
   const [rawAddress, rawPrefix, extra] = entry.split("/");
   const address = normalizeAddress(rawAddress ?? "");
   const version = isIP(address);
-  if (extra !== undefined || version === 0) {
-    throw new Error(`OCC_AUTH_TRUSTED_PROXY_CIDRS contains an invalid CIDR: ${entry}`);
-  }
   const bits = version === 4 ? 32 : 128;
-  const prefix = rawPrefix === undefined ? bits : Number(rawPrefix);
-  if (rawPrefix !== undefined && !/^[0-9]{1,3}$/.test(rawPrefix)) {
+  let prefix = bits;
+  if (rawPrefix !== undefined) {
+    // Same no-leading-zero rule as the chart and Compute: no sign, space or `/08`.
+    prefix = /^(?:0|[1-9][0-9]{0,2})$/.test(rawPrefix) ? Number(rawPrefix) : NaN;
+  }
+  if (extra !== undefined || version === 0 || !Number.isInteger(prefix)) {
     throw new Error(`OCC_AUTH_TRUSTED_PROXY_CIDRS contains an invalid CIDR: ${entry}`);
   }
-  if (!Number.isInteger(prefix) || prefix > bits) {
-    throw new Error(`OCC_AUTH_TRUSTED_PROXY_CIDRS contains an invalid CIDR: ${entry}`);
+  if (prefix > bits) {
+    // A mapped spelling was canonicalized to IPv4 above, so its prefix is an IPv4 one.
+    const mapped = version === 4 && isIP(rawAddress!.trim()) === 6;
+    throw new Error(
+      mapped
+        ? `OCC_AUTH_TRUSTED_PROXY_CIDRS contains an IPv4-mapped address, whose prefix must be 1 through 32: ${entry}`
+        : `OCC_AUTH_TRUSTED_PROXY_CIDRS contains an invalid CIDR: ${entry}`,
+    );
   }
-  if (prefix === 0) {
+  // BlockList checks IPv4 peers against ::ffff:0:0/96, even in an IPv6 subnet.
+  const coversIpv4 =
+    version === 6 &&
+    prefix <= 96 &&
+    ipv6Groups(address)
+      .slice(0, 6)
+      .every((group, index) => {
+        const shift = 16 - Math.min(16, Math.max(0, prefix - index * 16));
+        const mappedGroup = index === 5 ? 0xffff : 0;
+        return group >> shift === mappedGroup >> shift;
+      });
+  if (prefix === 0 || coversIpv4) {
     throw new Error(`OCC_AUTH_TRUSTED_PROXY_CIDRS must not trust every address: ${entry}`);
   }
   return { address, prefix, family: version === 4 ? "ipv4" : "ipv6" };

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { commandPath } from "../helpers/fake-commands.mjs";
 
 const script = resolve("scripts/pr-status.mjs");
 
@@ -11,10 +12,11 @@ function setup(t) {
   const directory = mkdtempSync(join(tmpdir(), "pr-status-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const log = join(directory, "calls");
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   writeFileSync(
     join(directory, "gh"),
     `#!/usr/bin/env node
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.PR_STATUS_CALLS, JSON.stringify(args) + "\\n");
 if (process.env.PR_STATUS_FAIL && args[0] === "pr") {
@@ -39,7 +41,7 @@ else process.exit(1);
     log,
     env: {
       ...process.env,
-      PATH: `${directory}${delimiter}${process.env.PATH}`,
+      PATH: commandPath(directory),
       PR_STATUS_CALLS: log,
     },
   };

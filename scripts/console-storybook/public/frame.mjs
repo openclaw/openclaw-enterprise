@@ -26,6 +26,10 @@ history.replaceState(
   "",
   scenario.path ?? "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
 );
+// Simulates a browser without clipboard access (an http origin), where copy buttons fall back.
+if (scenario.clipboard === "unavailable") {
+  Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+}
 // Focus the isolated preview before the console registers its focus-refresh handler.
 // Otherwise the first interaction can reset a preselected Preset before it becomes a form.
 window.focus();
@@ -45,7 +49,7 @@ if (scenario.component === "plugins") {
   const panel = document.createElement("section");
   panel.className = "agent-card agent-form";
   panel.append(fields.section);
-  document.querySelector("#app").append(panel);
+  document.querySelector("#app").replaceChildren(panel);
   fields.setDisabled(scenario.disabled ?? false);
 } else {
   await import("/console/console.mjs");
@@ -122,7 +126,7 @@ try {
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (scenario.path?.includes("tab=")) {
+  if (scenario.scrollToTabs !== false && scenario.path?.includes("tab=")) {
     document.querySelector(".agent-tabs")?.scrollIntoView({ block: "start" });
   }
   evidence.ready = true;

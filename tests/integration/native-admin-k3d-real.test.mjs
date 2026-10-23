@@ -1,3 +1,4 @@
+import { submitChatTurnWithAssistantProof, waitForStockUi } from "../helpers/native-ui-chat.mjs";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
@@ -203,9 +204,9 @@ async function launchBrowser(context, ingress) {
 
 async function login(page, origin, credentials, path) {
   await page.goto(new URL(path, origin).href);
-  await page.getByLabel("Username").fill(credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\//);
 }
 
@@ -326,80 +327,6 @@ async function assertNoNativeCredentialLeak(page, protectedValues) {
   }
 }
 
-function textFromFrame(frame) {
-  const payload = frame?.payload;
-  if (typeof payload === "string") {
-    return payload;
-  }
-  if (Buffer.isBuffer(payload)) {
-    return payload.toString("utf8");
-  }
-  return String(payload ?? "");
-}
-
-function messageText(message) {
-  if (typeof message?.content === "string") {
-    return message.content;
-  }
-  if (Array.isArray(message?.content)) {
-    return message.content
-      .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
-      .join("");
-  }
-  return "";
-}
-
-function terminalAssistantSessionMessage(frameText, marker, prompt) {
-  let parsed;
-  try {
-    parsed = JSON.parse(frameText);
-  } catch {
-    return false;
-  }
-  if (parsed?.type !== "event" || parsed.event !== "session.message") {
-    return false;
-  }
-  const message = parsed.payload?.message;
-  const text = messageText(message);
-  return message?.role === "assistant" && text.includes(marker) && !text.includes(prompt);
-}
-
-async function submitChatTurnWithAssistantProof(page, marker, receivedFrames) {
-  await page.goto(new URL("/new", page.url()).href);
-  await waitForStockUi(page);
-  const prompt = `Reply with exactly the token on its own line and no other text: ${marker}`;
-  const firstFrame = receivedFrames.length;
-  const input = page.locator(".agent-chat__composer-combobox > textarea").first();
-  await input.waitFor({ state: "visible", timeout: 60_000 });
-  await input.fill(prompt);
-  await page.getByRole("button", { name: "Start session", exact: true }).click();
-  return waitFor("stock UI terminal assistant session.message containing the nonce", () =>
-    receivedFrames
-      .slice(firstFrame)
-      .find((frame) => terminalAssistantSessionMessage(textFromFrame(frame), marker, prompt)),
-  );
-}
-
-async function waitForStockUi(page) {
-  await page.waitForFunction(
-    () =>
-      globalThis.customElements.get("openclaw-app") !== undefined &&
-      globalThis.document.querySelector("openclaw-app") !== null,
-    undefined,
-    { timeout: 120_000 },
-  );
-  await page.waitForFunction(
-    () =>
-      globalThis
-        .getComputedStyle(globalThis.document.documentElement)
-        .getPropertyValue("--openclaw-css-ok")
-        .trim() === "1",
-    undefined,
-    { timeout: 60_000 },
-  );
-  await page.locator("body").waitFor({ state: "visible", timeout: 60_000 });
-}
-
 async function assertServiceWorkerRegistrationBlockedByCsp(page) {
   const result = await page.evaluate(async () => {
     try {
@@ -431,13 +358,20 @@ async function assertServiceWorkerRegistrationBlockedByCsp(page) {
   assert.deepEqual(result.registrations, [], "native admin must not install a ServiceWorker");
 }
 
-async function completeNativeLaunch(nativePage, { nativeOrigin }) {
-  await nativePage.waitForLoadState("domcontentloaded");
-  assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
-  await nativePage.waitForURL((url) => url.origin === nativeOrigin && url.pathname === "/", {
-    timeout: 120_000,
-  });
+async function openNativeAdminConsole(page, nativeOrigin) {
+  const link = page.getByRole("link", { name: "Open admin console", exact: true });
+  const root = new URL("/", nativeOrigin).href;
+  assert.equal(await link.getAttribute("href"), root);
+  const [nativePage] = await Promise.all([page.waitForEvent("popup"), link.click()]);
   await waitForStockUi(nativePage);
+  // Navigation Timing keeps the loaded document URL when the stock UI replaces "/" with chat.
+  const documentUrl = await nativePage.evaluate(
+    () => performance.getEntriesByType("navigation")[0]?.name,
+  );
+  assert.equal(documentUrl, root, "Open admin console must load the native root document");
+  assert.equal(new URL(nativePage.url()).origin, nativeOrigin);
+  assert.equal(await nativePage.evaluate(() => globalThis.window.opener === null), true);
+  return nativePage;
 }
 
 async function openRawEditor(page, nativeOrigin) {
@@ -775,14 +709,12 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     }
     // Configuration remains denied, but exact Agent administer must still launch
     // the regular native UI. A fixture URL must not stand in for the Console link.
-    const popup = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
-    const nativePage = await popup;
-    await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
+    const nativePage = await openNativeAdminConsole(page, status.origin);
     const terminalFrame = await submitChatTurnWithAssistantProof(
       nativePage,
       `sharing-${label}-${randomUUID()}`,
       frames,
+      waitFor,
     );
     // Bind withdrawal to the connection that delivered the real assistant reply.
     // Records from previous page navigations do not establish a current stream.
@@ -851,6 +783,7 @@ async function assertSharedNativeSessions(context, { topology, browser, ingress,
     unaffected.nativePage,
     `sharing-after-withdrawal-${randomUUID()}`,
     unaffected.frames,
+    waitFor,
   );
   context.diagnostic(
     `Selective sharing withdrawal closed the confirmed native stream in ${Math.ceil(elapsedMs)} ms; the other recipient completed a subsequent real model turn.`,
@@ -951,11 +884,12 @@ test(
     const page = await browserContext.newPage();
     await login(page, ingress.origin, topology.credentials, agentDetailPath(topology));
     await page.getByRole("heading", { name: topology.agent.name }).waitFor();
-    await page.getByText("Native admin access can change this gateway outside OCE.").waitFor();
-    const popupPromise = page.waitForEvent("popup");
-    await page.getByRole("link", { name: "Open native admin UI" }).click();
-    const nativePage = await popupPromise;
-    await completeNativeLaunch(nativePage, { nativeOrigin: status.origin });
+    await page
+      .getByText(
+        "Manage configuration in OCE. Changes in the admin console aren’t saved to Agent versions",
+      )
+      .waitFor();
+    const nativePage = await openNativeAdminConsole(page, status.origin);
 
     const deepLink = new URL("/settings/advanced", status.origin);
     const deepLinkResponse = await nativePage.goto(deepLink.href);
@@ -979,7 +913,7 @@ test(
     );
 
     const marker = `native-admin-browser-${randomUUID()}`;
-    await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames);
+    await submitChatTurnWithAssistantProof(nativePage, marker, nativeSocketFrames, waitFor);
     await nativePage.screenshot({ path: join(artifacts, "stock-ui-chat.png"), fullPage: true });
     await assertNoNativeCredentialLeak(nativePage, [
       topology.gatewayPassword,

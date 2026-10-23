@@ -23,6 +23,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  rm,
   statfs,
   writeFile,
 } from "node:fs/promises";
@@ -30,39 +31,87 @@ import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
+import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { PUBLIC_GITHUB_READ_SKILL } from "../../apps/controller/src/drivers/repo/github/public-read/codex.ts";
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { createHarnessConfiguration } from "../../tests/helpers/harness-configuration.mjs";
-import { createModelProbeCertificates } from "../../tests/helpers/runtime-model-probe-certificates.mjs";
+import { installPublicGithubReadFixture } from "../../tests/helpers/public-github-read-k3d.mjs";
+import {
+  configureModelProviderDNS,
+  createModelProviderFiles,
+  writeModelProviderTrust,
+} from "../../tests/helpers/runtime-model-provider.mjs";
+import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const occ = join(root, "bin", "occ");
-const workDirectory = resolve(
+export const workDirectory = resolve(
   process.env.OCC_FIRST_AGENT_SMOKE_DIRECTORY ??
     join(process.env.RUNNER_TEMP ?? "/tmp", "first-agent-smoke"),
 );
-const registry = "127.0.0.1:5000";
+// OCC_FIRST_AGENT_SMOKE_SLOT (0-31, default 0) picks this run's host-wide names,
+// port and subnet, so concurrent smokes on one Docker host do not collide.
+// Unset, empty and 0 keep the names CI uses.
+export function smokeSlotNames(value) {
+  value ||= "0";
+  if (!/^(?:0|[1-9][0-9]?)$/.test(value) || Number(value) > 31) {
+    throw new Error(
+      `OCC_FIRST_AGENT_SMOKE_SLOT must be an integer from 0 to 31, got ${JSON.stringify(value)}`,
+    );
+  }
+  const slot = Number(value);
+  if (slot === 0) {
+    return {
+      cluster: "occ-dev-first-agent-smoke",
+      registryContainer: "oce-first-agent-smoke-registry",
+      registry: "127.0.0.1:5000",
+      model: "oce-first-agent-smoke-model",
+      subnet: "11.111.0.0/29",
+      modelAddress: "11.111.0.2",
+      nodeModelAddress: "11.111.0.3",
+    };
+  }
+  const base = 8 * slot;
+  return {
+    cluster: `occ-dev-smoke-s${slot}`,
+    registryContainer: `oce-smoke-s${slot}-registry`,
+    registry: `127.0.0.1:${15000 + slot}`,
+    model: `oce-smoke-s${slot}-model`,
+    subnet: `11.111.0.${base}/29`,
+    modelAddress: `11.111.0.${base + 2}`,
+    nodeModelAddress: `11.111.0.${base + 3}`,
+  };
+}
+const slotNames = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+const registry = slotNames.registry;
 // Pinned like tests/integration/container-registry-real.test.mjs.
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
 const nodeBaseImage =
-  "docker.io/library/node:24-bookworm@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584";
+  "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0";
 // Agent NetworkPolicies allow model egress only to public addresses on TCP/443,
 // and OpenClaw refuses provider addresses in private or special-use ranges. The
 // stand-in provider therefore uses a globally routable address, reachable only
 // on this host's Docker network; nothing outside the runner is contacted.
-const modelNetwork = { name: "oce-first-agent-smoke-model", subnet: "11.111.0.0/29" };
-const modelAddress = "11.111.0.2";
-const nodeModelAddress = "11.111.0.3";
-const modelContainer = "oce-first-agent-smoke-model";
+const modelNetwork = { name: slotNames.model, subnet: slotNames.subnet };
+const modelAddress = slotNames.modelAddress;
+const nodeModelAddress = slotNames.nodeModelAddress;
+export const modelContainer = slotNames.model;
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
+// Both stop requests share one serial worker. Per Agent, allow the selected
+// gateway grace, two minutes for a dedicated workload to terminate and one
+// minute for API observation/finalization. This is a finite smoke allowance,
+// not a change to runtime grace, worker retries or the 40-minute CI job bound.
+export const STOP_PHASE_TIMEOUT_MS = 2 * (GATEWAY_STOP_TIMEOUT_MS + 3 * minute);
 const timings = [];
+const proofResults = [];
 
 function log(message) {
   process.stdout.write(`[first-agent-smoke] ${message}\n`);
 }
 
-function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
+export function run(command, args, { env = process.env, input, timeout = 5 * minute, label } = {}) {
   return new Promise((resolveRun, reject) => {
     const child = spawn(command, args, { cwd: root, env, stdio: ["pipe", "pipe", "pipe"] });
     const stdout = [];
@@ -123,17 +172,104 @@ async function step(name, operation) {
   }
 }
 
-async function waitFor(description, operation, timeout) {
-  const deadline = Date.now() + timeout;
+function validTimeout(timeout) {
+  assert.ok(
+    Number.isSafeInteger(timeout) && timeout > 0,
+    "Timeout must be a positive finite integer.",
+  );
+}
+
+export async function waitFor(
+  description,
+  operation,
+  timeout,
+  { now = Date.now, sleep = delay } = {},
+) {
+  validTimeout(timeout);
+  const deadline = now() + timeout;
   let last;
-  while (Date.now() < deadline) {
+  while (now() < deadline) {
     last = await operation();
+    if (now() > deadline) {
+      break;
+    }
     if (last?.done) {
       return last.value;
     }
-    await delay(2_000);
+    const remaining = deadline - now();
+    if (remaining > 0) {
+      await sleep(Math.min(2_000, remaining));
+    }
   }
   throw new Error(`Timed out waiting for ${description}: ${JSON.stringify(last?.state ?? null)}`);
+}
+
+function agentStopState(agent) {
+  const revision = agent?.activeRevisionId;
+  return {
+    desiredRuntimeState: ["running", "stopped"].includes(agent?.desiredRuntimeState)
+      ? agent.desiredRuntimeState
+      : "unknown",
+    activeRevisionId:
+      revision == null
+        ? null
+        : typeof revision === "string" &&
+            /^rev_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(revision)
+          ? revision
+          : "invalid",
+    status: ["active", "deleting"].includes(agent?.status) ? agent.status : "unknown",
+  };
+}
+
+export async function agentStopDiagnostic(readAgent) {
+  try {
+    return { phase: "agent-state", ...agentStopState(await readAgent()) };
+  } catch {
+    // A failed diagnostic read must not replace the smoke's original failure.
+    return { phase: "agent-state", unavailable: true };
+  }
+}
+
+export async function observeAgentStop(
+  label,
+  readAgent,
+  readPods,
+  { timeout = STOP_PHASE_TIMEOUT_MS, now = Date.now, sleep = delay } = {},
+) {
+  validTimeout(timeout);
+  const started = now();
+  const deadline = started + timeout;
+  const clock = { now, sleep };
+  await waitFor(
+    `${label} to stop`,
+    async () => {
+      const current = await readAgent();
+      assert.ok(
+        current.desiredRuntimeState === "stopped",
+        `${label}: desired state changed while stopping`,
+      );
+      return {
+        done: !current.activeRevisionId,
+        state: { phase: "active-revision", elapsedMs: now() - started, ...agentStopState(current) },
+      };
+    },
+    timeout,
+    clock,
+  );
+  const remaining = deadline - now();
+  assert.ok(remaining > 0, `${label}: stop observation deadline expired before Pods were checked`);
+  await waitFor(
+    `${label} Pods to terminate after a reported stop`,
+    async () => {
+      const pods = await readPods();
+      return {
+        done: pods.length === 0,
+        state: { phase: "pods", elapsedMs: now() - started, remainingPods: pods.length },
+      };
+    },
+    Math.min(2 * minute, remaining),
+    clock,
+  );
 }
 
 // `run` reads the selections from its environment (GitHub Actions) or from the
@@ -154,7 +290,7 @@ async function exportEnvironment(values) {
 // images
 
 function cacheArguments(role) {
-  // Restore only: main's cache is written by the warm workflow and main pushes.
+  // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     !process.env.ACTIONS_RUNTIME_TOKEN ||
@@ -165,6 +301,14 @@ function cacheArguments(role) {
   const scope = `oce-ci-${role}-${process.platform}-${process.arch}-v1`;
   return ["--cache-from", `type=gha,version=2,scope=${scope},timeout=60s`];
 }
+
+// The image lanes and the warm job build with a fixed SOURCE_DATE_EPOCH, and
+// BuildKit stamps the directories WORKDIR creates with it. Without the same
+// value no step after an image's first WORKDIR matched their cache, so every
+// smoke run reinstalled both images' packages (finding 1273). It sets only
+// timestamps (image config, history, WORKDIR); the smoke reads none of them.
+// RUN steps do not see it: an `ARG SOURCE_DATE_EPOCH` would change their keys.
+const cacheBuildArguments = ["--build-arg", "SOURCE_DATE_EPOCH=0"];
 
 async function pushedDigest(tag) {
   await run("docker", ["push", tag], { timeout: 10 * minute });
@@ -181,32 +325,31 @@ async function pushedDigest(tag) {
   return reference;
 }
 
-async function createModelCertificates(directory) {
-  await mkdir(directory, { recursive: true });
-  const file = (name) => join(directory, name);
-  await createModelProbeCertificates({ directory, caName: "oce-first-agent-smoke-ca", run });
-  await copyFile(
-    join(root, "tests/fixtures/runtime-model-probe-endpoint.mjs"),
-    file("endpoint.mjs"),
-  );
-  await chmod(directory, 0o755);
-  for (const name of ["ca.pem", "cert.pem", "key.pem", "endpoint.mjs"]) {
-    await chmod(file(name), 0o644);
-  }
-}
-
-async function buildImages() {
+async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
   await mkdir(workDirectory, { recursive: true });
   const modelDirectory = join(workDirectory, "model");
-  await step("model certificates", () => createModelCertificates(modelDirectory));
-  await step("loopback registry", () =>
+  await step("model certificates", () =>
+    createModelProviderFiles({
+      directory: modelDirectory,
+      caName: "oce-first-agent-smoke-ca",
+      run,
+    }),
+  );
+  if (preparedGit) {
+    const name = "skipper-prepared-compute-model.mjs";
+    const companion = join(modelDirectory, name);
+    await copyFile(join(root, "tests", "fixtures", name), companion);
+    await chmod(companion, 0o644); // The model fixture runs as the image's non-root user.
+    await rm(join(modelDirectory, "ca-key.pem"));
+  }
+  const registryContainer = await step("loopback registry", () =>
     run("docker", [
       "run",
       "--detach",
       "--name",
-      "oce-first-agent-smoke-registry",
+      slotNames.registryContainer,
       "--publish",
       `${registry}:5000`,
       registryImage,
@@ -215,7 +358,7 @@ async function buildImages() {
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
-  // Both builds read the hosted caches the Images and Packaging lane writes.
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
       run(
@@ -225,6 +368,7 @@ async function buildImages() {
           "build",
           "--load",
           ...cacheArguments("controller"),
+          ...cacheBuildArguments,
           "--pull=false",
           "--target",
           "runtime",
@@ -245,6 +389,7 @@ async function buildImages() {
           "build",
           "--load",
           ...cacheArguments("runtime"),
+          ...cacheBuildArguments,
           "--pull=false",
           "--file",
           "deploy/runtime/Dockerfile",
@@ -262,22 +407,7 @@ async function buildImages() {
   // provider's private CA in the system store (Codex) and for Node (OpenClaw).
   // Labels, user, entrypoint and every other layer are inherited unchanged.
   const context = join(workDirectory, "runtime-trust");
-  await mkdir(context, { recursive: true });
-  await copyFile(join(modelDirectory, "ca.pem"), join(context, "smoke-ca.crt"));
-  await writeFile(
-    join(context, "Dockerfile"),
-    [
-      "ARG RUNTIME_IMAGE",
-      "FROM ${RUNTIME_IMAGE}",
-      "USER root",
-      "COPY smoke-ca.crt /usr/local/share/ca-certificates/oce-first-agent-smoke.crt",
-      "RUN update-ca-certificates",
-      "ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-      "ENV NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/oce-first-agent-smoke.crt",
-      "USER node",
-      "",
-    ].join("\n"),
-  );
+  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   await step("runtime trust layer", () =>
     run("docker", [
       "buildx",
@@ -295,7 +425,36 @@ async function buildImages() {
   const [controller, runtime] = await step("registry digests", () =>
     Promise.all([pushedDigest(controllerTag), pushedDigest(smokeRuntimeTag)]),
   );
+  const repository = {};
+  if (preparedGit) {
+    const tag = `${registry}/oce-smoke/repository:${revision}`;
+    await step("repository service image build", () =>
+      run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "--load",
+          ...cacheArguments("runtime"),
+          ...cacheBuildArguments,
+          "--file",
+          "deploy/runtime/Dockerfile",
+          "--target",
+          "repository-credentials-service",
+          "--label",
+          `org.opencontainers.image.revision=${revision}`,
+          "--tag",
+          tag,
+          ".",
+        ],
+        { timeout: 30 * minute, label: "repository-build" },
+      ),
+    );
+    repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
+    repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
+  }
   await exportEnvironment({
+    ...repository,
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
     OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
@@ -307,11 +466,17 @@ async function buildImages() {
 // ---------------------------------------------------------------------------
 // run
 
-function createApi(origin, key) {
+export function createApi(origin, key) {
   return async (method, path, body) => {
+    const url = new URL(path, origin);
+    assert.equal(
+      url.origin,
+      origin,
+      "refusing to send the smoke key outside the controller origin",
+    );
     let response;
     try {
-      response = await fetch(new URL(path, origin), {
+      response = await fetch(url, {
         method,
         redirect: "error",
         signal: AbortSignal.timeout(30_000),
@@ -341,14 +506,17 @@ function createApi(origin, key) {
   };
 }
 
-const clusterName = "occ-dev-first-agent-smoke";
+const clusterName = slotNames.cluster;
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the
-// cluster looked like while it was being installed.
-function watchCluster() {
+// cluster looked like while it was being installed. The returned stop function
+// wakes an idle wait without another capture; one already running finishes.
+// `finalCapture` takes one last snapshot, for a failed setup.
+export function watchCluster() {
   const kubeconfig = join(workDirectory, "watch-kubeconfig");
-  let stopped = false;
+  const wake = new AbortController();
+  let finalCapture = false;
   const record = async (label, command, args) => {
     try {
       const { stdout } = await run(command, args, { timeout: minute });
@@ -357,69 +525,80 @@ function watchCluster() {
       await appendFile(watchLog, `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`);
     }
   };
-  const loop = (async () => {
-    while (!stopped) {
-      await delay(30_000);
-      try {
-        const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
-          timeout: minute,
-        });
-        await writeFile(kubeconfig, stdout, { mode: 0o600 });
-      } catch {
-        continue;
-      }
-      const k = ["--kubeconfig", kubeconfig];
-      await record("pods", "kubectl", [...k, "get", "pods", "-A", "-o", "wide"]);
-      await record("warning events", "kubectl", [
-        ...k,
-        "get",
-        "events",
-        "-A",
-        "--field-selector",
-        "type!=Normal",
-      ]);
-      await record("node conditions", "kubectl", [
-        ...k,
-        "get",
-        "nodes",
-        "-o",
-        'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
-      ]);
-      try {
-        const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
-        for (const pod of JSON.parse(stdout).items) {
-          const ready = pod.status?.conditions?.some(
-            ({ type, status }) => type === "Ready" && status === "True",
-          );
-          const age = Date.now() - Date.parse(pod.metadata.creationTimestamp);
-          if (!ready && pod.status?.phase !== "Succeeded" && age > 90_000) {
-            await record(`describe ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
-              ...k,
-              "-n",
-              pod.metadata.namespace,
-              "describe",
-              "pod",
-              pod.metadata.name,
-            ]);
-            await record(`logs ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
-              ...k,
-              "-n",
-              pod.metadata.namespace,
-              "logs",
-              pod.metadata.name,
-              "--all-containers",
-              "--tail",
-              "40",
-            ]);
-          }
+  const capture = async () => {
+    try {
+      const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
+        timeout: minute,
+      });
+      await writeFile(kubeconfig, stdout, { mode: 0o600 });
+    } catch {
+      return;
+    }
+    const k = ["--kubeconfig", kubeconfig];
+    await record("pods", "kubectl", [...k, "get", "pods", "-A", "-o", "wide"]);
+    await record("warning events", "kubectl", [
+      ...k,
+      "get",
+      "events",
+      "-A",
+      "--field-selector",
+      "type!=Normal",
+    ]);
+    await record("node conditions", "kubectl", [
+      ...k,
+      "get",
+      "nodes",
+      "-o",
+      'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
+    ]);
+    try {
+      const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
+      for (const pod of JSON.parse(stdout).items) {
+        const ready = pod.status?.conditions?.some(
+          ({ type, status }) => type === "Ready" && status === "True",
+        );
+        const age = Date.now() - Date.parse(pod.metadata.creationTimestamp);
+        if (!ready && pod.status?.phase !== "Succeeded" && age > 90_000) {
+          await record(`describe ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
+            ...k,
+            "-n",
+            pod.metadata.namespace,
+            "describe",
+            "pod",
+            pod.metadata.name,
+          ]);
+          await record(`logs ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
+            ...k,
+            "-n",
+            pod.metadata.namespace,
+            "logs",
+            pod.metadata.name,
+            "--all-containers",
+            "--tail",
+            "40",
+          ]);
         }
-      } catch {
-        // The cluster may be going away.
       }
+    } catch {
+      // The cluster may be going away.
+    }
+  };
+  const loop = (async () => {
+    while (!wake.signal.aborted) {
+      try {
+        await delay(30_000, undefined, { signal: wake.signal });
+      } catch {
+        break;
+      }
+      await capture();
+    }
+    if (finalCapture) {
+      await capture();
     }
   })();
-  return async () => {
-    stopped = true;
+  return async ({ finalCapture: final = false } = {}) => {
+    finalCapture = final;
+    wake.abort();
     await loop;
   };
 }
@@ -433,16 +612,21 @@ async function printWatchLog() {
   }
 }
 
-async function startLocalSetup(environment) {
-  const stopWatching = watchCluster();
-  try {
-    await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
-  } catch (error) {
+export async function startLocalSetup(environment, { privateInstall = false } = {}) {
+  if (privateInstall) {
+    // Private acceptance retains only named stages, never installation or cluster logs.
+    await run(occ, ["dev", "up"], { env: environment, timeout: 30 * minute });
+  } else {
+    const stopWatching = watchCluster();
+    try {
+      await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
+    } catch (error) {
+      await stopWatching({ finalCapture: true });
+      await printWatchLog();
+      throw error;
+    }
     await stopWatching();
-    await printWatchLog();
-    throw error;
   }
-  await stopWatching();
   const directory = environment.OCC_DEVELOPMENT_STATE_DIRECTORY;
   const state = JSON.parse(await readFile(join(directory, "state.json"), "utf8"));
   const key = JSON.parse(await readFile(state.keyPath, "utf8"));
@@ -457,7 +641,7 @@ async function startLocalSetup(environment) {
   };
 }
 
-function kubectl(stack, args, options = {}) {
+export function kubectl(stack, args, options = {}) {
   return run("kubectl", ["--kubeconfig", stack.kubeconfig, "--context", stack.context, ...args], {
     timeout: 2 * minute,
     ...options,
@@ -467,8 +651,14 @@ function kubectl(stack, args, options = {}) {
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image.
-async function routeModelProvider(stack, modelDirectory, runtimeImage) {
+export async function routeModelProvider(
+  stack,
+  modelDirectory,
+  runtimeImage,
+  { journey = "PROBE_PUBLIC_READ_JOURNEY", cleanup = [], credentialDigests } = {},
+) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
+  cleanup.push(() => run("docker", ["network", "rm", modelNetwork.name]));
   // Fixed addresses: Docker would otherwise give the node the provider's address.
   await run("docker", [
     "network",
@@ -478,7 +668,15 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage) {
     modelNetwork.name,
     `k3d-${stack.state.cluster}-server-0`,
   ]);
-  await run("docker", [
+  cleanup.push(() =>
+    run("docker", [
+      "network",
+      "disconnect",
+      modelNetwork.name,
+      `k3d-${stack.state.cluster}-server-0`,
+    ]),
+  );
+  const providerArgs = [
     "run",
     "--detach",
     "--name",
@@ -497,86 +695,101 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage) {
     "PROBE_ENDPOINT_HOST=0.0.0.0",
     "--env",
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
+    "--env",
+    `${journey}=1`,
+    // With digests, the stand-in answers only these credentials and names each caller.
+    ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
     "node",
     runtimeImage,
     "/fixture/endpoint.mjs",
-  ]);
+  ];
+  const { stdout: containerId } = await run("docker", providerArgs, {
+    env: {
+      ...process.env,
+      ...(credentialDigests === undefined
+        ? {}
+        : { PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) }),
+    },
+  });
+  cleanup.push(() => run("docker", ["rm", "--force", containerId.trim()]));
   await waitFor(
     "the stand-in provider to listen",
     async () => ({ done: (await modelEvents()).some(({ event }) => event === "listening") }),
     minute,
   );
-  // k3s CoreDNS imports *.server files from the optional coredns-custom ConfigMap.
-  const configMap = {
-    apiVersion: "v1",
-    kind: "ConfigMap",
-    metadata: { name: "coredns-custom", namespace: "kube-system" },
-    data: {
-      "oce-first-agent-smoke.server": `api.openai.com:53 {\n    hosts {\n        ${modelAddress} api.openai.com\n    }\n}\n`,
-    },
+  await configureModelProviderDNS({
+    kubectl: (args, options) => kubectl(stack, args, options),
+    waitFor,
+    modelAddress,
+    platformNamespace: stack.state.platformNamespace,
+    serverFile: "oce-first-agent-smoke.server",
+  });
+}
+
+// Local Setup installs the controller first. Use its generated Installation and
+// chart values to add the reserved reader peer before admitting a revision.
+async function enablePublicReader(stack) {
+  const valuesPath = join(stack.directory, "helm-values.json");
+  const values = JSON.parse(await readFile(valuesPath, "utf8"));
+  const reader = await installPublicGithubReadFixture({
+    namespace: stack.state.platformNamespace,
+    controllerImage: values.images.controller,
+    kubectl: async (...args) => (await kubectl(stack, args)).stdout,
+    applyManifest: (input) => kubectl(stack, ["apply", "-f", "-"], { input }),
+    waitFor: (description, operation, timeout) =>
+      waitFor(description, async () => ({ done: await operation() }), timeout),
+    observeRequests: true,
+  });
+  const installationPath = join(stack.directory, "installation.yaml");
+  const installation = JSON.parse((await run("yq", ["-o=json", ".", installationPath])).stdout);
+  installation.drivers.compute.configuration.network.publicGithubRead = reader.peer;
+  const installationData = JSON.stringify(installation);
+  await writeFile(installationPath, installationData);
+  const patchPath = join(stack.directory, `installation-patch-${randomUUID()}.json`);
+  try {
+    await writeFile(
+      patchPath,
+      JSON.stringify({ stringData: { "installation.yaml": installationData } }),
+      {
+        flag: "wx",
+        mode: 0o600,
+      },
+    );
+    await kubectl(stack, [
+      "-n",
+      stack.state.platformNamespace,
+      "patch",
+      "secret",
+      "occ-installation-startup",
+      "--type=merge",
+      `--patch-file=${patchPath}`,
+    ]);
+  } finally {
+    await rm(patchPath, { force: true });
+  }
+  values.controlPlane = {
+    ...values.controlPlane,
+    installationChecksum: createHash("sha256").update(installationData).digest("hex"),
   };
-  await kubectl(stack, ["apply", "-f", "-"], { input: JSON.stringify(configMap) });
-  await kubectl(stack, ["-n", "kube-system", "rollout", "restart", "deployment/coredns"]);
-  await kubectl(stack, [
-    "-n",
-    "kube-system",
-    "rollout",
-    "status",
-    "deployment/coredns",
-    "--timeout=120s",
+  await writeFile(valuesPath, JSON.stringify(values));
+  await run("helm", [
+    "upgrade",
+    "openclaw-enterprise",
+    "deploy/helm/openclaw-enterprise",
+    "--namespace",
+    stack.state.platformNamespace,
+    "--kubeconfig",
+    stack.kubeconfig,
+    "--kube-context",
+    stack.context,
+    "-f",
+    valuesPath,
+    "--wait",
+    "--timeout",
+    "5m",
   ]);
-  // The Local Setup API proxy resolves the API Service for every connection,
-  // so API calls made while the old resolver Pod terminates fail after a DNS
-  // timeout. Wait until only the new Pod remains and, from the proxy Pod, the
-  // API Service resolves and api.openai.com resolves to the stand-in provider.
-  const lookup = `const dns = require("node:dns").promises;
-const address = (name) => dns.lookup(name, { family: 4 }).then((r) => r.address, () => null);
-Promise.all([address("api.openai.com"), address("openclaw-enterprise-api")]).then(([provider, api]) =>
-  process.stdout.write(JSON.stringify({ provider, api })));`;
-  await waitFor(
-    "cluster DNS to answer through the restarted resolver",
-    async () => {
-      const { stdout } = await kubectl(stack, [
-        "-n",
-        "kube-system",
-        "get",
-        "pods",
-        "-l",
-        "k8s-app=kube-dns",
-        "-o",
-        "json",
-      ]);
-      const pods = JSON.parse(stdout).items;
-      if (pods.length !== 1 || pods[0].metadata.deletionTimestamp) {
-        return { done: false, state: pods.map((pod) => pod.metadata.name) };
-      }
-      try {
-        const result = JSON.parse(
-          (
-            await kubectl(
-              stack,
-              [
-                "-n",
-                stack.state.platformNamespace,
-                "exec",
-                "deployment/occ-development-api-proxy",
-                "--",
-                "node",
-                "-e",
-                lookup,
-              ],
-              { timeout: 30_000 },
-            )
-          ).stdout,
-        );
-        return { done: result.provider === modelAddress && Boolean(result.api), state: result };
-      } catch (error) {
-        return { done: false, state: error.message.slice(0, 300) };
-      }
-    },
-    2 * minute,
-  );
+  return reader;
 }
 
 async function modelEvents() {
@@ -589,12 +802,15 @@ async function modelEvents() {
 
 async function assertModelAnswered(nonce, label) {
   const events = await modelEvents();
-  const answered = events.filter(({ event, text }) => event === "turn-answered" && text === nonce);
-  assert.ok(
-    answered.length > 0,
-    `${label}: the stand-in provider never answered ${nonce}; the reply did not come from a model turn`,
+  const answered = events.find(
+    ({ event, status, text, caller }) =>
+      event === "turn-answered" && status === 200 && text === nonce && caller === label,
   );
-  return answered[0].transport;
+  assert.ok(
+    answered,
+    `${label}: the stand-in provider never answered ${nonce} with this Agent's credential`,
+  );
+  return answered.transport;
 }
 
 function cli(stack, args, options = {}) {
@@ -757,28 +973,101 @@ async function readLogs(stack, agent, source) {
   );
 }
 
+// Finding 2198: a stopped Gateway left its agent database lease unreleased,
+// and its Pod and logs were gone before diagnostics ran. Keep the end of each
+// stopping Gateway's log, which carries OpenClaw's shutdown and the agent
+// database clean-close receipt.
+const STOPPED_GATEWAY_LOG_LINES = 300;
+const STOPPED_GATEWAY_LOG_SETTLE_MS = 15_000;
+
+// One line naming how the stopped Gateway's shutdown ended, for green runs too.
+export function stoppedGatewaySummary(output) {
+  const receipts = [...output.matchAll(/agent database clean-close receipt: ([a-z-]+)/g)].map(
+    (match) => match[1],
+  );
+  // OpenClaw's gateway/shutdown wording; other subsystems also log "shutdown failed".
+  const shutdown =
+    /shutdown (completed cleanly|failed) in \d+ms|shutdown completed in \d+ms (with warnings)/.exec(
+      output,
+    );
+  const outcome = shutdown === null ? "not logged" : (shutdown[1] ?? `completed ${shutdown[2]}`);
+  return `shutdown ${outcome}; clean-close receipts: ${
+    receipts.length === 0 ? "none" : receipts.join(", ")
+  }`;
+}
+
+// Follows a Gateway container's log until the container exits, keeping the last lines.
+function followGatewayLog(stack, pod) {
+  const child = spawn(
+    "kubectl",
+    [
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--context",
+      stack.context,
+      "logs",
+      "--follow",
+      "--tail",
+      String(STOPPED_GATEWAY_LOG_LINES),
+      "-n",
+      pod.metadata.namespace,
+      pod.metadata.name,
+      "-c",
+      "gateway",
+    ],
+    { cwd: root, stdio: ["ignore", "pipe", "ignore"] },
+  );
+  let lines = [];
+  let partial = "";
+  child.stdout.on("data", (chunk) => {
+    const parts = (partial + chunk.toString()).split("\n");
+    partial = parts.pop();
+    lines.push(...parts);
+    if (lines.length > 2 * STOPPED_GATEWAY_LOG_LINES) {
+      lines = lines.slice(-STOPPED_GATEWAY_LOG_LINES);
+    }
+  });
+  const closed = new Promise((resolveClosed) => {
+    child.once("error", resolveClosed);
+    child.once("close", resolveClosed);
+  });
+  return {
+    async finish() {
+      const settle = delay(STOPPED_GATEWAY_LOG_SETTLE_MS, undefined, { ref: false });
+      await Promise.race([closed, settle]);
+      child.kill("SIGKILL");
+      return [...lines, ...(partial === "" ? [] : [partial])]
+        .slice(-STOPPED_GATEWAY_LOG_LINES)
+        .join("\n");
+    },
+  };
+}
+
 async function stopAgent(stack, agent) {
-  const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
-  assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
-  // The active revision clears only after Compute reports shutdown; at that
-  // point no Agent workload may still be serving.
-  await waitFor(
-    `${agent.label} to stop`,
-    async () => {
-      const current = await stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`);
-      assert.equal(current.desiredRuntimeState, "stopped");
-      return { done: !current.activeRevisionId, state: current.activeRevisionId };
-    },
-    5 * minute,
+  // A failed Pod read only loses the kept log; it must not fail the stop.
+  const gateways = (await agentPods(stack, agent.id).catch(() => [])).filter(
+    (pod) => pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway",
   );
-  await waitFor(
-    `${agent.label} Pods to terminate after a reported stop`,
-    async () => {
-      const pods = await agentPods(stack, agent.id, { includeTerminating: true });
-      return { done: pods.length === 0, state: pods.map((pod) => pod.metadata.name) };
-    },
-    2 * minute,
-  );
+  if (gateways.length === 0) {
+    log(`${agent.label}: no running gateway Pod to follow through the stop`);
+  }
+  const followers = gateways.map((pod) => followGatewayLog(stack, pod));
+  try {
+    const stopped = await cliJson(stack, ["agent", "stop", agent.id]);
+    assert.equal(stopped.desiredRuntimeState, "stopped", `${agent.label}: stop not accepted`);
+    // The active revision clears only after Compute reports shutdown; still
+    // verify that no Agent workload remains after the controller reports it.
+    await observeAgentStop(
+      agent.label,
+      () => stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+      () => agentPods(stack, agent.id, { includeTerminating: true }),
+    );
+  } finally {
+    agent.stoppedGatewayLogs = await Promise.all(followers.map((follower) => follower.finish()));
+    for (const output of agent.stoppedGatewayLogs) {
+      log(`${agent.label}: stopped gateway ${stoppedGatewaySummary(output)}`);
+    }
+  }
 }
 
 async function deployAgent(stack, agent) {
@@ -790,7 +1079,7 @@ async function deployAgent(stack, agent) {
   return revision.id;
 }
 
-async function runFirstAgent(stack) {
+async function runFirstAgent(stack, modelCredential) {
   const { stdout } = await run(
     process.execPath,
     [join(root, "scripts/first-agent.mjs"), "smoke-embedded"],
@@ -800,7 +1089,7 @@ async function runFirstAgent(stack) {
         OCC_DEVELOPMENT_STATE_DIRECTORY: stack.directory,
         OCC_SERVICE_KEY_FILE: stack.keyPath,
         OCC_URL: stack.origin,
-        OPENAI_API_KEY: `sk-oce-smoke-${randomUUID()}`,
+        OPENAI_API_KEY: modelCredential,
       },
       timeout: 15 * minute,
       label: "first-agent",
@@ -823,24 +1112,33 @@ async function runFirstAgent(stack) {
 // The dedicated Codex Agent follows the console's API path: a Namespace Secret
 // for the model key, an exact operate grant for the Agent's service principal,
 // transport credentials, then deployment.
-async function createCodexAgent(stack) {
+async function createCodexAgent(stack, reader, label, modelCredential) {
   const base = `/namespaces/${stack.namespaceId}`;
   const secret = await stack.api("POST", `${base}/secrets`, {
     name: `smoke-codex-${randomUUID()}`,
-    value: `sk-oce-smoke-${randomUUID()}`,
+    value: modelCredential,
   });
+  const values = createHarnessConfiguration("codex", defaultAgentModel);
+  if (reader) {
+    values.plugins.entries.codex.config.appServer.networkProxy = {
+      enabled: true,
+      mode: "limited",
+      allowLocalBinding: false,
+      domains: { [reader.peer.address]: "allow" },
+    };
+  }
   const configuration = await stack.api("POST", `${base}/configurations`, {
     kind: "agent",
-    values: createHarnessConfiguration("codex", defaultAgentModel),
+    values,
   });
   const created = await stack.api("POST", `${base}/agents`, {
-    name: "smoke-codex",
+    name: `smoke-${label}`,
     configurationId: configuration.id,
     executionMode: "dedicated",
     harnessAuth: { method: "api_key", source: secret.ref },
   });
   const role = await stack.api("POST", `${base}/iam/roles`, {
-    name: "Smoke Agent Secret operate",
+    name: `Smoke ${label} Secret operate`,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
   await stack.api("POST", `${base}/iam/access-bindings`, {
@@ -854,10 +1152,532 @@ async function createCodexAgent(stack) {
   if (!credentials.transportConfigured) {
     await stack.api("POST", `${base}/agents/${created.id}/runtime-credentials`, {});
   }
-  const agent = { label: "codex", id: created.id };
+  const agent = { label, id: created.id };
   stack.agents.push(agent);
   const revisionId = await deployAgent(stack, agent);
-  return { agent, revisionId };
+  return { agent, revisionId, configurationId: configuration.id, values };
+}
+
+async function readerEvents(stack) {
+  const { stdout } = await kubectl(stack, [
+    "-n",
+    stack.state.platformNamespace,
+    "logs",
+    "deployment/openclaw-enterprise-public-github-read",
+  ]);
+  return stdout
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+}
+
+async function gatewaySkillStatus(stack, gateway) {
+  const { stdout } = await kubectl(
+    stack,
+    [
+      "exec",
+      "-n",
+      gateway.namespace,
+      gateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "node",
+      "/app/openclaw.mjs",
+      "gateway",
+      "call",
+      "skills.status",
+      "--params",
+      JSON.stringify({ agentId: "main" }),
+      "--json",
+      "--timeout",
+      "180000",
+    ],
+    { timeout: 4 * minute },
+  );
+  return JSON.parse(stdout);
+}
+
+// Inspect the persisted admission, or invoke the exact Compute withdrawal boundary.
+// An Installation change alone does not schedule this observation.
+async function observeReaderPeer(stack, selected, action) {
+  const input = {
+    namespaceId: stack.namespaceId,
+    agentId: selected.agent.id,
+    revisionId: selected.revisionId,
+  };
+  const script = `
+import assert from "node:assert/strict";
+import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
+import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
+const input = ${JSON.stringify(input)};
+const pool = await createPostgresPool(process.env.OCC_DATABASE_URL);
+try {
+  const state = new PostgresPlatformState(pool);
+  const revision = await state.read((view) => view.revisions.findRevision(input.namespaceId, input.agentId, input.revisionId));
+  assert.ok(revision, "admitted revision is unavailable");
+  const startup = await loadStartupConfigurationSnapshot({ mode: "production" });
+  const selected = await loadInstallationConfiguration({ mode: "production", startupConfiguration: startup });
+  assert.ok(revision.compute.admission && selected.computeDriver.admitRevision(revision) === revision.compute.admission, "revision did not select the installed reader");
+  if (${JSON.stringify(action)} === "withdraw") {
+    const configuration = structuredClone(startup.configuration);
+    delete configuration.drivers.compute.configuration.network.publicGithubRead;
+    const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
+    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
+      assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
+      assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
+      return true;
+    });
+  }
+  console.log("reader-peer-observed");
+} finally { await pool.end(); }
+`;
+  const admission = await kubectl(
+    stack,
+    [
+      "exec",
+      "-i",
+      "-n",
+      stack.state.platformNamespace,
+      "deployment/openclaw-enterprise-worker",
+      "-c",
+      "worker",
+      "--",
+      "node",
+      "--input-type=module",
+      "-",
+    ],
+    { input: script, timeout: 4 * minute },
+  );
+  assert.match(admission.stdout, /reader-peer-observed/);
+}
+
+async function assertSelectedReaderProjection(stack, selected, gateway) {
+  await observeReaderPeer(stack, selected, "inspect");
+  log("public reader admission: confirmed");
+  const harness = await revisionHarness(stack, selected.agent, selected.revisionId);
+  const skillPath = "/home/node/.openclaw/skills/public-github-read/SKILL.md";
+  const policy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
+  const granted = await kubectl(stack, [
+    "-n",
+    harness.metadata.namespace,
+    "get",
+    "networkpolicy",
+    policy,
+    "-o",
+    "name",
+  ]);
+  assert.ok(granted.stdout.trim(), "selected revision has no reader policy");
+  log("public reader policy: present");
+  for (const [namespace, pod, container] of [
+    [gateway.namespace, gateway.pod, "gateway"],
+    [harness.metadata.namespace, harness.metadata.name, "agent"],
+  ]) {
+    const observed = JSON.parse(
+      (await kubectl(stack, ["-n", namespace, "get", "pod", pod, "-o", "json"])).stdout,
+    );
+    const mounts =
+      observed.spec.containers.find(({ name }) => name === container)?.volumeMounts ?? [];
+    const mount = mounts.find(({ mountPath }) => mountPath === skillPath);
+    assert.ok(
+      mount?.readOnly && mount.subPath === PUBLIC_GITHUB_READ_SKILL,
+      `${container} skill mount missing`,
+    );
+    await kubectl(stack, [
+      "exec",
+      "-n",
+      namespace,
+      pod,
+      "-c",
+      container,
+      "--",
+      "test",
+      "-r",
+      skillPath,
+    ]);
+    log(`public reader ${container} mount: present`);
+  }
+}
+
+async function publicReadTurn(stack, selected, reader) {
+  const gateway = await readyGateway(stack, selected.agent.id, selected.revisionId);
+  await assertSelectedReaderProjection(stack, selected, gateway);
+  const status = await gatewaySkillStatus(stack, gateway);
+  assert.ok(
+    status.skills.some(({ name }) => name === "public-github-read"),
+    "managed skill was not discovered",
+  );
+  log("public reader Gateway discovery: confirmed");
+  const { namespace, pod } = gateway;
+  const prompt =
+    "OCE_PUBLIC_READ_JOURNEY: Use the managed public GitHub read skill to obtain pull request 27 in example/public-project and return its title.";
+  const script = `await (${gatewayTurn.toString()})(${JSON.stringify({ prompt })});`;
+  const { stdout } = await kubectl(
+    stack,
+    ["exec", "-i", "-n", namespace, pod, "-c", "gateway", "--", "node", "--input-type=module", "-"],
+    { input: script, timeout: 4 * minute },
+  );
+  const result = JSON.parse(stdout);
+  assert.equal(result.status, 200, "public read model turn failed");
+  assert.ok(
+    result.content?.includes(reader.marker),
+    "model did not return the provider-only title",
+  );
+  const events = await readerEvents(stack);
+  for (const event of ["reader", "provider"]) {
+    assert.ok(
+      events.some((item) => item.event === event && item.path.endsWith("/27")),
+      `${event} did not receive selected read`,
+    );
+  }
+}
+
+async function revisionHarness(stack, agent, revisionId) {
+  const pods = (await agentPods(stack, agent.id)).filter(
+    (pod) =>
+      pod.metadata.labels?.["openclaw.dev/workload-role"] === "agent" &&
+      pod.metadata.labels?.["openclaw.dev/revision"] === revisionId &&
+      pod.status?.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+  );
+  assert.equal(pods.length, 1, `expected one ready Harness for ${agent.label}`);
+  return pods[0];
+}
+
+// Keep one Agent-to-reader socket busy, avoiding the reader's idle timeout.
+// A second selected Agent performs the same requests throughout the interval.
+function holdReaderSocket(stack, pod, address, number) {
+  const script = `const http = require('node:http');
+const agent = new http.Agent({keepAlive:true, maxSockets:1});
+let busy = false;
+function read() {
+  if (busy) return;
+  busy = true;
+  const req = http.get({host:${JSON.stringify(address)}, port:8080, path:'/repos/example/public-project/pulls/${number}', agent}, res => {
+    res.resume(); res.on('end', () => { if (res.statusCode !== 200) process.exit(2); busy = false; console.log('ok'); });
+  });
+  req.on('error', () => process.exit(3));
+  req.setTimeout(3000, () => req.destroy());
+}
+read(); const interval = setInterval(read, 1000);
+process.stdin.on('data', () => { clearInterval(interval); agent.destroy(); process.exit(0); });`;
+  const child = spawn(
+    "kubectl",
+    [
+      "--kubeconfig",
+      stack.kubeconfig,
+      "--context",
+      stack.context,
+      "exec",
+      "-i",
+      "-n",
+      pod.metadata.namespace,
+      pod.metadata.name,
+      "-c",
+      "agent",
+      "--",
+      "node",
+      "-e",
+      script,
+    ],
+    { cwd: root, stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let output = "";
+  let closed = false;
+  child.stdin.on("error", () => {});
+  child.stdout.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  child.stderr.resume();
+  const done = new Promise((resolveDone, reject) => {
+    child.once("error", reject);
+    child.once("close", () => {
+      closed = true;
+      resolveDone();
+    });
+  });
+  return { child, done, count: () => (output.match(/^ok$/gm) ?? []).length, closed: () => closed };
+}
+
+// One line per proveRetirement sub-wait, so a slow retirement step names its slow wait
+// (61fba7ca2 spent 357 s of that step in silence). Logged on failure too.
+async function retirementWait(name, operation) {
+  const started = Date.now();
+  let outcome = "FAILED";
+  try {
+    const result = await operation();
+    outcome = "ok";
+    return result;
+  } finally {
+    log(
+      `reader retirement: ${name} ${outcome} at ${new Date().toISOString()} after ${Date.now() - started} ms`,
+    );
+  }
+}
+
+async function proveRetirement(stack, selected, control, reader) {
+  const old = await revisionHarness(stack, selected.agent, selected.revisionId);
+  const live = await revisionHarness(stack, control.agent, control.revisionId);
+  const held = holdReaderSocket(stack, old, reader.peer.address, 28);
+  const stillSelected = holdReaderSocket(stack, live, reader.peer.address, 30);
+  try {
+    await retirementWait("held sockets", () =>
+      waitFor(
+        "both selected Harness sockets",
+        async () => ({
+          done: held.count() >= 2 && stillSelected.count() >= 2,
+          state: { held: held.count(), control: stillSelected.count() },
+        }),
+        minute,
+      ),
+    );
+    const before = await readerEvents(stack);
+    const oldRequests = before.filter(
+      (event) => event.event === "reader" && event.path.endsWith("/28"),
+    );
+    const oldConnection = oldRequests.at(-1)?.connection;
+    assert.ok(oldConnection, "selected Harness did not use a reader socket");
+    assert.ok(
+      !before.some((event) => event.event === "closed" && event.connection === oldConnection),
+      "selected socket was not held before retirement",
+    );
+    const controlRequests = before.filter(
+      (event) => event.event === "reader" && event.path.endsWith("/30"),
+    );
+    const controlConnection = controlRequests.at(-1)?.connection;
+    assert.ok(controlConnection, "selected control did not use a reader socket");
+    assert.notEqual(oldConnection, controlConnection, "held and control sockets must be distinct");
+    assert.ok(
+      oldRequests.filter((event) => event.connection === oldConnection).length >= 2,
+      "selected Harness did not complete two requests on the held socket",
+    );
+    assert.ok(
+      controlRequests.filter((event) => event.connection === controlConnection).length >= 2,
+      "control Harness did not complete two requests on its held socket",
+    );
+    await retirementWait("observeReaderPeer withdraw", () =>
+      observeReaderPeer(stack, selected, "withdraw"),
+    );
+    const deployment = `agent-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
+    const { stdout: oldDeployment } = await kubectl(stack, [
+      "-n",
+      old.metadata.namespace,
+      "get",
+      "deployment",
+      deployment,
+      "--ignore-not-found",
+      "-o",
+      "name",
+    ]);
+    assert.equal(oldDeployment.trim(), "", "withdrawn revision still has a Deployment");
+    await retirementWait("old Harness Pod termination", () =>
+      waitFor(
+        "old Harness Pod to terminate",
+        async () => {
+          const { stdout } = await kubectl(stack, [
+            "-n",
+            old.metadata.namespace,
+            "get",
+            "pods",
+            "-l",
+            `openclaw.dev/agent=${selected.agent.id},openclaw.dev/revision=${selected.revisionId},openclaw.dev/workload-role=agent`,
+            "-o",
+            "json",
+          ]);
+          return { done: JSON.parse(stdout).items.length === 0 };
+        },
+        2 * minute,
+      ),
+    );
+    const policy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
+    const { stdout: oldPolicy } = await kubectl(stack, [
+      "-n",
+      old.metadata.namespace,
+      "get",
+      "networkpolicy",
+      policy,
+      "--ignore-not-found",
+      "-o",
+      "name",
+    ]);
+    assert.equal(oldPolicy.trim(), "", "retired revision still has a reader policy");
+    // Capture effects immediately at the absent Deployment, Pod, and policy barrier.
+    const barrier = await readerEvents(stack);
+    const count = (events, event, number) =>
+      events.filter((item) => item.event === event && item.path.endsWith(`/${number}`)).length;
+    const oldReaderAtBarrier = count(barrier, "reader", 28);
+    const oldProviderAtBarrier = count(barrier, "provider", 28);
+    const controlReaderAtBarrier = count(barrier, "reader", 30);
+    const controlProviderAtBarrier = count(barrier, "provider", 30);
+    await retirementWait("retired sockets closed", () =>
+      waitFor(
+        "retired Harness process and sockets to close",
+        async () => {
+          const events = await readerEvents(stack);
+          const connections = new Set(
+            events
+              .filter((event) => event.event === "reader" && event.path.endsWith("/28"))
+              .map((event) => event.connection),
+          );
+          const closed = new Set(
+            events.filter((event) => event.event === "closed").map((event) => event.connection),
+          );
+          return {
+            done:
+              held.closed() &&
+              connections.size > 0 &&
+              [...connections].every((connection) => closed.has(connection)),
+          };
+        },
+        minute,
+      ),
+    );
+    assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
+    const unselected = structuredClone(selected.values);
+    unselected.plugins.entries.codex.config.appServer.networkProxy.domains = {};
+    await stack.api(
+      "PATCH",
+      `/namespaces/${stack.namespaceId}/configurations/${selected.configurationId}`,
+      { values: unselected },
+    );
+    const successor = await retirementWait("successor deploy", () =>
+      deployAgent(stack, selected.agent),
+    );
+    const current = await revisionHarness(stack, selected.agent, successor);
+    const successorPolicy = `allow-public-github-read-${idHash(selected.agent.id)}-rev-${idHash(successor)}`;
+    const { stdout: currentPolicy } = await kubectl(stack, [
+      "-n",
+      current.metadata.namespace,
+      "get",
+      "networkpolicy",
+      successorPolicy,
+      "--ignore-not-found",
+      "-o",
+      "name",
+    ]);
+    assert.equal(currentPolicy.trim(), "", "unselected successor acquired a reader policy");
+    await kubectl(stack, [
+      "exec",
+      "-n",
+      current.metadata.namespace,
+      current.metadata.name,
+      "-c",
+      "agent",
+      "--",
+      "sh",
+      "-c",
+      "test ! -e /home/node/.openclaw/skills/public-github-read/SKILL.md",
+    ]);
+    const successorGateway = await readyGateway(stack, selected.agent.id, successor);
+    await kubectl(stack, [
+      "exec",
+      "-n",
+      successorGateway.namespace,
+      successorGateway.pod,
+      "-c",
+      "gateway",
+      "--",
+      "sh",
+      "-c",
+      "test ! -e /home/node/.openclaw/skills/public-github-read/SKILL.md",
+    ]);
+    const successorStatus = await gatewaySkillStatus(stack, successorGateway);
+    assert.ok(
+      !successorStatus.skills.some(({ name }) => name === "public-github-read"),
+      "unselected successor discovered the reader skill",
+    );
+    log("unselected Gateway and Harness skill: absent");
+    const negative = `const http = require('node:http');
+const req = http.get({host:${JSON.stringify(reader.peer.address)}, port:8080, path:'/repos/example/public-project/pulls/29'}, res => {res.resume(); process.exit(1)});
+const timer = setTimeout(() => req.destroy(new Error('probe-deadline')), 5000);
+req.on('error', error => { clearTimeout(timer); process.exit(error.message === 'probe-deadline' || ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH'].includes(error.code) ? 0 : 2); });`;
+    const controlBeforeNegative = stillSelected.count();
+    await kubectl(
+      stack,
+      [
+        "exec",
+        "-n",
+        current.metadata.namespace,
+        current.metadata.name,
+        "-c",
+        "agent",
+        "--",
+        "node",
+        "-e",
+        negative,
+      ],
+      { timeout: 15_000 },
+    );
+    await retirementWait("selected control after unselected probe", () =>
+      waitFor(
+        "selected control after unselected probe",
+        async () => {
+          const events = await readerEvents(stack);
+          return {
+            done:
+              stillSelected.count() > controlBeforeNegative &&
+              count(events, "reader", 30) > controlReaderAtBarrier &&
+              count(events, "provider", 30) > controlProviderAtBarrier,
+          };
+        },
+        minute,
+      ),
+    );
+    const after = await readerEvents(stack);
+    assert.equal(
+      after.filter(
+        (event) => ["reader", "provider"].includes(event.event) && event.path.endsWith("/29"),
+      ).length,
+      0,
+      "unselected request reached reader or provider",
+    );
+    assert.equal(
+      count(after, "reader", 28),
+      oldReaderAtBarrier,
+      "retired Harness sent a later read",
+    );
+    assert.equal(
+      count(after, "provider", 28),
+      oldProviderAtBarrier,
+      "retired Harness caused a later provider request",
+    );
+    const proof =
+      `revision=${selected.revisionId} environment=local-setup-k3d skips=0 ` +
+      "selected=ok peer-withdrawal=confirmed held-socket=closed old-deployment-pod-policy=gone retired-reader-delta=0 retired-provider-delta=0 unselected-reader=0 unselected-provider=0 selected-control=ok controlled-model-provider";
+    proofResults.push(proof);
+    log(`public reader: ${proof}`);
+    return successor;
+  } finally {
+    const cleanup = setTimeout(() => {
+      held.child.kill("SIGKILL");
+      stillSelected.child.kill("SIGKILL");
+    }, 5_000);
+    try {
+      held.child.stdin.end("stop");
+      stillSelected.child.stdin.end("stop");
+      await Promise.all([held.done, stillSelected.done]);
+    } finally {
+      clearTimeout(cleanup);
+    }
+  }
+}
+
+// Finding 2224: `kubectl --sort-by=.lastTimestamp` put events that carry only eventTime (written
+// through events.k8s.io) first, so the 20 kB tail printed could drop the newest of them. Order by the
+// last observed instant (compareEvents), newest last; equal instants keep the API's order.
+export function clusterEventLines(list) {
+  return [...(list.items ?? [])]
+    .sort(compareEvents)
+    .map((event) => {
+      const time = eventObservedTime(event) ?? "unknown-time";
+      const object = event.involvedObject ?? {};
+      const count = event.series?.count ?? event.count ?? 1;
+      return `${time} ${event.metadata?.namespace ?? "-"} ${event.type ?? "-"} ${
+        event.reason ?? "-"
+      } ${object.kind ?? "-"}/${object.name ?? "-"}${count > 1 ? ` x${count}` : ""}: ${
+        event.message ?? ""
+      }`;
+    })
+    .join("\n");
 }
 
 async function diagnostics(stack) {
@@ -877,10 +1697,16 @@ async function diagnostics(stack) {
     return;
   }
   await attempt("pods", () => kubectl(stack, ["get", "pods", "-A", "-o", "wide"]));
-  await attempt("events", () =>
-    kubectl(stack, ["get", "events", "-A", "--sort-by=.lastTimestamp"]),
-  );
+  await attempt("events", async () => ({
+    stdout: clusterEventLines(
+      JSON.parse((await kubectl(stack, ["get", "events", "-A", "-o", "json"])).stdout),
+    ),
+  }));
   for (const agent of stack.agents ?? []) {
+    const stopState = await agentStopDiagnostic(() =>
+      stack.api("GET", `/namespaces/${stack.namespaceId}/agents/${agent.id}`),
+    );
+    process.stdout.write(`----- ${agent.label} Agent stop state\n${JSON.stringify(stopState)}\n`);
     await attempt(`${agent.label} deployment status`, () =>
       cli(stack, ["agent", "deployment-status", agent.id, "-o", "json"]),
     );
@@ -888,6 +1714,9 @@ async function diagnostics(stack) {
       await attempt(`${agent.label} ${source} logs`, () =>
         cli(stack, ["agent", "logs", agent.id, "--source", source, "--tail", "300"]),
       );
+    }
+    for (const [index, output] of (agent.stoppedGatewayLogs ?? []).entries()) {
+      process.stdout.write(`----- ${agent.label} stopped gateway ${index + 1} logs\n${output}\n`);
     }
   }
   try {
@@ -940,6 +1769,15 @@ async function smoke() {
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
   delete environment.OPENAI_API_KEY;
+  const modelCredentials = Object.fromEntries(
+    ["embedded", "codex", "reader-control"].map((label) => [label, `sk-oce-smoke-${randomUUID()}`]),
+  );
+  const credentialDigests = Object.fromEntries(
+    Object.entries(modelCredentials).map(([label, value]) => [
+      label,
+      createHash("sha256").update(value).digest("hex"),
+    ]),
+  );
   let stack;
   try {
     stack = await step("Local Setup (occ dev up)", () => startLocalSetup(environment));
@@ -947,15 +1785,33 @@ async function smoke() {
     const namespaces = await stack.api("GET", "/namespaces");
     stack.namespaceId = namespaces.find(({ name }) => name === "default")?.id;
     assert.ok(stack.namespaceId, "Local Setup created no default Namespace");
+    const reader = await step("install public reader and select its peer", () =>
+      enablePublicReader(stack),
+    );
     await step("route api.openai.com to the stand-in provider", () =>
-      routeModelProvider(stack, modelDirectory, process.env.OCC_KUBERNETES_RUNTIME_IMAGE),
+      routeModelProvider(stack, modelDirectory, process.env.OCC_KUBERNETES_RUNTIME_IMAGE, {
+        credentialDigests,
+      }),
     );
     // The two Agents are independent; deploy them together to bound CI time.
-    const [embedded, codex] = await Promise.all([
-      step("embedded OpenClaw Agent via scripts/first-agent.mjs", () => runFirstAgent(stack)),
-      step("dedicated Codex Agent via the API", () => createCodexAgent(stack)),
+    const [embedded, codex, control] = await Promise.all([
+      step("embedded OpenClaw Agent via scripts/first-agent.mjs", () =>
+        runFirstAgent(stack, modelCredentials.embedded),
+      ),
+      step("dedicated Codex Agent via the API", () =>
+        createCodexAgent(stack, reader, "codex", modelCredentials.codex),
+      ),
+      step("selected reader control via the API", () =>
+        createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
+      ),
     ]);
     await step("dedicated Codex chat turn", () => chatTurn(stack, codex.agent, codex.revisionId));
+    await step("selected Agent managed-skill public read", () =>
+      publicReadTurn(stack, codex, reader),
+    );
+    const retiredRevision = await step("reader retirement and unselected successor", () =>
+      proveRetirement(stack, codex, control, reader),
+    );
     await step("occ agent logs", async () => {
       await readLogs(stack, embedded.agent, "gateway");
       await readLogs(stack, codex.agent, "gateway");
@@ -968,7 +1824,7 @@ async function smoke() {
       Promise.all([deployAgent(stack, embedded.agent), deployAgent(stack, codex.agent)]),
     );
     assert.notEqual(embeddedRevision, embedded.revisionId, "start must admit a new revision");
-    assert.notEqual(codexRevision, codex.revisionId, "start must admit a new revision");
+    assert.notEqual(codexRevision, retiredRevision, "start must admit a new revision");
     await step("chat turns after start", () =>
       Promise.all([
         chatTurn(stack, embedded.agent, embeddedRevision),
@@ -986,6 +1842,9 @@ async function summarize() {
   for (const [name, seconds, status] of timings) {
     lines.push(`| ${name} | ${seconds} | ${status} |`);
   }
+  for (const proof of proofResults) {
+    lines.push("", `Public reader: ${proof}`);
+  }
   try {
     const disk = await statfs("/");
     lines.push("", `Free disk: ${Math.round((disk.bavail * disk.bsize) / 1024 ** 3)} GiB`);
@@ -1001,18 +1860,22 @@ async function summarize() {
   }
 }
 
-const command = process.argv[2];
-try {
-  if (command === "images") {
-    await buildImages();
-  } else if (command === "run") {
-    await smoke();
-  } else {
-    throw new Error("Usage: node scripts/ci/first-agent-smoke.mjs images|run");
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const command = process.argv[2];
+  try {
+    if (command === "images" || command === "prepared-git-images") {
+      await buildImages({ preparedGit: command === "prepared-git-images" });
+    } else if (command === "run") {
+      await smoke();
+    } else {
+      throw new Error(
+        "Usage: node scripts/ci/first-agent-smoke.mjs images|prepared-git-images|run",
+      );
+    }
+  } catch (error) {
+    process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
+    process.exitCode = 1;
+  } finally {
+    await summarize();
   }
-} catch (error) {
-  process.stderr.write(`first-agent-smoke: ${error.stack ?? error.message}\n`);
-  process.exitCode = 1;
-} finally {
-  await summarize();
 }

@@ -20,8 +20,16 @@ test(
   async (t) => {
     const access = await createProductionNetworkAccess(t, { selection, image });
     const dependencies = ["dns", "database", "cluster"];
-    const optional = ["provider", "envoy"];
-    const unrelated = ["unexpected", "databaseWrongPort", "clusterWrongPort", "exporterWrongPort"];
+    const discovery = ["authentication", "catalog"];
+    const optional = ["provider", "envoy", ...discovery];
+    const discoveryWrongPorts = ["authenticationWrongPort", "catalogWrongPort"];
+    const unrelated = [
+      "unexpected",
+      "databaseWrongPort",
+      "clusterWrongPort",
+      "exporterWrongPort",
+      ...discoveryWrongPorts,
+    ];
     const all = [...dependencies, "exporter", ...optional, ...unrelated];
 
     // Pre-install hooks run before the ordinary release policies exist.
@@ -56,21 +64,37 @@ test(
       await t.test(`installed access for ${scenario.source}`, () => access.verify(scenario));
     }
 
-    // Provider egress is API-only; the private Envoy route also serves the worker.
+    // Model and hosted catalog discovery reach only the configured hosts on API HTTPS;
+    // the private Envoy route also serves the worker.
     await access.install("optional");
     for (const scenario of [
       {
         source: "api",
         allow: [...dependencies, ...optional],
-        deny: ["exporter", "unexpected", "providerWrongPort"],
+        deny: ["exporter", "unexpected", "providerWrongPort", ...discoveryWrongPorts],
       },
-      { source: "worker", allow: ["envoy"], deny: ["provider", "providerWrongPort"] },
-      ...["initialization", "collector", "unknown", "missing"].map((source) => ({
+      {
+        source: "worker",
+        allow: ["envoy"],
+        deny: ["provider", "providerWrongPort", ...discovery, ...discoveryWrongPorts],
+      },
+      ...["initialization", "collector", "unknown", "missing", "otherRelease"].map((source) => ({
         source,
         deny: optional,
       })),
     ]) {
       await t.test(`optional routes for ${scenario.source}`, () => access.verify(scenario));
     }
+
+    // Exercise the actual Compute-generated revision policy against the CNI.
+    await access.installPublicReaderRevisions();
+    await t.test("only the selected revision reaches the exact public reader peer", async () => {
+      await access.verify({
+        source: "selectedreader",
+        allow: ["publicReader"],
+        deny: ["publicReaderWrongPort", "unexpected"],
+      });
+      await access.verify({ source: "oldreader", deny: ["publicReader", "publicReaderWrongPort"] });
+    });
   },
 );

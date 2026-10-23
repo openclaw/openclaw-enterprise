@@ -14,10 +14,13 @@ upstream credentials managed by [Service accounts](../service-accounts.md).
 - A human administrator session, or an Installation-scoped service principal
   with current `administer` on the singleton Installation.
 - An existing non-Agent service principal and its exact Namespace, if it has
-  one. Fresh bootstrap creates an Installation service administrator. OCC has no
-  public API to create other service principals; the selected IAM authority
-  must provision them. Administrators manage Namespace Roles and AccessBindings
-  through the [Namespace IAM API](../authorization.md#manage-namespace-policy).
+  one. Fresh bootstrap creates an Installation service administrator. For
+  Namespace automation or a member's CLI, create a Namespace service principal
+  with `occ iam service-principal create` (`POST
+/namespaces/:namespaceId/iam/service-principals`) and grant it a Role with an
+  AccessBinding; both use the [Namespace IAM API](../authorization.md#manage-namespace-policy).
+  A new service principal holds no grant. You must already hold every grant of
+  the principal whose key you issue or revoke.
 - A private directory for credentials. Keep shell tracing disabled, do not print
   keys, and run the examples from the repository root. CLI examples assume the
   [`occ` executable](../../guides/cli.md) is installed and on `PATH`.
@@ -39,6 +42,15 @@ curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
   --data '{"servicePrincipalId":"<service-principal-id>","namespaceId":"<namespace-id>","name":"nightly-reader","expiresIn":2592000}' \
   --output "$OCC_SERVICE_KEY_FILE"
 ```
+
+`occ service-key create --service-principal ID --name NAME --out FILE`, with
+`--namespace` for a Namespace principal, makes the same request and writes the
+response to a new `0600` file without printing the key. The name is 1 to 32
+characters, counted as Unicode code points rather than bytes, and must contain
+a non-whitespace character, the same rule as the API. The CLI refuses any
+other name before it creates the key file or sends the request. For an
+Installation principal, unset `OCC_NAMESPACE`, which the CLI also sends as
+`namespaceId`.
 
 Success returns HTTP `201`. The response contains the credential exactly once in
 `data.key` and a non-secret `data.id` needed to revoke it. Record the key and
@@ -72,6 +84,7 @@ curl --fail-with-body --silent --show-error --cookie "$OCC_SESSION_COOKIE_JAR" \
   --request DELETE "$OCC_URL/api/auth/service-keys/$OCC_SERVICE_KEY_ID"
 ```
 
+`occ service-key revoke ID` makes the same request with a service-key file.
 Success returns HTTP `200` and `data.revoked: true`; subsequent use of the key
 returns `401`. To rotate without interrupting clients, issue a replacement to a
 new private file, switch the clients, verify access, then revoke the old key by
@@ -168,6 +181,15 @@ file to obtain the ID.
 
 ## Recover an incomplete bootstrap
 
+Fresh bootstrap checks both configured password and service-key output paths
+before creating credentials. `BOOTSTRAP_OUTPUT_EXISTS` means preserve the output
+and reconcile the original attempt; it does not establish who owns the file.
+`BOOTSTRAP_OUTPUT_UNVERIFIED` means absence could not be established. Neither
+result authorizes a retry. Exclusive, no-follow creation still refuses a later collision,
+which can leave partial effects. Migration may already have run; the check does
+not establish an empty database. Existing-Installation verification and upgrades
+are unchanged.
+
 Bootstrap makes one attempt. On failure, preserve logs, non-secret IDs, and
 protected output. Confirm database commit state before deleting anything. If the
 attempt did not commit, remove only proven orphan accounts or keys and
@@ -223,10 +245,15 @@ finish. An unknown or removed key returns `404`. Revoking an issuer’s key does
 not revoke other keys issued through it or delete a principal or its bindings.
 
 HTTP issuance and revocation emit [audit events](../../guides/topics/audit-log.md)
-with administrator and non-secret IDs. If issuance audit persistence fails, OCC
-returns `503` without disclosing the key and attempts to remove it; this cleanup
-is best effort. A failed revocation audit returns `503` but does not restore the
-deleted key.
+with the caller, the principal ID, and the key's ID (`serviceKeyId`) and name
+(`serviceKeyName`). Every API route's audit event (change, audited read, or
+denial) for a request made with a service key, including these, names that key
+in `actorServiceKeyId`, so you can tell which of a principal's keys acted.
+Events OCC writes for the work itself, such as `openclaw.agents.provision` and
+worker `reconcile` events, name only the principal. If issuance audit
+persistence fails, OCC returns `503` without disclosing the key and attempts to
+remove it; this cleanup is best effort. A failed revocation audit returns `503`
+but does not restore the deleted key.
 
 ## Service-key failures
 

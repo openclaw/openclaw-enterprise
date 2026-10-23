@@ -15,7 +15,7 @@
     "requiresPreparedStateForFile": true,
     "nodeBaseImage": true,
     "defaultEnv": {
-      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df"
+      "NODE_BASE_IMAGE": "docker.io/library/node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20"
     }
   },
   "files": [
@@ -24,6 +24,7 @@
       "expectedTests": [
         "demo Grafana keeps its disposable SQLite database off node disk",
         "demo guide install can be rerun after a cold-cache wait timeout",
+        "demo Service names admit valid release shapes and keep Grafana URLs aligned",
         "demo Kubernetes identifiers remain strings for 407",
         "demo Kubernetes identifiers remain strings for true",
         "demo Kubernetes identifiers remain strings for null",

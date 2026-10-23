@@ -21,7 +21,8 @@ Run the commands below from the repository root on Linux or macOS. You need:
   in `package.json`.
 - About 20 GB of free container-engine storage for the first build. On macOS
   that space is inside the Podman or Docker virtual machine rather than on your
-  host disk; check it with `podman machine ssh df -h /var`. Without it, startup
+  host disk; check it with `podman machine ssh df -h /var`, or for Docker
+  Desktop with `docker run --rm alpine df -h /`. Without it, startup
   fails late with `no space left on device` and rolls back the cluster.
 - Free local ports `3000` for the API, `8443` for the browser console, and
   `6443` for Kubernetes. If a port is in use, override `OPENCLAW_DEV_PORT`,
@@ -59,11 +60,14 @@ sandbox on the node. If that check fails, follow
 
 ## Open the platform console
 
-Import the printed browser CA certificate into your browser's trusted CA store
-using your browser's own certificate settings, then open the printed HTTPS
-browser console URL. Only import the public `browser-ca.crt`; keep its private
-key and the entire state directory private. Remove the CA from your browser's
-trust store when you discard this installation.
+Trust the printed public `browser-ca.crt` on the computer running your browser,
+then open the printed HTTPS console URL. Startup generates a local CA; it does
+not install it in a trust store. Without that step, the browser can report
+`NET::ERR_CERT_AUTHORITY_INVALID` even when the stack is ready. Follow
+[local browser CA trust and verification](operate/troubleshooting.md#the-local-console-reports-a-certificate-error)
+for macOS instructions, certificate checks, and removal. The CA can vouch only
+for that installation's console and Agent hosts, and startup discards its
+private key. Keep the entire state directory private.
 
 Open the printed URL on the machine that ran `./bin/occ dev up`. Kubernetes-only
 mode publishes the console port on that machine's loopback, and the hostname
@@ -144,7 +148,8 @@ the stock local-path StorageClass supports the Harness-only claim.
 
 ## Open an Agent's native admin UI
 
-For a separate console-managed Agent, follow [local native admin setup](deploy/native-admin.md#local-development).
-It requires exact-Agent `administer` permission and the Agent's native access policy.
-The first-Agent helper disables native UI and refuses to reuse its Agent after
-outside Configuration edits.
+Follow [local native admin setup](deploy/native-admin.md#local-development). It
+requires exact-Agent `administer` permission and the Agent's native access
+policy. The first-Agent helper can opt in a new Agent when Local setup uses the
+Compose control plane with Kubernetes Compute and OpenShell; other profiles use
+a separate console-managed Agent.

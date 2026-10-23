@@ -136,6 +136,7 @@ export function checkMarkdownWordCounts({
   const markdownFiles = collectMarkdownFiles({ root, files });
   const absoluteRoot = fs.realpathSync.native(path.resolve(root));
   const apiReference = path.join(absoluteRoot, "docs/reference/api.md");
+  const ciGuide = path.join(absoluteRoot, "docs/testing/ci.md");
   const rows = markdownFiles.map((file) => {
     const markdown = fs.readFileSync(file.absolutePath, "utf8");
     const counts = countMarkdownWords(markdown, {
@@ -147,6 +148,8 @@ export function checkMarkdownWordCounts({
     let lengthException;
     if (file.realPath === apiReference) {
       lengthException = "User-approved single-page API reference";
+    } else if (file.realPath === ciGuide) {
+      lengthException = "User-approved consolidated CI guide";
     } else if (path.basename(file.realPath) === "AGENTS.md") {
       lengthException = "Agent instruction document";
     }

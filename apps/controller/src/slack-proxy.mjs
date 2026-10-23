@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 const DEFAULT_PORT = 3128;
 const CONNECT_TIMEOUT_MS = 10_000;
 const SHUTDOWN_DRAIN_MS = 2_000;
+// How long a client may take to read what is still queued for it, and close its side, after
+// the proxy has finished writing to it.
+const CLIENT_DRAIN_TIMEOUT_MS = 10_000;
 const ALLOWED_SUFFIXES = [".slack.com", ".slack-edge.com", ".slack-msgs.com"];
 const ALLOWED_HOSTS = new Set(["slack.com", "slack-edge.com", "slack-msgs.com"]);
 
@@ -60,7 +63,42 @@ function reject(socket, statusCode, message) {
   socket.end(`HTTP/1.1 ${statusCode} ${message}\r\nConnection: close\r\n\r\n`);
 }
 
-function createSlackProxyServer() {
+// Closes a client socket now. If bytes are still queued for it, reset the connection instead
+// of sending a FIN, so the client cannot take a cut reply as whole. With nothing queued, every
+// byte is already with the kernel (a shutdown may still be in flight, when a reset would fail
+// and leak the handle), so a plain close is right.
+function cutClient(socket) {
+  if (socket.writableLength > 0) {
+    socket.resetAndDestroy();
+    return;
+  }
+  socket.destroy();
+}
+
+// Called once the proxy is done writing to the client: the upstream closed, or a CONNECT was
+// refused. When the client's write side was already ended (pipe() ends it on the upstream's
+// clean EOF; reject() ends it with the status line), bytes can still be queued for a slow
+// client, and destroy() would drop them. Even after they are flushed, a close with unread
+// client bytes (a TLS close_notify, say) makes the kernel reset the connection and drop the
+// tail. So linger: discard what the client sends, keep the socket until the client has read
+// everything and closed its side, and cut it at `drainTimeoutMs`. Anything else (an upstream
+// close with no EOF) still closes the client now. The native admin WebSocket relay
+// (gateway/native-admin-proxy.ts) has its own copy: this file runs standalone, with no imports.
+function closeClientWhenDrained(clientSocket, drainTimeoutMs) {
+  if (clientSocket.destroyed) {
+    return;
+  }
+  if (!clientSocket.writableEnded) {
+    cutClient(clientSocket);
+    return;
+  }
+  clientSocket.resume();
+  const timer = setTimeout(() => cutClient(clientSocket), drainTimeoutMs);
+  timer.unref();
+  clientSocket.once("close", () => clearTimeout(timer));
+}
+
+export function createSlackProxyServer({ clientDrainTimeoutMs = CLIENT_DRAIN_TIMEOUT_MS } = {}) {
   const server = createServer((request, response) => {
     response.writeHead(405, { "content-type": "text/plain; charset=utf-8" });
     response.end("CONNECT required\n");
@@ -73,6 +111,7 @@ function createSlackProxyServer() {
     closeOnSocketError(clientSocket);
     if (!isAllowedSlackConnectTarget(request.url)) {
       reject(clientSocket, 403, "Forbidden");
+      closeClientWhenDrained(clientSocket, clientDrainTimeoutMs);
       return;
     }
     const target = parseConnectTarget(request.url);
@@ -92,12 +131,17 @@ function createSlackProxyServer() {
     upstream.once("timeout", () => upstream.destroy(new Error("upstream connection timeout")));
     upstream.once("error", () => {
       if (connected) {
-        clientSocket.destroy();
+        // Before the upstream's EOF, the reply is cut: reset, so the client cannot take it as
+        // whole. After it (a client byte piped into the ended upstream, say), the reply is
+        // complete and the close handler lets the client drain it.
+        if (!clientSocket.destroyed && !clientSocket.writableEnded) {
+          clientSocket.resetAndDestroy();
+        }
         return;
       }
       reject(clientSocket, 502, "Bad Gateway");
     });
-    upstream.once("close", () => clientSocket.destroy());
+    upstream.once("close", () => closeClientWhenDrained(clientSocket, clientDrainTimeoutMs));
     clientSocket.once("close", () => upstream.destroy());
     clientSocket.once("error", () => upstream.destroy());
   });

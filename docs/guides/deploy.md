@@ -76,13 +76,14 @@ Follow these pages in order in the same operator shell:
    bootstrap PVC, install the chart, and authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
    Grant tenant RoleBindings, choose embedded OpenClaw or dedicated Codex,
-   provision exact-Agent credentials, and deploy an immutable revision.
+   provision exact-Agent credentials, and deploy a saved version.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
-   Confirm the active revision and require a real model response. The guide
+   Confirm the selected version and require a real model response. The guide
    offers a TUI and an HTTP check using the optional loopback password on
    Kubernetes trusted-proxy gateways.
 
-Before upgrading a retained installation, complete the
+Before upgrading a retained installation, read the
+[breaking-change notices](deploy/breaking-changes.md) and complete the
 [upgrade migration checklist](deploy/upgrade-checklist.md). Then use
 [production image upgrades](deploy/production-upgrade.md) to release the
 control plane without replacing Agent revisions, or to update Agent runtimes
@@ -121,6 +122,9 @@ For startup diagnosis, see the [production startup flow](../flows/production-sta
 For runtime proof, see the [production TUI flow](../flows/production-tui.md).
 
 ## Customization
+
+[Apply a console theme](deploy/console-theme.md) to customize the product name,
+logo, browser icons, and colors through mounted files with the upstream image.
 
 Use Helm values, Kubernetes manifests, Installation startup YAML, and Collector
 Secrets for production. Use

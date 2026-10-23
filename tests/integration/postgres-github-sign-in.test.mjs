@@ -7,8 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import pg from "pg";
 import { chromium } from "playwright";
-import { composePostgresDevelopment } from "../../apps/controller/src/composition/development-postgres.ts";
-import { composeProduction } from "../../apps/controller/src/composition/production.ts";
+import { composePostgresDevelopment, composeProduction } from "../helpers/password-hasher.mjs";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
@@ -25,7 +24,8 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
-import { availablePort } from "../helpers/available-port.mjs";
+import { reservePort } from "../helpers/available-port.mjs";
+import { consoleStorage } from "../helpers/console-storage.mjs";
 
 const email = "github-recovery@example.test";
 const password = "github-local-recovery-password";
@@ -75,7 +75,11 @@ test(
       computeDriver: createDevelopmentComputeDriver(),
       configurationDriver,
     });
-    const port = await availablePort();
+    // The port is part of the auth base URL, and three apps bind it in turn. Hold it from here
+    // until the first binds it, and again across each restart, so no other socket takes it.
+    let reservation = await reservePort();
+    t.after(() => reservation.release());
+    const { port, reusePort } = reservation;
     const origin = `http://127.0.0.1:${port}`;
     const base = {
       mode: "development",
@@ -95,7 +99,8 @@ test(
         await releaseAdmitted.promise;
       }
     });
-    await unconfigured.listen({ host: "127.0.0.1", port });
+    await unconfigured.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (await unconfigured.inject({ url: "/api/auth/providers" })).json().data.github,
       false,
@@ -170,6 +175,7 @@ test(
       headers: { cookie: legacyCookie },
     });
     await admitted.promise;
+    reservation = await reservePort({ port });
     let closed = false;
     const closing = unconfigured.close().then(() => {
       closed = true;
@@ -301,7 +307,8 @@ test(
     }
     const app = await composePostgresDevelopment(config, drivers());
     apps.push(app);
-    await app.listen({ host: "127.0.0.1", port });
+    await app.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (await app.inject({ url: "/api/auth/session", headers: { cookie: legacyCookie } })).json()
         .data,
@@ -733,7 +740,10 @@ test(
       url: `/api/auth/providers/github/callback?state=${unavailableAttempt.state}&code=provider-unavailable`,
       headers: { cookie: unavailableAttempt.cookie },
     });
-    assert.equal(unavailable.headers.location, "/console/?authError=github");
+    assert.equal(
+      unavailable.headers.location,
+      "/console/?authError=github&authReason=provider-unavailable",
+    );
     assert.equal(unavailable.headers["set-cookie"], undefined);
     const offlinePassword = await app.inject({
       method: "POST",
@@ -797,12 +807,7 @@ test(
     assert.equal((await confirmedResult.json()).data.sessionKey, browserSession.sessionKey);
     assert.equal((await pinnedRead).headers()["x-occ-session-key"], browserSession.sessionKey);
     assert.deepEqual(
-      // The tab keeps only its settled Installation-access probe answer.
-      await page.evaluate(() => {
-        const stored = { ...sessionStorage };
-        delete stored["occ.console.installationAccess"];
-        return stored;
-      }),
+      (await consoleStorage(page)).session,
       {},
       "the one-use attemptId leaves tab storage after the exchange",
     );
@@ -817,8 +822,8 @@ test(
     );
     await page.goto(`${origin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=draft`);
     assert.equal((await (await detailResponse).json()).data.id, agent.id);
-    await page.getByRole("heading", { name: "Create new version" }).waitFor();
-    await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
     assert.ok((await page.locator("body").textContent()).includes(agent.name));
     const after = await state.loadNativeIAMState(installation.id);
     assert.deepEqual(
@@ -1382,11 +1387,13 @@ test(
     );
     await browser.close();
     browser = undefined;
+    reservation = await reservePort({ port });
     await app.close();
     apps.pop();
     const restarted = await composePostgresDevelopment(config, drivers());
     apps.push(restarted);
-    await restarted.listen({ host: "127.0.0.1", port });
+    await restarted.listen({ host: "127.0.0.1", port, reusePort });
+    await reservation.release();
     assert.equal(
       (
         await restarted.inject({ url: "/api/auth/session", headers: { cookie: limitedCookie } })

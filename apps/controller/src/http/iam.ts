@@ -3,6 +3,7 @@ import type {
   ResourceKind,
   ResourceRef,
   Role,
+  ServicePrincipal,
 } from "@openclaw-enterprise/contracts";
 import type { ResourceHandlers } from "./types.ts";
 
@@ -48,13 +49,28 @@ function clientIAMAccessBinding(binding: Readonly<AccessBinding>): Record<string
   };
 }
 
+function clientIAMServicePrincipal(
+  servicePrincipal: Readonly<ServicePrincipal>,
+): Record<string, unknown> {
+  return { id: servicePrincipal.id, namespaceId: servicePrincipal.namespaceId };
+}
+
 export const iamHandlers = {
   async listIAMRoles({ controller, context, request, reply, namespaceId }) {
     const roles = await controller.listIAMRoles(context.actorId, namespaceId);
     reply.send({ data: roles.map(clientIAMRole), meta: { requestId: request.id } });
   },
-  async createIAMRole({ controller, context, request, reply, body, namespaceId, mutationEvent }) {
-    const role = await controller.transact(async (unit) => {
+  async createIAMRole({
+    controller,
+    context,
+    request,
+    reply,
+    body,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const role = await transactIAM(async (unit) => {
       const created = await controller.createIAMRole(context.actorId, {
         namespaceId,
         ...(body?.name === undefined ? {} : { name: body.name as string }),
@@ -74,8 +90,16 @@ export const iamHandlers = {
     const role = await controller.getIAMRole(context.actorId, namespaceId, params.roleId as string);
     reply.send({ data: clientIAMRole(role), meta: { requestId: request.id } });
   },
-  async deleteIAMRole({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMRole({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMRole(
         context.actorId,
         namespaceId,
@@ -105,8 +129,9 @@ export const iamHandlers = {
     body,
     namespaceId,
     mutationEvent,
+    transactIAM,
   }) {
-    const binding = await controller.transact(async (unit) => {
+    const binding = await transactIAM(async (unit) => {
       const created = await controller.createIAMAccessBinding(context.actorId, {
         namespaceId,
         subjectKind: body?.subjectKind as "identity",
@@ -133,8 +158,16 @@ export const iamHandlers = {
       meta: { requestId: request.id },
     });
   },
-  async deleteIAMAccessBinding({ controller, context, reply, params, namespaceId, mutationEvent }) {
-    await controller.transact(async (unit) => {
+  async deleteIAMAccessBinding({
+    controller,
+    context,
+    reply,
+    params,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    await transactIAM(async (unit) => {
       const deleted = await controller.deleteIAMAccessBinding(
         context.actorId,
         namespaceId,
@@ -145,5 +178,47 @@ export const iamHandlers = {
       );
     });
     reply.status(204).send();
+  },
+  async listIAMServicePrincipals({ controller, context, request, reply, namespaceId }) {
+    const principals = await controller.listIAMServicePrincipals(context.actorId, namespaceId);
+    reply.send({
+      data: principals.map(clientIAMServicePrincipal),
+      meta: { requestId: request.id },
+    });
+  },
+  async createIAMServicePrincipal({
+    controller,
+    context,
+    request,
+    reply,
+    namespaceId,
+    mutationEvent,
+    transactIAM,
+  }) {
+    const created = await transactIAM(async (unit) => {
+      const servicePrincipal = await controller.createIAMServicePrincipal(
+        context.actorId,
+        namespaceId,
+      );
+      await unit.audit.append(
+        mutationEvent(
+          { kind: "namespace", id: namespaceId, namespaceId },
+          { servicePrincipalId: servicePrincipal.id },
+        ),
+      );
+      return clientIAMServicePrincipal(servicePrincipal);
+    });
+    reply.status(201).send({ data: created, meta: { requestId: request.id } });
+  },
+  async getIAMServicePrincipal({ controller, context, request, reply, params, namespaceId }) {
+    const servicePrincipal = await controller.getIAMServicePrincipal(
+      context.actorId,
+      namespaceId,
+      params.servicePrincipalId as string,
+    );
+    reply.send({
+      data: clientIAMServicePrincipal(servicePrincipal),
+      meta: { requestId: request.id },
+    });
   },
 } satisfies ResourceHandlers;

@@ -53,6 +53,9 @@ export const configurationHandlers = {
         ...(body?.secretBindings === undefined
           ? {}
           : { secretBindings: body.secretBindings as SecretBindings }),
+        ...(body?.expectedGeneration === undefined
+          ? {}
+          : { expectedGeneration: body.expectedGeneration as number }),
       });
       await unit.audit.append(
         mutationEvent({ kind: "configuration", id: updated.id, namespaceId }),

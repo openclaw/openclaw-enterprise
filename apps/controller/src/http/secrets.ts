@@ -1,4 +1,4 @@
-import type { SecretMetadata } from "@openclaw-enterprise/contracts";
+import type { SecretDetail, SecretMetadata } from "@openclaw-enterprise/contracts";
 import { removedAccessBindingDetails, type ResourceHandlers } from "./types.ts";
 
 function clientSecret(secret: Readonly<SecretMetadata>): Record<string, unknown> {
@@ -7,6 +7,21 @@ function clientSecret(secret: Readonly<SecretMetadata>): Record<string, unknown>
     namespaceId: secret.namespaceId,
     name: secret.name,
     ref: secret.ref,
+  };
+}
+
+function clientSecretDetail(secret: Readonly<SecretDetail>): Record<string, unknown> {
+  const { consumers } = secret;
+  return {
+    ...clientSecret(secret),
+    consumers: {
+      agents: consumers.agents,
+      configurations: consumers.configurations,
+      credentialSources: consumers.credentialSources,
+      provisioningRequests: consumers.provisioningRequests,
+      unreadable: consumers.unreadable,
+      truncated: consumers.truncated,
+    },
   };
 }
 
@@ -33,7 +48,7 @@ export const secretHandlers = {
       namespaceId,
       params.secretId as string,
     );
-    reply.send({ data: clientSecret(secret), meta: { requestId: request.id } });
+    reply.send({ data: clientSecretDetail(secret), meta: { requestId: request.id } });
   },
   async updateSecret({
     controller,

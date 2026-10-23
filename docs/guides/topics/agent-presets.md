@@ -95,9 +95,12 @@ selected runtime before relying on it.
 ## Use it in the console
 
 1. Sign in, select the same Namespace, and open **Agents → Create Agent**.
-   You need `read` on the Preset and the normal Agent/Configuration creation
-   permissions. An administrator can grant exact Preset access through
-   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy).
+   You need `read` on the Preset and Agent and Configuration `create` in the
+   Namespace. An administrator can grant exact Preset access through
+   [Namespace IAM](../../reference/authorization.md#manage-namespace-policy), but
+   Namespace IAM cannot grant `create`, so only Installation administrators can save
+   the Agent. Other members can render a Preset into a draft, and the console says
+   that creating it needs Installation access.
 2. Choose your Preset in **Preset template**, fill its variables,
    and select **Use Preset**. The chooser closes and the Agent form opens with
    the rendered copy. To load the installed `default-codex` copy, select **Start with default Preset**.
@@ -117,6 +120,9 @@ variable offers **Create new Secret** or **Use existing Secret** in the same
 Namespace. Enter a token only in new mode; it is stored when you create the Agent.
 Existing mode reuses the selected reference without reading credential bytes.
 
+Choosing another primary model keeps the ordered fallback list and saved options for
+still-referenced models. Review the resulting Configuration JSON before saving.
+
 Variables are used once to fill the form. Edit the resulting fields directly.
 You can navigate away and return to your [unsaved Console draft](../../reference/console/create-and-deploy.md#create-an-agent); reenter any new credentials.
 Before saving, to choose another Preset or supply different variables, select **Start over**
@@ -134,7 +140,7 @@ replace its complete `template`, and `DELETE` on the same path, or
 `occ preset delete ID`, to remove it. `occ preset list` shows the IDs.
 You need the corresponding permission on the exact Preset. These operations
 affect future selections only. Already selected copies, saved Agents, and
-running revisions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
+running versions stay unchanged. See [CRUD and permissions](../../reference/presets.md#crud-and-permissions).
 
 If a Preset is missing from the selector, check the current Namespace and your
 exact Preset `read` grant. If applying fails, check the named variable and its
