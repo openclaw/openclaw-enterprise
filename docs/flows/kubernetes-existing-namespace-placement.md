@@ -1,6 +1,6 @@
 ---
 created: 2026-08-25
-updated: 2026-10-09
+updated: 2026-10-23
 last_updated_session: authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5
 ---
 
@@ -125,11 +125,19 @@ gateway teardown removes the exact-owned private and shared claims by UID.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteNamespace`
 
-OCC first rejects deletion while Agents, Configurations, or service accounts
-remain. Compute therefore removes only its owned `openclaw-quota`,
+OCC first rejects deletion while Agents, Configurations, Secrets, or service
+accounts remain. Any object still carrying this Namespace's ownership (the
+`app.kubernetes.io/managed-by=openclaw-enterprise` and `openclaw.dev/namespace`
+labels plus the `openclaw.dev/namespace-id` annotation) is therefore an orphan,
+for example a Configuration ConfigMap whose create applied but whose transaction
+then failed. Compute deletes such ConfigMaps and ServiceAccounts by UID, and such
+Secrets too when repository credentials are enabled, the only setup in which the
+worker may list Secrets. A failed list or delete keeps the Namespace `deleting`.
+Compute then removes its owned `openclaw-quota`,
 `openclaw-limits`, `allow-dns`, `allow-gateway-ingress`, and `default-deny`
 objects, preserving default-deny until last. External namespace objects, their
-tenant markers, RoleBindings, Secrets, and unrelated resources remain untouched.
+tenant markers, RoleBindings, the operator's Secrets, and unrelated resources
+remain untouched.
 Deleting a failed selection that was never bound to either tenant marker also
 leaves the external namespace untouched; partial or foreign markers fail
 closed. An already-missing namespace counts as deleted. After deleting an
@@ -159,6 +167,10 @@ complete-deletion lifecycle.
   NetworkPolicy the Namespace does not own; list those with `kubectl`. Old
   tenant markers are usually left by an earlier OCC Namespace on the same
   Kubernetes namespace.
+- Without repository credentials, an orphaned Secret outlives deletion. List
+  Secrets labelled `openclaw.dev/namespace=<id>` and
+  `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, then
+  delete them.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup
@@ -181,6 +193,7 @@ complete-deletion lifecycle.
 
 ## Changelog
 
+- 2026-10-23 17:00: Deletion sweeps orphaned OCE-owned ConfigMaps, ServiceAccounts and, with repository credentials, Secrets. (fix-1400)
 - 2026-10-09 20:19: Refuse an explicitly empty CLI adoption flag before creating a client. (authoring-run/ee7a6b77-c247-4a57-8aa7-cfc15eb650a5 - c4cc1d9f23f9bebac8fd82881561cce48fb4fc6a)
 
 - 2026-10-06 18:55: A refused selection logs its reason in `worker.completed`, naming foreign markers by key only. (fix-d521)

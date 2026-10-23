@@ -4578,6 +4578,230 @@ test("explicit existing namespace adoption claims tenant identity only after sec
   assert.equal(sameTenant.patches.length, 1);
 });
 
+// An adopted namespace whose OCC Namespace is being deleted: a transport-only fake of the
+// requests teardown makes, with label-selector lists and UID-fenced deletes.
+function adoptedNamespaceTeardownFixture(computeOptions = options()) {
+  const name = "customer-support";
+  const target = { name, plane: "execution" };
+  const ownership = { namespaceId: tenant.id };
+  const driver = createKubernetesComputeDriver(computeOptions);
+  driver.waitBeforeRetry = async () => {};
+  const namespace = {
+    apiVersion: "v1",
+    kind: "Namespace",
+    metadata: {
+      name,
+      uid: "customer-support-uid",
+      labels: {
+        "app.kubernetes.io/managed-by": "helm",
+        "openclaw.dev/namespace": tenant.id,
+        "openclaw.dev/gateway-namespace": tenant.id,
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/audit": "restricted",
+        "pod-security.kubernetes.io/warn": "restricted",
+      },
+      annotations: {
+        "openclaw.dev/namespace-lifecycle": "external",
+        "openclaw.dev/namespace-id": tenant.id,
+      },
+    },
+    status: { phase: "Active" },
+  };
+  const objects = new Map();
+  const save = (object) =>
+    objects.set(`${object.kind}:${object.metadata.name}`, {
+      ...structuredClone(object),
+      metadata: { uid: `${object.metadata.name}-uid`, ...structuredClone(object.metadata) },
+    });
+  const owned = (kind, objectName, owner = ownership) =>
+    save(driver.manifest("v1", kind, objectName, owner, target));
+  owned("ResourceQuota", "openclaw-quota");
+  owned("LimitRange", "openclaw-limits");
+  for (const policy of driver.networkPolicies(ownership, target)) {
+    save(policy);
+  }
+  // Orphans of a create whose OCC transaction failed: a Secret driver Secret, a Configuration
+  // ConfigMap and an Agent ServiceAccount, each with this Namespace's full ownership metadata.
+  owned("Secret", "secret-orphan");
+  owned("ConfigMap", "configuration-orphan");
+  owned("ServiceAccount", "agent-orphan", { ...ownership, agentId: "agt_orphan" });
+  // The operator's own objects, another tenant's, and one that copies OCE's labels without the
+  // Namespace-ID annotation OCE always writes, all stay.
+  const kept = [];
+  for (const kind of ["ConfigMap", "Secret", "ServiceAccount"]) {
+    const plain = {
+      apiVersion: "v1",
+      kind,
+      metadata: { name: `operator-${kind}`, namespace: name },
+    };
+    save(plain);
+    owned(kind, `other-tenant-${kind}`, { namespaceId: "ns_other" });
+    const lookalike = driver.manifest("v1", kind, `lookalike-${kind}`, ownership, target);
+    delete lookalike.metadata.annotations;
+    save(lookalike);
+    kept.push(
+      `${kind}:operator-${kind}`,
+      `${kind}:other-tenant-${kind}`,
+      `${kind}:lookalike-${kind}`,
+    );
+  }
+  const state = { calls: [], fail: {}, finalizer: undefined };
+  const notFound = () => Object.assign(new Error("not found"), { statusCode: 404 });
+  const matches = (labels = {}, selector = "") =>
+    selector
+      .split(",")
+      .filter(Boolean)
+      .every((term) => {
+        const [key, value] = term.split("=");
+        return labels[key] === value;
+      });
+  const api = (kind) => ({
+    async [`readNamespaced${kind}`]({ name: objectName, namespace: requested }) {
+      assert.equal(requested, name);
+      const object = objects.get(`${kind}:${objectName}`);
+      if (object === undefined) {
+        throw notFound();
+      }
+      return structuredClone(object);
+    },
+    async [`listNamespaced${kind}`]({ namespace: requested, labelSelector }) {
+      assert.equal(requested, name);
+      state.calls.push(`list ${kind}`);
+      // Repository material cleanup lists its own session Secrets first; fail only the sweep.
+      if (
+        state.fail[`list ${kind}`] !== undefined &&
+        !labelSelector.includes("openclaw.dev/repository-material")
+      ) {
+        throw state.fail[`list ${kind}`];
+      }
+      return {
+        apiVersion: "v1",
+        kind: `${kind}List`,
+        metadata: {},
+        items: [...objects.values()]
+          .filter(
+            (object) => object.kind === kind && matches(object.metadata.labels, labelSelector),
+          )
+          .map((object) => structuredClone(object)),
+      };
+    },
+    async [`deleteNamespaced${kind}`]({ name: objectName, namespace: requested, body }) {
+      assert.equal(requested, name);
+      state.calls.push(`delete ${kind}:${objectName}`);
+      if (state.fail[`delete ${kind}`] !== undefined) {
+        throw state.fail[`delete ${kind}`];
+      }
+      const object = objects.get(`${kind}:${objectName}`);
+      if (object === undefined) {
+        throw notFound();
+      }
+      assert.equal(body.preconditions.uid, object.metadata.uid);
+      if (state.finalizer === `${kind}:${objectName}`) {
+        object.metadata.deletionTimestamp = "2026-10-23T00:00:00Z";
+        return;
+      }
+      objects.delete(`${kind}:${objectName}`);
+    },
+  });
+  driver.apiClients = Promise.resolve({
+    core: {
+      ...namespaceListClient([namespace]),
+      async readNamespace({ name: requested }) {
+        if (requested !== name) {
+          throw notFound();
+        }
+        return structuredClone(namespace);
+      },
+      async deleteNamespace() {
+        assert.fail("an existing namespace must outlive its OCC Namespace");
+      },
+      // Repository material cleanup finds no workloads and no session material.
+      async listNamespacedPod() {
+        return { items: [] };
+      },
+      ...api("ConfigMap"),
+      ...api("Secret"),
+      ...api("ServiceAccount"),
+      ...api("ResourceQuota"),
+      ...api("LimitRange"),
+    },
+    apps: {
+      async listNamespacedDeployment() {
+        return { items: [] };
+      },
+    },
+    networking: api("NetworkPolicy"),
+    objects: {},
+  });
+  driver.executionApiClients = driver.apiClients;
+  const teardown = () =>
+    driver.deleteNamespace({ ...tenant, status: "deleting", existingNamespace: name });
+  const remaining = () => [...objects.keys()].sort();
+  return { objects, state, kept, teardown, remaining };
+}
+
+// Finding 1400: an existing namespace outlives its OCC Namespace, so teardown removes the
+// orphans a failed create left there, matched by this Namespace's full ownership only.
+test("existing namespace teardown deletes OCE-owned orphans and keeps everything else", async () => {
+  const deleted = { namespaceId: tenant.id, namespaceDeleted: true };
+  const swept = adoptedNamespaceTeardownFixture();
+  assert.deepEqual(await swept.teardown(), deleted);
+  // Without repository credentials the worker may not list Secrets (finding 2201), so the
+  // Secret orphan stays: the documented gap. ConfigMaps and ServiceAccounts are swept.
+  assert.deepEqual(swept.remaining(), [...swept.kept, "Secret:secret-orphan"].sort());
+  assert.ok(!swept.state.calls.includes("list Secret"));
+
+  const repositoryOptions = options({
+    runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    network: {
+      ...options().network,
+      repositoryCredentials: {
+        namespace: "repository-service",
+        podLabels: { app: "repository" },
+        port: 8443,
+      },
+    },
+  });
+  const all = adoptedNamespaceTeardownFixture(repositoryOptions);
+  assert.deepEqual(await all.teardown(), deleted);
+  assert.deepEqual(all.remaining(), [...all.kept].sort());
+  // Only the orphans and OCE's fixed infrastructure were deleted.
+  assert.deepEqual(all.state.calls.filter((call) => call.startsWith("delete ")).sort(), [
+    "delete ConfigMap:configuration-orphan",
+    "delete LimitRange:openclaw-limits",
+    "delete NetworkPolicy:allow-dns",
+    "delete NetworkPolicy:allow-gateway-ingress",
+    "delete NetworkPolicy:default-deny",
+    "delete ResourceQuota:openclaw-quota",
+    "delete Secret:secret-orphan",
+    "delete ServiceAccount:agent-orphan",
+  ]);
+
+  // A refused list or a failed delete is a failed teardown, never a clean one, and OCE's
+  // infrastructure stays until a retry finishes the sweep.
+  for (const [step, error, failure] of [
+    ["list Secret", Object.assign(new Error("forbidden"), { statusCode: 403 }), "permanent"],
+    ["list ConfigMap", Object.assign(new Error("unavailable"), { statusCode: 503 }), "retryable"],
+    ["delete ServiceAccount", Object.assign(new Error("failed"), { statusCode: 500 }), "retryable"],
+  ]) {
+    const failed = adoptedNamespaceTeardownFixture(repositoryOptions);
+    failed.state.fail[step] = error;
+    const result = await failed.teardown();
+    assert.equal(result.namespaceDeleted, false, step);
+    assert.equal(result.failure, failure, step);
+    assert.ok(failed.objects.has("ResourceQuota:openclaw-quota"), step);
+    delete failed.state.fail[step];
+    assert.deepEqual(await failed.teardown(), deleted, step);
+    assert.deepEqual(failed.remaining(), [...failed.kept].sort(), step);
+  }
+
+  // An orphan that is still terminating (a finalizer) keeps the teardown pending.
+  const pending = adoptedNamespaceTeardownFixture();
+  pending.state.finalizer = "ConfigMap:configuration-orphan";
+  assert.deepEqual(await pending.teardown(), { namespaceId: tenant.id, namespaceDeleted: false });
+  assert.ok(pending.objects.has("ResourceQuota:openclaw-quota"));
+});
+
 // The worker logs a failed ensure's reason, so the reason never carries response text and stays
 // loggable: other failures map to fixed texts, and the Driver's own refusals are cleaned and cut.
 test("a failed Namespace ensure reports a fixed or cleaned, bounded reason", async (t) => {

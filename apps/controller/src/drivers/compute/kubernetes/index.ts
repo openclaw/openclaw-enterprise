@@ -9843,6 +9843,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     namespace: KubernetesNamespaceAddress,
     ownership: Ownership,
   ): Promise<boolean> {
+    if (!(await this.deleteOrphanedNamespaceObjects(namespace, ownership))) {
+      return false;
+    }
     const clients = await this.clients(namespace.plane);
     const infrastructure = [
       ["ResourceQuota", "openclaw-quota"],
@@ -9894,6 +9897,102 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ownership,
       );
       if (remaining !== undefined) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * A Secret, Configuration or ServiceAccount credential whose create applied but whose OCC
+   * transaction then failed for real (a crash, or an unknown COMMIT outcome that was a failure)
+   * leaves an object no record names, and nothing revisits it (finding 1400). A managed namespace
+   * takes such orphans with it; an existing one outlives the OCC Namespace. OCC deletes the
+   * Namespace only after its Secrets, Configurations, service accounts and Agents are gone, and
+   * nothing creates them once it is `deleting`, so every object here that carries this
+   * Namespace's full ownership metadata is an orphan. Objects without that exact metadata (the
+   * operator's own, another tenant's) are kept. A list or delete error throws, so the teardown
+   * never reads as clean; an object that is still present afterwards (a finalizer) makes the
+   * caller retry. Secrets are swept only where the worker may list them: the tenant worker role
+   * grants Secret `list` only with repository credentials (finding 2201).
+   */
+  private async deleteOrphanedNamespaceObjects(
+    namespace: KubernetesNamespaceAddress,
+    ownership: Ownership,
+  ): Promise<boolean> {
+    const clients = await this.clients(namespace.plane);
+    const labelSelector = labelsToSelector({
+      "app.kubernetes.io/managed-by": MANAGER,
+      "openclaw.dev/namespace": ownership.namespaceId,
+    });
+    const kinds: readonly ("ConfigMap" | "ServiceAccount" | "Secret")[] =
+      this.options.network.repositoryCredentials === undefined
+        ? ["ConfigMap", "ServiceAccount"]
+        : ["ConfigMap", "ServiceAccount", "Secret"];
+    const owned = async (kind: (typeof kinds)[number]) => {
+      const request = { namespace: namespace.name, labelSelector };
+      const listed = await this.request(() =>
+        kind === "ConfigMap"
+          ? clients.core.listNamespacedConfigMap(request)
+          : kind === "Secret"
+            ? clients.core.listNamespacedSecret(request)
+            : clients.core.listNamespacedServiceAccount(request),
+      );
+      let items: readonly unknown[];
+      try {
+        items = completeKubernetesList(listed as { items?: readonly unknown[] });
+      } catch {
+        throw new DependencyUnavailableError(`The Kubernetes ${kind} list is incomplete.`);
+      }
+      const objects: { readonly name: string; readonly uid: string }[] = [];
+      // Check every object before deleting one: the selector is advisory to this code.
+      for (const item of items) {
+        const metadata = asRecord(asRecord(item)?.metadata);
+        const labels = asRecord(metadata?.labels);
+        const annotations = asRecord(metadata?.annotations);
+        if (
+          !isNonEmptyString(metadata?.name) ||
+          !isNonEmptyString(metadata.uid) ||
+          (metadata.namespace !== undefined && metadata.namespace !== namespace.name) ||
+          labels?.["app.kubernetes.io/managed-by"] !== MANAGER ||
+          labels["openclaw.dev/namespace"] !== ownership.namespaceId
+        ) {
+          throw new DependencyUnavailableError(`The Kubernetes ${kind} list is invalid.`);
+        }
+        // OCE writes the Namespace-ID annotation with the labels; labels alone are not ownership.
+        if (annotations?.["openclaw.dev/namespace-id"] === ownership.namespaceId) {
+          objects.push({ name: metadata.name, uid: metadata.uid });
+        }
+      }
+      return objects;
+    };
+    for (const kind of kinds) {
+      for (const { name, uid } of await owned(kind)) {
+        const request = {
+          name,
+          namespace: namespace.name,
+          body: { preconditions: { uid } },
+        };
+        try {
+          await this.request(
+            async () => {
+              if (kind === "ConfigMap") {
+                await clients.core.deleteNamespacedConfigMap(request);
+              } else if (kind === "Secret") {
+                await clients.core.deleteNamespacedSecret(request);
+              } else {
+                await clients.core.deleteNamespacedServiceAccount(request);
+              }
+            },
+            { mutating: true },
+          );
+        } catch (error) {
+          if (numericErrorStatus(error) !== 404) {
+            throw error;
+          }
+        }
+      }
+      if ((await owned(kind)).length > 0) {
         return false;
       }
     }
