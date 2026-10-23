@@ -1,0 +1,586 @@
+apiVersion: v1
+items:
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      meta.helm.sh/release-name: openclaw-enterprise
+      meta.helm.sh/release-namespace: oc4024-system
+    creationTimestamp: "2026-10-29T18:32:07Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    name: openclaw-enterprise-7d866abf7bb9-envoy-dataplane
+    namespace: envoy-gateway-system
+    resourceVersion: "1672"
+    uid: eecbf83b-f0d5-424c-a7f2-739f45ca7b9d
+  spec:
+    egress:
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    - ports:
+      - port: 8080
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            openclaw-enterprise.io/gateway: 7d866abf7bb9
+        podSelector:
+          matchLabels:
+            openclaw.dev/workload-role: gateway
+    - ports:
+      - port: 18000
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: gateway-helm
+            control-plane: envoy-gateway
+    ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: oc4024-system
+        podSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/component
+            operator: In
+            values:
+            - api
+            - worker
+          matchLabels:
+            app.kubernetes.io/instance: openclaw-enterprise
+            app.kubernetes.io/name: openclaw-enterprise
+      - namespaceSelector:
+          matchLabels:
+            openclaw-enterprise.io/gateway: 7d866abf7bb9
+        podSelector:
+          matchLabels:
+            openclaw.dev/workload-role: agent
+      - namespaceSelector:
+          matchLabels:
+            openclaw-enterprise.io/gateway: 7d866abf7bb9
+        podSelector:
+          matchLabels:
+            openshell.ai/boundary-role: supervisor
+      ports:
+      - port: 10443
+        protocol: TCP
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/component: proxy
+        app.kubernetes.io/managed-by: envoy-gateway
+        app.kubernetes.io/name: envoy
+        gateway.envoyproxy.io/owning-gateway-name: openclaw-enterprise-agent-gateways
+        gateway.envoyproxy.io/owning-gateway-namespace: oc4024-system
+    policyTypes:
+    - Ingress
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"openclaw-development"},"name":"openclaw-development-kubernetes-egress","namespace":"oc4024-system"},"spec":{"egress":[{"ports":[{"port":6443,"protocol":"TCP"}],"to":[{"ipBlock":{"cidr":"172.31.42.0/24"}}]}],"podSelector":{"matchExpressions":[{"key":"app.kubernetes.io/component","operator":"In","values":["api","worker","initialization","collector"]}],"matchLabels":{"app.kubernetes.io/instance":"openclaw-enterprise","app.kubernetes.io/name":"openclaw-enterprise"}},"policyTypes":["Egress"]}}
+    creationTimestamp: "2026-10-29T18:31:50Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-development
+    name: openclaw-development-kubernetes-egress
+    namespace: oc4024-system
+    resourceVersion: "1606"
+    uid: 2978e2b6-bd5f-41bb-b8bf-d001d65c689c
+  spec:
+    egress:
+    - ports:
+      - port: 6443
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 172.31.42.0/24
+    podSelector:
+      matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        - api
+        - worker
+        - initialization
+        - collector
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"openclaw-development"},"name":"openclaw-development-postgres-egress","namespace":"oc4024-system"},"spec":{"egress":[{"ports":[{"port":5432,"protocol":"TCP"}],"to":[{"podSelector":{"matchLabels":{"app":"postgres"}}}]}],"podSelector":{"matchExpressions":[{"key":"app.kubernetes.io/component","operator":"In","values":["api","worker","initialization"]}],"matchLabels":{"app.kubernetes.io/instance":"openclaw-enterprise","app.kubernetes.io/name":"openclaw-enterprise"}},"policyTypes":["Egress"]}}
+    creationTimestamp: "2026-10-29T18:31:50Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-development
+    name: openclaw-development-postgres-egress
+    namespace: oc4024-system
+    resourceVersion: "1605"
+    uid: 965024e5-1f07-4ac5-9cd8-d2b1dc2bc732
+  spec:
+    egress:
+    - ports:
+      - port: 5432
+        protocol: TCP
+      to:
+      - podSelector:
+          matchLabels:
+            app: postgres
+    podSelector:
+      matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        - api
+        - worker
+        - initialization
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      meta.helm.sh/release-name: openclaw-enterprise
+      meta.helm.sh/release-namespace: oc4024-system
+    creationTimestamp: "2026-10-29T18:32:07Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    name: openclaw-enterprise-api-ingress
+    namespace: oc4024-system
+    resourceVersion: "1670"
+    uid: 51c42546-416e-461a-b06b-2d6f2588b82d
+  spec:
+    ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: oc4024-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: occ-kubernetes-dev-client
+      ports:
+      - port: 8080
+        protocol: TCP
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/component: api
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Ingress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      helm.sh/hook: pre-install,pre-upgrade
+      helm.sh/hook-delete-policy: before-hook-creation
+      helm.sh/hook-weight: "-30"
+    creationTimestamp: "2026-10-29T18:31:52Z"
+    generation: 1
+    name: openclaw-enterprise-bootstrap-isolation
+    namespace: oc4024-system
+    resourceVersion: "1618"
+    uid: 39322ad4-f67e-4c5a-9996-ee56b40ad169
+  spec:
+    egress:
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    - ports:
+      - port: 5432
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 10.42.0.23/32
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/component: initialization
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Ingress
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      meta.helm.sh/release-name: openclaw-enterprise
+      meta.helm.sh/release-namespace: oc4024-system
+    creationTimestamp: "2026-10-29T18:32:07Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    name: openclaw-enterprise-controller-envoy-egress
+    namespace: oc4024-system
+    resourceVersion: "1668"
+    uid: b11eb4ee-b9d7-4f27-b3fb-f3e898dd9ed8
+  spec:
+    egress:
+    - ports:
+      - port: 10443
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/component: proxy
+            app.kubernetes.io/managed-by: envoy-gateway
+            app.kubernetes.io/name: envoy
+            gateway.envoyproxy.io/owning-gateway-name: openclaw-enterprise-agent-gateways
+            gateway.envoyproxy.io/owning-gateway-namespace: oc4024-system
+    podSelector:
+      matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        - api
+        - worker
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      meta.helm.sh/release-name: openclaw-enterprise
+      meta.helm.sh/release-namespace: oc4024-system
+    creationTimestamp: "2026-10-29T18:32:07Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    name: openclaw-enterprise-default-deny
+    namespace: oc4024-system
+    resourceVersion: "1671"
+    uid: b351b3fc-26ba-4ec5-b863-45ee5612a383
+  spec:
+    podSelector:
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Ingress
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      meta.helm.sh/release-name: openclaw-enterprise
+      meta.helm.sh/release-namespace: oc4024-system
+    creationTimestamp: "2026-10-29T18:32:07Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    name: openclaw-enterprise-dependency-egress
+    namespace: oc4024-system
+    resourceVersion: "1669"
+    uid: 06dfc2f6-68f9-4b31-9b64-2d6d7a5dc2ac
+  spec:
+    egress:
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    - ports:
+      - port: 5432
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 10.42.0.23/32
+    - ports:
+      - port: 6443
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 172.31.42.2/32
+    podSelector:
+      matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        - api
+        - worker
+        - initialization
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"annotations":{},"labels":{"app.kubernetes.io/managed-by":"openclaw-development","app.kubernetes.io/name":"occ-kubernetes-dev-client"},"name":"openclaw-enterprise-openshell-egress","namespace":"oc4024-system"},"spec":{"egress":[{"ports":[{"port":8080,"protocol":"TCP"}],"to":[{"ipBlock":{"cidr":"172.31.42.250/32"}}]},{"ports":[{"port":8443,"protocol":"TCP"}],"to":[{"ipBlock":{"cidr":"172.31.42.10/32"}}]}],"podSelector":{"matchExpressions":[{"key":"app.kubernetes.io/component","operator":"In","values":["api","worker"]}],"matchLabels":{"app.kubernetes.io/instance":"openclaw-enterprise","app.kubernetes.io/name":"openclaw-enterprise"}},"policyTypes":["Egress"]}}
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-development
+      app.kubernetes.io/name: occ-kubernetes-dev-client
+    name: openclaw-enterprise-openshell-egress
+    namespace: oc4024-system
+    resourceVersion: "1902"
+    uid: fa66c464-a956-4038-bb8c-ce28bd0c9ba4
+  spec:
+    egress:
+    - ports:
+      - port: 8080
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 172.31.42.250/32
+    - ports:
+      - port: 8443
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 172.31.42.10/32
+    podSelector:
+      matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        - api
+        - worker
+      matchLabels:
+        app.kubernetes.io/instance: openclaw-enterprise
+        app.kubernetes.io/name: openclaw-enterprise
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: allow-dns
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "1876"
+    uid: d0673f11-9069-4c36-bddc-10e21ed9c026
+  spec:
+    egress:
+    - ports:
+      - port: 53
+        protocol: UDP
+      - port: 53
+        protocol: TCP
+      - port: 5353
+        protocol: UDP
+      - port: 5353
+        protocol: TCP
+      to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: kube-system
+        podSelector:
+          matchLabels:
+            k8s-app: kube-dns
+    podSelector:
+      matchLabels:
+        openclaw.dev/network-profile: broad-egress-v1
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: allow-gateway-ingress
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "1877"
+    uid: 6f6cf60a-f557-4ee9-8507-552667f2388c
+  spec:
+    ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: envoy-gateway-system
+        podSelector:
+          matchLabels:
+            gateway.envoyproxy.io/owning-gateway-name: openclaw-enterprise-agent-gateways
+            gateway.envoyproxy.io/owning-gateway-namespace: oc4024-system
+      ports:
+      - port: 8080
+        protocol: TCP
+    podSelector:
+      matchLabels:
+        openclaw.dev/network-profile: broad-egress-v1
+        openclaw.dev/workload-role: gateway
+    policyTypes:
+    - Ingress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: allow-openshell-sandbox-callback
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "1895"
+    uid: b6276b0b-de72-4164-9561-ec9d8cfae79b
+  spec:
+    egress:
+    - ports:
+      - port: 8080
+        protocol: TCP
+      to:
+      - ipBlock:
+          cidr: 172.31.42.250/32
+    podSelector:
+      matchLabels:
+        openshell.ai/boundary-role: supervisor
+        openshell.ai/managed-by: openshell
+    policyTypes:
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/agent-id: agt_da17aad0-00e5-4263-bcd3-a176258efd88
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:52:24Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      openclaw.dev/agent: agt_da17aad0-00e5-4263-bcd3-a176258efd88
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: allow-plugin-status-proxy-0927530402d8
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "3901"
+    uid: 1828ab44-a216-4fd8-b12d-46fcba2d5f28
+  spec:
+    ingress:
+    - from:
+      - ipBlock:
+          cidr: 10.42.0.1/32
+      ports:
+      - port: 18791
+        protocol: TCP
+    podSelector:
+      matchLabels:
+        openclaw.dev/agent: agt_da17aad0-00e5-4263-bcd3-a176258efd88
+        openclaw.dev/network-profile: broad-egress-v1
+        openclaw.dev/revision: rev_6794ffde-6ba9-4b56-9f0b-300ddbb81b0e
+    policyTypes:
+    - Ingress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: default-deny
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "1875"
+    uid: e2c25e5c-b866-4c6b-bf6b-d8c81bf69292
+  spec:
+    podSelector: {}
+    policyTypes:
+    - Ingress
+    - Egress
+- apiVersion: networking.k8s.io/v1
+  kind: NetworkPolicy
+  metadata:
+    annotations:
+      openclaw.dev/namespace-id: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    creationTimestamp: "2026-10-29T18:32:21Z"
+    generation: 1
+    labels:
+      app.kubernetes.io/instance: openshell-workspace
+      app.kubernetes.io/managed-by: openclaw-enterprise
+      app.kubernetes.io/name: openshell-workspace
+      app.kubernetes.io/version: 0.1.5
+      helm.sh/chart: openshell-workspace-0.1.5
+      openclaw.dev/namespace: ns_f0721b15-23a4-49de-828d-0e191242ad44
+    name: openshell-workspace-sandbox-ssh
+    namespace: oce-395e5274d09f28d
+    resourceVersion: "1891"
+    uid: 4f735bc7-a9d3-458c-83ec-2f0ba4d5e725
+  spec:
+    ingress:
+    - ports:
+      - port: 2222
+        protocol: TCP
+    podSelector:
+      matchLabels:
+        openshell.ai/managed-by: openshell
+    policyTypes:
+    - Ingress
+kind: List
+metadata:
+  resourceVersion: ""

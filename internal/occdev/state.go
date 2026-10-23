@@ -58,6 +58,9 @@ type developmentState struct {
 	ImageRegistryNetwork   string             `json:"imageRegistryNetwork,omitempty"`
 	OpenShellImageTag      *openShellImageTag `json:"openShellImageTag,omitempty"`
 	directory              string
+	// openShellExternal replaces the pinned in-cluster gateway with an operator's
+	// external gateway; it is transient and re-read from the environment on each start.
+	openShellExternal *externalOpenShell
 }
 
 func (s *developmentState) composeCommand() []string {

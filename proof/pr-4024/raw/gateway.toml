@@ -1,0 +1,56 @@
+[openshell]
+version = 2
+
+[openshell.drivers.kubernetes]
+workspace_mode = "operator"
+operator_namespace_label = "openshell.ai/openclaw-workspace=true"
+namespace = "oc4024-system"
+client_tls_secret_name = "oc4024-gateway-client-tls"
+grpc_endpoint = "https://172.31.42.250:8080"
+gateway_id = "oc4024-gateway"
+supervisor_image = "docker.io/openclaw-development/openshell-supervisor@sha256:07cc8b62b34a0b54a3ebeb485cebe9f223cffe10dad819af550849cf0699816f"
+sandbox_runtime_image = "docker.io/openclaw-development/openshell-sandbox@sha256:d60222e1183ad3212436507c4b9035c0aeda1c1bba4a00a02ec7949fb0a0d7b2"
+supervisor_image_pull_policy = "if_not_present"
+sandbox_runtime_image_pull_policy = "if_not_present"
+service_account_name = "openshell-sandbox"
+sa_token_ttl_secs = 3600
+allow_driver_config = true
+sandbox_runtime = { boundary_port = 5500 }
+
+[openshell.drivers.kubernetes.resource_admission]
+enabled = true
+
+[openshell.gateway]
+bind_address = "0.0.0.0:8080"
+health_bind_address = "0.0.0.0:8081"
+metrics_bind_address = "0.0.0.0:9090"
+log_level = "info"
+compute_driver = "kubernetes"
+disable_tls = false
+enable_loopback_service_http = true
+enable_websocket_tunnel = false
+name = "oc4024-gateway"
+policy_validation_failure_mode = "fail_closed"
+
+[openshell.gateway.gateway_jwt]
+gateway_id = "oc4024-gateway"
+signing_key_path = "/etc/openshell/jwt/signing.pem"
+public_key_path = "/etc/openshell/jwt/public.pem"
+kid_path = "/etc/openshell/jwt/kid"
+ttl_secs = 3600
+
+[openshell.gateway.oidc]
+issuer = "https://172.31.42.10:8443/realms/oc4024"
+audience = "openshell-cli"
+roles_claim = "realm_access.roles"
+admin_role = "openshell-admin"
+user_role = "openshell-user"
+jwks_ttl_secs = 3600
+dangerously_allow_insecure_http = false
+
+[openshell.gateway.tls]
+cert_path = "/etc/openshell/tls/tls.crt"
+key_path = "/etc/openshell/tls/tls.key"
+
+[openshell.gateway.credential_storage]
+key_encryption_key_env = "OPENSHELL_GATEWAY_CREDENTIAL_KEY_ENCRYPTION_KEY"

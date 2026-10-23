@@ -1,0 +1,76 @@
+diff --git a/internal/occdev/openshell.go b/internal/occdev/openshell.go
+index c5433e6ed..fa7837067 100644
+--- a/internal/occdev/openshell.go
++++ b/internal/occdev/openshell.go
+@@ -6,6 +6,7 @@ import (
+ 	"crypto/rand"
+ 	"crypto/x509"
+ 	"encoding/hex"
++	"encoding/json"
+ 	"encoding/pem"
+ 	"errors"
+ 	"fmt"
+@@ -302,6 +303,35 @@ func (r *runner) renderOpenShellWorkspaceResources(ctx context.Context, chart, g
+ 	return resources, nil
+ }
+ 
++// platformChildReference resolves a multi-platform reference to the child image
++// digest of one platform — the reference Docker can save directly when it refuses
++// the platform-filtered save of the whole index.
++func (r *runner) platformChildReference(ctx context.Context, source, platform string) (string, error) {
++	output, err := r.output(ctx, r.engine, "manifest", "inspect", "--verbose", source)
++	if err != nil {
++		return "", err
++	}
++	var descriptors []struct {
++		Descriptor struct {
++			Digest   string `json:"digest"`
++			Platform struct {
++				OS           string `json:"os"`
++				Architecture string `json:"architecture"`
++			} `json:"platform"`
++		} `json:"Descriptor"`
++	}
++	if err := json.Unmarshal(output, &descriptors); err != nil {
++		return "", err
++	}
++	for _, descriptor := range descriptors {
++		if descriptor.Descriptor.Platform.OS+"/"+descriptor.Descriptor.Platform.Architecture == platform {
++			name, _, _ := strings.Cut(source, "@")
++			return name + "@" + descriptor.Descriptor.Digest, nil
++		}
++	}
++	return "", fmt.Errorf("no %s child image in %s", platform, source)
++}
++
+ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentState, root, component, source string, localOnly bool) (result string, resultErr error) {
+ 	if _, err := r.output(ctx, r.engine, "image", "inspect", source); err != nil {
+ 		if localOnly {
+@@ -358,7 +388,21 @@ func (r *runner) importOpenShellImage(ctx context.Context, state *developmentSta
+ 	}
+ 	saveArgs = append(saveArgs, "--output", archive, recorded)
+ 	if err := r.run(ctx, r.engine, saveArgs...); err != nil {
+-		return "", err
++		// Docker can refuse a platform-filtered save of a locally pulled
++		// multi-platform index ("no suitable export target"), and the unfiltered
++		// archive references content the daemon never downloaded. Resolve the
++		// selected platform's child image from the source's manifest list and
++		// save that reference directly.
++		if r.engine != "docker" {
++			return "", err
++		}
++		child, childErr := r.platformChildReference(ctx, source, platform)
++		if childErr != nil {
++			return "", err
++		}
++		if retryErr := r.run(ctx, r.engine, "image", "save", "--platform", platform, "--output", archive, child); retryErr != nil {
++			return "", err
++		}
+ 	}
+ 	if err := r.importArchiveDirect(ctx, archive, state.Cluster); err != nil {
+ 		return "", err
+
+# Note: superseded upstream — main's #4120 (a0513bc2d) and the #4531 refactor
+# (0ce9648f1) implement platform-child staging in internal/occdev/k3d_import.go.
+# Dropped from the branch in favor of main's implementation during the
+# 2026-11-10 refresh.
