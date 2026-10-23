@@ -71,8 +71,10 @@ export class InstallationFieldError extends Error {
   override readonly name = "InstallationFieldError";
   readonly details: readonly [InstallationFieldDetail, ...InstallationFieldDetail[]];
   constructor(details: readonly [InstallationFieldDetail, ...InstallationFieldDetail[]]) {
-    super(details.map((detail) => detail.message).join(" "));
-    this.details = details;
+    // The same bound as ConfigurationValidationError and the startup log filter.
+    const bounded = details.slice(0, 32) as [InstallationFieldDetail, ...InstallationFieldDetail[]];
+    super(bounded.map((detail) => detail.message).join(" "));
+    this.details = bounded;
   }
 }
 
@@ -97,8 +99,7 @@ export function egressAuthorityConfiguration(
   path: string,
 ): EgressAuthorityConfiguration {
   const pointer = (field?: string) =>
-    settingPointer(path) +
-    (field === undefined ? "" : "/" + field.replaceAll("~", "~0").replaceAll("/", "~1"));
+    settingPointer(field === undefined ? path : `${path}.${field}`);
   const value = asRecord(input);
   if (!value) {
     throw new InstallationFieldError([
@@ -110,14 +111,16 @@ export function egressAuthorityConfiguration(
     ]);
   }
   const details: InstallationFieldDetail[] = [];
-  for (const key of Object.keys(value)) {
-    if (!(egressAuthorityFields as readonly string[]).includes(key)) {
-      details.push({
-        path: pointer(key),
-        code: "UNKNOWN_FIELD",
-        message: `${path} supports only ${egressAuthorityFields.join(", ")}.`,
-      });
-    }
+  // The block's own pointer: an operator's key may be long, contain control characters or
+  // look like a credential, and the log filter would drop a detail that echoed it.
+  if (
+    Object.keys(value).some((key) => !(egressAuthorityFields as readonly string[]).includes(key))
+  ) {
+    details.push({
+      path: pointer(),
+      code: "UNKNOWN_FIELD",
+      message: `${path} supports only ${egressAuthorityFields.join(", ")}.`,
+    });
   }
   for (const field of egressAuthorityFields) {
     const entry = value[field];
@@ -142,7 +145,7 @@ export function egressAuthorityConfiguration(
     } else if (typeof entry !== "string" || !entry) {
       details.push({
         path: pointer(field),
-        code: entry === undefined ? "REQUIRED" : "INVALID_TYPE",
+        code: entry === undefined ? "REQUIRED" : entry === "" ? "INVALID_VALUE" : "INVALID_TYPE",
         message: `${path}.${field} must be a nonempty string.`,
       });
     } else if (egressAuthorityFiles.includes(field) && !isAbsolute(entry)) {

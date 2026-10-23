@@ -2028,49 +2028,56 @@ test("an authority block names each refused field and never its value", async (t
   // and API and worker logs said only STARTUP_FAILED.
   const field = "/drivers/credential_proxy/configuration/authority";
   const sentinel = "sentinel-7c1e";
+  const block = (value) => (configuration) =>
+    (configuration.drivers.credential_proxy.configuration.authority = value);
+  const fieldOf = (mutate) => (configuration) =>
+    mutate(configuration.drivers.credential_proxy.configuration.authority);
   const cases = [
+    ["production", block(undefined), [[field, "REQUIRED"]]],
+    ["production", block([]), [[field, "INVALID_TYPE"]]],
+    // An unknown key is reported at the block: the key itself could be anything.
+    ["production", fieldOf((a) => (a[`${sentinel}/~`] = 1)), [[field, "UNKNOWN_FIELD"]]],
+    ["production", fieldOf((a) => delete a.issuer), [[`${field}/issuer`, "REQUIRED"]]],
+    ["production", fieldOf((a) => (a.keyId = "")), [[`${field}/keyId`, "INVALID_VALUE"]]],
+    ["production", fieldOf((a) => (a.audience = 7)), [[`${field}/audience`, "INVALID_TYPE"]]],
+    ["production", fieldOf((a) => delete a.port), [[`${field}/port`, "REQUIRED"]]],
+    ["production", fieldOf((a) => (a.port = "9444")), [[`${field}/port`, "INVALID_TYPE"]]],
+    ["production", fieldOf((a) => (a.port = 65536)), [[`${field}/port`, "INVALID_RANGE"]]],
     [
       "production",
-      (a) => (a[`${sentinel}/~`] = 1),
-      [[`${field}/${sentinel}~1~0`, "UNKNOWN_FIELD"]],
-    ],
-    ["production", (a) => delete a.issuer, [[`${field}/issuer`, "REQUIRED"]]],
-    ["production", (a) => (a.keyId = ""), [[`${field}/keyId`, "INVALID_TYPE"]]],
-    ["production", (a) => (a.audience = 7), [[`${field}/audience`, "INVALID_TYPE"]]],
-    ["production", (a) => delete a.port, [[`${field}/port`, "REQUIRED"]]],
-    ["production", (a) => (a.port = "9444"), [[`${field}/port`, "INVALID_TYPE"]]],
-    ["production", (a) => (a.port = 65536), [[`${field}/port`, "INVALID_RANGE"]]],
-    [
-      "production",
-      (a) => {
+      fieldOf((a) => {
         a.certificatePath = `${sentinel}.crt`;
         a.privateKeyPath = `${sentinel}.key`;
         a.issuerPublicKeyPath = `${sentinel}.pub`;
-      },
+      }),
       ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"].map((key) => [
         `${field}/${key}`,
         "INVALID_FORMAT",
       ]),
     ],
-    ["development", (a) => (a.host = "0.0.0.0"), [[`${field}/host`, "INVALID_VALUE"]]],
+    ["development", fieldOf((a) => (a.host = "0.0.0.0")), [[`${field}/host`, "INVALID_VALUE"]]],
   ];
   for (const [mode, mutate, expected] of cases) {
     const configuration = credentialProxyInstallation();
-    mutate(configuration.drivers.credential_proxy.configuration.authority);
+    mutate(configuration);
     await assert.rejects(
       loadInstallationConfiguration({
         mode,
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
       (error) => {
+        // What the startup log and the upgrade check print, after the log filter.
         const failure = formatStartupConfigurationFailure(error);
-        assert.ok(failure?.startsWith("DRIVER_CONFIGURATION_INVALID: "), String(error));
+        const prefix = "DRIVER_CONFIGURATION_INVALID: ";
+        assert.ok(failure?.startsWith(prefix), String(error));
         assert.deepEqual(
-          error.details.map((detail) => [detail.path, detail.code]),
+          JSON.parse(failure.slice(prefix.length)).map((detail) => [detail.path, detail.code]),
           expected,
           failure,
         );
-        assert.ok(!failure.includes(`${sentinel}.`) && !failure.includes("0.0.0.0"), failure);
+        for (const value of [sentinel, "0.0.0.0", "9444"]) {
+          assert.ok(!failure.includes(value), failure);
+        }
         return true;
       },
     );
