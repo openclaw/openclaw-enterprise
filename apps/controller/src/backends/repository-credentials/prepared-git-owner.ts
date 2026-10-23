@@ -174,6 +174,7 @@ async function appSigningKey(
   } finally {
     bytes.fill(0);
   }
+  // The registry already admitted appId, so the signer refuses only the key's type or size.
   try {
     return { keyObject, owner: createGitHubKeyOwner({ privateKey: keyObject, appId, clock }) };
   } catch {
@@ -322,10 +323,10 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         registry.appId,
         clock,
       );
-      const version = createHash("sha256")
-        .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-        .digest("hex");
       try {
+        const version = createHash("sha256")
+          .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
+          .digest("hex");
         for (const source of sources) {
           const admission = await store.claimGit(source, version);
           if (!admission) {

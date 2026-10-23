@@ -872,8 +872,11 @@ test("the worker refuses a repository App key that cannot sign before it reports
     pushRefAllowlist: ["refs/heads/review"],
   });
   await writeFile(registrySource, JSON.stringify(registry));
-  const { preparedGitHub, nativeSender } = configuration.repository;
-  nativeSender.controlSocket = join(await socketDirectory(t, "occ-app-key-"), "p", "control.sock");
+  const { preparedGitHub } = configuration.repository;
+  // Each case binds its own control and prepared-git-use sockets under a short directory.
+  const sockets = await socketDirectory(t, "occ-app-key-", {
+    longest: "group-writable/prepared-git-use.sock",
+  });
   await writeFile(preparedGitHub.custodyKeyPath, randomBytes(32), { mode: 0o600 });
   const directory = dirname(preparedGitHub.custodyKeyPath);
   const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
@@ -910,10 +913,7 @@ test("the worker refuses a repository App key that cannot sign before it reports
       }
       const mutated = structuredClone(configuration);
       mutated.repository.preparedGitHub.privateKeyPath = keyPath;
-      mutated.repository.nativeSender.controlSocket = nativeSender.controlSocket.replace(
-        "/p/",
-        `/${name}/`,
-      );
+      mutated.repository.nativeSender.controlSocket = join(sockets, name, "control.sock");
       const worker = await boot("apps/controller/src/worker.mjs", {
         PATH: process.env.PATH,
         NODE_ENV: "production",
@@ -930,7 +930,7 @@ test("the worker refuses a repository App key that cannot sign before it reports
           : ["PREPARED_GITHUB_APP_KEY_INVALID", reason],
         `${name}: ${worker.stderr}`,
       );
-      assert.ok(!worker.stderr.includes("PRIVATE KEY") && !worker.stderr.includes(directory));
+      assert.ok(!worker.stderr.includes("-----BEGIN") && !worker.stderr.includes(directory));
     }),
   );
 });
