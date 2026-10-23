@@ -60,7 +60,8 @@ export class TokenService implements PreparedTokenService {
       signal: AbortSignal,
       run: (preparation: Preparation) => ReturnType<Preparation["run"]>,
     ): Promise<void | string>;
-    failed(): void;
+    /** Called with the pass's error so an owner can name a known refusal. */
+    failed(error: unknown): void;
   }) {
     const stop = new AbortController();
     let running: Promise<string | void> | undefined;
@@ -91,9 +92,9 @@ export class TokenService implements PreparedTokenService {
         if (result && !["idle", "issuer-mismatch", "blocked", "quarantined"].includes(result)) {
           delay = 100;
         }
-      } catch {
+      } catch (error) {
         if (!stop.signal.aborted) {
-          families.failed();
+          families.failed(error);
         }
       } finally {
         if (!stop.signal.aborted) {

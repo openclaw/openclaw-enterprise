@@ -244,6 +244,8 @@ With `repository` selected, both processes load the same registry and construct
 `repository.id`. Native delivery adds the public CA and a lazy Unix client for
 `GitHubNativeRepositorySender`. Startup refuses the retired Installation
 `drivers.repo`. API startup performs no control operation and loads no App key.
+With prepared repository Git, the worker reads the App key at startup and exits
+before readiness with `PREPARED_GITHUB_APP_KEY_INVALID` if it cannot sign.
 The worker owns session lifecycle; API readiness remains database-backed.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
@@ -253,8 +255,8 @@ projection generation, copies the known config/key/TLS/registry files into owned
 private regular files, validates the selected Backend and exact Service origin,
 then uses the protected loader and starts both listeners. App/TLS private
 material stays in that container. Only the worker receives an explicitly
-projected Kubernetes API token. The service's private health probe checks the
-Unix listener; it performs no provider operation. The service and worker share
+projected Kubernetes API token. The service's private health probe checks only
+the Unix listener. The service and worker share
 only the private control volume, and the Pod uses `Recreate` with a 75-second
 termination grace period. Both containers must pass readiness for the Pod to be
 ready; the worker keeps its queue-health probe and retries unavailable session
@@ -274,7 +276,7 @@ approved reader path into an owner-readable file. A completed Job is
 not an exec endpoint, and the API and worker cannot retrieve this file for the
 operator.
 
-From an approved client, `occ installation get` reads the protected key file
+`occ installation get` reads the protected key file
 and displays the Installation. Its `ID` must match the key
 response's `meta.installationId`. The operator records that ID in the Installation
 startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
@@ -307,8 +309,6 @@ until tenant deployment/TUI procedures run.
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
   administrator/IAM mismatch.
-- `occ installation get` must display an `ID` equal to `meta.installationId`
-  from the retrieved key file.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the

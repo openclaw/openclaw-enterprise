@@ -57,6 +57,7 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     code:
       | "PREPARED_GITHUB_RECOVERY_REQUIRED"
       | "PREPARED_GITHUB_MAINTENANCE_FAILED"
+      | "PREPARED_GITHUB_APP_KEY_INVALID"
       | "PREPARED_GITHUB_RETIRED_UNREVOKED",
     context?: Readonly<Record<string, string>>,
   ) => void;
@@ -357,7 +358,12 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         key.close();
       }
     },
-    failed: () => options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+    // A key that went bad after startup (a rotated Secret) logs the same code and fixed
+    // reason as the startup refusal, never key bytes or its path.
+    failed: (error) =>
+      error instanceof PreparedGitHubAppKeyError
+        ? options.report?.(error.code, { reason: error.reason })
+        : options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
   });
   if (options.startWorker !== false) {
     maintenance.start();
