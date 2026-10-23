@@ -501,16 +501,21 @@ for (const scenario of [
           t.diagnostic(JSON.stringify({ events, work: await f.workResult(revision) }));
           throw error;
         });
+        // The first standing observation runs on the revision's maintenance schedule (a
+        // tenth of the 90 s session). Make each queued pass due now instead of waiting for it;
+        // the worker still claims and runs that pass and records the observation itself.
         await waitFor(
           "durable execution observation",
-          () =>
-            f.state.read((v) =>
+          async () => {
+            await f.advanceMaintenance(revision);
+            return f.state.read((v) =>
               v.repositorySessions.findStandingExecution({
                 namespaceId: f.namespace.id,
                 agentId: owner.id,
                 revisionId: revision.id,
               }),
-            ),
+            );
+          },
           15_000,
         );
         const provider = credentials.repositories[0]!.github;

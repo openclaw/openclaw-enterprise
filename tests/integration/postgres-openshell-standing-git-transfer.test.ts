@@ -27,6 +27,10 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import {
+  advanceCleanupRetries,
+  expireStoppedClaims,
+} from "../helpers/postgres-worker-revision-support.mjs";
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
 import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { options } from "../helpers/kubernetes-routed-scenarios.mjs";
@@ -495,7 +499,21 @@ test(
       assert.equal(preparationFailure, undefined);
       assert.equal(preparationClaims.length, 3);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
-      const execution = await waitFor("admitted standing execution", known, 15_000);
+      // Queue cadences are not under test here: make this revision's queued maintenance and
+      // cleanup passes due while waiting. The worker still claims and runs every pass, and the
+      // token and admission deadlines below are still crossed in real time.
+      const due = async () => {
+        await f.advanceMaintenance(revision);
+        await advanceCleanupRetries(f, revision);
+      };
+      const execution = await waitFor(
+        "admitted standing execution",
+        async () => {
+          await due();
+          return known();
+        },
+        15_000,
+      );
       const first = (await attempts())[0]!;
       assert.equal(first.deadlineWallMs, deadline);
       assert.equal(world.writes, 1);
@@ -627,6 +645,7 @@ test(
       await waitFor(
         "same execution with a newly installed bounded successor",
         async () => {
+          await due();
           if (world.writes !== 2) {
             return undefined;
           }
@@ -743,10 +762,18 @@ test(
         1,
         "one live successor retirement",
       );
+      await expireStoppedClaims(f, revision);
       await start();
       // Stop both owners after the peer committed detach but lost its reply. Recovery must
       // observe the reduced policy, never send a second detach or bootstrap an installation.
-      await waitFor("lost detach reply", async () => lostDetachReply || undefined, 60_000);
+      await waitFor(
+        "lost detach reply",
+        async () => {
+          await due();
+          return lostDetachReply || undefined;
+        },
+        60_000,
+      );
       await f.stop();
       const reduction = async () =>
         (
@@ -767,10 +794,14 @@ test(
       await runtime.close();
       runtime = newRuntime();
       const beforeRestartObservations = withdrawn;
+      await expireStoppedClaims(f, revision);
       await start();
       await waitFor(
         "withdrawal followed by ordinary maintenance on the reduced execution",
-        async () => (withdrawn >= beforeRestartObservations + 2 && true) || undefined,
+        async () => {
+          await due();
+          return (withdrawn >= beforeRestartObservations + 2 && true) || undefined;
+        },
         100_000,
       );
       await f.stop();

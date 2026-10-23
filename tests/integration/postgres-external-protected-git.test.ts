@@ -41,6 +41,7 @@ import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs"
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { advanceCleanupRetries } from "../helpers/postgres-worker-revision-support.mjs";
 import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
@@ -602,8 +603,10 @@ function externalGitJourney(
     const compute: ComputeDriver = {
       ...f.compute,
       capability: "compute",
-      async stopRevision() {
-        if (withdrawalStarted) {
+      async stopRevision(stopped) {
+        // The cases share one database, so this worker can also claim an earlier case's due
+        // retirement. Count only this case's Agent.
+        if (withdrawalStarted && stopped.namespaceId === namespaceId) {
           stopAttempts++;
           assert.equal(reducible, false, "Git binding withdrawal must never stop the execution");
         }
@@ -949,6 +952,12 @@ function externalGitJourney(
     }
     const ref = { ...key, revisionId: revision.id };
     t.diagnostic("journey revision " + revision.id);
+    // Queue cadences are not under test here: make this revision's queued maintenance and
+    // cleanup passes due while waiting for them. The worker still claims and runs every pass.
+    const due = async () => {
+      await f.advanceMaintenance(revision);
+      await advanceCleanupRetries(f, revision);
+    };
     try {
       await f.start(compute, {
         emit,
@@ -960,7 +969,10 @@ function externalGitJourney(
       });
       await waitFor(
         "worker's standing execution",
-        () => f.state.read((v) => v.repositorySessions.findStandingExecution(ref)),
+        async () => {
+          await due();
+          return f.state.read((v) => v.repositorySessions.findStandingExecution(ref));
+        },
         25_000,
       );
       const first = await waitFor(
@@ -1382,18 +1394,15 @@ function externalGitJourney(
       }
 
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
-      // Wait for the persisted next check, without extending or editing a token or session deadline.
+      // Make the persisted next check due now for the owner's background loop, without
+      // extending or editing a token or session deadline.
       let second = first;
       if (!broad) {
-        const {
-          rows: [{ delay_ms }],
-        } = await pool.query(
-          "SELECT extract(epoch FROM next_check_at-clock_timestamp())*1000 AS delay_ms FROM occ.prepared_github_families WHERE enabled AND source #>> '{session,revisionId}'=$1",
+        const { rowCount } = await pool.query(
+          "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE enabled AND source #>> '{session,revisionId}'=$1",
           [revision.id],
         );
-        await delay(Math.max(0, Number(delay_ms) + 25), undefined, {
-          signal: t.signal,
-        });
+        assert.equal(rowCount, 1);
         if (!lostRotation) {
           second = await waitFor(
             "worker rotates material",
@@ -1650,7 +1659,12 @@ function externalGitJourney(
           // They must GET the original operation, never send its POST again.
           await waitFor(
             "cleanup observes the original operation while hidden",
-            () => peer.reduction.observations.includes(original.request.operationId) || undefined,
+            async () => {
+              await due();
+              return (
+                peer.reduction.observations.includes(original.request.operationId) || undefined
+              );
+            },
             65_000,
           );
           assertNoEffect();
@@ -1659,6 +1673,7 @@ function externalGitJourney(
           const settledReduction = await waitFor(
             "authorized Git withdrawal is durably observed",
             async () => {
+              await due();
               const durable = await readReduction();
               return durable.records[0]?.observed ? durable : undefined;
             },
@@ -1807,8 +1822,10 @@ function externalGitJourney(
         });
         await waitFor(
           "replacement worker observes the original reduction",
-          () =>
-            f.state.read(
+          async () => {
+            // Cleanup retries after the lost reply on its 30-second cadence; make each retry due.
+            await due();
+            return f.state.read(
               async (view) =>
                 (
                   await view.credentialSources.listCredentialPolicyReductions(
@@ -1817,8 +1834,8 @@ function externalGitJourney(
                   )
                 ).find((reduction) => reduction.bindingId === "policy:repository-git")?.observed ||
                 undefined,
-            ),
-          // Cleanup retries on its ordinary 30-second cadence after the lost reply.
+            );
+          },
           45_000,
         );
         assert.equal(peer.reduction.attempts, 1, "lost acknowledgment never replays POST");

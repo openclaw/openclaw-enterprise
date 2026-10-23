@@ -43,6 +43,16 @@ export async function advanceCleanupRetries(fixture, revision) {
   );
 }
 
+// Only after every fixture worker has stopped: a pass that stop interrupted keeps its claim
+// until the lease ends. Expire this revision's claims instead of waiting out the lease.
+export async function expireStoppedClaims(fixture, revision) {
+  await fixture.observerPool.query(
+    `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
+     WHERE state = 'claimed' AND revision_id = $1`,
+    [revision.id],
+  );
+}
+
 // This boundary Driver supplies synthetic sessions backed by the actual receipt
 // owner. The real worker, IAM, State, and PostgreSQL queue own the lifecycle
 // decisions; these cases do not qualify the concrete credential service or Compute.
