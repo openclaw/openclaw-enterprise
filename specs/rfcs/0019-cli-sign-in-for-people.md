@@ -7,7 +7,7 @@ author: freeqaz
 # Proposal: Let people sign in to `occ` with their console account
 
 - **ID:** RFC-0019 (provisional until merge)
-- **Created:** 2026-10-04 · **Last updated:** 2026-10-15
+- **Created:** 2026-10-04 · **Last updated:** 2026-10-23
 - **Review:** [RFC #1235](https://github.com/openclaw/openclaw-enterprise/pull/1235) ·
   [Implementation proposal #1619](https://github.com/openclaw/openclaw-enterprise/pull/1619) depends on acceptance here.
 
@@ -96,7 +96,9 @@ sequenceDiagram
    both may identify only the ingress. Someone can still persuade Maya to type their code. Denial is final.
 4. **Collect once.** `occ` polls `POST /api/auth/cli/token` at the stated interval, handles
    `authorization_pending` and `slow_down`, and stops on `access_denied` or `expired_token`.
-   In one transaction, consume the approved authorization, insert the CLI session and record its issue.
+   At collection, recheck the approving browser session and account under the same rules as a CLI
+   request. If the browser signed out after approval, return `access_denied` and issue no credential.
+   In one transaction, validate the parent, consume the approval, insert the CLI session and record its issue.
    If audit fails, roll back, return `503` and let `occ` poll again. If the commit succeeds but its
    response is lost, the code is spent: Maya can find and revoke the issued session in the console,
    then start a new login. Never recover or return the lost token.
@@ -134,7 +136,7 @@ approve another CLI login, read or manage accounts (including creation and recov
 revoke service keys, use native admin, or inspect `GET /api/auth/session`. In particular, even an
 Installation administrator's CLI session must not be convertible into a days-long service key.
 
-At main `00bbc7cd976a` (October 15), the [CLI client](../../internal/occclient/client.go) [sends `x-api-key`](../../internal/occclient/transport.go),
+The [CLI client](../../internal/occclient/client.go) [sends `x-api-key`](../../internal/occclient/transport.go),
 and [controller admission](../../apps/controller/src/auth/index.ts) distinguishes that key from a
 browser session. Add `x-occ-cli-session`, with no `Origin` requirement. Reject an invalid explicit
 credential, or both credential headers together, with `401`; never fall back to a cookie. In the
@@ -184,7 +186,9 @@ and a Namespace-bound session trying an Installation route. These are requiremen
 
 Below that test, cover the device state machine, code normalization, shared wrong-code limit, each
 admission gate and password-only binding. In PostgreSQL race two collectors, fail audit before
-commit, and exercise cascades, method detach, parent-bounded expiry, sweep and session cap. In the
+commit, and sign out between approval and collection. The last case must return `access_denied`
+without creating a CLI session or an issuance event. Exercise cascades, method detach, parent-bounded
+expiry, sweep and the session cap. In the
 browser cover denial, wrong and expired codes, return after sign-in, ignoring a code in the URL and
 the address warning; in `occ` cover origin pinning, file protections and keychain timeout.
 
