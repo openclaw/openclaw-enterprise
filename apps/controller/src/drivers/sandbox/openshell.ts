@@ -3784,15 +3784,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       if (present !== undefined) {
         await refused(() => client.deleteSandbox(selector, context.signal));
       }
-      const git = this.openShellGit;
-      const revision = context.revision;
-      if (git !== undefined && revision.repositoryCredentials !== undefined) {
-        // cleanup() withdrew the route and the Sandbox is gone: nothing uses the revision's
-        // Git provider, which would otherwise keep DeleteWorkspace refused (finding 2206).
-        await refused(() =>
-          git.removeProvider(revision, client, workspace, sandbox.resourceName, context.signal),
-        );
-      }
       const harnessId = context.revision.harness.id;
       if (
         context.revision.harness.mode === "dedicated" &&
@@ -3811,6 +3802,23 @@ export class OpenShellSandboxDriver implements SandboxDriver {
           );
           await client.deleteProvider(workspace, provider, context.signal);
         }
+      }
+      const git = this.openShellGit;
+      const revision = context.revision;
+      if (git !== undefined && revision.repositoryCredentials !== undefined) {
+        // cleanup() withdrew the route and the Sandbox is gone: nothing uses the revision's
+        // Git provider, which would otherwise keep DeleteWorkspace refused (finding 2206).
+        const attached = present?.spec?.providers;
+        await refused(() =>
+          git.removeProvider(
+            revision,
+            client,
+            workspace,
+            sandbox.resourceName,
+            Array.isArray(attached) ? attached.filter((name) => typeof name === "string") : [],
+            context.signal,
+          ),
+        );
       }
       return;
     }

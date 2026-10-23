@@ -176,7 +176,8 @@ function workspaceGatewayClient(seed = [], events = []) {
       calls.push(["deleteWorkspace", name]);
       events.push(["gateway", "deleteWorkspace", name]);
       // As OpenShell 0.1.4 (grpc/workspace.rs): a Workspace that still holds Sandboxes,
-      // providers or provider profiles stays, and the delete is refused.
+      // providers or provider profiles stays, and the delete is refused. Every scenario on this
+      // fake has one Workspace, so its maps hold that Workspace's members.
       const blocking = [
         ...(sandboxes.size > 0 ? ["sandbox"] : []),
         ...(providers.size > 0 ? ["provider"] : []),
@@ -203,6 +204,9 @@ function workspaceGatewayClient(seed = [], events = []) {
     },
     async getProviderProfile(_workspace, id) {
       return profiles.get(id);
+    },
+    async listProviderProfiles() {
+      return [...profiles.values()];
     },
     async importProviderProfile(_workspace, profile) {
       storeProfile(profile, "1");
@@ -6132,6 +6136,56 @@ test(
           assert.equal(gateway.profiles.has(gitProvider), false, "Git provider profile deleted");
           assert.deepEqual([...gateway.providers.keys()], [inferenceProvider]);
 
+          // The operator withdrew the Namespace's grant from the registry and restarted the
+          // controller, a usual reason for a revision to stop. The restarted worker cannot derive
+          // the Git provider's name from the revision's scope any more; the Sandbox's own
+          // provider list, read before its deletion, names it.
+          const withdrawnId = "rev_" + randomUUID();
+          const withdrawnPlan = {
+            ...plan,
+            id: randomUUID(),
+            execution: {
+              ...plan.execution,
+              revisionId: withdrawnId,
+              executionId: randomUUID().replaceAll("-", ""),
+            },
+          };
+          const withdrawnRev = { ...rev, id: withdrawnId, egressPlan: withdrawnPlan };
+          const withdrawnCtx = { ...context, plan: withdrawnPlan, revision: withdrawnRev };
+          const withdrawnRequired = structuredClone({
+            ...requirements,
+            proxyWiring: qualifiedWiring(withdrawnCtx),
+          });
+          withdrawnRequired.files[0].content = JSON.stringify({
+            kind: "codex",
+            selections: {},
+            providerTools: "none",
+            egressEnrollment: harnessEgressEnrollment(withdrawnPlan),
+          });
+          await sandbox.provisionHarness({ ...withdrawnCtx, requirements: withdrawnRequired });
+          const withdrawnProvider = created.spec.providers.find((p) => p.startsWith("oce-git-"));
+          assert.ok(withdrawnProvider !== gitProvider && gateway.providers.has(withdrawnProvider));
+          const revokedRegistry = structuredClone(registry);
+          revokedRegistry.repositories[0].namespaces[0].namespaceId =
+            "ns_00000000-0000-4000-8000-000000000999";
+          const revokedPath = join(tls.directory, "registry-revoked.json");
+          await writeFile(revokedPath, JSON.stringify(revokedRegistry));
+          const revoked = structuredClone(configuration);
+          revoked.backend.find(({ id }) => id === "github-primary").configuration.registryPath =
+            revokedPath;
+          const restarted = await loadInstallationFile(t, revoked, {
+            createOpenShellBackend: () => backendFor(gateway),
+          });
+          // A same-name profile another owner annotated is kept (the provider's own, renamed).
+          gateway.profiles.get(withdrawnProvider).annotations = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await restarted.sandboxDriver.cleanup(withdrawnCtx);
+          assert.equal(gateway.sandboxes.has(created.name), false);
+          assert.equal(gateway.providers.has(withdrawnProvider), false, "provider deleted");
+          assert.equal(gateway.profiles.has(withdrawnProvider), true, "foreign profile kept");
+          gateway.profiles.delete(withdrawnProvider);
+
           // A revision cleaned up before this fix left its Git provider and profile behind.
           // Namespace cleanup deletes them before the Workspace, but only objects whose owner
           // label matches the name a preparation derives from it: a provider without it, or a
@@ -6149,6 +6203,14 @@ test(
             labels: { "openclaw.dev/prepared-git-binding": owner },
           });
           gateway.profiles.set(reused, { ...leftBehind.profile, id: reused });
+          // A profile whose provider is already gone: a CreateProvider reply was lost, or an
+          // earlier pass failed between the two deletes. Only a listing finds it.
+          const orphan = "oce-github-installation-" + "2".repeat(32);
+          gateway.profiles.set(orphan, {
+            ...leftBehind.profile,
+            id: orphan,
+            annotations: { "openclaw.dev/prepared-git-binding": "2".repeat(48) },
+          });
           // The model source's provider belongs to the Credential Gateway, which withdraws it.
           gateway.providers.delete(inferenceProvider);
           gateway.profiles.delete("inference-profile");

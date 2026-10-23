@@ -248,7 +248,7 @@ gaps. The raw app-server token stays outside the provider. Plugins and repositor
 broker configuration fail before creation.
 
 Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
-cleanup removes unused profiles. Adoption requires matching
+cleanup removes leftover Git providers and unused profiles. Adoption requires matching
 Namespace, Agent, and Agent revision IDs and nonsecret configuration,
 except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
 for normal Agent revision cleanup with the Sandbox.
