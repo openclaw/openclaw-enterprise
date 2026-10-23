@@ -24,7 +24,8 @@ for (const cidr of MODEL_EGRESS_EXCLUDED_IPV4_CIDRS) {
 /**
  * Why the Harness model egress policy blocks a normalized HTTPS model endpoint, after `subject`
  * (such as "Codex model endpoint"), or `undefined` (finding 1740). Only a literal address is
- * checked: a host name may resolve anywhere, which admission cannot know.
+ * checked: a host name may resolve anywhere, which admission cannot know. Like the policy, it
+ * leaves other special-use IPv4 ranges (loopback, 198.18.0.0/15) alone.
  */
 export function modelEgressRefusal(subject: string, endpoint: string): string | undefined {
   const url = new URL(endpoint);
@@ -35,7 +36,7 @@ export function modelEgressRefusal(subject: string, endpoint: string): string | 
     return `${subject} must not be an IPv6 address: Harness model egress allows only IPv4.`;
   }
   if (isIP(url.hostname) === 4 && excluded.check(url.hostname, "ipv4")) {
-    return `${subject} IPv4 host must be public: Harness model egress excludes ${MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.join(", ")}.`;
+    return `${subject} IPv4 host must be outside ${MODEL_EGRESS_EXCLUDED_IPV4_CIDRS.join(", ")}: Harness model egress excludes them.`;
   }
   return undefined;
 }

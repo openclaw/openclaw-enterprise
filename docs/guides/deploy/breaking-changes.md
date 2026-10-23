@@ -27,11 +27,13 @@ blocks: a port other than 443, an IPv6 address, or an IPv4 address in
 Codex `api_key` Agent failed its model authentication check.
 
 **Who is affected.** Installations that set `runtime.codexModelBaseUrl` to such
-an endpoint. No Agent could use it.
+an endpoint. Compute's model egress policy blocked it for every `api_key`
+Agent, and OpenShell installs, whose Sandbox fences egress, run no `api_key`
+Agents, so no Agent could use it.
 
 **How to tell.** Compute startup refuses `/runtime/codexModelBaseUrl` with
 `Codex model endpoint must use port 443`, `must not be an IPv6 address` or
-`IPv4 host must be public`.
+`IPv4 host must be outside`.
 
 **Steps.** Serve the endpoint on port 443 at a public IPv4 address or a host
 name, or remove the setting, then start again. _untested_ against a live

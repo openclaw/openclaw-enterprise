@@ -6844,12 +6844,12 @@ test("the canonical Kubernetes runtime validates the dedicated Codex model endpo
     ["https://[::ffff:203.0.113.1]/v1", /must not be an IPv6 address/],
     [
       "https://10.1.2.3/v1",
-      /IPv4 host must be public: Harness model egress excludes 10\.0\.0\.0\/8,/,
+      /IPv4 host must be outside 10\.0\.0\.0\/8, 100\.64\.0\.0\/10,.*: Harness model egress excludes them/,
     ],
-    ["https://100.127.255.255/v1", /IPv4 host must be public/],
-    ["https://172.31.0.1/v1", /IPv4 host must be public/],
-    ["https://192.168.0.10/v1", /IPv4 host must be public/],
-    ["https://169.254.169.254/v1", /IPv4 host must be public/],
+    ["https://100.127.255.255/v1", /IPv4 host must be outside /],
+    ["https://172.31.0.1/v1", /IPv4 host must be outside /],
+    ["https://192.168.0.10/v1", /IPv4 host must be outside /],
+    ["https://169.254.169.254/v1", /IPv4 host must be outside /],
   ]) {
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, codexModelBaseUrl } })),
