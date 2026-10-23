@@ -203,8 +203,9 @@ function safePath(value: unknown): string | undefined {
     : undefined;
 }
 
-// Fields that name a fixed code: an expiry check, a failure class, the reason code an Agent is
-// shown, or a Harness lifecycle state. Only a short identifier passes, never free text.
+// Fields that name a fixed code, from any emitter: for example an OpenShell Git expiry check, a
+// failure class, the reason code an Agent is shown, or a Harness lifecycle state. Only a short
+// identifier passes, never free text.
 const CODE_FIELDS = new Set(["check", "failure", "harnessState", "reasonCode"]);
 const SAFE_CODE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -345,7 +346,7 @@ function sanitizedEvent(
       continue;
     }
     if (key === "fence") {
-      // The OpenShell Git route generation a worker holds: a non-negative integer.
+      // A route generation, such as the OpenShell Git fence a worker holds: a non-negative integer.
       if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
         result.fence = value;
       }

@@ -1,6 +1,7 @@
 import {
   openShellGitRuntimeFixture,
   registry as runtimeRegistry,
+  takeUnloggedRuntimeFields,
 } from "../helpers/openshell-git-runtime.ts";
 import {
   createGitHubRepositoryDeliveryResolver,
@@ -19,7 +20,7 @@ import { writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
-import test from "node:test";
+import test, { afterEach } from "node:test";
 import type {
   AgentRevision,
   ComputeDriver,
@@ -38,6 +39,9 @@ import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 import { listen } from "../helpers/listen.mjs";
+
+// Every field the OpenShell Git runtime emits reaches the worker log (finding 2244).
+afterEach(() => assert.deepEqual(takeUnloggedRuntimeFields(), []));
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
   const id = "release-fixture";

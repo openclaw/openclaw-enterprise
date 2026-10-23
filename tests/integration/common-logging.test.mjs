@@ -12,6 +12,7 @@ import {
   operationalLoggingConfiguration,
   skippedUserLogFields,
 } from "../../apps/controller/src/logging.ts";
+import { OPENSHELL_GIT_EXPIRY_CHECKS } from "../../apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -714,6 +715,12 @@ test("worker log keeps fixed codes and route fences, and drops anything shaped o
     for (const [key, value] of Object.entries(event)) {
       assert.equal(line[key], value, `${event.event} keeps ${key}`);
     }
+  }
+
+  // Every expiry step the runtime can report passes as a code.
+  for (const check of OPENSHELL_GIT_EXPIRY_CHECKS) {
+    emit({ event: "worker.openshell-git-expiry", outcome: "pending", check });
+    assert.equal(output.lines.at(-1).check, check);
   }
 
   // Free text, a credential shape, an overlong value or a non-string never passes as a code;

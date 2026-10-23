@@ -88,9 +88,10 @@ lowercase hexadecimal characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
 The local worker emitter also retains `stopYields` from throttled drain-yield and
 completion records as a nonnegative safe integer; the Collector does not export this count.
-It also keeps the fixed codes that the worker and the OpenShell Git runtime name (`check`,
-`failure`, `reasonCode`, `harnessState`), each a short identifier and never free text, and
-the Git route `fence` as a nonnegative safe integer.
+For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harnessState`
+only as short identifier codes, never free text, and `fence` only as a nonnegative safe
+integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
+classes, the reason code an Agent is shown, Harness state and route generations.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
 status, and a message of at most 256 characters. The worker never serializes the raw exception, and
@@ -292,7 +293,7 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
-- 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244)
+- 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244 - #3289)
 
 - 2026-10-16 00:17: Reject negative and nonnumeric stop-yield counts at the local logging boundary. (authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2 - f916021bf235e9f8e91630484948eb6fc88ccfa7)
 

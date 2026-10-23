@@ -23,26 +23,28 @@ export type OpenShellGitExpiryResult = "withdrawn" | "pending" | "retire-runtime
  */
 export type OpenShellGitExpiryPendingFailure =
   "unconfirmed" | "admission_limit" | "gateway_unavailable" | "timeout" | "failed";
-/** The step an expiry pass reports, a fixed name that operators can alert on. */
-export type OpenShellGitExpiryCheck =
-  | "model-provider"
-  | "original-launch-and-pods"
-  | "original-git-provider"
-  | "attachment-after-send-intent"
-  | "original-git-installation"
-  | "before-detach"
-  | "sandbox-version-moved-before-intent"
-  | "detach-intent"
-  | "conditional-detach"
-  | "repeated-conditional-detach"
-  | "launch-after-uncertain-detach"
-  | "launch-after-detach"
-  | "git-revocation-on-original-supervisor"
-  | "retained-provider-profiles"
-  | "model-on-original-supervisor"
-  | "reduced-generation-moved-across-provider-check"
-  | "sandbox-version-moved-after-read"
-  | "record-reduced-generation";
+/** The steps an expiry pass reports: fixed names that operators can alert on. */
+export const OPENSHELL_GIT_EXPIRY_CHECKS = [
+  "model-provider",
+  "original-launch-and-pods",
+  "original-git-provider",
+  "attachment-after-send-intent",
+  "original-git-installation",
+  "before-detach",
+  "sandbox-version-moved-before-intent",
+  "detach-intent",
+  "conditional-detach",
+  "repeated-conditional-detach",
+  "launch-after-uncertain-detach",
+  "launch-after-detach",
+  "git-revocation-on-original-supervisor",
+  "retained-provider-profiles",
+  "model-on-original-supervisor",
+  "reduced-generation-moved-across-provider-check",
+  "sandbox-version-moved-after-read",
+  "record-reduced-generation",
+] as const;
+export type OpenShellGitExpiryCheck = (typeof OPENSHELL_GIT_EXPIRY_CHECKS)[number];
 type Client = Pick<
   OpenShellGatewayClient,
   "getSandbox" | "getProvider" | "getSandboxProviderStatus" | "detachSandboxProvider"
