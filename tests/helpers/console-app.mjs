@@ -89,7 +89,8 @@ function computeDriver({
 }
 
 // The default model credential Secret's name for createAgent. An Agent name may use all of the
-// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points).
+// Name rule's characters, so "Auth <Agent name>" is cut to that length (in code points); the cut
+// can land after a space, which a Name cannot end with.
 function authSecretName(agentName) {
   return Array.from(`Auth ${agentName}`).slice(0, NAME_MAX_CHARACTERS).join("").trimEnd();
 }
