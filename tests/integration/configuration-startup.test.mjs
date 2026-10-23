@@ -15,6 +15,7 @@ import {
   isDevelopmentBrowserOrigin,
 } from "../../apps/controller/src/auth/configuration.ts";
 import { PresetFileError } from "../../apps/controller/src/composition/installation-presets.ts";
+import { openShellRepositoryConfiguration } from "../../apps/controller/src/composition/installation-fields.ts";
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { formatStartupConfigurationFailure } from "../../apps/controller/src/startup-failure.ts";
@@ -2020,6 +2021,108 @@ test("API and worker name a chart listener mismatch and both values in their sta
       },
     ]);
   }
+});
+
+test("an authority block names each refused field and never its value", async (t) => {
+  // Finding 2216: nine faults shared one message about "a loopback development listener",
+  // and API and worker logs said only STARTUP_FAILED.
+  const field = "/drivers/credential_proxy/configuration/authority";
+  const sentinel = "sentinel-7c1e";
+  const cases = [
+    [
+      "production",
+      (a) => (a[`${sentinel}/~`] = 1),
+      [[`${field}/${sentinel}~1~0`, "UNKNOWN_FIELD"]],
+    ],
+    ["production", (a) => delete a.issuer, [[`${field}/issuer`, "REQUIRED"]]],
+    ["production", (a) => (a.keyId = ""), [[`${field}/keyId`, "INVALID_TYPE"]]],
+    ["production", (a) => (a.audience = 7), [[`${field}/audience`, "INVALID_TYPE"]]],
+    ["production", (a) => delete a.port, [[`${field}/port`, "REQUIRED"]]],
+    ["production", (a) => (a.port = "9444"), [[`${field}/port`, "INVALID_TYPE"]]],
+    ["production", (a) => (a.port = 65536), [[`${field}/port`, "INVALID_RANGE"]]],
+    [
+      "production",
+      (a) => {
+        a.certificatePath = `${sentinel}.crt`;
+        a.privateKeyPath = `${sentinel}.key`;
+        a.issuerPublicKeyPath = `${sentinel}.pub`;
+      },
+      ["certificatePath", "privateKeyPath", "issuerPublicKeyPath"].map((key) => [
+        `${field}/${key}`,
+        "INVALID_FORMAT",
+      ]),
+    ],
+    ["development", (a) => (a.host = "0.0.0.0"), [[`${field}/host`, "INVALID_VALUE"]]],
+  ];
+  for (const [mode, mutate, expected] of cases) {
+    const configuration = credentialProxyInstallation();
+    mutate(configuration.drivers.credential_proxy.configuration.authority);
+    await assert.rejects(
+      loadInstallationConfiguration({
+        mode,
+        environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
+      }),
+      (error) => {
+        const failure = formatStartupConfigurationFailure(error);
+        assert.ok(failure?.startsWith("DRIVER_CONFIGURATION_INVALID: "), String(error));
+        assert.deepEqual(
+          error.details.map((detail) => [detail.path, detail.code]),
+          expected,
+          failure,
+        );
+        assert.ok(!failure.includes(`${sentinel}.`) && !failure.includes("0.0.0.0"), failure);
+        return true;
+      },
+    );
+  }
+  // The same field and code reach both processes' startup logs.
+  const configuration = credentialProxyInstallation();
+  configuration.drivers.credential_proxy.configuration.authority.privateKeyPath = "tls.key";
+  const shared = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: await fixture(t, configuration),
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+  };
+  const [server, worker] = await settled([
+    boot("apps/controller/src/server.mjs", { ...shared, ...productionServer }),
+    boot("apps/controller/src/worker.mjs", shared),
+  ]);
+  for (const [result, event] of [
+    [server, "startup-error"],
+    [worker, "worker.startup-error"],
+  ]) {
+    assert.equal(result.status, 1, result.stderr);
+    const diagnostic = startupDiagnostic(result.stderr, event);
+    assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID", result.stderr);
+    assert.deepEqual(diagnostic.details, [
+      {
+        path: `${field}/privateKeyPath`,
+        code: "INVALID_FORMAT",
+        message:
+          "drivers.credential_proxy.configuration.authority.privateKeyPath must be an absolute mounted-file path.",
+      },
+    ]);
+  }
+});
+
+test("a repository OpenShell authority refusal names its own block", () => {
+  // The Installation and the repository transport share the validator, not the field path.
+  const authority = credentialProxyInstallation().drivers.credential_proxy.configuration.authority;
+  delete authority.keyId;
+  assert.throws(
+    () => openShellRepositoryConfiguration({ registrationName: "git", authority }, "production"),
+    (error) => {
+      assert.deepEqual(error.details, [
+        {
+          path: "/repository/openShell/authority/keyId",
+          code: "REQUIRED",
+          message: "repository.openShell.authority.keyId must be a nonempty string.",
+        },
+      ]);
+      return true;
+    },
+  );
 });
 
 test("closed Installation observes only its operator-bound Namespace, including Secret and Configuration custody", async (t) => {
