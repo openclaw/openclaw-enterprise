@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/185ec4e3-7292-41e3-a669-f574bccc3b16
+updated: 2026-10-23
+last_updated_session: authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668
 ---
 
 # OCC CLI publication flow
@@ -49,7 +49,7 @@ those separate releases from the same source.
 ### 2. Prepare the binaries before write access
 
 `scripts/ci/cli-release.mjs:packageCli` builds with `CGO_ENABLED=0` for Darwin
-and Linux on amd64 and arm64 using pinned Go 1.27.1. The build embeds
+and Linux on amd64 and arm64 using pinned Go 1.27.3. The build embeds
 `v<version>` in the CLI, checks the source commit and Go platform metadata,
 runs `--version` and `--help` on the runner-native
 binary, and writes `SHA256SUMS`. The prepare job has read-only repository
@@ -100,6 +100,8 @@ provenance.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 15:28: Require Go 1.27.3 for the existing clean-source CLI packaging gate (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 - 2026-09-28 17:25: Clarified draft lookup and failed-job artifact reuse (authoring-run/185ec4e3-7292-41e3-a669-f574bccc3b16 - fd9ed7f3f50c8e1f9867acb55b2b7bce00c341fa)
 - 2026-09-28 15:34: Documented the CLI release build, gate and draft publication path (authoring-run/9245ac4f-d350-4d1e-920b-3d9d638de966 - 7cd4a210d8cf63e6b541427c7d46d7524736a8dc)

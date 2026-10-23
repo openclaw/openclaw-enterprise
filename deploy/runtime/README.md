@@ -76,13 +76,13 @@ Native AMD64 and ARM64 image checks and real deployment verification remain
 separate requirements. Schema acceptance alone does not prove placement,
 enrollment, containment, workspace access, or model execution.
 
-| Input                                        | Selection                                                                                                    |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Build base                                   | `docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0` |
-| OpenClaw source commit                       | `f8386bc7df0a6c9eda7a28ae81943c5c06a414ff`                                                                   |
-| Source archive SHA-256                       | `ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d`                                           |
-| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                            |
-| Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
+| Input                                        | Selection                                                                                                         |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Build base                                   | `docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a` |
+| OpenClaw source commit                       | `f8386bc7df0a6c9eda7a28ae81943c5c06a414ff`                                                                        |
+| Source archive SHA-256                       | `ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d`                                                |
+| Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                                 |
+| Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                         |
 
 The source's package version is `2026.9.9`; it does not identify this custom
 build. `/opt/oce/runtime/provenance.json` records the source commit, verified archive
@@ -146,7 +146,7 @@ The assembly links missing plugin dependencies into that root without replacing
 existing core dependencies.
 The custom npm-distribution packer rejects that combination because it requires
 one shared dependency version. Alternate
-`NODE_BASE_IMAGE` values must provide Node.js 24.16 or newer within the 24 series.
+`NODE_BASE_IMAGE` values must provide Node.js 24.22.1 or newer within the 24 series.
 The Dedicated command and bundled plugin both resolve the same
 [Codex 0.163.0-alpha.2](https://github.com/openai/codex/releases/tag/rust-v0.163.0-alpha.2) installation.
 For multi-architecture builds, the frozen npm install selects the stock

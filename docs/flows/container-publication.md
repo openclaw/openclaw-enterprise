@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-08
-last_updated_session: authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10
+updated: 2026-10-23
+last_updated_session: authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668
 ---
 
 # Container publication flow
@@ -95,10 +95,11 @@ bridge patches. The bridge forwards the bound
 Agent's stock network settings without modifying Codex. Both installs use
 frozen lockfiles and upstream's selected-plugin manifests, retaining required
 bundled plugins plus Codex and Slack. The standalone Codex command links to the
-plugin's installation. Build tools remain in full Bookworm stages; final images
-use a separately pinned Node 24 Bookworm slim base. Both bases apply available
-Debian package updates when their recipe layers build. The Node digest identifies
-the upstream image; it does not freeze Debian package repositories.
+plugin's installation. Build stages use full Bookworm; final images use separately
+pinned slim bases. `Dockerfile` checks its dependency and runtime stages, and
+`deploy/runtime/Dockerfile` checks both bases and its runtime, for Node 24.22.1+
+within the 24 series. Older explicit overrides fail. Both bases apply available
+Debian updates; image digests do not freeze Debian repositories.
 
 `deploy/runtime/Dockerfile:runtime` disables npm's background update notifier in
 the final image environment. Harness child processes inherit that default, so
@@ -235,6 +236,8 @@ owns package-write access and coordination.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-23 15:28: Require patched Node 24.22.1 bases before controller and runtime preparation (authoring-run/9b2870c6-312f-48b7-a654-186ae5ec4668 - 5370e972f8b1d51222d79b64c375e8e13a2bd452)
 
 - 2026-10-10 03:00: Pin stock Codex 0.163.0-alpha.2; alpha.1 sent metadata the backend rejects. (fix-992-pin)
 

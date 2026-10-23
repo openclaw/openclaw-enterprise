@@ -22,7 +22,7 @@ node --test tests/integration/repository-credentials-git.test.mjs \
   tests/integration/repository-credentials-service-loss.test.mjs
 ```
 
-The source Git tests require a `node:24-bookworm` image and `gh` **2.100.0**
+The source Git tests require a `node:24-bookworm` image and `gh` **2.103.2**
 at `/usr/bin/gh`. Override these with `REPOSITORY_CREDENTIALS_NODE_IMAGE` and
 `REPOSITORY_CREDENTIALS_GH_BINARY`. Missing prerequisites fail the tests. The
 fixtures use a controlled provider and verified TLS; they do not prove live GitHub

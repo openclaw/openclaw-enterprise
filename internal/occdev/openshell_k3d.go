@@ -23,7 +23,7 @@ import (
 const (
 	developmentAPINodePort = 30080
 	developmentController  = "openclaw-enterprise-controller:kubernetes-quickstart"
-	developmentNodeBase    = "docker.io/library/node:24-bookworm@sha256:3d27e5c11e5786e309ec3e03f93ae536eb36e6e5eb3714d5eb3300a36157add0"
+	developmentNodeBase    = "docker.io/library/node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a"
 	developmentPostgres    = "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae"
 )
 
