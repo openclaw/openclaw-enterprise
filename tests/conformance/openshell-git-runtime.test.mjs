@@ -943,6 +943,10 @@ test("a failed read while the Git route bootstraps is read again; a refused iden
       error instanceof OpenShellGitRouteBlockedError && error.reason === "gateway_unauthorized",
   );
   assert.equal(f.store.rows.get(f.revision.id).blocked, "gateway_unauthorized");
+  assert.deepEqual(
+    f.errors().map(({ reason }) => reason),
+    ["gateway_unauthorized"],
+  );
   // Refused inside the provider's bootstrap: the route is a tombstone, in the store too.
   f = bootstrapping({ store: routeStore() });
   f.faults.gatewayCall = (called, name) =>
@@ -967,7 +971,7 @@ test("a reconcile pass that runs out of time before the provider write sends not
   let reads = 0;
   f.owner.readOpenShellMaterial = async (revisionId, signal, ...rest) => {
     reads += 1;
-    if (reads === 2) {
+    if (reads === 2 && !signal.aborted) {
       // The last read before the write, inside the release, answers once the budget is spent.
       await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
     }

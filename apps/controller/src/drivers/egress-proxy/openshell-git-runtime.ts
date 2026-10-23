@@ -648,6 +648,12 @@ export class OpenShellGitRuntime {
           } catch (error) {
             if (persisted !== undefined && error instanceof OpenShellGitRouteError) {
               await routes?.block(revision.id, persisted.fence, error.reason).catch(() => {});
+              this.emit?.({
+                event: "worker.error",
+                code: "OPENSHELL_GIT_RECONCILIATION_REQUIRED",
+                reason: error.reason,
+                ...revisionIdentity(revision),
+              });
               throw new OpenShellGitRouteBlockedError(error.reason);
             }
             throw error;
