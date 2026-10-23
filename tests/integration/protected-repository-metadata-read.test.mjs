@@ -200,6 +200,11 @@ test(
         { body: JSON.stringify({ ...identity, full_name: "Fixture/Repository" }) },
         true,
       ],
+      [
+        "GitHub's all-caps spelling of the full name",
+        { body: JSON.stringify({ ...identity, full_name: "FIXTURE/REPOSITORY" }) },
+        true,
+      ],
       ["a declaration alone is not an actual trailer", { declaration: true }, true],
       ["undeclared last actual trailer", { trailer: true, body: JSON.stringify(identity) }],
       [

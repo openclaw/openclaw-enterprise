@@ -34,7 +34,7 @@ test("consented protected repository read uses only exact, already prepared meta
         response.addTrailers({ "x-forbidden-last": "last" });
       }
     },
-    metadataResponse: (body) => (spelling ? { ...body, full_name: spelling } : body),
+    metadataResponse: (body) => (spelling === undefined ? body : { ...body, full_name: spelling }),
   });
   const key = createGitHubKeyOwner({ appId: fixtureAppId, clock, privateKey: gh.privateKey });
   t.after(() => key.close());
@@ -185,6 +185,9 @@ test("consented protected repository read uses only exact, already prepared meta
     [false, "FIXTURE/REPOSITORY"],
     [false, "fixture/repository-other", false],
     [false, "fixture/repository.git", false],
+    // Only ASCII letter case may differ: no lookalike letters, no non-string names.
+    [false, "fixture/repo\u017Fitory", false],
+    [false, null, false],
     [true],
   ]) {
     forbiddenTrailer = block;
@@ -197,10 +200,10 @@ test("consented protected repository read uses only exact, already prepared meta
       assert.equal(
         safe.body.toString(),
         JSON.stringify({ id: Number(fixtureRepositoryId), full_name: fixtureRepository }),
-        spelled,
+        String(spelled),
       );
     } else if (!block) {
-      assert.deepEqual(safe, { blocked: true }, spelled);
+      assert.deepEqual(safe, { blocked: true }, String(spelled));
     }
   }
   spelling = undefined;
@@ -213,7 +216,7 @@ test("consented protected repository read uses only exact, already prepared meta
     (await f.authorize(f.permitRequest(captured, ready))).refused.code,
     f.refusalCode("DENIED"),
   );
-  assert.equal(sendChecks, 7);
+  assert.equal(sendChecks, 9);
   assert.equal(gh.issuesOfTokens.length, 1, "no request may renew or issue");
 });
 
