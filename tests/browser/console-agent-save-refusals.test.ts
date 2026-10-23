@@ -461,8 +461,14 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
       ),
       reason,
     );
-    // Save stays a keyboard stop; activating it sends no write.
+    // Save stays a keyboard stop. Even with a changed file (set by script, past readOnly),
+    // activating it sends no write.
+    await editor.evaluate((node: HTMLTextAreaElement) => {
+      node.value = "changed";
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     await save.focus();
+    assert.equal(await save.evaluate((node) => node === document.activeElement), true);
     await page.keyboard.press("Enter");
   }
   await nextFrames(page, 2);

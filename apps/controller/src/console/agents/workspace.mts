@@ -425,9 +425,11 @@ export function renderWorkspaceFiles(
     section.append(form);
     void load();
   }
-  // An answer already settled applies before this section is first painted.
+  // An answer already settled applies before this section is first painted. It also applies while
+  // the tab is parked (another tab is shown), since the page restores these nodes on return; it
+  // changes only this section's own nodes.
   void operateAllowed?.then((allowed) => {
-    if (allowed === false && context.isCurrent()) {
+    if (allowed === false) {
       operateDenied = true;
       operateNote.textContent = OPERATE_DENIED;
       operateNote.hidden = false;
