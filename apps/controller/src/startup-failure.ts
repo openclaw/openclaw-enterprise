@@ -27,8 +27,8 @@ export function startupDependencyFailure(
 
 /**
  * Log fields for an Installation listener the chart cannot reach: the code and one detail
- * whose message names the Installation and Helm settings and values (ports, a bind host or
- * a flag; never a file path or secret).
+ * whose message names the Installation and Helm settings and values (ports, a bind host, a
+ * flag or the chart's fixed mount path; never a configured file path or secret).
  */
 export function startupListenerFailure(error: unknown) {
   return error instanceof ChartListenerMismatchError

@@ -357,7 +357,8 @@ egressAuthority:
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation
 # repository.openShell configuration for protected delivery: its authority uses this
-# port on host 0.0.0.0 or ::, or startup and the upgrade check refuse it.
+# port and the chart's file paths, on host 0.0.0.0 or ::, or startup and the upgrade
+# check refuse it.
 # Only the Gateway issuer's public key is mounted.
 openshellGit:
   enabled: false

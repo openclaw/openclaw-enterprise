@@ -75,8 +75,9 @@ export function egressAuthorityConfiguration(
 
 /**
  * An Installation listener that the production chart's Service cannot reach: the chart
- * serves no such listener, serves it on another port, or the listener does not bind all
- * addresses. Startup and the chart's upgrade check report it as `CHART_LISTENER_MISMATCH`.
+ * serves no such listener, serves it on another port, the listener does not bind all
+ * addresses, or it names TLS or issuer files where the chart mounts none. Startup and the
+ * chart's upgrade check report it as `CHART_LISTENER_MISMATCH`.
  * The message names the Installation and Helm settings and values, which hold no secret;
  * `path` is the refused Installation setting as a JSON Pointer (finding 2213).
  */
@@ -90,28 +91,54 @@ export class ChartListenerMismatchError extends Error {
   }
 }
 
-/** The chart routes these listeners and passes each one's port, or `disabled`, to startup. */
+/**
+ * The chart routes these listeners and passes each one's port, or `disabled`, to startup.
+ * `files` are the fixed paths where the chart mounts each listener's TLS and issuer files
+ * (deployments.yaml), and the Helm value each comes from.
+ */
 export const chartListeners = {
   egressAuthority: {
     path: "drivers.credential_proxy.configuration.authority",
     chart: "egressAuthority",
     variable: "OCC_EGRESS_AUTHORITY_PORT",
+    files: {
+      certificatePath: ["/etc/openclaw/egress/tls/tls.crt", "egressAuthority.tlsSecretName"],
+      privateKeyPath: ["/etc/openclaw/egress/tls/tls.key", "egressAuthority.tlsSecretName"],
+      issuerPublicKeyPath: [
+        "/etc/openclaw/egress/issuer/issuer.pub",
+        "egressAuthority.issuerSecretName",
+      ],
+    },
   },
   openshellGit: {
     path: "repository.openShell.authority",
     chart: "openshellGit",
     variable: "OCC_OPENSHELL_GIT_PORT",
+    files: {
+      certificatePath: ["/etc/openclaw/openshell-git/tls.crt", "openshellGit.tlsSecretName"],
+      privateKeyPath: ["/etc/openclaw/openshell-git/tls.key", "openshellGit.tlsSecretName"],
+      issuerPublicKeyPath: [
+        "/etc/openclaw/openshell-git/gateway-public.pem",
+        "openshellGit.issuerPublicKeyConfigMapName",
+      ],
+    },
   },
 } as const;
 
 /**
  * Refuse an Installation listener the chart's Service cannot reach. The Service targets the
- * Pod's address, which the Installation cannot name, so the listener must bind all addresses.
+ * Pod's address, which the Installation cannot name, so the listener must bind all addresses
+ * and read its files where the chart mounts them.
  * Without the chart's variable (no chart, for example a test or another packaging) there is
  * nothing to compare.
  */
 export function requireChartListener(
-  authority: Pick<EgressAuthorityConfiguration, "host" | "port"> | undefined,
+  authority:
+    | Pick<
+        EgressAuthorityConfiguration,
+        "host" | "port" | "certificatePath" | "privateKeyPath" | "issuerPublicKeyPath"
+      >
+    | undefined,
   environment: Readonly<Record<string, string | undefined>>,
   listener: (typeof chartListeners)[keyof typeof chartListeners],
 ): void {
@@ -149,6 +176,16 @@ export function requireChartListener(
       `${listener.path}.host is ${authority.host}, but the chart's ${listener.chart} Service on port ${port} reaches only a listener on all addresses: use 0.0.0.0 or ::.`,
       `${listener.path}.host`,
     );
+  }
+  // The listener reads these files only when it starts, after a Recreate upgrade has stopped
+  // the old Pod. Name only the chart's path: the configured one is the operator's layout.
+  for (const [field, [mounted, value]] of Object.entries(listener.files)) {
+    if (authority[field as keyof typeof listener.files] !== mounted) {
+      throw new ChartListenerMismatchError(
+        `${listener.path}.${field} must be ${mounted}, where the chart mounts the file from Helm ${value}.`,
+        `${listener.path}.${field}`,
+      );
+    }
   }
 }
 
