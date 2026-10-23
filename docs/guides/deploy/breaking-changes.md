@@ -19,8 +19,8 @@ real Installation.
 
 ## 2026-10-23: saves refuse a model without its provider
 
-**What breaks.** Configuration create and update, Agent provisioning and Preset
-save refuse an `agents.defaults.model` or `agents.entries.<id>.model` primary
+**What breaks.** Configuration create and update, Agent provisioning, Agent
+create preflight and Preset save refuse an `agents.defaults.model` or `agents.entries.<id>.model` primary
 or fallback that is not `<provider>/<model>`, such as `fast` or OpenClaw's
 `openrouter:auto`, and fallbacks that are not a list. Every deployment already
 refused them. A stored Configuration still reads; an edit must fix the model.

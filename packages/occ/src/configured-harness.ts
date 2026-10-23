@@ -142,7 +142,9 @@ function fillsAsModelReference(literals: readonly string[], type: string | undef
  * deployment refuses a fallback on another provider, so Configuration save (through
  * requireDeployableRoster), Preset save and Agent save refuse it too, even where another model
  * policy rule leaves the rest to deployment (finding 1298). OpenClaw's `openrouter:auto` and
- * `openrouter:free` count as openrouter references (finding 1320). On a Preset save
+ * `openrouter:free` count as openrouter references (finding 1320): saves refuse them earlier, as
+ * models without a slash (finding 1828), so this reading names a fallback only for Agent save's
+ * check of a stored Configuration. On a Preset save
  * (`options.unresolved`), a reference whose provider waits on an unfilled variable (no `/` before
  * the first one, as in `openrouter:{{ vars.kind }}`) is checked once filled, on the Configuration
  * a launch creates (finding 1305).
@@ -193,8 +195,8 @@ export function requireFallbackProviders(
 
 /**
  * The model selection rules of resolveConfiguredHarnessId that hold for every topology, in its
- * order: each selection's fallbacks are a list, each model a <provider>/<model> reference, and
- * each fallback on the primary model's provider. Every deployment refuses a selection that breaks
+ * order within each selection: its fallbacks are a list, each model a <provider>/<model>
+ * reference, and each fallback on the primary model's provider. Every deployment refuses a selection that breaks
  * one, so Configuration save, Agent provisioning, Agent create preflight and Preset save refuse it
  * too, with the deployment's text (requireDeployableRoster; finding 1828). On a Preset save, a
  * model that waits on an unfilled variable is checked as far as its written text goes, and in

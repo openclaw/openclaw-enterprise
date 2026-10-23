@@ -619,6 +619,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
     namespaceId: namespace.id,
     id: agent.configurationId,
   });
+  assert.ok(stored);
   await configurationDriver.update({ ...stored, values: bare });
   const { page } = await newPage(t, fixture);
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
