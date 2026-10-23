@@ -363,6 +363,8 @@ tls.connect = (options, ...rest) => connect({ ...options, host: "127.0.0.1", por
     });
     for (const [label, response] of [
       ["url", canonical("https://github.com/Example/Other/pull/8")],
+      ["url number", canonical("https://github.com/Example/Project/pull/9")],
+      ["url host", canonical("https://github.org/Example/Project/pull/8")],
       ["head", canonical("https://github.com/Example/Project/pull/8", "Example/Other")],
       ["base", canonical("https://github.com/Example/Project/pull/8", own, "Example/Other")],
     ]) {
