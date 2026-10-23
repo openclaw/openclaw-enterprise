@@ -559,23 +559,18 @@ function launchEnvironment(input) {
 function workspaceDirectory(input, agentDir) {
   const agents = input.revision.configuration.agents ?? {};
   const { entries } = agents;
-  const ids =
-    typeof entries === "object" && entries !== null && !Array.isArray(entries)
-      ? Object.keys(entries)
-      : undefined;
+  const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  const ids = record(entries) ? Object.keys(entries) : undefined;
+  const main = ids?.length === 1 ? entries[ids[0]] : undefined;
   if (
     (entries !== undefined &&
-      (ids === undefined ||
-        ids.length > 1 ||
-        ids.some((id) => id.trim().toLowerCase() !== "main"))) ||
+      (ids?.length !== 1 || ids[0].trim().toLowerCase() !== "main" || !record(main))) ||
     agents.list !== undefined
   ) {
     throw new ConfigurationFailure("Workspace setup supports only the native main Agent.");
   }
   const configured =
-    (ids?.length === 1 ? entries[ids[0]]?.workspace : undefined) ??
-    agents.defaults?.workspace ??
-    join(agentDir, "state", "workspace");
+    main?.workspace ?? agents.defaults?.workspace ?? join(agentDir, "state", "workspace");
   if (
     typeof configured !== "string" ||
     !isAbsolute(configured) ||

@@ -1386,28 +1386,33 @@ test("SSH setup reads the main roster entry under any letter case, like Kubernet
       assert.equal((await json(join(f.agentDir(first), "workspace-setup.json"))).completed, true);
     });
   }
-  // Two keys that both name main are as ambiguous here as in the shared rule.
-  const f = await fixture(t);
-  assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
-  const twice = revision(f.driver, 1, "agent-ssh-twice", {
-    agents: { entries: { main: {}, Main: {} } },
-  });
-  bind(f.driver, twice);
-  await assert.rejects(
-    f.driver.prepareRevision(twice, {
-      secretEnvironment: [],
-      harnessAuth: { method: "runtime" },
-      workspaceSetup: {
-        id: "setup-ssh-twice",
-        namespaceId: tenant.id,
-        agentId: twice.agentId,
-        files: { "AGENTS.md": "roster" },
-        completed: false,
-      },
-    }),
-    /SSH helper rejected host or revision configuration/,
-  );
-  await missing(join(f.agentDir(twice), "workspace-setup.json"));
+  // As in the shared rule, the roster holds exactly one main entry: two keys that both name
+  // main, an empty roster and a null entry are refused before setup runs.
+  for (const entries of [{ main: {}, Main: {} }, {}, { Main: null }]) {
+    await t.test(`refuses ${JSON.stringify(entries)}`, async (t) => {
+      const f = await fixture(t);
+      assert.equal((await f.driver.ensureNamespace(tenant)).namespaceReady, true);
+      const refused = revision(f.driver, 1, "agent-ssh-refused", { agents: { entries } });
+      bind(f.driver, refused);
+      await assert.rejects(
+        f.driver.prepareRevision(refused, {
+          secretEnvironment: [],
+          harnessAuth: { method: "runtime" },
+          workspaceSetup: {
+            id: "setup-ssh-refused",
+            namespaceId: tenant.id,
+            agentId: refused.agentId,
+            files: { "AGENTS.md": "roster" },
+            completed: false,
+          },
+        }),
+        /SSH helper rejected host or revision configuration/,
+      );
+      // The helper withholds its reason; the stand-in never ran, so the roster refused it.
+      await missing(join(f.state, "setup-workspace"));
+      await missing(join(f.agentDir(refused), "workspace-setup.json"));
+    });
+  }
 });
 
 test("system SSH executor sends exact argv and stdin and bounds cancellation and timeout", async (t) => {
