@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
 updated: 2026-10-23
-last_updated_session: fix-2245
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # Common Operational Logging Flow
@@ -259,6 +259,8 @@ then appends the original release hash. Ending with the hash separates these
 names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
 `templates/grafana.yaml` uses the same names in both datasource URLs.
 Deployment names, Pod selectors and discovery identity keep the full release.
+Before rendering, `demo.validate` refuses an uppercase image repository path
+that kubelet cannot pull. Registry hosts and tags may retain uppercase spelling.
 The separately configured Collector endpoint remains in its exporter Secret.
 If an upgrade renames Loki, the operator updates that endpoint and refreshes
 the Collector Pods before new records can reach Loki; the
@@ -298,11 +300,15 @@ for panels, correlation, and authorization limits.
 
 ## Changelog
 
+- 2026-10-23 20:00: Preserve current logging documentation and both histories while retaining demo repository-casing validation. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - e1788c775)
+
 - 2026-10-23 12:30: Keep `work.id` for credential withdrawal keys that end in `activation` or `:recovery:<n>`; the Collector dropped them. (fix-2249 - #3302)
 
 - 2026-10-23 10:45: Keep the auth:maintain command, refusal guidance codes, OCC-assigned Installation and orphaned Configuration IDs, and the delivery-pending Sandbox Driver ID through the local logging sanitizer. (fix-2245)
 
 - 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244 - #3289)
+
+- 2026-10-20 02:25: Refuse uppercase demo image repository paths before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - d331d24fd)
 
 - 2026-10-16 00:17: Reject negative and nonnumeric stop-yield counts at the local logging boundary. (authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2 - f916021bf235e9f8e91630484948eb6fc88ccfa7)
 

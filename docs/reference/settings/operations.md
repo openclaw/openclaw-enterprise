@@ -51,17 +51,14 @@ Classify a database without applying migrations:
 pnpm db:migrate --check
 ```
 
-Exit 0 and `migration.checked` identify the recognized history: `empty`, a stage
-below, or `completed`.
-`prePresetsMain` means
-the exact canonical history through `0023_runtime_failure_timestamp_validation`;
+Exit 0 and `migration.checked` identify `empty`, a stage below, or `completed`.
+`prePresetsMain` ends at `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
 `0025_repository_credentials` and `0026_privileged_function_search_paths`.
 `repositoryRetention`, `workspaceSetup`, and `agentProvisioning` add migrations
-through `0029_agent_provisioning_work`. `backendCompleted` is the exact
-31-receipt Backend terminology history published before the compatibility
-migration. `providerCompleted` is the exact 31-receipt Provider terminology
-history published before the rename. `backendTerminology` has the 32 receipts
+through `0029_agent_provisioning_work`. `backendCompleted` and `providerCompleted`
+are the respective 31-receipt Backend and Provider histories before compatibility.
+`backendTerminology` has the 32 receipts
 through `0031_backend_terminology_compatibility`; `prePluginApprovers` adds
 `0032_credential_sources` for 33 receipts. `preBrokerReceipts` has 34 receipts
 through `0033_agent_plugin_approvers`; `preAgentDeletion` has 35 through
@@ -85,18 +82,20 @@ through `0050_agent_credential_sources`; later `pre*` shapes add one each, throu
 `preCredentialProxy` (59) and `prePreparedAttemptSettlement` (62, through
 `0062_credential_delivery_custody`). Migration brings each to `completed` with 63 receipts.
 The [canonical manifest](../../../migrations/meta/_canonical-history.json) records
-accepted source hashes and catalogs. Intermediate pre-merge preview histories
-are unsupported; do not delete or relabel their receipts.
-Empty schemas may be absent or have only their owner's ordinary `CREATE` and
-`USAGE` privileges, with no objects or unexpected default privileges. An empty
-stock Drizzle ledger left by a rolled-back first migration is also supported.
+accepted source and catalog hashes. Never delete or relabel unsupported preview
+receipts. Empty schemas may be absent or owner-only, with no objects or
+unexpected default privileges. An empty Drizzle ledger after a rolled-back
+first migration is also supported.
 
-After a successful check, confirm the target and authorization. Run `pnpm db:migrate`
-for development or `pnpm db:migrate:production` for production. Both commands validate source hashes,
-receipts, catalog definitions, effective application privileges, and role
-separation under one PostgreSQL advisory lock. Drizzle applies the pending SQL
-and receipts in its normal transaction on that connection. Existing canonical
-receipts remain unchanged. The production command also accepts `--check`.
+For a [logical restore](../../guides/deploy/upgrade-baseline.md#record-the-database),
+the manifest pairs the PostgreSQL 18.6 restored catalog with its exact native
+digest. For the next schema, qualify both upgrading that restore and restoring
+the new schema. A match cannot establish backup completeness or provenance.
+
+After checking, confirm the target and authorization. Run `pnpm db:migrate`
+(development) or `pnpm db:migrate:production`. Both check source, roles, receipts,
+definitions and effective privileges under one advisory lock; Drizzle applies SQL
+and new receipts transactionally. Production also accepts `--check`.
 
 On first install, Helm adds `--expect-empty`. `MIGRATION_HISTORY_NOT_EMPTY`
 means migration stopped before changing recognized OCE history, not that the
