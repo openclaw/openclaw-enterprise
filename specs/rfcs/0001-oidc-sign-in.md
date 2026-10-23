@@ -9,7 +9,7 @@ status: Proposed
 - **ID:** RFC-0001
 - **Owner:** rclarke0 (proposal). Auth design review: freeqaz. Scope and release: kevinlin-openai.
 - **Created:** 2026-09-30
-- **Last updated:** 2026-10-15
+- **Last updated:** 2026-10-23
 - **RFC and implementation:** [#731][pr-731] and [#790][pr-790], both merged 2026-10-01
 - **Related:** [#729][issue-729]; the original proposal left SSO/SCIM in the 1.0 backlog ([#82][issue-82], [#92][issue-92]);
   Google sign-in [PR #594][pr-594]; [RFC-0007](0007-human-federated-sign-in/index.md).
@@ -135,8 +135,10 @@ ones sign in.
   [Service keys][service-key-guide] represent service principals and must be revoked separately.
 - **Detach the OIDC identity to remove that sign-in method.** Detach also advances the account
   version and ends every session, even one opened with a password. Other enabled sign-in
-  methods remain usable. Signing out of OCE is local. If the IdP session is still active,
-  the person can sign back in without another password prompt.
+  methods remain usable.
+- **Sign out of the Console to end the current OCE session.** If the identity is still
+  attached and the IdP session is active, the person can sign in again without another
+  password prompt.
 - **Change the issuer or client ID to replace the provider instance.** Sessions signed in
   through the old instance end on their next use, audited as `authentication.session.end`.
   Removing the provider has the same effect on those sessions. Attach identities to the new
