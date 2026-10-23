@@ -154,8 +154,9 @@ const reviewedImports = {
       "preparedGitHubProviderRef",
       "preparedGitHubSourceFromRoute",
     ],
-    // Bind the admitted source and its exact current version on the send transaction.
-    "@openclaw-enterprise/occ": ["postgresPreparedGitHubProof"],
+    // Bind the admitted source and its exact current version on the send transaction; the error
+    // class only reports an unsettled withdrawal and carries no material or I/O authority.
+    "@openclaw-enterprise/occ": ["CredentialTokenUnsettledError", "postgresPreparedGitHubProof"],
   },
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
   "drivers/repo/github/credentials/prepared-postgres.ts": {
