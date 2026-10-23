@@ -882,7 +882,7 @@ export async function loadInstallationConfiguration(options: {
     // left behind after a switch to protected Git fails every stop, retire and delete with a
     // 403 (finding 2212).
     throw new Error(
-      "network.repositoryCredentials in drivers.compute.configuration requires repository.nativeSender; remove it for protected Git or without repository delivery.",
+      "drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; remove it for protected Git or when no repository is configured.",
     );
   }
   const sandbox =

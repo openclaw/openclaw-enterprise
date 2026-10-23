@@ -133,8 +133,8 @@ mounts `/etc/openclaw/repository-registry/registry.json` for the API, worker and
 upgrade check. Only the worker gets `private-key.pem` and `custody.key` under
 `/etc/openclaw/prepared-repository`, plus an egress rule to the issuer on TCP 443.
 Your sender supplies its own listener, trust and network policy. Before switching from
-a broker, stop admissions and settle existing sessions with their original owner, then
-remove Compute `network.repositoryCredentials`; startup refuses it without
+a broker, stop admissions and settle existing sessions with their original owner. Then
+remove Compute `network.repositoryCredentials`. Startup refuses it without
 `repository.nativeSender`.
 The worker's `Recreate` rollout cannot establish that custody is settled.
 

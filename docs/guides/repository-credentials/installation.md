@@ -123,8 +123,9 @@ Backend `drivers.repo` policy member. The worker alone mounts the App key and
 and omits the native sender; see [sender selection](../../reference/drivers/selection.md#select-a-protected-sender). Keep the shown registry, control socket
 and public CA paths; Helm mounts exactly those locations.
 
-Add this peer under the existing
-`drivers.compute.configuration.network` object, retaining its other settings:
+For native delivery only, add this peer under the existing
+`drivers.compute.configuration.network` object, retaining its other settings.
+Startup refuses it without `repository.nativeSender`:
 
 ```yaml
 repositoryCredentials:

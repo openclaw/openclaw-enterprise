@@ -5653,7 +5653,7 @@ test(
     };
     await assert.rejects(
       loadInstallationFile(t, brokerPeer, { createOpenShellBackend: () => backendFor(gateway) }),
-      /network\.repositoryCredentials in drivers\.compute\.configuration requires repository\.nativeSender/,
+      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
     );
     const protectedGit = await loadInstallationFile(t, configuration, {
       createOpenShellBackend: () => backendFor(gateway),
