@@ -7,10 +7,12 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
+  completedPasses,
   completion,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
+  withUnavailableIAM,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Repository sessions through admission, maintenance and cleanup. Agent stop, its Gateway drain,
@@ -209,31 +211,12 @@ test(
         return fixture.compute.stopRevision(revision);
       },
     };
-    const withUnavailableIAM = (drivers) => {
-      const createIAMDriver = drivers.createIAMDriver;
-      return {
-        ...drivers,
-        createIAMDriver(state) {
-          const iam = createIAMDriver(state);
-          return {
-            id: iam.id,
-            implementation: iam.implementation,
-            capability: iam.capability,
-            lookupIdentity: iam.lookupIdentity.bind(iam),
-            async authorize(request) {
-              if (iamUnavailable) {
-                throw new Error("IAM is temporarily unavailable");
-              }
-              return iam.authorize(request);
-            },
-          };
-        },
-      };
-    };
+    const events = [];
     const startWorker = () =>
       fixture.start(compute, {
+        emit: (event) => events.push(event),
         pool: fixture.createWorkerPool(),
-        transformDrivers: withUnavailableIAM,
+        transformDrivers: withUnavailableIAM(() => iamUnavailable),
       });
     await startWorker();
     await fixture.work(candidate, "succeeded");
@@ -246,6 +229,10 @@ test(
     await startWorker();
     await fixture.work(outage, "failed_permanent");
     await fixture.stop();
+    // The log says why the exhausted pass failed (finding 1743).
+    const ended = (await completedPasses(events, outage, "retry")).at(-1);
+    assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
+    assert.equal(ended.cause, "Error");
     const failed = await fixture.observerPool.query(
       "SELECT reason_code FROM occ.controller_work WHERE idempotency_key = $1",
       [outage.idempotencyKey],
@@ -461,29 +448,7 @@ for (const { name, crashes, finish } of [
       // A retry outcome on the extra (last) attempt fails the deployment but keeps the
       // runtime it already activated.
       iamUnavailable = true;
-      await fixture.start(compute, {
-        transformDrivers: (drivers) => {
-          const createIAMDriver = drivers.createIAMDriver;
-          return {
-            ...drivers,
-            createIAMDriver(state) {
-              const iam = createIAMDriver(state);
-              return {
-                id: iam.id,
-                implementation: iam.implementation,
-                capability: iam.capability,
-                lookupIdentity: iam.lookupIdentity.bind(iam),
-                async authorize(request) {
-                  if (iamUnavailable) {
-                    throw new Error("IAM is temporarily unavailable");
-                  }
-                  return iam.authorize(request);
-                },
-              };
-            },
-          };
-        },
-      });
+      await fixture.start(compute, { transformDrivers: withUnavailableIAM(() => iamUnavailable) });
       await fixture.work(second, "failed_permanent");
       await fixture.stop();
       assert.deepEqual(await row(), {
@@ -511,6 +476,70 @@ for (const { name, crashes, finish } of [
     const agent = await fixture.currentAgent(owner);
     assert.equal(agent.activeRevisionId, second.id);
   });
+}
+
+// Finding 1743: a deployment that published the active pointer and then exhausts its retries keeps
+// the runtime it activated (above), and its log line says why its last pass failed. Whether it
+// should also start the maintenance chain its activation would have is finding 1743's open design
+// question: today it queues no maintenance, declared or not, and these cases pin that.
+for (const maintained of [true, false]) {
+  test(
+    `an exhausted deployment of the published active revision logs its failure${maintained ? " (maintenance declared)" : ""}`,
+    requiresPostgres,
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 1 });
+      const { owner, candidate: first } = await fixture.admitInitialRevision(
+        `exhausted-published-${maintained}`,
+      );
+      const stopped = [];
+      let iamUnavailable = false;
+      const compute = {
+        ...fixture.compute,
+        ...(maintained ? { maintenanceIntervalMs: 3_600_000 } : {}),
+        async stopRevision(revision) {
+          stopped.push(revision.id);
+          return fixture.compute.stopRevision(revision);
+        },
+      };
+      const events = [];
+      const options = {
+        emit: (event) => events.push(event),
+        transformDrivers: withUnavailableIAM(() => iamUnavailable),
+      };
+      await fixture.start(compute, options);
+      await fixture.work(first, "succeeded");
+      await fixture.stop();
+
+      // An earlier pass of the replacement published the active pointer; its last attempt then
+      // meets an IAM outage.
+      const second = await fixture.revision(owner, 2);
+      await fixture.state.transact((unit) =>
+        unit.agents.compareAndSetActiveRevision(
+          fixture.namespace.id,
+          owner.id,
+          first.id,
+          second.id,
+        ),
+      );
+      iamUnavailable = true;
+      await fixture.start(compute, options);
+      await fixture.work(second, "failed_permanent");
+      await fixture.stop();
+      const ended = (await completedPasses(events, second, "retry")).at(-1);
+      assert.equal(ended.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(ended.cause, "Error", "the log names the failure that exhausted the deployment");
+      const maintenance = await fixture.observerPool.query(
+        `SELECT idempotency_key FROM occ.controller_work
+         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+        [second.id, `agent_revision:${second.id}:maintenance:%`],
+      );
+      assert.equal(maintenance.rowCount, 0, "finding 1743: the chain question is still open");
+      assert.deepEqual(stopped, []);
+      const agent = await fixture.currentAgent(owner);
+      assert.equal(agent.activeRevisionId, second.id);
+      assert.equal(agent.desiredRuntimeState, "running");
+    },
+  );
 }
 
 for (const loss of ["missing", "closed-repair"]) {

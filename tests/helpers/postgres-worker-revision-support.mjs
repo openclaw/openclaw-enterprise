@@ -127,6 +127,32 @@ export function nextMaintenancePass(fixture, revision, events, options = 25_000)
   );
 }
 
+// A `transformDrivers` for fixture.start whose IAM Driver throws a plain Error while
+// `unavailable()` is true, as an IAM outage does. The worker retries that pass.
+export function withUnavailableIAM(unavailable) {
+  return (drivers) => {
+    const createIAMDriver = drivers.createIAMDriver;
+    return {
+      ...drivers,
+      createIAMDriver(state) {
+        const iam = createIAMDriver(state);
+        return {
+          id: iam.id,
+          implementation: iam.implementation,
+          capability: iam.capability,
+          lookupIdentity: iam.lookupIdentity.bind(iam),
+          async authorize(request) {
+            if (unavailable()) {
+              throw new Error("IAM is temporarily unavailable");
+            }
+            return iam.authorize(request);
+          },
+        };
+      },
+    };
+  };
+}
+
 // Only after every fixture worker has stopped: a pass that stop interrupted keeps its claim
 // until the lease ends. Expire this revision's claims instead of waiting out the lease.
 export async function expireStoppedClaims(fixture, revision) {
