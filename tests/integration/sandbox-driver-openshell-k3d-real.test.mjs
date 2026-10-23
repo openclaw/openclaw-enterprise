@@ -685,6 +685,7 @@ function summarizeWorkerEvent(event) {
       "code",
       "attempt",
       "cause",
+      "dependency",
       "method",
       "grpcStatus",
     ]
@@ -6698,9 +6699,10 @@ async function assertOpenShellGatewayOutage(topology) {
   let gatewayRestartedAt;
   // The controller reaches this gateway through a kubectl port-forward. Once the Pod is gone,
   // kubectl still accepts one connection, closes it before the HTTP/2 handshake and only then
-  // exits, so for about a second gRPC reports "Failed to connect": not an unanswered request
-  // (finding 2042), so a pass then spends an attempt (finding 2104). The Service of a gateway with
-  // no Pods refuses connections; closing the forward first makes its endpoint do the same.
+  // exits, so for about a second gRPC reports "Failed to connect", which the client's
+  // unanswered-request allowlist (finding 2042) does not count as an outage, so a pass then spends
+  // an attempt (finding 2104). A Service with no ready endpoints refuses connections; closing the
+  // forward first makes this endpoint do the same.
   await topology.closeGatewayForward();
   await scale(0);
   try {

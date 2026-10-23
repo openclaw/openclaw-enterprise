@@ -1559,12 +1559,23 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   // unanswered request, and grpc-js repeats it until its next connection attempt (about a
   // second later); only once nothing listens is it an outage. The OpenShell k3d proof closes
   // its forward before stopping the gateway, so its passes see only the refusal.
+  const staleSockets = [];
   const stale = createNetServer((socket) => {
+    staleSockets.push(socket);
     socket.on("error", () => {});
     socket.end();
     stale.close();
   });
   await new Promise((resolve) => stale.listen(0, "127.0.0.1", resolve));
+  // grpc-js leaves its end of the closed connection open, so the test destroys this one.
+  t.after(() => {
+    for (const socket of staleSockets) {
+      socket.destroy();
+    }
+    if (stale.listening) {
+      stale.close();
+    }
+  });
   const forwarded = new GrpcOpenShellGatewayClient({
     endpoint: `127.0.0.1:${stale.address().port}`,
   });
