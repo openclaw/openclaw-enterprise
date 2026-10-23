@@ -42,7 +42,7 @@ graph TD
   E --> F["Bind generated tenant identity while preserving external manager"]
   F --> G["Provision owned infrastructure and mark Namespace ready"]
   G --> H["Place workloads and ConfigMaps in the bound namespace"]
-  H --> I["Delete owned infrastructure only; retain external ownership"]
+  H --> I["Delete orphans and owned infrastructure; retain external ownership"]
 ```
 
 ## Execution Trace
@@ -125,14 +125,15 @@ gateway teardown removes the exact-owned private and shared claims by UID.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.deleteNamespace`
 
-OCC first rejects deletion while Agents, Configurations, Secrets, or service
-accounts remain. Any object still carrying this Namespace's ownership (the
+OCC first rejects deletion while Agents, Configurations, Secrets, service
+accounts, or other Namespace contents remain. Any object still carrying this Namespace's ownership (the
 `app.kubernetes.io/managed-by=openclaw-enterprise` and `openclaw.dev/namespace`
 labels plus the `openclaw.dev/namespace-id` annotation) is therefore an orphan,
 for example a Configuration ConfigMap whose create applied but whose transaction
 then failed. Compute deletes such ConfigMaps and ServiceAccounts by UID, and such
 Secrets too when repository credentials are enabled, the only setup in which the
-worker may list Secrets. A failed list or delete keeps the Namespace `deleting`.
+single-cluster chart lets the worker list Secrets. Two-cluster Compute keeps
+Secrets and Configurations in the control-plane namespace, which it deletes. A failed list or delete keeps the Namespace `deleting`.
 Compute then removes its owned `openclaw-quota`,
 `openclaw-limits`, `allow-dns`, `allow-gateway-ingress`, and `default-deny`
 objects, preserving default-deny until last. External namespace objects, their
@@ -167,10 +168,10 @@ complete-deletion lifecycle.
   NetworkPolicy the Namespace does not own; list those with `kubectl`. Old
   tenant markers are usually left by an earlier OCC Namespace on the same
   Kubernetes namespace.
-- Without repository credentials, an orphaned Secret outlives deletion. List
-  Secrets labelled `openclaw.dev/namespace=<id>` and
-  `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, then
-  delete them.
+- In single-cluster Compute without repository credentials, an orphaned
+  Secret outlives deletion. List Secrets labelled `openclaw.dev/namespace=<id>`
+  and `app.kubernetes.io/managed-by=openclaw-enterprise` with `kubectl`, and
+  delete those whose `openclaw.dev/namespace-id` annotation is also `<id>`.
 - Run `node --test tests/conformance/kubernetes-compute.test.mjs` for driver
   contract coverage, including current managed placement, previous managed-name
   discovery, duplicate-claim rejection, foreign ownership rejection, and cleanup

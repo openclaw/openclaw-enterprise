@@ -63,6 +63,7 @@ import {
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { labelSelectorLabels } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
@@ -5179,10 +5180,7 @@ test("OpenShell preparer cleanup tolerates a concurrent delete but waits for lin
           assert.equal(version, "v1");
           assert.equal(kind, "Pod");
           assert.equal(namespace, context.namespace.name);
-          assert.deepEqual(
-            Object.fromEntries(selector.split(",").map((entry) => entry.split("="))),
-            deployment.metadata.labels,
-          );
+          assert.deepEqual(labelSelectorLabels(selector), deployment.metadata.labels);
           assert.equal(gateway.providers.size, 1);
           assert.equal(
             gateway.calls.some(([method]) => method === "deleteSandbox"),

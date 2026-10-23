@@ -73,6 +73,7 @@ import {
   gatewayRouting,
   routedOptions,
   routedRevision,
+  labelSelectorLabels,
   selectorMatches,
 } from "../helpers/kubernetes-routed-scenarios.mjs";
 import {
@@ -1187,7 +1188,7 @@ function dedicatedFirstDeployFixture({
     ],
   });
   clients.core.listNamespacedPod = async ({ labelSelector, namespace: requestedNamespace }) => {
-    const labels = Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("=")));
+    const labels = labelSelectorLabels(labelSelector);
     const role = labels["openclaw.dev/workload-role"];
     if (role === "agent" && sandboxDriver !== undefined) {
       return { items: state.providerPod === undefined ? [] : [structuredClone(state.providerPod)] };
@@ -3904,7 +3905,7 @@ test("dedicated replacement starts a candidate Gateway when the predecessor cann
             metadata: {
               name: "candidate-harness",
               namespace: target,
-              labels: Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("="))),
+              labels: labelSelectorLabels(labelSelector),
             },
           },
         ]
@@ -4645,16 +4646,11 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
       `${kind}:lookalike-${kind}`,
     );
   }
-  const state = { calls: [], fail: {}, finalizer: undefined };
+  // fail: errors by request; finalizer: an object that stays terminating; vanished: an object
+  // another actor deletes during the request; unselected: an object a list returns although its
+  // labels do not match the selector.
+  const state = { calls: [], fail: {}, finalizer: undefined, vanished: undefined, unselected: [] };
   const notFound = () => Object.assign(new Error("not found"), { statusCode: 404 });
-  const matches = (labels = {}, selector = "") =>
-    selector
-      .split(",")
-      .filter(Boolean)
-      .every((term) => {
-        const [key, value] = term.split("=");
-        return labels[key] === value;
-      });
   const api = (kind) => ({
     async [`readNamespaced${kind}`]({ name: objectName, namespace: requested }) {
       assert.equal(requested, name);
@@ -4680,8 +4676,14 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
         metadata: {},
         items: [...objects.values()]
           .filter(
-            (object) => object.kind === kind && matches(object.metadata.labels, labelSelector),
+            (object) =>
+              object.kind === kind &&
+              selectorMatches(
+                { matchLabels: labelSelectorLabels(labelSelector) },
+                object.metadata.labels ?? {},
+              ),
           )
+          .concat(state.unselected.filter((object) => object.kind === kind))
           .map((object) => structuredClone(object)),
       };
     },
@@ -4696,6 +4698,10 @@ function adoptedNamespaceTeardownFixture(computeOptions = options()) {
         throw notFound();
       }
       assert.equal(body.preconditions.uid, object.metadata.uid);
+      if (state.vanished === `${kind}:${objectName}`) {
+        objects.delete(`${kind}:${objectName}`);
+        throw notFound();
+      }
       if (state.finalizer === `${kind}:${objectName}`) {
         object.metadata.deletionTimestamp = "2026-10-23T00:00:00Z";
         return;
@@ -4794,6 +4800,28 @@ test("existing namespace teardown deletes OCE-owned orphans and keeps everything
     assert.deepEqual(await failed.teardown(), deleted, step);
     assert.deepEqual(failed.remaining(), [...failed.kept].sort(), step);
   }
+
+  // An orphan another actor deletes first is gone all the same.
+  const vanished = adoptedNamespaceTeardownFixture();
+  vanished.state.vanished = "ConfigMap:configuration-orphan";
+  assert.deepEqual(await vanished.teardown(), deleted);
+  assert.ok(!vanished.objects.has("ConfigMap:configuration-orphan"));
+
+  // A list answer with an object outside the selector is refused before anything is deleted.
+  const unselected = adoptedNamespaceTeardownFixture();
+  unselected.state.unselected.push({
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: { name: "operator-unlabelled", namespace: "customer-support", uid: "foreign-uid" },
+  });
+  assert.deepEqual(await unselected.teardown(), {
+    namespaceId: tenant.id,
+    namespaceDeleted: false,
+    failure: "permanent",
+  });
+  assert.ok(!unselected.state.calls.some((call) => call.startsWith("delete ServiceAccount")));
+  assert.ok(unselected.objects.has("ServiceAccount:agent-orphan"));
+  assert.ok(unselected.objects.has("ResourceQuota:openclaw-quota"));
 
   // An orphan that is still terminating (a finalizer) keeps the teardown pending.
   const pending = adoptedNamespaceTeardownFixture();
@@ -15126,9 +15154,7 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
         return structuredClone(namespaceResource);
       },
       async listNamespacedPod(request) {
-        const selected = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        );
+        const selected = labelSelectorLabels(request.labelSelector);
         assert.equal(selected["openclaw.dev/namespace"], revision.namespaceId);
         assert.equal(selected["openclaw.dev/agent"], revision.agentId);
         assert.equal(selected["openclaw.dev/revision"], revision.id);
@@ -15277,9 +15303,7 @@ function stopOrderFixture(id) {
         return structuredClone(namespaceResource);
       },
       async listNamespacedPod(request) {
-        const role = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        )["openclaw.dev/workload-role"];
+        const role = labelSelectorLabels(request.labelSelector)["openclaw.dev/workload-role"];
         fixture.events.push(`list ${role} Pods`);
         if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
           fixture.gatewayPodsLeft -= 1;
@@ -15524,9 +15548,7 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
         return structuredClone(namespaceResource);
       },
       async listNamespacedPod(request) {
-        const selected = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        );
+        const selected = labelSelectorLabels(request.labelSelector);
         if (selected["openclaw.dev/workload-role"] === "gateway") {
           return { apiVersion: "v1", kind: "PodList", items: [] };
         }
@@ -15674,9 +15696,7 @@ test("stop and retirement end credential-source access through Sandbox cleanup",
         return structuredClone(namespaceResource);
       },
       async listNamespacedPod(request) {
-        const selected = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        );
+        const selected = labelSelectorLabels(request.labelSelector);
         if (selected["openclaw.dev/workload-role"] === "agent") {
           // The Harness is only observed as gone after its Sandbox cleanup succeeded.
           assert.equal(failCleanup, false);
@@ -17180,7 +17200,7 @@ function workspaceSetupFixture(
     },
     readNamespace: read("Namespace"),
     async listNamespacedPod({ namespace: target, labelSelector }) {
-      const labels = Object.fromEntries(labelSelector.split(",").map((entry) => entry.split("=")));
+      const labels = labelSelectorLabels(labelSelector);
       const gateway = objects.get(key("Deployment", `gateway-${digest(revision.agentId)}`, target));
       const revisionId = labels["openclaw.dev/revision"];
       if (
@@ -18906,9 +18926,7 @@ for (const predecessorRuntime of ["Deployment", "terminating Pod"]) {
       const clients = await driver.apiClients;
       const listPods = clients.core.listNamespacedPod;
       clients.core.listNamespacedPod = async (request) => {
-        const labels = Object.fromEntries(
-          request.labelSelector.split(",").map((entry) => entry.split("=")),
-        );
+        const labels = labelSelectorLabels(request.labelSelector);
         return survivingPod !== undefined &&
           request.namespace === namespace &&
           labels["openclaw.dev/revision"] === revision.id &&
@@ -19088,9 +19106,7 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
         return { items: [] };
       },
       async listNamespacedPod({ namespace, labelSelector }) {
-        const labels = Object.fromEntries(
-          labelSelector.split(",").map((entry) => entry.split("=")),
-        );
+        const labels = labelSelectorLabels(labelSelector);
         const role = labels["openclaw.dev/workload-role"];
         return {
           items: [

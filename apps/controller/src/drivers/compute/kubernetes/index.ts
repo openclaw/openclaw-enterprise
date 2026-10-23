@@ -9938,12 +9938,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ? clients.core.listNamespacedSecret(request)
             : clients.core.listNamespacedServiceAccount(request),
       );
-      let items: readonly unknown[];
-      try {
-        items = completeKubernetesList(listed as { items?: readonly unknown[] });
-      } catch {
-        throw new DependencyUnavailableError(`The Kubernetes ${kind} list is incomplete.`);
-      }
+      const items = completeKubernetesList(listed as { items?: readonly unknown[] });
       const objects: { readonly name: string; readonly uid: string }[] = [];
       // Check every object before deleting one: the selector is advisory to this code.
       for (const item of items) {
@@ -9957,7 +9952,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           labels?.["app.kubernetes.io/managed-by"] !== MANAGER ||
           labels["openclaw.dev/namespace"] !== ownership.namespaceId
         ) {
-          throw new DependencyUnavailableError(`The Kubernetes ${kind} list is invalid.`);
+          throw new OwnershipFailure(`The Kubernetes ${kind} list is invalid.`);
         }
         // OCE writes the Namespace-ID annotation with the labels; labels alone are not ownership.
         if (annotations?.["openclaw.dev/namespace-id"] === ownership.namespaceId) {

@@ -17,6 +17,23 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: existing-namespace deletion lists ConfigMaps and ServiceAccounts
+
+**What breaks.** Deleting a Namespace placed in an existing Kubernetes
+namespace now lists and deletes the ConfigMaps and ServiceAccounts (and, with
+repository credentials, Secrets) that still carry that Namespace's ownership.
+A worker RoleBinding to a custom role without `list` and `delete` on those
+resources used to finish teardown; now the Namespace stays `deleting`.
+
+**Who is affected.** Existing-namespace Installations whose tenant worker role
+is not the chart's `tenant-worker` role. The chart's roles already grant both.
+
+**How to tell.** The Namespace stays `deleting`, and its `namespace.delete`
+work fails in the worker log.
+
+**Steps.** Grant the worker `list` and `delete` on `configmaps` and
+`serviceaccounts` in the namespace, then repeat the `DELETE`.
+
 ## 2026-10-23: saves refuse a model without its provider
 
 **What breaks.** Configuration create and update, Agent provisioning, Agent
