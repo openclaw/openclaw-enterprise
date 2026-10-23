@@ -184,12 +184,6 @@ apply its workspace node, so activation fails at once with
 access**) and deploy again; the gateway log's `runtime.workspace_node` line names
 OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
 
-Kubernetes answering `403` to a private Secret write fails preparation at once
-with `KUBERNETES_SECRET_WRITE_FORBIDDEN`: check the worker's tenant RoleBindings
-(`get`, `create` and `update` on `secrets`), admission policies and
-ResourceQuotas in the Agent's Kubernetes namespaces (with an execution cluster,
-also the control cluster's Gateway namespace), then deploy again.
-
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
 through its route yet (for example, the route answers 404 until the gateway

@@ -296,6 +296,18 @@ After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
 
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. The worker log's `worker.compute-prepare-failed`
+line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again.
+
 ## An Agent's Gateway or Harness Pod stays unready
 
 Run `kubectl describe pod <pod-name>` in the Agent's tenant namespace. Each
