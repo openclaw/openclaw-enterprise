@@ -13,8 +13,11 @@ export interface TokenIssue {
   refused(): void;
 }
 
-/** How far the issuer's wall clock may differ from the store's before it refuses to dispatch. */
-const storeClockToleranceMs = 60_000;
+/**
+ * How far the issuer's wall clock may run ahead of the store's before it refuses to dispatch. A
+ * clock behind only shortens what the issuer signs.
+ */
+const storeClockToleranceMs = 120_000;
 
 interface PreparationOptions<A extends TokenAdmission> {
   readonly admission: A;
@@ -109,12 +112,12 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
                 : undefined,
             );
             // Settlement measures the attempt in the store's clock, but our clock sets the JWT
-            // expiry that bounds when the provider can still mint: they must agree.
+            // expiry that bounds when the provider can still mint: ours must not run ahead.
             if (
               !issuing ||
               !inBounds() ||
               (issuing.observedAt !== undefined &&
-                !(Math.abs(clock.wallNow() - issuing.observedAt) <= storeClockToleranceMs))
+                !(clock.wallNow() - issuing.observedAt <= storeClockToleranceMs))
             ) {
               throw new Error("preparation-fenced");
             }

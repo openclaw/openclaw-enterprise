@@ -7,8 +7,9 @@ export const providerClockSkewMs = 60000;
 // intent is younger than this window, then dispatches at most once (within a 25 s budget).
 export const issueAttemptDispatchWindowMs = 60000;
 // GitHub refuses an App JWT whose expiry is more than ten minutes ahead of its clock; ours expire
-// 300 s after signing, by a worker clock that must agree with the database's within a minute
-// before dispatch. Ten minutes covers that lifetime plus clock skew. So GitHub cannot mint for an
+// 300 s after signing, by a worker clock that may not run more than two minutes ahead of the
+// database's before dispatch. Ten minutes covers that lifetime, those two minutes and the
+// database's skew from GitHub. So GitHub cannot mint for an
 // attempt later than the window plus ten minutes after its intent, and the token lives at most an
 // hour more: no token from an attempt is live after this bound, whatever its response was, even
 // if the worker's host was suspended mid-attempt.
