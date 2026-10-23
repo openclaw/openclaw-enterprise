@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
-import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
+import {
+  admitProtectedVersion,
+  disposeBrokerSession,
+  fixture,
+  prepare,
+  startProtectedOwner,
+} from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -187,7 +192,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       ).rows[0].outcome,
       "outcome_unknown",
     );
-    const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = f.revision;
+    const { namespaceId } = f.revision;
     if (!draftPullLimit) {
       const brokerRequest =
         f.request() as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
@@ -197,19 +202,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         "the explicitly selected protocol-1 broker retains its original decision",
       );
     }
-    const driver = {
-      id: "controlled",
-      implementation: "openshell",
-      configurationId: "d".repeat(64),
-    };
-    const start = (overrides = {}) =>
-      f.startOwner({
-        controlSocket: undefined,
-        protectedGitDriver: driver,
-        protectedGitEvidence: openShellGitRecipientEvidence,
-        ...overrides,
-      });
-    const owner = await start();
+    const owner = await startProtectedOwner(f);
     const signal = t.signal;
     assert.deepEqual(
       await owner.protectedGit!.readMaterial(
@@ -220,138 +213,13 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       "a live protocol-1 broker receipt does not authorize protected Git",
     );
     assert.equal(f.gh.issuesOfTokens.length, 1);
-    const revisionId = "rev_" + crypto.randomUUID();
-    const sessionId = crypto.randomUUID();
-    const admissionId = crypto.randomUUID();
-    const executionId = crypto.randomUUID().replaceAll("-", "");
-    const plan = {
-      id: "migration-proof",
-      generation: 1,
-      driver,
-      execution: {
-        namespaceId,
-        agentId,
-        servicePrincipalId,
-        revisionId,
-        executionId,
-        installationId: "test",
-      },
-      sandboxDriverId: "controlled",
-      egressDriverId: "controlled",
-      routes: [],
-      repositoryGit: repositoryCredentials!,
-    };
-    const attempt = {
-      namespaceId,
-      agentId,
-      revisionId,
-      admissionId,
-      repositoryRef: "source",
-      durationSeconds: 3600,
-      deadlineWallMs: f.deadlineWallMs,
-      createdAt: new Date().toISOString(),
-      brokerProtocol: 2 as const,
-    };
-    await f.state.transact(async (u) => {
-      await u.revisions.createRevision({
-        ...(f.revision as import("../../packages/contracts/src/index.ts").AgentRevision),
-        id: revisionId,
-        revision: f.revision.revision + 1,
-        executionAdmission: { version: 4, mode: "protected" },
-        egressPlan: plan,
-      });
-      assert.ok(
-        await u.agents.compareAndSetActiveRevision(namespaceId, agentId, f.revision.id, revisionId),
-      );
-      await u.repositorySessions.createAttempt(attempt);
-      await u.repositorySessions.advanceAttempt({
-        admissionId,
-        expectedPhase: "opening",
-        phase: "open",
-        sessionId,
-        updatedAt: attempt.createdAt,
-      });
-    });
-    const providerId = "controlled-provider";
-    const policyHash = "controlled-policy";
-    const sandboxId = "controlled-box-" + crypto.randomUUID();
-    const observed = {
-      workspace: "w",
-      sandbox: "s",
-      sandboxId,
-      executionId: revisionId,
-      provider: "p",
-      providerId,
-      providerResourceVersion: "1",
-      profileVersion: "1",
-      credentialState: "active",
-      attachmentEpoch: "e",
-      providerEnvRevision: "1",
-      configRevision: "1",
-      policyHash,
-      supervisorSessionId: "s",
-      processInstanceId: "p",
-      networkInstanceId: "n",
-    };
-    const route = { revisionId, fence: 1, observed };
-    await f.state.transact((u) =>
-      u.credentialSources.recordEgressInstallation({
-        plan,
-        sandboxId,
-        sender: { id: "sender", generation: 1 },
-        installedAt: attempt.createdAt,
-        enforcement: {
-          policyHash,
-          instanceId: "released-supervisor-A",
-          repositoryGitRecipient: {
-            providerId,
-            attachmentEpoch: observed.attachmentEpoch,
-            processInstanceId: observed.processInstanceId,
-            networkInstanceId: observed.networkInstanceId,
-          },
-          configurationId: "c",
-          authorityScope: "execution",
-          peerKeyId: "fixture",
-        },
-      }),
-    );
-    // Match the OpenShell delivery owner's snapshot receipt, tied to this live revision.
-    await f.pool.query(
-      `insert into occ.credential_deliveries
-    (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
-    values($1,$1,'snapshot',$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
-      jsonb_build_object('credentialState','bootstrap','providerId',$6::text,'profileVersion','1','resourceVersion','1','expiresAt',''),$7)`,
-      [
-        revisionId,
-        namespaceId,
-        agentId,
-        executionId,
-        crypto.randomUUID(),
-        providerId,
-        JSON.stringify(observed),
-      ],
-    );
+    const { revisionId, sessionId, admissionId, executionId, attempt, observed, route } =
+      await admitProtectedVersion(f);
     const exact = owner.protectedGit!;
     const read = () => exact.readMaterial(route, signal);
     await owner.maintain();
     assert.equal(f.gh.issuesOfTokens.length, 1, "a live broker predecessor prevents new issuance");
-    await f.withdraw();
-    const oldTime = { admissionId: f.admissionId, updatedAt: attempt.createdAt };
-    await f.state.transact(async (u) => {
-      const sessions = u.repositorySessions;
-      const receipt = (await sessions.findBrokerReceipt(f.admissionId))!;
-      await sessions.advanceBrokerReceipt({
-        ...oldTime,
-        generation: receipt.generation!,
-        sessionId: f.sessionId,
-        deadlineWallMs: f.deadlineWallMs,
-        revoked: 0,
-        expired: 0,
-        expectedState: "active",
-        state: "disposed",
-      });
-      await sessions.advanceAttempt({ ...oldTime, expectedPhase: "closing", phase: "disposed" });
-    });
+    await disposeBrokerSession(f, attempt.createdAt);
     await owner.maintain();
     assert.equal(
       f.gh.issuesOfTokens.length,
@@ -490,7 +358,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     );
     // A cold owner can recover the committed version for the released recipient. A substituted
     // recipient at the same policy and fence cannot fetch that version, authorize it, or leave a use.
-    const cold = (await start()).protectedGit!;
+    const cold = (await startProtectedOwner(f)).protectedGit!;
     const recovered = await cold.readMaterial(route, signal);
     assert.ok(recovered && "materialVersion" in recovered);
     assert.equal(recovered.materialVersion, installed.materialVersion);

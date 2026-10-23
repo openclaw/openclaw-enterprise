@@ -29,6 +29,8 @@ export interface TokenAttempt<A extends TokenAdmission> {
   materialVersion?: string;
   /** Retained only for trusted cleanup, never eligible for warm reads. */
   candidate?: Uint8Array;
+  /** Quarantined on a complete provider answer that refused issuance and carried no token. */
+  notIssued?: true;
 }
 
 /** Private repository fragment. Admission and recovery belong to OCC. */

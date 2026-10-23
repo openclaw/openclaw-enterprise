@@ -783,6 +783,11 @@
                     "type": "string"
                   },
                   {
+                    "const": "CREDENTIAL_TOKEN_UNSETTLED",
+                    "description": "A provider token issued for the source may still be valid after a lost issue or revocation outcome; retry the deletion after the time in the message.",
+                    "type": "string"
+                  },
+                  {
                     "const": "SANDBOX_POLICY_PROTECTED_EXECUTION",
                     "description": "Protected execution keeps only its Credential Proxy egress policy: Agent network policy additions are refused at save and deploy while the running or next revision is protected, and live application to a protected revision is refused.",
                     "type": "string"

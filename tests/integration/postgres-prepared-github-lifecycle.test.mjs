@@ -28,68 +28,14 @@ test(
   "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
   requiresPostgres,
   async (t) => {
-    // Both keys are generated here. Only the dedicated issuer Secret receives the private App key.
-    const dir = await mkdtemp(join(tmpdir(), "occ-prepared-gh-"));
-    t.after(() => rm(dir, { recursive: true, force: true }));
-    const key = join(dir, "custody.key");
-    await writeFile(key, randomBytes(32), { mode: 0o600 });
     // A nine-minute provider lifetime puts renewal inside the owner's ten-minute lead.
     let invalidScope = false;
-    const gh = await startGitHubFixture(t, {
-      clock: createSystemClock(),
+    const prepared = await preparedLifecycleFixture(t, {
       tokenLifetimeMs: 9 * 60_000,
       tokenResponse: (packet) => (invalidScope ? { ...packet, repositories: [] } : packet),
     });
-    const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
-    let lifecycle;
-    let secretDriver;
-    let issuer;
-    let source;
-    let registration;
-    const createOwner = (origin = gh.origin, tokenService) =>
-      new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
-    const f = await staticEgressFixture(t, {
-      secretValue,
-      protectedSourceOnly: true,
-      createPreparedGitHub(opts) {
-        secretDriver = opts.secretDriver;
-        lifecycle = createOwner(gh.origin, opts.tokenService);
-        return lifecycle;
-      },
-      async appFactory(t, opts) {
-        const app = await postgresApp(t, {
-          ...opts,
-          poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
-        });
-        await lifecycle.connect(app.pool);
-        t.after(() => lifecycle.close());
-        return app;
-      },
-      async admitSource({ app, agent, namespace, secret, path }) {
-        issuer = secret;
-        const created = await app.request("POST", path, {
-          body: (registration = {
-            type: "github-app-metadata",
-            name: "prepared-repository",
-            config: {
-              authority: "execution",
-              app_id: fixtureAppId,
-              installation_id: fixtureInstallationId,
-              repository_id: fixtureRepositoryId,
-              repository: fixtureRepository,
-              agent_id: agent.id,
-            },
-            secrets: { private_key: secret.ref },
-          }),
-        });
-        assert.equal(created.status, 201);
-        source = created.data;
-        return bindRuntimeSource(app, namespace, agent, source);
-      },
-    });
-    source = (
-      await f.state.read((v) => v.credentialSources.findCredentialSource(f.namespace.id, source.id))
-    ).egress;
+    const { gh, f, lifecycle, issuer, secretValue, createOwner, registerSource } = prepared;
+    let { source } = prepared;
     const signal = new AbortController().signal;
     const readWindow = () => ({ signal, deadlineAt: new Date(Date.now() + 20_000).toISOString() });
     const firstReads = f.secretReads;
@@ -660,7 +606,9 @@ test(
           ["quarantined"],
         );
         const attemptsAtA = gh.trace.length;
-        await assert.rejects(restartedAtB.withdraw(source, signal), /unsettled provider attempt/);
+        await assert.rejects(restartedAtB.withdraw(source, signal), {
+          name: "CredentialTokenUnsettledError",
+        });
         assert.equal(credentialRequestsAtB, 0, "B received A's exceptional pending credential");
         assert.equal(gh.trace.length, attemptsAtA);
         const kept = await pendingRetirements();
@@ -696,12 +644,6 @@ test(
     );
     // Lose the response *after* the synthetic provider owns the token. A different worker must
     // observe the durable quarantine, never issue again, and never claim remote revocation.
-    const path = `/namespaces/${f.namespace.id}/credential-sources`;
-    const registerSource = async (name) => {
-      const { status, data } = await f.request("POST", path, { body: { ...registration, name } });
-      assert.equal(status, 201);
-      return data.id;
-    };
     const lostSource = await registerSource("prepared-lost-response");
     const lost = (
       await f.state.read((v) =>
@@ -725,7 +667,9 @@ test(
     );
     assert.equal(gh.issuesOfTokens.length, issuedBefore + 1);
     assert.equal(await lifecycle.readWarm(lost, readWindow()), undefined);
-    await assert.rejects(lifecycle.withdraw(lost, signal), /unsettled provider attempt/);
+    await assert.rejects(lifecycle.withdraw(lost, signal), {
+      name: "CredentialTokenUnsettledError",
+    });
     await t.test("a lost retirement commit receipt clears the unreceived candidate", async (t) => {
       // An out-of-scope issuance leaves a real cleanup candidate for the next worker pass.
       await registerSource("prepared-lost-retirement-commit");
@@ -825,6 +769,191 @@ test(
     assert.deepEqual(gh.errors, []);
   },
 );
+
+test(
+  "PostgreSQL prepared custody: deleting a source waits only while a token from it may be valid",
+  requiresPostgres,
+  async (t) => {
+    // Finding 2208: deletion failed with a plain 500 forever once any attempt was not revoked.
+    // A refused issue is terminal at once; a lost issue or revocation settles after GitHub's
+    // maximum token lifetime. Until then deletion answers a coded 409 naming the retry time.
+    let elapsed = 0;
+    const { gh, f, lifecycle, source, registerSource } = await preparedLifecycleFixture(
+      t,
+      {},
+      () => new Date(Date.now() + elapsed),
+    );
+    const signal = new AbortController().signal;
+    // The Agent's bound source is not part of this proof: keep the worker on the new sources.
+    await f.pool.query(
+      "UPDATE occ.prepared_github_families SET next_check_at=now()+interval '1 day' WHERE source_id=$1",
+      [source.key.source.id],
+    );
+    const attempts = async (sourceId) =>
+      (
+        await f.pool.query(
+          "SELECT state, custody FROM occ.prepared_github_attempts WHERE source_id=$1",
+          [sourceId],
+        )
+      ).rows;
+    // A typo'd installation: GitHub answers 404 and mints nothing.
+    gh.setIssueStatus(404);
+    const refused = await registerSource("prepared-refused");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    gh.setIssueStatus(201);
+    assert.deepEqual(await attempts(refused), [{ state: "quarantined", custody: "not_issued" }]);
+    // GitHub mints a token, then its answer is lost.
+    gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);
+    const lost = await registerSource("prepared-lost-issue");
+    assert.equal(await lifecycle.maintain(signal), "quarantined");
+    assert.deepEqual(await attempts(lost), [{ state: "quarantined", custody: "intent" }]);
+    // A committed token whose revocation GitHub refuses, as once it expired while the worker was down.
+    const expired = await registerSource("prepared-unconfirmed-revocation");
+    assert.equal(await lifecycle.maintain(signal), "committed");
+    gh.setRevokeStatus(401);
+    assert.equal(gh.issuesOfTokens.length, 2);
+
+    // Past the registration fence, which is independent of provider custody.
+    elapsed = 120_000;
+    const remove = (id) =>
+      f.request("DELETE", `/namespaces/${f.namespace.id}/credential-sources/${id}`);
+    const exists = async (id) =>
+      (await f.request("GET", `/namespaces/${f.namespace.id}/credential-sources/${id}`)).status;
+    // The deadline is the attempt start plus ten minutes of App JWT acceptance, one hour of
+    // token life and one minute of skew, or a verified expiry plus skew if that is later.
+    const unsettled = async (id) => {
+      const {
+        rows: [{ at }],
+      } = await f.pool.query(
+        `SELECT greatest(started_at + interval '71 minutes', provider_expires_at + interval '1 minute') AS at
+         FROM occ.prepared_github_attempts WHERE source_id=$1`,
+        [id],
+      );
+      const result = await remove(id);
+      assert.equal(result.status, 409);
+      assert.deepEqual(result.body.error, {
+        code: "CREDENTIAL_TOKEN_UNSETTLED",
+        message:
+          "A GitHub token issued for this credential source may still be valid, so it cannot be deleted yet. " +
+          `Retry the deletion after ${at.toISOString()}, when GitHub's maximum token lifetime has passed.`,
+      });
+      assert.equal(await exists(id), 200, "the source stays until its custody settles");
+    };
+    const age = (id, column, minutes) =>
+      f.pool.query(
+        `UPDATE occ.prepared_github_attempts SET ${column}=clock_timestamp()-$2*interval '1 minute' WHERE source_id=$1`,
+        [id, minutes],
+      );
+
+    assert.equal((await remove(refused)).status, 204, "a refusal with no token is settled");
+    assert.equal(await exists(refused), 404);
+
+    await unsettled(lost);
+    await age(lost, "started_at", 72);
+    assert.equal((await remove(lost)).status, 204);
+    assert.equal(await exists(lost), 404);
+
+    const deletes = () => gh.trace.filter((entry) => entry.method === "DELETE").length;
+    await unsettled(expired);
+    assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.equal(deletes(), 1);
+    // The attempt bound alone is not enough while the verified expiry is still ahead.
+    await age(expired, "started_at", 72);
+    await unsettled(expired);
+    await f.pool.query(
+      `UPDATE occ.prepared_github_attempts SET provider_expires_at=clock_timestamp()-interval '2 minutes',
+       usable_until=clock_timestamp()-interval '3 minutes' WHERE source_id=$1`,
+      [expired],
+    );
+    assert.equal((await remove(expired)).status, 204);
+    assert.equal(deletes(), 1, "an unconfirmed revocation is never replayed");
+    // Settlement never rewrites the recorded outcome.
+    assert.deepEqual(await attempts(expired), [{ state: "committed", custody: "unknown" }]);
+    assert.deepEqual(gh.errors, []);
+  },
+);
+
+/**
+ * A prepared GitHub metadata source registered through the real API, bound to an Agent, over
+ * PostgreSQL and a synthetic HTTPS GitHub App issuer. Both keys are generated here; only the
+ * dedicated issuer Secret receives the private App key.
+ */
+async function preparedLifecycleFixture(t, githubOptions = {}, now = undefined) {
+  const dir = await mkdtemp(join(tmpdir(), "occ-prepared-gh-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const key = join(dir, "custody.key");
+  await writeFile(key, randomBytes(32), { mode: 0o600 });
+  const gh = await startGitHubFixture(t, { clock: createSystemClock(), ...githubOptions });
+  const secretValue = gh.privateKey.export({ format: "pem", type: "pkcs8" });
+  let lifecycle;
+  let secretDriver;
+  let issuer;
+  let source;
+  let registration;
+  const createOwner = (origin = gh.origin, tokenService) =>
+    new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
+  const f = await staticEgressFixture(t, {
+    secretValue,
+    protectedSourceOnly: true,
+    ...(now && { now }),
+    createPreparedGitHub(opts) {
+      secretDriver = opts.secretDriver;
+      lifecycle = createOwner(gh.origin, opts.tokenService);
+      return lifecycle;
+    },
+    async appFactory(t, opts) {
+      const app = await postgresApp(t, {
+        ...opts,
+        poolOptions: { max: 1, connectionTimeoutMillis: 2000 },
+      });
+      await lifecycle.connect(app.pool);
+      t.after(() => lifecycle.close());
+      return app;
+    },
+    async admitSource({ app, agent, namespace, secret, path }) {
+      issuer = secret;
+      const created = await app.request("POST", path, {
+        body: (registration = {
+          type: "github-app-metadata",
+          name: "prepared-repository",
+          config: {
+            authority: "execution",
+            app_id: fixtureAppId,
+            installation_id: fixtureInstallationId,
+            repository_id: fixtureRepositoryId,
+            repository: fixtureRepository,
+            agent_id: agent.id,
+          },
+          secrets: { private_key: secret.ref },
+        }),
+      });
+      assert.equal(created.status, 201);
+      source = created.data;
+      return bindRuntimeSource(app, namespace, agent, source);
+    },
+  });
+  source = (
+    await f.state.read((v) => v.credentialSources.findCredentialSource(f.namespace.id, source.id))
+  ).egress;
+  /** Register another prepared source with the same grant; no Agent revision holds it. */
+  const registerSource = async (name) => {
+    const path = `/namespaces/${f.namespace.id}/credential-sources`;
+    const { status, data } = await f.request("POST", path, { body: { ...registration, name } });
+    assert.equal(status, 201);
+    return data.id;
+  };
+  return {
+    gh,
+    f,
+    lifecycle,
+    issuer,
+    source,
+    registration,
+    secretValue,
+    createOwner,
+    registerSource,
+  };
+}
 
 // Start with the signed dispatch above, whose material, peer, custody and policy all agreed.
 // The repository issues SQL directly; no caller-side parser can satisfy these negative cases.

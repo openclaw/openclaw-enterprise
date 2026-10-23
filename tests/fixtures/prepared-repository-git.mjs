@@ -9,6 +9,7 @@ import {
   repositoryApprovalFingerprint,
 } from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
+import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
@@ -318,4 +319,195 @@ export async function prepare(f) {
   assert.equal(f.gh.issuesOfTokens.length, 1, "open OCC admission must prepare exactly one token");
   assert.deepEqual(f.gh.issuesOfTokens[0].permissions, f.permissions);
   assert.deepEqual(f.gh.issuesOfTokens[0].repositoryIds.map(String), [String(fixtureRepositoryId)]);
+}
+
+/** The controlled Credential Proxy selection that protected versions in these tests name. */
+export const controlledProtectedDriver = Object.freeze({
+  id: "controlled",
+  implementation: "openshell",
+  configurationId: "d".repeat(64),
+});
+
+/** Another worker owner that serves protected (Credential Proxy) Git for that selection. */
+export function startProtectedOwner(f, overrides = {}) {
+  return f.startOwner({
+    controlSocket: undefined,
+    protectedGitDriver: controlledProtectedDriver,
+    protectedGitEvidence: openShellGitRecipientEvidence,
+    ...overrides,
+  });
+}
+
+/**
+ * Deploy a protected version after `previous`, with one open repository session and the
+ * released OpenShell Git recipient of its Sandbox. The installation and the delivery receipt
+ * are controlled evidence; the standing transfer test exercises the real release.
+ */
+export async function admitProtectedVersion(f, previous = f.revision) {
+  const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = previous;
+  const driver = controlledProtectedDriver;
+  const revisionId = "rev_" + randomUUID();
+  const sessionId = randomUUID();
+  const admissionId = randomUUID();
+  const executionId = randomUUID().replaceAll("-", "");
+  const plan = {
+    id: "migration-proof",
+    generation: 1,
+    driver,
+    execution: {
+      namespaceId,
+      agentId,
+      servicePrincipalId,
+      revisionId,
+      executionId,
+      installationId: "test",
+    },
+    sandboxDriverId: "controlled",
+    egressDriverId: "controlled",
+    routes: [],
+    repositoryGit: repositoryCredentials,
+  };
+  const attempt = {
+    namespaceId,
+    agentId,
+    revisionId,
+    admissionId,
+    repositoryRef: "source",
+    durationSeconds: 3600,
+    deadlineWallMs: f.deadlineWallMs,
+    createdAt: new Date().toISOString(),
+    brokerProtocol: /** @type {const} */ (2),
+  };
+  const revision = {
+    ...previous,
+    id: revisionId,
+    revision: previous.revision + 1,
+    executionAdmission: { version: 4, mode: "protected" },
+    egressPlan: plan,
+  };
+  await f.state.transact(async (u) => {
+    await u.revisions.createRevision(revision);
+    assert.ok(
+      await u.agents.compareAndSetActiveRevision(namespaceId, agentId, previous.id, revisionId),
+    );
+    await u.repositorySessions.createAttempt(attempt);
+    await u.repositorySessions.advanceAttempt({
+      admissionId,
+      expectedPhase: "opening",
+      phase: "open",
+      sessionId,
+      updatedAt: attempt.createdAt,
+    });
+  });
+  const providerId = "controlled-provider";
+  const policyHash = "controlled-policy";
+  const sandboxId = "controlled-box-" + randomUUID();
+  const observed = {
+    workspace: "w",
+    sandbox: "s",
+    sandboxId,
+    executionId: revisionId,
+    provider: "p",
+    providerId,
+    providerResourceVersion: "1",
+    profileVersion: "1",
+    credentialState: "active",
+    attachmentEpoch: "e",
+    providerEnvRevision: "1",
+    configRevision: "1",
+    policyHash,
+    supervisorSessionId: "s",
+    processInstanceId: "p",
+    networkInstanceId: "n",
+  };
+  await f.state.transact((u) =>
+    u.credentialSources.recordEgressInstallation({
+      plan,
+      sandboxId,
+      sender: { id: "sender", generation: 1 },
+      installedAt: attempt.createdAt,
+      enforcement: {
+        policyHash,
+        instanceId: "released-supervisor-A",
+        repositoryGitRecipient: {
+          providerId,
+          attachmentEpoch: observed.attachmentEpoch,
+          processInstanceId: observed.processInstanceId,
+          networkInstanceId: observed.networkInstanceId,
+        },
+        configurationId: "c",
+        authorityScope: "execution",
+        peerKeyId: "fixture",
+      },
+    }),
+  );
+  // Match the OpenShell delivery owner's snapshot receipt, tied to this live revision.
+  await f.pool.query(
+    `insert into occ.credential_deliveries
+    (revision_id,live_revision_id,settlement,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
+    values($1,$1,'snapshot',$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
+      jsonb_build_object('credentialState','bootstrap','providerId',$6::text,'profileVersion','1','resourceVersion','1','expiresAt',''),$7)`,
+    [
+      revisionId,
+      namespaceId,
+      agentId,
+      executionId,
+      randomUUID(),
+      providerId,
+      JSON.stringify(observed),
+    ],
+  );
+  return {
+    revision,
+    revisionId,
+    sessionId,
+    admissionId,
+    executionId,
+    plan,
+    attempt,
+    observed,
+    route: { revisionId, fence: 1, observed },
+    familyId: `repository-git:${admissionId}`,
+  };
+}
+
+/** End a protected version's repository session, as the worker does once its version is replaced. */
+export async function disposeProtectedSession(f, version) {
+  const updatedAt = new Date().toISOString();
+  await f.state.transact(async (u) => {
+    for (const [expectedPhase, phase] of [
+      ["open", "closing"],
+      ["closing", "disposed"],
+    ]) {
+      assert.ok(
+        await u.repositorySessions.advanceAttempt({
+          admissionId: version.admissionId,
+          expectedPhase,
+          phase,
+          updatedAt,
+        }),
+      );
+    }
+  });
+}
+
+/** Close and dispose the fixture's broker session, as its broker does after replacement. */
+export async function disposeBrokerSession(f, updatedAt = new Date().toISOString()) {
+  await f.withdraw();
+  const at = { admissionId: f.admissionId, updatedAt };
+  await f.state.transact(async (u) => {
+    const sessions = u.repositorySessions;
+    const receipt = await sessions.findBrokerReceipt(f.admissionId);
+    await sessions.advanceBrokerReceipt({
+      ...at,
+      generation: receipt.generation,
+      sessionId: f.sessionId,
+      deadlineWallMs: f.deadlineWallMs,
+      revoked: 0,
+      expired: 0,
+      expectedState: "active",
+      state: "disposed",
+    });
+    await sessions.advanceAttempt({ ...at, expectedPhase: "closing", phase: "disposed" });
+  });
 }

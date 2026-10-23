@@ -29,6 +29,7 @@ export function createGitHubProtocol({
   issueResponseGate,
   draftResponse = (body) => body,
   revokeStatus = 204,
+  issueStatus = 201,
 }) {
   const { privateKey, publicKey } = keyPair;
   const authority = createTokenAuthority({
@@ -86,6 +87,12 @@ export function createGitHubProtocol({
         url.pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
       ) {
         await beforeIssue?.();
+        if (issueStatus !== 201) {
+          // GitHub refuses before minting: a rejected App key (401), an unknown installation
+          // (404) or a repository outside it (422) answers with no token.
+          json(issueStatus, { message: "Refused", status: String(issueStatus) });
+          return;
+        }
         // The provider owns the token before response gates can delay or lose its delivery.
         const { token, expires, permissions } = authority.issue(
           request.headers.authorization,
@@ -186,6 +193,10 @@ export function createGitHubProtocol({
     tokenState: authority.tokenState,
     setRevokeStatus(status) {
       revokeStatus = status;
+    },
+    /** Answer issue requests with this status and no token (201 issues again). */
+    setIssueStatus(status) {
+      issueStatus = status;
     },
     disconnectAfterMutation(method, target) {
       disconnectMutation = `${method} ${target}`;

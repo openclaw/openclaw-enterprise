@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { providerClockSkewMs } from "./driver/lifetime.ts";
+import { issueAttemptLiveBoundMs, providerClockSkewMs } from "./driver/lifetime.ts";
 import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
 import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
@@ -24,6 +24,19 @@ const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_reposit
   AND a.state='committed' AND a.material_version IS NOT NULL
   AND a.admission=f.admission AND isfinite(a.provider_expires_at)
   AND a.usable_until < a.provider_expires_at THEN a.provider_expires_at END`;
+
+// An attempt settles when no token from it can still be live: revoked, locally expired, refused
+// by an answer that carried no token, or past both bounds: issueAttemptLiveBoundMs after its
+// intent, and any verified provider expiry plus skew. 'current' is live custody, never settled
+// by time. 'intent', 'retire', 'revoking' and 'unknown' (lost issue or revocation) settle by time.
+const settledAfter = (
+  a: string,
+) => `greatest(${a}.started_at + ${issueAttemptLiveBoundMs} * interval '1 millisecond',
+  ${a}.provider_expires_at + ${providerClockSkewMs} * interval '1 millisecond')`;
+export const preparedAttemptSettled = (
+  a: string,
+) => `(${a}.custody IN ('revoked','expired','not_issued')
+  OR (${a}.custody <> 'current' AND ${settledAfter(a)} <= clock_timestamp()))`;
 
 const active = live("'ready'");
 const enrolling = live("'registering','ready'");
@@ -170,14 +183,23 @@ export class PreparedGitHubPostgres {
     });
   }
 
-  async withdrawalSettled(source: Source) {
+  /** Settled, or the earliest time every unsettled attempt settles (none for live custody). */
+  async withdrawalSettlement(source: Source) {
     return this.transaction(async (c) => {
       const { rows } = await c.query(
-        `SELECT 1 FROM ${attempts} a JOIN ${families} f USING (source_id)
-        WHERE ${matching} AND NOT enabled AND custody <> 'revoked' LIMIT 1`,
+        `SELECT count(*)::integer AS unsettled, CASE WHEN NOT bool_or(custody='current')
+          THEN max(${settledAfter("a")}) END AS "settlesAt"
+        FROM ${attempts} a JOIN ${families} f USING (source_id)
+        WHERE ${matching} AND NOT enabled AND NOT ${preparedAttemptSettled("a")}`,
         [source.key.source.id, source],
       );
-      return !rows.length;
+      const { unsettled, settlesAt } = rows[0] as { unsettled: number; settlesAt: Date | null };
+      return unsettled === 0
+        ? { settled: true as const }
+        : {
+            settled: false as const,
+            ...(settlesAt instanceof Date && Number.isFinite(settlesAt.getTime()) && { settlesAt }),
+          };
     });
   }
 
@@ -245,7 +267,14 @@ export class PreparedGitHubPostgres {
         | {
             state: Attempt["state"];
             custody:
-              "intent" | "current" | "retire" | "revoking" | "revoked" | "unknown" | "expired";
+              | "intent"
+              | "current"
+              | "retire"
+              | "revoking"
+              | "revoked"
+              | "unknown"
+              | "expired"
+              | "not_issued";
             materialVersion: string | null;
             providerExpiresAt: Date | null;
           }
@@ -453,7 +482,8 @@ export class PreparedGitHubPostgres {
                   [
                     a.id,
                     a.state,
-                    m ? "current" : bytes ? "retire" : "intent",
+                    // Only a provider answer that refused issuance proves no token exists.
+                    m ? "current" : bytes ? "retire" : a.notIssued ? "not_issued" : "intent",
                     bytes && this.seal(bytes, a.admission, a.id),
                     m?.materialVersion,
                     m && new Date(m.providerExpiresAt),

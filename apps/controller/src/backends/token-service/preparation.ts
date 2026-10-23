@@ -9,6 +9,8 @@ export interface TokenIssue {
   assertIssuing(): Promise<void>;
   /** Transfer candidate ownership to cleanup custody before validating it or awaiting transport close. */
   capture(candidate: Uint8Array): void;
+  /** Record a complete provider answer that refused issuance. Never for a lost or partial answer. */
+  refused(): void;
 }
 
 interface PreparationOptions<A extends TokenAdmission> {
@@ -83,6 +85,7 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
 
       let candidate: Uint8Array | undefined;
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
+      let refused = false;
       try {
         verified = await options.issue({
           attemptId,
@@ -108,6 +111,9 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
           capture(bytes) {
             candidate?.fill(0);
             candidate = bytes;
+          },
+          refused() {
+            refused = true;
           },
         });
       } catch {
@@ -136,6 +142,9 @@ export function createTokenPreparation<A extends TokenAdmission>(options: Prepar
             attempt.state = "quarantined";
             if (candidate) {
               attempt.candidate = Uint8Array.from(candidate);
+            } else if (refused) {
+              // The provider answered this attempt's one request without a token: terminal.
+              attempt.notIssued = true;
             }
             return "quarantined" as const;
           }

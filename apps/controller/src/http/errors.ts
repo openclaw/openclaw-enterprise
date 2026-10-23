@@ -15,6 +15,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -721,6 +722,10 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
+  }
+  if (error instanceof CredentialTokenUnsettledError) {
+    // Names only the retry time; raised only after delete on the source and its lookup.
+    return failure(409, "CREDENTIAL_TOKEN_UNSETTLED", error.message);
   }
   if (error instanceof CredentialWithdrawalInProgressError) {
     // A fixed message naming the way out; raised only after delete on the source and its lookup.
