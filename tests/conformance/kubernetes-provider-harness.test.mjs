@@ -1420,7 +1420,7 @@ test("provider Harness protected execution is released only on current signed in
       pod.metadata.labels["app.kubernetes.io/name"] =
         "agent-" + digest(protectedRevision.agentId) + "-rev-" + digest(protectedRevision.id);
       const originalList = core.listNamespacedPod;
-      const { harnessEndpoint } = sandbox;
+      const { enrollHarness, harnessEndpoint } = sandbox;
       core.listNamespacedPod = async (request) =>
         request.labelSelector.includes("openclaw.dev/revision=" + protectedRevision.id)
           ? { items: [pod] }
@@ -1480,6 +1480,7 @@ test("provider Harness protected execution is released only on current signed in
         }
       } finally {
         core.listNamespacedPod = originalList;
+        sandbox.enrollHarness = enrollHarness;
         sandbox.harnessEndpoint = harnessEndpoint;
       }
     },
