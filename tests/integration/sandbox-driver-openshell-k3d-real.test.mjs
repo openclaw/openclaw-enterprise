@@ -1957,6 +1957,32 @@ function createIntegrationSandboxDriverFactory(
           context,
         );
       },
+      // Compute activates only a Harness that completes the authenticated handshake.
+      async harnessStatus(context) {
+        const endpoint = await endpointForNamespace(context, {
+          sandboxServiceAccountName: agentSandboxServiceAccount(context),
+          exact: context.requirements.workloadIdentity !== undefined,
+        });
+        return await delegate(
+          context.requirements,
+          context.namespace.name,
+          endpoint,
+          context,
+        ).harnessStatus(context);
+      },
+      // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
+      async withdrawHarnessExposure(context) {
+        const endpoint = await endpointForNamespace(context, {
+          sandboxServiceAccountName: agentSandboxServiceAccount(context),
+          exact: context.requirements.workloadIdentity !== undefined,
+        });
+        await delegate(
+          context.requirements,
+          context.namespace.name,
+          endpoint,
+          context,
+        ).withdrawHarnessExposure(context);
+      },
       // Compute asks for the OpenShell-exposed Codex endpoint and points the Agent Gateway at it.
       // The real Driver supports this only for dedicated Codex, so the bridge proof omits it.
       ...(enableCompatibilityBridges
@@ -1973,32 +1999,6 @@ function createIntegrationSandboxDriverFactory(
                 endpoint,
                 context,
               ).harnessEndpoint(context);
-            },
-            // Compute activates only a Harness that completes the authenticated handshake.
-            async harnessStatus(context) {
-              const endpoint = await endpointForNamespace(context, {
-                sandboxServiceAccountName: agentSandboxServiceAccount(context),
-                exact: context.requirements.workloadIdentity !== undefined,
-              });
-              return await delegate(
-                context.requirements,
-                context.namespace.name,
-                endpoint,
-                context,
-              ).harnessStatus(context);
-            },
-            // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
-            async withdrawHarnessExposure(context) {
-              const endpoint = await endpointForNamespace(context, {
-                sandboxServiceAccountName: agentSandboxServiceAccount(context),
-                exact: context.requirements.workloadIdentity !== undefined,
-              });
-              await delegate(
-                context.requirements,
-                context.namespace.name,
-                endpoint,
-                context,
-              ).withdrawHarnessExposure(context);
             },
           }),
       async cleanup(context) {
@@ -7234,10 +7234,21 @@ test(
       );
       assert.ok(topology.sandbox.metadata.name);
       if (selectedHarness === "openclaw") {
+        // A native worker exposes held startup failures only until its node enrolls.
+        // Confirm Workspace visibility before treating an absent service as withdrawn.
+        const nativeGateway = topology.gatewayClient();
+        assert.ok(
+          await nativeGateway.getWorkspace(topology.placement, AbortSignal.timeout(10_000)),
+        );
         assert.equal(
-          topology.harnessServiceUrl,
+          await nativeGateway.getService(
+            topology.placement,
+            topology.sandbox.metadata.name,
+            "",
+            AbortSignal.timeout(10_000),
+          ),
           undefined,
-          "native OpenClaw must not request an inbound OpenShell service exposure.",
+          "native OpenClaw must withdraw its startup-failure exposure after enrollment.",
         );
         process.stderr.write(
           "OpenShell integration: verifying dedicated native workspace file access.\n",
