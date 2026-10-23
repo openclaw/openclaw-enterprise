@@ -103,6 +103,7 @@ export class OpenShellPreparedGitProviderError extends Error {
 
 const KEY = "GITHUB_TOKEN";
 const OWNER = "openclaw.dev/prepared-git-binding";
+const REPOSITORY_PROVIDER_PREFIX = "oce-git-";
 
 function refuse(): never {
   throw new OpenShellPreparedGitProviderError("refused");
@@ -199,7 +200,9 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    const prefix = scope.installationId ? openShellInstallationGitProviderPrefix : "oce-git-";
+    const prefix = scope.installationId
+      ? openShellInstallationGitProviderPrefix
+      : REPOSITORY_PROVIDER_PREFIX;
     this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
@@ -732,6 +735,33 @@ export class OpenShellPreparedGitProvider {
     return observeOpenShellGitPredecessor(this.client, previous, signal);
   }
 
+  /**
+   * Deletes this route's provider, then its profile (finding 2206). The caller first confirms
+   * the route's Sandbox gone; OpenShell also refuses to delete a provider a Sandbox still
+   * attaches. A same-name object without this binding's owner fingerprint is refused, never
+   * deleted.
+   */
+  async remove(signal: AbortSignal): Promise<void> {
+    const provider = await this.client.getProvider(this.scope.workspace, this.provider, signal);
+    if (provider !== undefined) {
+      if (provider.labels[OWNER] !== this.fingerprint || provider.type !== this.profile.id) {
+        refuse();
+      }
+      await this.client.deleteProvider(this.scope.workspace, this.provider, signal);
+    }
+    const profile = await this.client.getProviderProfile(
+      this.scope.workspace,
+      this.profile.id,
+      signal,
+    );
+    if (profile !== undefined) {
+      if (profile.annotations[OWNER] !== this.fingerprint) {
+        refuse();
+      }
+      await this.client.deleteProviderProfile(this.scope.workspace, this.profile.id, signal);
+    }
+  }
+
   async rotate(
     previous: OpenShellPreparedGitBinding,
     release: () => Promise<OpenShellPreparedGitToken | undefined>,
@@ -818,6 +848,41 @@ export class OpenShellPreparedGitProvider {
         phase === "writing" ? "unknown" : "refused",
         phase === "writing" ? undefined : readFailure(error),
       );
+    }
+  }
+}
+
+/**
+ * Namespace cleanup (finding 2206): deletes each prepared Git provider in `providers`, then its
+ * profile, before the Workspace is deleted. Its routes are withdrawn and its Sandboxes gone by
+ * then; OpenShell refuses to delete a provider a Sandbox still attaches. Only an object whose
+ * name derives from its owner fingerprint, as a preparation wrote it, is deleted.
+ */
+export async function deleteOpenShellPreparedGitProviders(
+  client: Pick<
+    OpenShellGatewayClient,
+    "deleteProvider" | "getProviderProfile" | "deleteProviderProfile"
+  >,
+  workspace: string,
+  providers: readonly OpenShellProviderResponse[],
+  signal: AbortSignal,
+): Promise<void> {
+  for (const provider of providers) {
+    const owner = provider.labels[OWNER];
+    const hash = owner?.slice(0, 32);
+    if (
+      owner === undefined ||
+      !/^[0-9a-f]{48}$/.test(owner) ||
+      (provider.name !== REPOSITORY_PROVIDER_PREFIX + hash &&
+        provider.name !== openShellInstallationGitProviderPrefix + hash) ||
+      provider.type !== provider.name
+    ) {
+      continue;
+    }
+    await client.deleteProvider(workspace, provider.name, signal);
+    const profile = await client.getProviderProfile(workspace, provider.type, signal);
+    if (profile?.annotations[OWNER] === owner) {
+      await client.deleteProviderProfile(workspace, provider.type, signal);
     }
   }
 }

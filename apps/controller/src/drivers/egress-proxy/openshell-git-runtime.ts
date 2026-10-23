@@ -1163,6 +1163,34 @@ export class OpenShellGitRuntime {
     );
   }
 
+  /**
+   * Deletes the revision's Git provider and its profile (finding 2206). The Sandbox Driver calls
+   * this only after withdraw() and after OpenShell confirms the revision's Sandbox gone, so no
+   * route can use the provider again. The name derives from the revision's own scope, as at
+   * preparation, so a restarted worker finds it too. A provider this worker cannot name (the
+   * revision's scope no longer resolves) or one in a Workspace already gone is left to
+   * Namespace cleanup.
+   */
+  async removeProvider(
+    revision: Readonly<AgentRevision>,
+    client: OpenShellGatewayClient,
+    workspace: string,
+    sandbox: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let delivery: OpenShellPreparedGitDelivery;
+    try {
+      delivery = this.scope(revision).delivery;
+    } catch {
+      return;
+    }
+    const current = await client.getWorkspace(workspace, signal);
+    if (!current?.id) {
+      return;
+    }
+    await gitProvider(client, workspace, current.id, sandbox, revision.id, delivery).remove(signal);
+  }
+
   withdraw(revisionId: string): void {
     // Keep the tombstone to prevent adoption/recreation under the same execution identity,
     // in this process and, through the store, in any later one.

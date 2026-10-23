@@ -132,10 +132,16 @@ function harnessRuntimeCommand(program) {
   return [...RUNTIME_WRAPPER_COMMAND, ...nodeProgramArguments(program)];
 }
 
+/** The gRPC FAILED_PRECONDITION error OpenShell answers a delete that members still block. */
+function failedPrecondition(details) {
+  return Object.assign(new Error(`9 FAILED_PRECONDITION: ${details}`), { code: 9, details });
+}
+
 function workspaceGatewayClient(seed = [], events = []) {
   const workspaces = new Map(seed.map((workspace) => [workspace.name, structuredClone(workspace)]));
   const profiles = new Map();
   const providers = new Map();
+  const sandboxes = new Map();
   const calls = [];
   const storeProfile = (profile, resourceVersion) =>
     profiles.set(profile.id, {
@@ -148,6 +154,7 @@ function workspaceGatewayClient(seed = [], events = []) {
     calls,
     profiles,
     providers,
+    sandboxes,
     workspaces,
     async health() {
       calls.push(["health"]);
@@ -168,18 +175,32 @@ function workspaceGatewayClient(seed = [], events = []) {
     async deleteWorkspace(name) {
       calls.push(["deleteWorkspace", name]);
       events.push(["gateway", "deleteWorkspace", name]);
+      // As OpenShell 0.1.4 (grpc/workspace.rs): a Workspace that still holds Sandboxes,
+      // providers or provider profiles stays, and the delete is refused.
+      const blocking = [
+        ...(sandboxes.size > 0 ? ["sandbox"] : []),
+        ...(providers.size > 0 ? ["provider"] : []),
+        ...(profiles.size > 0 ? ["provider profile"] : []),
+      ];
+      if (workspaces.has(name) && blocking.length > 0) {
+        throw failedPrecondition(
+          `workspace '${name}' still contains resources: ${blocking.join(", ")}`,
+        );
+      }
       workspaces.delete(name);
     },
     async createSandbox() {
       throw new Error("Sandbox creation is outside this Namespace lifecycle scenario.");
     },
-    async getSandbox() {
-      return undefined;
+    async getSandbox({ name }) {
+      return sandboxes.get(name);
     },
     async getService() {
       return undefined;
     },
-    async deleteSandbox() {},
+    async deleteSandbox({ name }) {
+      sandboxes.delete(name);
+    },
     async getProviderProfile(_workspace, id) {
       return profiles.get(id);
     },
@@ -190,6 +211,10 @@ function workspaceGatewayClient(seed = [], events = []) {
       storeProfile(profile, "2");
     },
     async deleteProviderProfile(_workspace, id) {
+      // OpenShell refuses to delete a profile a provider still uses.
+      if ([...providers.values()].some((provider) => provider.type === id)) {
+        throw failedPrecondition(`provider profile '${id}' is in use by providers`);
+      }
       profiles.delete(id);
     },
     async createProvider(request) {
@@ -214,6 +239,11 @@ function workspaceGatewayClient(seed = [], events = []) {
       return [...providers.values()];
     },
     async deleteProvider(_workspace, name) {
+      calls.push(["deleteProvider", name]);
+      // OpenShell refuses to delete a provider a Sandbox still attaches.
+      if ([...sandboxes.values()].some((sandbox) => sandbox.spec?.providers?.includes(name))) {
+        throw failedPrecondition(`provider '${name}' is attached to sandbox(es)`);
+      }
       providers.delete(name);
     },
     async updateProviderCredentials(_workspace, name, credentials) {
@@ -5590,7 +5620,7 @@ test(
       ),
       { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
     )["openshell.v1.SandboxSpec"];
-    const sandboxes = new Map();
+    const sandboxes = gateway.sandboxes;
     let created;
     gateway.createSandbox = async (request) => {
       created = request;
@@ -6068,6 +6098,73 @@ test(
             gateway.getSandbox = getSandbox;
             gateway.updatePolicy = updatePolicy;
           }
+
+          // Finding 2206: the revision's Git provider and its profile go with its Sandbox. Left
+          // behind, they kept the Namespace's Workspace forever: OpenShell refuses DeleteWorkspace
+          // while a Sandbox, provider or provider profile remains (the fake gateway does too).
+          const gitProvider = spec.providers.find((p) => p.startsWith("oce-git-"));
+          const leftBehind = {
+            provider: structuredClone(gateway.providers.get(gitProvider)),
+            profile: structuredClone(gateway.profiles.get(gitProvider)),
+          };
+          assert.ok(leftBehind.provider && leftBehind.profile);
+          // A same-name provider without the revision's owner fingerprint is refused, not deleted.
+          gateway.providers.get(gitProvider).labels = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
+            name: "OpenShellPreparedGitProviderError",
+          });
+          assert.ok(gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+          gateway.providers.set(gitProvider, structuredClone(leftBehind.provider));
+          // The same for its profile: the provider goes, the profile stays.
+          gateway.profiles.get(gitProvider).annotations = {
+            "openclaw.dev/prepared-git-binding": "0".repeat(48),
+          };
+          await assert.rejects(sandbox.cleanup({ ...ctx, revision: rev }), {
+            name: "OpenShellPreparedGitProviderError",
+          });
+          assert.ok(!gateway.providers.has(gitProvider) && gateway.profiles.has(gitProvider));
+          gateway.profiles.set(gitProvider, structuredClone(leftBehind.profile));
+          await sandbox.cleanup({ ...ctx, revision: rev });
+          assert.equal(gateway.sandboxes.has(created.name), false);
+          assert.equal(gateway.providers.has(gitProvider), false, "Git provider deleted");
+          assert.equal(gateway.profiles.has(gitProvider), false, "Git provider profile deleted");
+          assert.deepEqual([...gateway.providers.keys()], [inferenceProvider]);
+
+          // A revision cleaned up before this fix left its Git provider and profile behind.
+          // Namespace cleanup deletes them before the Workspace, but only objects whose owner
+          // label matches the name a preparation derives from it: a provider without it, or a
+          // profile another owner annotated, is kept, and OpenShell keeps refusing the Workspace.
+          gateway.providers.set(gitProvider, leftBehind.provider);
+          gateway.profiles.set(gitProvider, leftBehind.profile);
+          const foreign = "oce-git-" + "0".repeat(32);
+          gateway.providers.set(foreign, { ...leftBehind.provider, name: foreign, type: foreign });
+          const owner = "1".repeat(48);
+          const reused = "oce-git-" + owner.slice(0, 32);
+          gateway.providers.set(reused, {
+            ...leftBehind.provider,
+            name: reused,
+            type: reused,
+            labels: { "openclaw.dev/prepared-git-binding": owner },
+          });
+          gateway.profiles.set(reused, { ...leftBehind.profile, id: reused });
+          // The model source's provider belongs to the Credential Gateway, which withdraws it.
+          gateway.providers.delete(inferenceProvider);
+          gateway.profiles.delete("inference-profile");
+          const workspace = openShellWorkspaceName(ctx.namespace);
+          gateway.workspaces.set(workspace, ownedWorkspace(workspace, ctx.namespace.id));
+          const namespaceCleanup = { ...ctx, revision: undefined };
+          await assert.rejects(sandbox.cleanup(namespaceCleanup), {
+            code: 9,
+            details: `workspace '${workspace}' still contains resources: provider, provider profile`,
+          });
+          assert.deepEqual([...gateway.providers.keys()], [foreign]);
+          assert.deepEqual([...gateway.profiles.keys()], [reused]);
+          gateway.providers.delete(foreign);
+          gateway.profiles.delete(reused);
+          await sandbox.cleanup(namespaceCleanup);
+          assert.equal(gateway.workspaces.has(workspace), false, "Workspace deleted");
         } finally {
           await git.close();
         }
