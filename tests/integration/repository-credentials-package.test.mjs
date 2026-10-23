@@ -370,7 +370,8 @@ test(
     try {
       const socket = join(sockets, "control.sock");
       await waitUntil(
-        "the emitted process to bind its control socket or exit",
+        () =>
+          `the emitted process to bind its control socket or exit (exit code ${service.exitCode})`,
         async () => (await lstat(socket).catch(() => undefined)) || service.exitCode !== null,
         { timeoutMs: 5000, intervalMs: 10 },
       );

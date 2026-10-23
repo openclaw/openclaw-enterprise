@@ -10,7 +10,7 @@ import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts"
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, randomUUID, randomBytes, sign } from "node:crypto";
 import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
-import { readFile, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { buffer } from "node:stream/consumers";
@@ -100,11 +100,13 @@ export async function staticEgressFixture(
   } = {},
 ) {
   const directory = await temporaryDirectory(t, "oce-egress-wire-");
-  const { keyPath, certPath } = await selfSigned(directory, {
+  // Only ephemeral test-generated material is used; no operator credential files are involved.
+  const generated = await selfSigned(directory, {
     subjectAltName: "DNS:localhost,DNS:provider.example.test,IP:127.0.0.1",
   });
-  // Only ephemeral test-generated material is read; no operator credential files are involved.
-  const [key, cert] = await Promise.all([readFile(keyPath), readFile(certPath)]);
+  // gRPC credentials take Buffers.
+  const [key, cert] = [Buffer.from(generated.key), Buffer.from(generated.cert)];
+  const certPath = generated.certPath;
   const objects = new Map();
   let namespace;
   const namespaceResource = () => ({
