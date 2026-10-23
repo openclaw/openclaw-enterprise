@@ -1758,6 +1758,11 @@ function externalGitJourney(
         ).length,
         issues: gh.issuesOfTokens.length,
       });
+      // Withdraw between worker passes, and snapshot the provider once none is running. A pass
+      // that checked the approval just before removal may still prepare after it commits; its
+      // Git is still denied per request and cleanup reduces after it. Every pass that starts
+      // after the withdrawal must never prepare.
+      await settleRevisionMaintenance(f, revision);
       const before = providerTraffic();
       const decisions = peer.decisions.length;
       if (reducible) {
@@ -1768,10 +1773,6 @@ function externalGitJourney(
         });
         peer.reduction.beforeApply = () => hold;
       }
-      // Withdraw between worker passes. A pass that checked the approval just before removal
-      // may still prepare after it commits; its Git is still denied per request and cleanup
-      // reduces after it. Every pass that starts after the withdrawal must never prepare.
-      await settleRevisionMaintenance(f, revision);
       preparationsBeforeWithdrawal = preparations;
       withdrawalStarted = true;
       await controller.removeAgentStandingApproval(who, {
@@ -1937,7 +1938,7 @@ function externalGitJourney(
       assert.deepEqual(
         providerTraffic(),
         settledTraffic,
-        "maintenance after withdrawal sends no Git",
+        "maintenance after withdrawal reaches no provider",
       );
       t.diagnostic(
         broad

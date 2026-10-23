@@ -103,9 +103,10 @@ export async function settleRevisionMaintenance(fixture, revision, options = 25_
   );
 }
 
-// After settleRevisionMaintenance and the authority change, make this revision's deferred
-// maintenance due and wait until one of its passes ends. That pass started after the change,
-// so a test can then check it did not prepare. `events` holds the worker's emitted events.
+// After settleRevisionMaintenance and then the authority change, make this revision's deferred
+// maintenance due and wait until one of its passes ends. Given that order, the pass started
+// after the change, so a test can then check it did not prepare. `events` collects the worker's
+// emitted events.
 export function nextMaintenancePass(fixture, revision, events, options = 25_000) {
   const maintenance = `agent_revision:${revision.id}:maintenance:`;
   const seen = events.length;
