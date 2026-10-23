@@ -1767,7 +1767,20 @@ function createIntegrationSandboxDriverFactory(
                 harnessServiceUrls.set(context.revision.id, serviceUrl);
               },
             });
-      return new OpenShellSandboxDriver(optionsFor(requirements, namespaceName), {
+      const options = optionsFor(requirements, namespaceName);
+      if (enableCompatibilityBridges && context !== undefined) {
+        // The bridge removes projected-token requirements for upstream OpenShell;
+        // workspace preparation must still use the existing Compute-owned identity.
+        options.gateway.operatorWorkspaceResources = [
+          ...(options.gateway.operatorWorkspaceResources ?? []),
+          {
+            apiVersion: "v1",
+            kind: "ServiceAccount",
+            metadata: { name: agentSandboxServiceAccount(context), namespace: namespaceName },
+          },
+        ];
+      }
+      return new OpenShellSandboxDriver(options, {
         id: selection.id,
         implementation: "openshell",
         backend: backendFor(gatewayClient),
