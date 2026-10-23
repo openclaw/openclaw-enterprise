@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import {
   createDockerDevelopmentComputeDriverFromEnv,
   DockerComputeDriver,
@@ -640,40 +642,298 @@ function splitEnvironment(entry) {
  */
 function fakeDockerEngine() {
   const containers = new Map();
-  const createDriver = () => {
-    const driver = new DockerComputeDriver({
-      images: { gateway: "gateway:local", agent: "agent:local" },
-    });
-    driver.network = async () => ({
-      Labels: {
-        "org.openclaw.enterprise.managed": "true",
-        "org.openclaw.enterprise.compute-driver": "docker",
-        "org.openclaw.enterprise.namespace-id": tenant.id,
-      },
-    });
-    driver.request = async (method, path, body) => {
-      const url = new URL(path, "http://docker.invalid");
-      if (method === "POST" && url.pathname === "/containers/create") {
-        containers.set(url.searchParams.get("name"), {
-          Config: structuredClone(body),
-          State: { Running: true, Health: { Status: "healthy" } },
+  const volumes = new Map();
+  const archives = new Map();
+  const events = [];
+  let nextId = 1;
+  const engine = { containers, volumes, archives, events, stopCompletes: true, statusPort: 0 };
+  const lookup = (id) =>
+    containers.get(id) ?? [...containers.values()].find((value) => value.Id === id);
+  const request = async (method, path, body) => {
+    const url = new URL(path, "http://docker.invalid");
+    if (method === "GET" && url.pathname === "/_ping") {
+      return "OK";
+    }
+    if (method === "GET" && url.pathname === "/version") {
+      return { Components: [{ Name: "Engine" }] };
+    }
+    if (method === "GET" && url.pathname.startsWith("/images/")) {
+      return {};
+    }
+    if (method === "GET" && url.pathname.startsWith("/networks/")) {
+      return {
+        Labels: {
+          "org.openclaw.enterprise.managed": "true",
+          "org.openclaw.enterprise.compute-driver": "docker",
+          "org.openclaw.enterprise.namespace-id": tenant.id,
+        },
+      };
+    }
+    if (method === "POST" && url.pathname === "/volumes/create") {
+      engine.beforeVolumeCreate?.(body);
+      if (!volumes.has(body.Name)) {
+        volumes.set(body.Name, structuredClone(body));
+      }
+      return volumes.get(body.Name);
+    }
+    if (method === "GET" && url.pathname === "/volumes") {
+      const filters = JSON.parse(url.searchParams.get("filters"));
+      return {
+        Volumes: [...volumes.values()].filter((volume) =>
+          filters.label.every((label) => {
+            const at = label.indexOf("=");
+            return volume.Labels[label.slice(0, at)] === label.slice(at + 1);
+          }),
+        ),
+      };
+    }
+    if (url.pathname.startsWith("/volumes/")) {
+      const name = decodeURIComponent(url.pathname.slice("/volumes/".length));
+      if (method === "GET") {
+        return volumes.get(name);
+      }
+      if (method === "DELETE") {
+        volumes.delete(name);
+        events.push({ action: "delete-volume", name });
+        return "";
+      }
+    }
+    if (method === "POST" && url.pathname === "/containers/create") {
+      const id = String(nextId++).padStart(64, "0");
+      containers.set(url.searchParams.get("name"), {
+        Id: id,
+        Config: structuredClone(body),
+        HostConfig: structuredClone(body.HostConfig),
+        State: {
+          Running: false,
+          Pid: 0,
+          Status: "created",
+          StartedAt: "0001-01-01T00:00:00Z",
+          ExitCode: 0,
+        },
+        NetworkSettings: {
+          Ports: { "18791/tcp": [{ HostIp: "127.0.0.1", HostPort: String(engine.statusPort) }] },
+        },
+      });
+      return { Id: id };
+    }
+    const [, encodedId, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
+    const id = decodeURIComponent(encodedId ?? "");
+    const container = lookup(id);
+    if (method === "GET" && action === "json") {
+      if (
+        container?.State.Running &&
+        container.Config.Labels["org.openclaw.enterprise.role"] === "gateway" &&
+        container.Config.Env.some((entry) =>
+          entry.startsWith("OPENCLAW_STATE_OWNER_RECOVERY_PATH="),
+        ) &&
+        engine.healthReport !== undefined
+      ) {
+        const report = engine.healthReport(container);
+        const health = container.State.Health;
+        const log = {
+          Start: new Date().toISOString(),
+          End: new Date().toISOString(),
+          ExitCode: health.Status === "healthy" ? 0 : 1,
+          Output: engine.omitProjection
+            ? ""
+            : "OCE_GATEWAY_OWNER_V1 " + JSON.stringify(report) + "\n",
+        };
+        health.FailingStreak = log.ExitCode === 0 ? 0 : 1;
+        health.Log = [...(health.Log ?? []), log].slice(-5);
+      }
+      const observed = container === undefined ? undefined : structuredClone(container);
+      engine.afterInspect?.(id, container);
+      return observed;
+    }
+    if (method === "POST" && action === "start") {
+      assert.notEqual(
+        container.Config.Labels["org.openclaw.enterprise.role"],
+        "gateway-state-recovery",
+        "archive holders must never start",
+      );
+      container.State = {
+        Running: true,
+        Pid: 100 + nextId,
+        Status: "running",
+        StartedAt: new Date(1700000000000 + nextId).toISOString(),
+        Health: { Status: "healthy" },
+      };
+      if (container.Config.Labels["org.openclaw.enterprise.role"] === "workspace-setup") {
+        container.State = {
+          ...container.State,
+          Running: false,
+          Pid: 0,
+          Status: "exited",
+          ExitCode: 0,
+        };
+      }
+      return "";
+    }
+    if (method === "POST" && action === "stop") {
+      events.push({ action: "stop", id });
+      if (engine.stopCompletes) {
+        container.State = {
+          ...container.State,
+          Running: false,
+          Pid: 0,
+          Status: "exited",
+          FinishedAt: new Date().toISOString(),
+          ExitCode: 0,
+        };
+      }
+      return "";
+    }
+    if (action === "archive") {
+      const target = url.searchParams.get("path");
+      if (target === "/run" && method === "PUT") {
+        return "";
+      }
+      const volume = container.HostConfig.Mounts[0].Source;
+      if (method === "PUT") {
+        const name = body.subarray(0, 100).toString().replace(/\0.*$/s, "");
+        archives.set(`${volume}/${name}`, Buffer.from(body));
+        const size = Number.parseInt(body.subarray(124, 136).toString().replace(/\0.*$/s, ""), 8);
+        const text = body.subarray(512, 512 + size).toString();
+        events.push({
+          action: "archive-write",
+          id,
+          name,
+          value: name === "request.json" ? JSON.parse(text) : text,
         });
         return "";
       }
-      const [, name, action] = /^\/containers\/([^/]+)(?:\/(\w+))?$/.exec(url.pathname) ?? [];
-      if (method === "POST" && action === "start") {
-        return "";
+      return archives.get(`${volume}/${target.split("/").at(-1)}`);
+    }
+    if (method === "DELETE") {
+      events.push({ action: "delete-container", id });
+      const entry = [...containers].find(([, value]) => value === container);
+      if (entry !== undefined) {
+        containers.delete(entry[0]);
       }
-      if (method === "DELETE") {
-        containers.delete(name);
-        return "";
-      }
-      throw new Error(`Unexpected Docker API request ${method} ${path}`);
-    };
-    driver.container = async (name) => containers.get(name);
+      return "";
+    }
+    throw new Error(`Unexpected Docker API request ${method} ${path}`);
+  };
+  engine.request = request;
+  engine.createDriver = () => {
+    const driver = new DockerComputeDriver({
+      images: { gateway: "gateway:local", agent: "agent:local" },
+    });
+    driver.network = async () => request("GET", "/networks/fixture");
+    driver.request = request;
+    driver.container = async (id) => lookup(id);
     return driver;
   };
-  return { containers, createDriver };
+  return engine;
+}
+
+function recoveryOwner(id) {
+  return {
+    databasePath: "/home/node/.openclaw/state/openclaw.sqlite",
+    ownerId: `owner-${id}`,
+    role: "gateway",
+    pid: 42,
+    startTime: 100,
+    processNamespace: {
+      platform: "linux",
+      host: "fixture-host",
+      identity: "fixture-container",
+      pidNsInode: "1001",
+    },
+  };
+}
+
+/** The real Driver/HTTP client run against an Engine protocol fixture; Native is not simulated as live proof. */
+async function withRecoveryEngine(body) {
+  const engine = fakeDockerEngine();
+  const environment = (container) => Object.fromEntries(container.Config.Env.map(splitEnvironment));
+  engine.healthReport = (gateway) => {
+    const env = environment(gateway);
+    const report = {
+      revisionId: env.OPENCLAW_AGENT_REVISION_ID,
+      container: "gateway",
+      gatewayState: {
+        toolBoundary: "oce-gateway-tools/v1",
+        stateOrigin: "private-dedicated/v1",
+        storageId: env.OPENCLAW_STATE_RECOVERY_STORAGE_ID,
+        instanceId: gateway.Id,
+        sourceProtection: "bundled-image/v1",
+        liveOwner: recoveryOwner(gateway.Id),
+      },
+    };
+    return engine.report?.(gateway, report) ?? report;
+  };
+  const server = http.createServer(async (request, response) => {
+    try {
+      const chunks = [];
+      for await (const chunk of request) {
+        chunks.push(chunk);
+      }
+      const bytes = Buffer.concat(chunks);
+      const input =
+        bytes.length === 0
+          ? undefined
+          : request.headers["content-type"] === "application/x-tar"
+            ? bytes
+            : JSON.parse(bytes.toString());
+      const result = await engine.request(request.method, request.url, input);
+      if (result === undefined) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end('{"message":"not found"}');
+      } else if (Buffer.isBuffer(result)) {
+        response.writeHead(200, { "content-type": "application/x-tar" });
+        response.end(result);
+      } else if (typeof result === "object") {
+        response.writeHead(
+          request.method === "POST" &&
+            new URL(request.url, "http://fixture").pathname.endsWith("create")
+            ? 201
+            : 200,
+          { "content-type": "application/json" },
+        );
+        response.end(JSON.stringify(result));
+      } else {
+        response.writeHead(["GET", "PUT"].includes(request.method) ? 200 : 204);
+        response.end(result);
+      }
+    } catch (error) {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(JSON.stringify({ message: error.message }));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const nativeRequest = http.request;
+  http.request = (options, callback) =>
+    options.socketPath === "/var/run/docker.sock"
+      ? nativeRequest(
+          { ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port },
+          callback,
+        )
+      : nativeRequest(options, callback);
+  syncBuiltinESMExports();
+  const createDriver = async (fenced = true) => {
+    const driver = new DockerComputeDriver(
+      { images: { gateway: "gateway:local", agent: "agent:local" } },
+      fenced ? { trustedGatewayToolBoundary: "oce-gateway-tools/v1" } : {},
+    );
+    await driver.preflight();
+    return driver;
+  };
+  const snapshot = () =>
+    engine.events
+      .filter((event) => event.action === "archive-write" && event.name === "request.json")
+      .at(-1)?.value;
+  try {
+    await withModelKey(() => body({ ...engine, engine, createDriver, snapshot, environment }));
+  } finally {
+    http.request = nativeRequest;
+    syncBuiltinESMExports();
+    for (const listener of [server]) {
+      listener.closeAllConnections();
+      await new Promise((resolve) => listener.close(resolve));
+    }
+  }
 }
 
 function dockerAgentRevision(driver, { id, agentId, revision = 1, mode }) {
@@ -935,7 +1195,11 @@ for (const mode of ["embedded", "dedicated"]) {
       if (method === "POST" && url.pathname === "/containers/create") {
         const name = url.searchParams.get("name");
         creations.push(structuredClone(body));
-        containers.set(name, { Config: body, State: { Running: false, ExitCode: 0 } });
+        containers.set(name, {
+          Config: body,
+          HostConfig: body.HostConfig,
+          State: { Running: false, ExitCode: 0 },
+        });
         return {};
       }
       const [, encodedName, action] =
@@ -1002,7 +1266,15 @@ for (const mode of ["embedded", "dedicated"]) {
       );
       assert.equal(runtimeStarts, 0);
       assert.equal(containers.size, 0, "failed initializer and private payload must be removed");
-      assert.equal(volumes.size, 2, "retry retains exact-Agent durable storage");
+      const gatewayState = [...volumes.keys()].find(
+        (name) => name.endsWith("-state") && !name.endsWith("-harness-state"),
+      );
+      const retainedGatewayState = volumes.get(gatewayState);
+      assert.equal(
+        volumes.size,
+        mode === "dedicated" ? 3 : 2,
+        "retry retains Gateway state and workspace, plus separate dedicated Harness state",
+      );
       initializerExit = 0;
       assert.equal((await driver.prepareRevision(revision, { workspaceSetup: setup })).ready, true);
       assert.deepEqual(
@@ -1027,12 +1299,42 @@ for (const mode of ["embedded", "dedicated"]) {
         mounts.find(({ Target }) => Target === "/home/node/workspace").Source,
       );
 
-      for (const container of containers.values()) {
-        assert.deepEqual(container.Config.HostConfig.Mounts, mounts);
+      const gatewayMounts = mounts.filter(({ Target }) => Target !== "/harness-local-state");
+      const harnessState = mounts.find(({ Target }) => Target === "/harness-local-state");
+      const assertRuntimeMounts = () => {
+        for (const container of containers.values()) {
+          const role = container.Config.Labels["org.openclaw.enterprise.role"];
+          const expected =
+            role === "agent"
+              ? gatewayMounts.map((mount) =>
+                  mount.Target === "/home/node/.openclaw"
+                    ? { ...mount, Source: harnessState.Source }
+                    : mount,
+                )
+              : gatewayMounts;
+          assert.deepEqual(container.HostConfig.Mounts, expected);
+        }
+        assert.equal(
+          volumes.get(gatewayState),
+          retainedGatewayState,
+          "the existing Gateway state is retained without replacement",
+        );
+      };
+      if (mode === "dedicated") {
+        assert.notEqual(
+          harnessState.Source,
+          gatewayState,
+          "dedicated Harness state must not expose retained Gateway credentials",
+        );
       }
+      assertRuntimeMounts();
       await driver.stopRevision(revision);
       assert.equal(containers.size, 0);
-      assert.equal(volumes.size, 2, "stop preserves setup state and user edits");
+      assert.equal(
+        volumes.size,
+        mode === "dedicated" ? 3 : 2,
+        "stop preserves role-specific state and shared workspace edits",
+      );
       const completed = { ...setup, completed: true };
       delete completed.files;
       assert.equal(
@@ -1049,9 +1351,7 @@ for (const mode of ["embedded", "dedicated"]) {
         completed,
         "recreation verifies metadata without sending original contents",
       );
-      for (const container of containers.values()) {
-        assert.deepEqual(container.Config.HostConfig.Mounts, mounts);
-      }
+      assertRuntimeMounts();
       await driver.stopRevision({ ...revision, id: revision.id + "-next", revision: 2 });
       volumes.set("unrelated", {
         Name: "unrelated",
@@ -1159,4 +1459,383 @@ test("Docker workspace setup refusals match Kubernetes Compute's and name the se
       `Configuration setting ${setting} must not be true for initial workspace files: Docker Compute writes them after native bootstrap.`,
     );
   }
+});
+
+function protectedDockerRevision(driver, revision = 1) {
+  return {
+    ...dockerAgentRevision(driver, {
+      id: `private-${revision}`,
+      agentId: "private-agent",
+      revision,
+      mode: "dedicated",
+    }),
+    configuration: admitLoggingConfiguration(
+      { agents: { entries: { main: { workspace: "/home/node/workspace" } } } },
+      "info",
+    ),
+  };
+}
+
+function protectedDockerSetup(revision) {
+  return {
+    id: "private-setup",
+    namespaceId: revision.namespaceId,
+    agentId: revision.agentId,
+    completed: false,
+    files: { "AGENTS.md": "instructions" },
+  };
+}
+
+test("Docker observes before healthy, retains exact termination before removal, and targets the new waiting instance", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    const driver = await createDriver();
+    const first = protectedDockerRevision(driver);
+    const setup = protectedDockerSetup(first);
+    assert.equal((await driver.prepareRevision(first, { workspaceSetup: setup })).ready, true);
+    const old = snapshot().binding;
+    assert.ok(old, "provider custody retains the observed live owner before returning healthy");
+    const gateway = [...engine.containers.values()].find(
+      (container) => container.Id === old.containerId,
+    );
+    assert.equal(
+      gateway.HostConfig.Mounts.find((mount) => mount.Target === "/etc/openclaw-state-recovery")
+        .ReadOnly,
+      true,
+    );
+    const agent = [...engine.containers.values()].find(
+      (container) => container.Config.Labels["org.openclaw.enterprise.role"] === "agent",
+    );
+    assert.equal(
+      agent.HostConfig.Mounts.some(
+        (mount) =>
+          mount.Source === gateway.HostConfig.Mounts[0].Source ||
+          mount.Target === "/etc/openclaw-state-recovery",
+      ),
+      false,
+    );
+    await driver.stopRevision(first);
+    const stopped = snapshot().binding;
+    assert.equal(stopped.termination.containerId, old.containerId);
+    assert.equal(stopped.termination.startedAt, old.startedAt);
+    const stop = engine.events.findIndex(
+      (event) => event.action === "stop" && event.id === old.containerId,
+    );
+    const proof = engine.events.findIndex(
+      (event) =>
+        event.action === "archive-write" &&
+        event.value?.binding?.termination?.containerId === old.containerId,
+    );
+    const removed = engine.events.findIndex(
+      (event) => event.action === "delete-container" && event.id === old.containerId,
+    );
+    assert.ok(
+      stop >= 0 && stop < proof && proof < removed,
+      "genuine Engine stop and durable proof precede exact-ID removal",
+    );
+    let addressed;
+    engine.report = (container, report) => {
+      const intent = snapshot();
+      if (intent.instanceId === container.Id) {
+        addressed = structuredClone(intent);
+        container.State.Health.Status = "healthy";
+        return report;
+      }
+      container.State.Health.Status = "unhealthy";
+      delete report.gatewayState.liveOwner;
+      report.gatewayState.recovery = {
+        state: "waiting",
+        ownerRecords: [{ kind: "state-owner", owner: old.owner }],
+      };
+      return report;
+    };
+    const next = protectedDockerRevision(driver, 2);
+    assert.equal(
+      (await driver.prepareRevision(next, { workspaceSetup: { ...setup, completed: true } })).ready,
+      true,
+    );
+    assert.equal(addressed.revisionId, next.id);
+    assert.notEqual(addressed.instanceId, old.instanceId);
+    assert.deepEqual(addressed.owner, old.owner);
+    assert.equal(
+      addressed.binding.containerId,
+      old.containerId,
+      "intent preserves the historical observed owner binding",
+    );
+    assert.equal(snapshot().binding.instanceId, addressed.instanceId);
+    assert.equal(snapshot().owner, undefined, "new live custody replaces the consumed intent");
+    await driver.stopRevision(next);
+    await driver.deleteAgentRuntimeCredentials({
+      namespace: tenant,
+      agent: { id: next.agentId, namespaceId: tenant.id },
+    });
+    assert.equal(engine.volumes.size, 0);
+    assert.equal(
+      engine.containers.size,
+      0,
+      "the never-started holder is removed before its owned volume",
+    );
+  });
+});
+
+test("Docker never adopts legacy state and invalidation survives a stale complete snapshot", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    const unfenced = await createDriver(false);
+    const first = protectedDockerRevision(unfenced);
+    const setup = protectedDockerSetup(first);
+    assert.equal((await unfenced.prepareRevision(first, { workspaceSetup: setup })).ready, true);
+    const state = [...engine.volumes.values()].find(
+      (volume) => volume.Name.endsWith("-state") && !volume.Name.endsWith("-harness-state"),
+    );
+    const fenced = await createDriver();
+    assert.equal(
+      (await fenced.prepareRevision(first, { workspaceSetup: { ...setup, completed: true } }))
+        .ready,
+      true,
+    );
+    assert.equal(engine.volumes.get(state.Name), state);
+    assert.equal(
+      snapshot(),
+      undefined,
+      "a new trusted fence cannot manufacture origin for retained data",
+    );
+    assert.equal(
+      [...engine.containers.values()].some(
+        (container) =>
+          container.Config.Labels["org.openclaw.enterprise.role"] === "gateway-state-recovery",
+      ),
+      false,
+    );
+  });
+  await withRecoveryEngine(async ({ engine, createDriver, environment }) => {
+    const driver = await createDriver();
+    const first = protectedDockerRevision(driver);
+    const setup = protectedDockerSetup(first);
+    await driver.prepareRevision(first, { workspaceSetup: setup });
+    const retained = [...engine.archives].find(([name]) => name.endsWith("/request.json"));
+    const next = {
+      ...protectedDockerRevision(driver, 2),
+      configuration: { ...first.configuration, hooks: { enabled: true } },
+    };
+    await driver.prepareRevision(next, { workspaceSetup: { ...setup, completed: true } });
+    assert.ok(
+      [...engine.archives.keys()].some((name) => name.endsWith("/manual")),
+      "unsupported sources invalidate before Gateway reuse",
+    );
+    engine.archives.set(retained[0], retained[1]);
+    await driver.prepareRevision(protectedDockerRevision(driver, 3), {
+      workspaceSetup: { ...setup, completed: true },
+    });
+    const gateway = [...engine.containers.values()].find(
+      (container) => container.Config.Labels["org.openclaw.enterprise.role"] === "gateway",
+    );
+    assert.equal(
+      environment(gateway).OPENCLAW_STATE_OWNER_RECOVERY_PATH,
+      undefined,
+      "a stale snapshot cannot resurrect the separate manual tombstone",
+    );
+  });
+});
+
+test("Docker does not persist termination or remove the observed Gateway when Engine stop is unproven", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    const driver = await createDriver();
+    const first = protectedDockerRevision(driver);
+    await driver.prepareRevision(first, { workspaceSetup: protectedDockerSetup(first) });
+    const binding = snapshot().binding;
+    engine.stopCompletes = false;
+    await assert.rejects(driver.stopRevision(first), /did not prove termination/);
+    assert.equal(snapshot().binding.termination, undefined);
+    assert.equal(
+      engine.events.some(
+        (event) => event.action === "delete-container" && event.id === binding.containerId,
+      ),
+      false,
+    );
+  });
+});
+
+test("Docker owner-log selection rejects retained, malformed and stopped-instance reports", async () => {
+  const driver = new DockerComputeDriver({ images: { gateway: "fixture", agent: "fixture" } });
+  const report = {
+    revisionId: "revision",
+    container: "gateway",
+    gatewayState: {
+      toolBoundary: "oce-gateway-tools/v1",
+      stateOrigin: "private-dedicated/v1",
+      storageId: "storage",
+      instanceId: "current",
+      sourceProtection: "bundled-image/v1",
+      liveOwner: recoveryOwner("current"),
+    },
+  };
+  const entry = {
+    Start: "2030-01-01T00:00:01Z",
+    End: "2030-01-01T00:00:02Z",
+    ExitCode: 0,
+    Output: "OCE_GATEWAY_OWNER_V1 " + JSON.stringify(report) + "\n",
+  };
+  const inspect = {
+    State: {
+      Running: true,
+      Status: "running",
+      StartedAt: "2026-01-01T00:00:00Z",
+      Health: { Status: "healthy", FailingStreak: 0, Log: [entry] },
+    },
+  };
+  assert.deepEqual(driver.gatewayRuntimeStatus(inspect), report);
+  const retained = structuredClone(inspect);
+  retained.State.Health.Status = "starting";
+  assert.equal(
+    driver.gatewayRuntimeStatus(retained),
+    undefined,
+    "a retained old log cannot authorize a restart, even with a newer wall-clock timestamp",
+  );
+  retained.State.Health.FailingStreak = 1;
+  retained.State.Health.Log[0].ExitCode = 1;
+  assert.deepEqual(
+    driver.gatewayRuntimeStatus(retained),
+    report,
+    "an unready current probe can carry waiting metadata",
+  );
+  for (const latest of [
+    { ...entry, Output: entry.Output + "..." },
+    { ...entry, Output: "incomplete" },
+    { ...entry, ExitCode: -1 },
+  ]) {
+    const invalid = structuredClone(inspect);
+    invalid.State.Health.Log.push(latest);
+    assert.equal(
+      driver.gatewayRuntimeStatus(invalid),
+      undefined,
+      "never fall back past an unusable newest entry",
+    );
+  }
+  for (const flag of ["Paused", "Restarting", "Dead"]) {
+    assert.equal(
+      driver.gatewayRuntimeStatus({ State: { ...inspect.State, [flag]: true } }),
+      undefined,
+    );
+  }
+});
+
+test("Docker origin creation cannot label or adopt a volume won by a legacy create race", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    engine.beforeVolumeCreate = (body) => {
+      if (!body.Labels["org.openclaw.enterprise.state-origin"]) {
+        return;
+      }
+      const legacy = structuredClone(body);
+      delete legacy.Labels["org.openclaw.enterprise.state-origin"];
+      delete legacy.Labels["org.openclaw.enterprise.state-instance"];
+      engine.volumes.set(body.Name, legacy);
+    };
+    const driver = await createDriver();
+    const revision = protectedDockerRevision(driver);
+    assert.equal(
+      (await driver.prepareRevision(revision, { workspaceSetup: protectedDockerSetup(revision) }))
+        .ready,
+      true,
+    );
+    assert.equal(snapshot(), undefined);
+    assert.equal(
+      [...engine.volumes.values()].some(
+        (volume) => volume.Labels["org.openclaw.enterprise.state-origin"],
+      ),
+      false,
+    );
+  });
+});
+
+test("Docker refuses an Engine epoch change before it can publish owner custody", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    let changed = false;
+    engine.afterInspect = (_id, container) => {
+      if (
+        changed ||
+        !container?.State.Running ||
+        container.Config.Labels["org.openclaw.enterprise.role"] !== "gateway"
+      ) {
+        return;
+      }
+      changed = true;
+      container.State.StartedAt = "2029-01-01T00:00:00Z";
+    };
+    const driver = await createDriver();
+    const revision = protectedDockerRevision(driver);
+    await assert.rejects(
+      driver.prepareRevision(revision, { workspaceSetup: protectedDockerSetup(revision) }),
+      /instance changed|changed during owner observation/,
+    );
+    assert.equal(
+      snapshot().binding,
+      undefined,
+      "the replacement epoch cannot inherit the earlier observation",
+    );
+  });
+});
+
+test("Docker keeps a healthy Gateway available without owner telemetry or invented authority", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    engine.omitProjection = true;
+    const driver = await createDriver();
+    const revision = protectedDockerRevision(driver);
+    assert.equal(
+      (await driver.prepareRevision(revision, { workspaceSetup: protectedDockerSetup(revision) }))
+        .ready,
+      true,
+    );
+    assert.equal(snapshot().binding, undefined);
+    assert.equal(snapshot().owner, undefined);
+    assert.equal(
+      [...engine.archives.keys()].some((name) => name.endsWith("/manual")),
+      false,
+      "missing observation is not evidence that private sources became unsafe",
+    );
+  });
+});
+
+test("Docker deletion removes its metadata holder after unused state was pruned", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver }) => {
+    const driver = await createDriver();
+    const revision = protectedDockerRevision(driver);
+    await driver.prepareRevision(revision, { workspaceSetup: protectedDockerSetup(revision) });
+    await driver.stopRevision(revision);
+    const stateName = [...engine.volumes.keys()].find(
+      (name) => name.endsWith("-state") && !name.endsWith("-harness-state"),
+    );
+    engine.volumes.delete(stateName);
+    const unrelated = {
+      Name: "foreign",
+      Labels: { "org.openclaw.enterprise.namespace-id": "another" },
+    };
+    engine.volumes.set(unrelated.Name, unrelated);
+    await driver.deleteAgentRuntimeCredentials({
+      namespace: tenant,
+      agent: { id: revision.agentId, namespaceId: tenant.id },
+    });
+    assert.deepEqual([...engine.volumes.values()], [unrelated]);
+    assert.equal(engine.containers.size, 0);
+  });
+});
+
+test("Docker stop consumes a newly reported source denial instead of reusing old live custody", async () => {
+  await withRecoveryEngine(async ({ engine, createDriver, snapshot }) => {
+    const driver = await createDriver();
+    const revision = protectedDockerRevision(driver);
+    await driver.prepareRevision(revision, { workspaceSetup: protectedDockerSetup(revision) });
+    assert.ok(snapshot().binding);
+    engine.report = (_container, report) => {
+      delete report.gatewayState.liveOwner;
+      delete report.gatewayState.sourceProtection;
+      report.gatewayState.recovery = { state: "manual" };
+      return report;
+    };
+    await driver.stopRevision(revision);
+    assert.ok([...engine.archives.keys()].some((name) => name.endsWith("/manual")));
+    assert.equal(
+      snapshot().binding.termination,
+      undefined,
+      "unsafe provenance cannot produce a new eligible stop proof",
+    );
+  });
 });

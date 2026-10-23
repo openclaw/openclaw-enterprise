@@ -1804,6 +1804,25 @@ for (const setupMode of executionModes) {
           setup.files,
           "actual Harness cwd must contain the initialized native workspace",
         );
+        // A write beside the Harness config must stay private even though both roles see the workspace.
+        const stateProbe = "/home/node/.openclaw/harness-state-probe";
+        await docker([
+          "exec",
+          harness.Id,
+          "node",
+          "-e",
+          "require('node:fs').writeFileSync(process.argv[1], 'harness', { flag: 'wx' })",
+          stateProbe,
+        ]);
+        const { stdout: probe } = await docker([
+          "exec",
+          gateway.Id,
+          "node",
+          "-e",
+          "console.log(require('node:fs').lstatSync(process.argv[1], { throwIfNoEntry: false }) === undefined)",
+          stateProbe,
+        ]);
+        assert.equal(probe.trim(), "true", "Harness state must be absent from the Gateway");
       }
       assert.equal(
         JSON.stringify(gateway.Config).includes(setup.files["AGENTS.md"]),

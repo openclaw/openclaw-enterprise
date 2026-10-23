@@ -191,6 +191,10 @@ retires every Agent revision before its final cleanup hook deletes the owned cla
 using their exact Kubernetes UIDs. A cleanup failure keeps deletion pending
 for retry and preserves the Agent's database identity.
 
+## Native owner recovery
+
+[Recovery contract](./native-owner-recovery.md).
+
 ## Managed native configuration
 
 Ordinary runtime gateways read the managed ConfigMap at

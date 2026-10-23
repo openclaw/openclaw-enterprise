@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdir, open, readFile, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -270,6 +271,21 @@ async function runDockerGateway(
   const errors = [];
   const exits = [];
   const realFs = nodeRequire("node:fs");
+  // Map the real Docker mount paths into this test's private state directory.
+  // Keep the filesystem operations real so config replacement exercises the
+  // legacy symlink boundary as well as migration ordering.
+  const stateRoot = "/home/node/.openclaw";
+  const workspaceRoot = "/home/node/workspace";
+  const physicalPath = (path) => {
+    if (path === stateRoot || path.startsWith(stateRoot + "/")) {
+      return join(directory, path.slice(stateRoot.length));
+    }
+    if (path === workspaceRoot || path.startsWith(workspaceRoot + "/")) {
+      return join(directory, "workspace", path.slice(workspaceRoot.length));
+    }
+    return path;
+  };
+  const canonicalDirectory = realFs.realpathSync(directory);
   const context = {
     Buffer,
     Date,
@@ -296,9 +312,21 @@ async function runDockerGateway(
       if (specifier === "node:fs") {
         return {
           ...realFs,
-          chmodSync() {},
-          mkdirSync() {},
-          writeFileSync: () => events.push("write"),
+          chmodSync: (path, mode) => realFs.chmodSync(physicalPath(path), mode),
+          mkdirSync: (path, options) => realFs.mkdirSync(physicalPath(path), options),
+          lstatSync: (path) => realFs.lstatSync(physicalPath(path)),
+          realpathSync(path) {
+            const resolved = realFs.realpathSync(physicalPath(path));
+            return path === stateRoot && resolved === canonicalDirectory ? stateRoot : resolved;
+          },
+          writeFileSync(path, ...args) {
+            realFs.writeFileSync(physicalPath(path), ...args);
+            events.push("write");
+          },
+          renameSync(from, to) {
+            realFs.renameSync(physicalPath(from), physicalPath(to));
+            events.push("rename");
+          },
         };
       }
       if (specifier === "node:child_process") {
@@ -335,7 +363,7 @@ test("Docker development Gateway starts current state without Doctor", async (t)
     [["node", "/app/openclaw.mjs", "gateway", "--port", "8080"]],
   );
   // Current state adds no await before the spawn.
-  assert.deepEqual(outcome.synchronousEvents, ["write", "spawn:gateway"]);
+  assert.deepEqual(outcome.synchronousEvents, ["write", "rename", "spawn:gateway"]);
   assert.deepEqual(outcome.exits, []);
 });
 
@@ -354,7 +382,7 @@ test("Docker development Gateway migrates an older agent database before startin
   );
   assert.equal(outcome.spawned[0].env.OPENCLAW_CONFIG_READONLY, "1");
   // Doctor reads the configuration document written before it, not its environment copy.
-  assert.deepEqual(outcome.events, ["write", "spawn:doctor", "spawn:gateway"]);
+  assert.deepEqual(outcome.events, ["write", "rename", "spawn:doctor", "spawn:gateway"]);
   assert.equal(outcome.spawned[0].env.OPENCLAW_CONFIG_JSON, undefined);
   assert.deepEqual(outcome.exits, []);
   assert.ok(
@@ -400,4 +428,37 @@ test("Docker development Gateway exits without starting OpenClaw on an unexpecte
   );
   assert.deepEqual(outcome.exits, [1]);
   assert.equal(outcome.errors.at(-1), "Gateway state migration failed: node:sqlite is unavailable");
+});
+
+test("Docker replaces a legacy config symlink without changing its workspace target", async (t) => {
+  const directory = await stateDirectory(t);
+  const workspace = join(directory, "workspace");
+  await mkdir(workspace);
+  const target = join(workspace, "openclaw.json");
+  await writeFile(target, "workspace-owned content");
+  const config = join(directory, "openclaw.json");
+  await symlink(target, config);
+  const outcome = await runDockerGateway(directory);
+  assert.equal(outcome.spawned.at(-1).args[1], "gateway");
+  const published = await open(config, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert.equal((await published.stat()).isFile(), true);
+    assert.deepEqual(JSON.parse(await published.readFile("utf8")), {});
+  } finally {
+    await published.close();
+  }
+  assert.equal(await readFile(target, "utf8"), "workspace-owned content");
+});
+
+test("Docker refuses a symlinked managed state directory before writing configuration", async (t) => {
+  const parent = await temporaryDirectory(t, "oce-gateway-redirected-state-");
+  const actual = join(parent, "actual");
+  const redirected = join(parent, "redirected");
+  await mkdir(actual);
+  await symlink(actual, redirected);
+  await assert.rejects(
+    runDockerGateway(redirected),
+    /Gateway configuration directory is not the managed state directory/,
+  );
+  assert.equal(nodeRequire("node:fs").existsSync(join(actual, "openclaw.json")), false);
 });

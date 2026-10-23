@@ -1,5 +1,6 @@
 import type { CredentialPolicyWithdrawalOptions } from "@openclaw-enterprise/contracts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
+import { nativeGatewayRecoveryConfigurationEligible } from "../native-state-recovery-runtime.ts";
 import {
   assertExecutionAdmission,
   type PreparedTokenService,
@@ -20,6 +21,26 @@ import {
   openAiBaseUrlSpellingMessage,
 } from "../../openai-endpoint.ts";
 import { compareResourceQuantities } from "./resource-quantities.ts";
+import {
+  GATEWAY_STATE_DATABASE_PATH,
+  GATEWAY_STATE_OWNER_ANNOTATION,
+  GATEWAY_STATE_RECOVERY_ANNOTATION,
+  GATEWAY_STATE_RECOVERY_DIRECTORY,
+  GATEWAY_STATE_RECOVERY_PATH,
+  GATEWAY_STATE_RECOVERY_VOLUME,
+  GATEWAY_STATE_TERMINATION_PATH,
+  GATEWAY_RECOVERY_SOURCE_PROTECTION,
+  GATEWAY_STATE_ORIGIN_ANNOTATION,
+  GATEWAY_PRIVATE_STATE_ORIGIN,
+  TRUSTED_GATEWAY_TOOL_BOUNDARY,
+  gatewayOwnerTermination,
+  nativeGatewayOwnersMatch,
+  parseGatewayStateOwnerBinding,
+  parseNativeGatewayOwnerRecords,
+  parseNativeGatewayStateOwner,
+  type GatewayStateOwnerBinding,
+  type GatewayToolBoundary,
+} from "../native-state-owner.ts";
 import {
   asRecord,
   hasControlCharacter,
@@ -227,6 +248,7 @@ import {
   pluginRuntimeConfigMapData,
   pluginRuntimeEarlierConfigMapData,
   pluginRuntimeSpecForRevision,
+  nativeGatewayRecoveryPluginInputsEligible,
 } from "../plugin-runtime.ts";
 import {
   codexPublicGithubRead,
@@ -556,6 +578,8 @@ interface GatewayConfigurationSnapshot {
   readonly workspace: unknown;
   readonly nativeWorkerProfile?: string;
   readonly nativeWorkerNodeId?: string;
+  /** Only an origin-marked PVC created under the private deployment boundary. */
+  readonly stateRecoveryStorageUid?: string;
 }
 
 const PROTECTED_CODEX_NO_CONNECTION_RETRY = "protected-codex-no-connection-retry:v1";
@@ -1129,6 +1153,11 @@ const COMPUTE_PRIVATE_STATUS_ENVIRONMENT = new Set([
   "OPENCLAW_RUNTIME_STATUS_CONTAINER",
   "OPENCLAW_RUNTIME_STATUS_PORT",
   "OPENCLAW_POD_UID",
+  "OPENCLAW_STATE_OWNER_RECOVERY_PATH",
+  "OPENCLAW_TRUSTED_GATEWAY_TOOL_BOUNDARY",
+  "OPENCLAW_STATE_RECOVERY_ORIGIN",
+  "OPENCLAW_STATE_RECOVERY_STORAGE_ID",
+  "OPENCLAW_RUNTIME_STATUS_TOKEN",
 ]);
 const AGENT_REVISION_ANNOTATION = "openclaw.dev/agent-revision";
 const AGENT_REVISION_ID_ANNOTATION = "openclaw.dev/agent-revision-id";
@@ -3401,6 +3430,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
+  private readonly trustedGatewayToolBoundary: GatewayToolBoundary | undefined;
 
   private get proxyDriver() {
     return this.protectedExecution?.proxy;
@@ -3976,6 +4006,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly protectedDriver?: InstalledDriver;
       readonly nodeEnrollment?: GatewayNodeEnrollment;
       readonly readNodeCa?: () => Promise<string | undefined>;
+      /** Trusted composition only: the deployment pipeline enforces this boundary. */
+      readonly trustedGatewayToolBoundary?: GatewayToolBoundary;
     } = {},
   ) {
     options = requireConfiguration(KubernetesComputeDriver, options);
@@ -4017,6 +4049,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.credentialGatewayDriver = selection.credentialGatewayDriver;
     this.nodeEnrollment = selection.nodeEnrollment;
     this.readNodeCa = selection.readNodeCa;
+    this.trustedGatewayToolBoundary = selection.trustedGatewayToolBoundary;
     const lifecycleDrivers = selection.lifecycleDrivers ?? [];
     this.lifecycle = new ComputeLifecycleDispatcher(lifecycleDrivers);
     this.lifecycleOwners = lifecycleOwnerSelection(lifecycleDrivers);
@@ -6256,7 +6289,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     await this.prepareRevisionStage("workspace_setup", () =>
       this.deliverWorkspaceSetup(revision, workspaceSetup, namespace),
     );
-    const configuration = await this.prepareRevisionStage("gateway_configuration", async () =>
+    let configuration = await this.prepareRevisionStage("gateway_configuration", async () =>
       this.gatewayConfiguration(
         admittedRevision,
         await this.workspaceNodeDeviceId(admittedRevision, namespace),
@@ -6499,13 +6532,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (this.options.runtime !== undefined) {
-      await this.prepareRevisionStage("gateway_private_state_claim", () =>
-        this.reconcile(
-          this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
-          gatewayOwnership,
-          gatewayNamespace,
-        ),
+      const storageUid = await this.prepareRevisionStage("gateway_private_state_claim", () =>
+        this.prepareGatewayPrivateStateClaim(revision, gatewayOwnership, gatewayNamespace),
       );
+      if (storageUid !== undefined) {
+        configuration = { ...configuration, stateRecoveryStorageUid: storageUid };
+      }
     }
     const deliveredHarnessAuth = await this.prepareRevisionStage("harness_auth", () =>
       this.deliverHarnessAuth(
@@ -6668,7 +6700,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       } else if (
         embedded &&
-        !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
+        !(await this.gatewayReady(revision, gatewayName, gatewayNamespace, revision.id))
       ) {
         return incomplete();
       }
@@ -6987,9 +7019,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           (existingGateway === undefined || existingGatewayRevisionId === revision.id)
         ) {
           await reconcileGatewayDeployment({}, providerEndpoint);
-          if (
-            !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
-          ) {
+          if (!(await this.gatewayReady(revision, gatewayName, gatewayNamespace, revision.id))) {
             // The setup observer uses this Gateway. Do not turn its expected
             // provider-endpoint rollout into a failed enrollment attempt.
             return incomplete();
@@ -7092,12 +7122,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // The provider's Harness Pod and the Gateway are ready, so only the node's
           // connection is outstanding: say so, as the Compute-owned Harness path does
           // (D222). A Gateway still rolling out keeps the unnamed wait.
-          return (await this.gatewayReady(
-            gatewayOwnership,
-            gatewayName,
-            gatewayNamespace,
-            revision.id,
-          ))
+          return (await this.gatewayReady(revision, gatewayName, gatewayNamespace, revision.id))
             ? incomplete("WORKSPACE_NODE_PENDING")
             : incomplete();
         }
@@ -7199,7 +7224,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         return agentReadiness;
       }
       if (this.options.runtime === undefined) {
-        return (await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace)) &&
+        return (await this.gatewayReady(revision, gatewayName, gatewayNamespace)) &&
           (repositoryMaterial === undefined || repositoryMaterialCurrent(repositoryMaterial))
           ? agentReadiness
           : incomplete();
@@ -7207,9 +7232,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (existingGatewayRevisionId !== undefined && existingGatewayRevisionId !== revision.id) {
         // The serving predecessor is observed like the embedded one: only a
         // genuinely unready Gateway is repaired with the successor's template.
-        if (
-          !(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace, revision.id))
-        ) {
+        if (!(await this.gatewayReady(revision, gatewayName, gatewayNamespace, revision.id))) {
           await reconcileGatewayDeployment({});
           return incomplete();
         }
@@ -7242,7 +7265,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (deferInitialDedicatedGatewayForPluginStatus) {
         await reconcileGatewayDeployment({});
       }
-      if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
+      if (!(await this.gatewayReady(revision, gatewayName, gatewayNamespace))) {
         return incomplete();
       }
       // Enrolling the workspace node replaces the Harness and restarts its
@@ -7439,6 +7462,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         currentRevisionId !== revision.id ||
         annotations[REPOSITORY_MATERIAL_GENERATION] !== repositoryMaterial?.generation
       ) {
+        // A rejected activation never reuses state. Invalidate any earlier
+        // private origin only when this embedded workload will replace it.
+        await this.gatewayStateOriginUid(revision, namespace);
         const deliveredHarnessAuth = await this.deliverHarnessAuth(
           admittedRevision,
           context,
@@ -7509,7 +7535,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
       );
       await this.reconcileGatewayRoute(revision, gatewayOwnership, namespace);
-      if (!(await this.gatewayReady(gatewayOwnership, gatewayName, namespace))) {
+      if (!(await this.gatewayReady(revision, gatewayName, namespace))) {
         throw new Error("The exact AgentRevision gateway is not ready.");
       }
       if (repositoryMaterial !== undefined) {
@@ -7548,7 +7574,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     const revisionName = `${agentName}-rev-${sha256Hex(revision.id, 12)}`;
-    const configuration = this.gatewayConfiguration(
+    let configuration = this.gatewayConfiguration(
       admittedRevision,
       await this.workspaceNodeDeviceId(admittedRevision, namespace),
       namespace,
@@ -7717,6 +7743,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
       gatewayOwnership,
       namespace,
     );
+    // Enrollment and Harness readiness must succeed before this activation
+    // can reuse the Gateway's state under a different protection boundary.
+    const stateRecoveryStorageUid = await this.gatewayStateOriginUid(revision, gatewayNamespace);
+    if (stateRecoveryStorageUid !== undefined) {
+      configuration = { ...configuration, stateRecoveryStorageUid };
+    }
     await this.reconcile(
       this.gatewayPrivateStateClaim(revision.agentId, gatewayOwnership, gatewayNamespace),
       gatewayOwnership,
@@ -7794,7 +7826,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     await this.reconcilePublicGithubReadNetworkPolicy(revision, namespace, pluginRuntime);
     await this.deleteUnwrittenAgentPolicies(revision, namespace, policies);
-    if (!(await this.gatewayReady(gatewayOwnership, gatewayName, gatewayNamespace))) {
+    if (!(await this.gatewayReady(revision, gatewayName, gatewayNamespace))) {
       throw new Error("The exact AgentRevision gateway is not ready.");
     }
     if (!(await this.workspaceNodeBindingApplied(revision, namespace, configuration))) {
@@ -10447,6 +10479,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
       return undefined;
     }
     namespace = container === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
+    const readback = await this.privateStatusReadbackAtNamespace(
+      revision,
+      namespace,
+      container,
+      path,
+    );
+    return readback === undefined
+      ? undefined
+      : { status: readback.status, podUid: readback.podUid, containerId: readback.containerId };
+  }
+
+  private async privateStatusReadbackAtNamespace(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    container: "agent" | "gateway",
+    path: string,
+  ): Promise<(PrivateStatusReadback & { readonly podName: string }) | undefined> {
     const pods = (await this.revisionPods(revision, namespace, container)).filter(
       (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
     );
@@ -10539,7 +10588,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     ) {
       return undefined;
     }
-    return { status: parsed, podUid, containerId };
+    return { status: parsed, podName, podUid, containerId };
   }
 
   private boundedRuntimeStatusResponse(value: unknown): unknown {
@@ -11591,13 +11640,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const paired =
       setupFile && Buffer.from(existing?.data?.deviceId ?? "", "base64").toString("utf8") !== "";
     if (existing === undefined || (expired && !paired)) {
-      const gatewayOwnership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
       const gatewayName = `gateway-${sha256Hex(revision.agentId, 12)}`;
       // Plugin initialization can precede the first Gateway. Start the Harness
       // without a node, then enroll once its Gateway is available.
       if (
         !(await this.gatewayReady(
-          gatewayOwnership,
+          revision,
           gatewayName,
           this.gatewayNamespace(revision, namespace),
           revision.id,
@@ -12225,6 +12273,207 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   /**
+   * Native lock fingerprints describe records, not whether a different Pod is dead.
+   * Keep the earlier live observation on the Agent's state claim until Kubernetes
+   * reports that exact container's exit and its own termination message agrees.
+   */
+  private async reconcileNativeGatewayStateOwner(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    if (
+      this.trustedGatewayToolBoundary !== TRUSTED_GATEWAY_TOOL_BOUNDARY ||
+      revision.harness.mode !== "dedicated" ||
+      this.options.runtime === undefined ||
+      !this.gatewayPrivateStatusReachable()
+    ) {
+      return;
+    }
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    const claimName = this.gatewayPrivateStateClaimName(revision.agentId);
+    const claim = await this.getOwned("PersistentVolumeClaim", claimName, namespace, ownership);
+    if (
+      !isNonEmptyString(claim?.metadata.uid) ||
+      !isNonEmptyString(claim.metadata.resourceVersion) ||
+      claim.metadata.annotations?.[GATEWAY_STATE_ORIGIN_ANNOTATION] !== GATEWAY_PRIVATE_STATE_ORIGIN
+    ) {
+      return;
+    }
+    this.verifyPersistentVolumeClaim(
+      claim,
+      this.gatewayPrivateStateClaim(revision.agentId, ownership, namespace),
+    );
+    let previous: GatewayStateOwnerBinding | undefined;
+    const saved = claim.metadata.annotations?.[GATEWAY_STATE_OWNER_ANNOTATION];
+    if (saved !== undefined) {
+      try {
+        if (Buffer.byteLength(saved) > 16384) {
+          return;
+        }
+        previous = parseGatewayStateOwnerBinding(JSON.parse(saved));
+      } catch {
+        return;
+      }
+      if (
+        previous === undefined ||
+        previous.pvcUid !== claim.metadata.uid ||
+        previous.owner.databasePath !== GATEWAY_STATE_DATABASE_PATH
+      ) {
+        return;
+      }
+    }
+    const clients = await this.clients(namespace.plane);
+    const save = async (binding: GatewayStateOwnerBinding): Promise<void> => {
+      await this.request(
+        () =>
+          clients.core.patchNamespacedPersistentVolumeClaim(
+            {
+              name: claimName,
+              namespace: namespace.name,
+              body: {
+                metadata: {
+                  uid: claim.metadata.uid,
+                  resourceVersion: claim.metadata.resourceVersion,
+                  annotations: { [GATEWAY_STATE_OWNER_ANNOTATION]: JSON.stringify(binding) },
+                },
+              },
+            },
+            this.mergePatchOptions,
+          ),
+        { mutating: true },
+      );
+    };
+
+    // Save observed death before the old Pod can disappear. Absence and a requested
+    // stop deliberately leave the earlier binding intact and require manual recovery.
+    if (previous !== undefined && previous.termination === undefined) {
+      const oldPod = await this.getOwned("Pod", previous.podName, namespace, ownership);
+      const termination = gatewayOwnerTermination(oldPod, previous);
+      if (termination !== undefined) {
+        await save({ ...previous, termination });
+        return;
+      }
+    }
+    const readback = await this.privateStatusReadbackAtNamespace(
+      revision,
+      namespace,
+      "gateway",
+      RUNTIME_STATUS_PATH,
+    );
+    const status = asRecord(readback?.status);
+    const state = asRecord(status?.gatewayState);
+    if (
+      readback?.containerId === undefined ||
+      status?.revisionId !== revision.id ||
+      status.container !== "gateway" ||
+      status.podUid !== readback.podUid ||
+      state?.toolBoundary !== TRUSTED_GATEWAY_TOOL_BOUNDARY ||
+      state.storageId !== claim.metadata.uid ||
+      state.stateOrigin !== GATEWAY_PRIVATE_STATE_ORIGIN ||
+      !isNonEmptyString(state.instanceId) ||
+      state.instanceId.length > 128
+    ) {
+      return;
+    }
+    if (asRecord(state.recovery)?.state === "manual") {
+      await this.invalidateGatewayStateOrigin(claim, namespace);
+      return;
+    }
+    const pod = await this.getOwned("Pod", readback.podName, namespace, ownership);
+    const spec = asRecord(pod?.spec);
+    const containers = Array.isArray(spec?.containers) ? spec.containers.map(asRecord) : [];
+    const gateway = containers.find((container) => container?.name === "gateway");
+    const mounts = Array.isArray(gateway?.volumeMounts) ? gateway.volumeMounts.map(asRecord) : [];
+    const volumes = Array.isArray(spec?.volumes) ? spec.volumes.map(asRecord) : [];
+    if (
+      pod?.metadata.uid !== readback.podUid ||
+      !isNonEmptyString(pod.metadata.resourceVersion) ||
+      this.podContainerId(pod, "gateway") !== readback.containerId ||
+      spec?.hostPID === true ||
+      spec?.shareProcessNamespace === true ||
+      gateway?.terminationMessagePath !== GATEWAY_STATE_TERMINATION_PATH ||
+      gateway.terminationMessagePolicy !== "File" ||
+      mounts.some(
+        (mount) =>
+          isNonEmptyString(mount?.mountPath) &&
+          (GATEWAY_STATE_TERMINATION_PATH === mount.mountPath ||
+            GATEWAY_STATE_TERMINATION_PATH.startsWith(mount.mountPath.replace(/\/$/, "") + "/")),
+      ) ||
+      !volumes.some(
+        (volume) =>
+          volume?.name === GATEWAY_PRIVATE_STATE_VOLUME &&
+          asRecord(volume.persistentVolumeClaim)?.claimName === claimName,
+      )
+    ) {
+      return;
+    }
+
+    const live = parseNativeGatewayStateOwner(state.liveOwner);
+    if (
+      live !== undefined &&
+      live.databasePath === GATEWAY_STATE_DATABASE_PATH &&
+      state.sourceProtection === GATEWAY_RECOVERY_SOURCE_PROTECTION
+    ) {
+      const binding: GatewayStateOwnerBinding = {
+        version: 1,
+        toolBoundary: TRUSTED_GATEWAY_TOOL_BOUNDARY,
+        sourceProtection: GATEWAY_RECOVERY_SOURCE_PROTECTION,
+        stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+        pvcUid: claim.metadata.uid,
+        revisionId: revision.id,
+        instanceId: state.instanceId,
+        podName: readback.podName,
+        podUid: readback.podUid,
+        containerId: readback.containerId,
+        owner: live,
+      };
+      if (!isDeepStrictEqual(previous, binding)) {
+        await save(binding);
+      }
+      return;
+    }
+    const recovery = asRecord(state.recovery);
+    const records = parseNativeGatewayOwnerRecords(recovery?.ownerRecords);
+    if (
+      previous?.termination === undefined ||
+      recovery?.state !== "waiting" ||
+      records === undefined ||
+      !nativeGatewayOwnersMatch(records, previous.owner)
+    ) {
+      return;
+    }
+    const intent = JSON.stringify({
+      version: 1,
+      storageId: claim.metadata.uid,
+      revisionId: revision.id,
+      podUid: readback.podUid,
+      instanceId: state.instanceId,
+      owner: previous.owner,
+    });
+    if (pod.metadata.annotations?.[GATEWAY_STATE_RECOVERY_ANNOTATION] === intent) {
+      return;
+    }
+    await this.request(
+      () =>
+        clients.core.patchNamespacedPod(
+          {
+            name: readback.podName,
+            namespace: namespace.name,
+            body: {
+              metadata: {
+                uid: readback.podUid,
+                resourceVersion: pod.metadata.resourceVersion,
+                annotations: { [GATEWAY_STATE_RECOVERY_ANNOTATION]: intent },
+              },
+            },
+          },
+          this.mergePatchOptions,
+        ),
+      { mutating: true },
+    );
+  }
+
+  /**
    * With `preparingRevisionId`, a Gateway Deployment annotated for another
    * revision is the serving predecessor: preparation (embedded or dedicated)
    * observes it but does not re-render it, and activation replaces it. It may predate the
@@ -12232,11 +12481,22 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
    * Every template rendered for the revision itself still needs the profile.
    */
   private async gatewayReady(
-    ownership: Ownership,
+    revision: AgentRevision,
     gatewayName: string,
     namespace: KubernetesNamespaceAddress,
     preparingRevisionId?: string,
   ): Promise<boolean> {
+    const ownership = { namespaceId: revision.namespaceId, agentId: revision.agentId };
+    try {
+      await this.reconcileNativeGatewayStateOwner(revision, namespace);
+    } catch (error) {
+      // An intervening Pod/PVC replacement or metadata update invalidates this
+      // observation. A later reconciliation must read it again before acting.
+      if ([404, 409].includes(numericErrorStatus(error) ?? 0)) {
+        return false;
+      }
+      throw error;
+    }
     const clients = await this.clients(namespace.plane);
     const deployment = await this.getOwned("Deployment", gatewayName, namespace, ownership);
     if (deployment === undefined) {
@@ -12720,6 +12980,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     revision: AgentRevision,
     workspaceNodeId?: string,
     harnessNamespace?: KubernetesNamespaceAddress,
+    stateRecoveryStorageUid?: string,
   ): GatewayConfigurationSnapshot {
     const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
     const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
@@ -12730,6 +12991,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
       revisionId: revision.id,
+      ...(stateRecoveryStorageUid === undefined ? {} : { stateRecoveryStorageUid }),
       ...(harnessNamespace === undefined ? {} : { harnessNamespace }),
       usesGatewayPasswordEnv,
       usesWritableNativeAdminConfig: this.usesWritableNativeAdminConfig(nativeConfiguration),
@@ -13967,6 +14229,119 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         resources: { requests: { storage: HARNESS_WORKSPACE_SIZE } },
       },
     };
+  }
+
+  private async gatewayStateOriginUid(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<string | undefined> {
+    if (this.options.runtime === undefined) {
+      return undefined;
+    }
+    const claim = await this.getOwned(
+      "PersistentVolumeClaim",
+      this.gatewayPrivateStateClaimName(revision.agentId),
+      namespace,
+      { namespaceId: revision.namespaceId, agentId: revision.agentId },
+    );
+    if (
+      claim?.metadata.annotations?.[GATEWAY_STATE_ORIGIN_ANNOTATION] ===
+        GATEWAY_PRIVATE_STATE_ORIGIN &&
+      (this.trustedGatewayToolBoundary !== TRUSTED_GATEWAY_TOOL_BOUNDARY ||
+        revision.harness.mode !== "dedicated" ||
+        !this.gatewayRecoveryInputsEligible(revision))
+    ) {
+      // This Agent-scoped claim can outlive a harness-mode change. Reusing it
+      // without the boundary permanently ends this creation-origin attestation.
+      await this.invalidateGatewayStateOrigin(claim, namespace);
+      return undefined;
+    }
+    return claim?.metadata.annotations?.[GATEWAY_STATE_ORIGIN_ANNOTATION] ===
+      GATEWAY_PRIVATE_STATE_ORIGIN && isNonEmptyString(claim.metadata.uid)
+      ? claim.metadata.uid
+      : undefined;
+  }
+
+  private gatewayRecoveryInputsEligible(revision: AgentRevision): boolean {
+    return (
+      nativeGatewayRecoveryConfigurationEligible(revision.configuration) &&
+      nativeGatewayRecoveryPluginInputsEligible(pluginRuntimeSpecForRevision(revision))
+    );
+  }
+
+  private async invalidateGatewayStateOrigin(
+    claim: ManagedKubernetesObject,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<void> {
+    const clients = await this.clients(namespace.plane);
+    await this.request(
+      () =>
+        clients.core.patchNamespacedPersistentVolumeClaim(
+          {
+            namespace: namespace.name,
+            name: claim.metadata.name,
+            body: {
+              metadata: {
+                uid: required(claim.metadata.uid, "State claim UID"),
+                resourceVersion: required(claim.metadata.resourceVersion, "State claim version"),
+                annotations: { [GATEWAY_STATE_ORIGIN_ANNOTATION]: null },
+              },
+            },
+          },
+          this.mergePatchOptions,
+        ),
+      { mutating: true },
+    );
+  }
+
+  private async prepareGatewayPrivateStateClaim(
+    revision: AgentRevision,
+    ownership: Ownership,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<string | undefined> {
+    const desired = this.gatewayPrivateStateClaim(revision.agentId, ownership, namespace);
+    if (
+      this.trustedGatewayToolBoundary === TRUSTED_GATEWAY_TOOL_BOUNDARY &&
+      revision.harness.mode === "dedicated" &&
+      this.gatewayRecoveryInputsEligible(revision) &&
+      (await this.getOwned(
+        "PersistentVolumeClaim",
+        desired.metadata.name,
+        namespace,
+        ownership,
+      )) === undefined
+    ) {
+      const clients = await this.clients(namespace.plane);
+      try {
+        await this.request(
+          () =>
+            clients.core.createNamespacedPersistentVolumeClaim({
+              namespace: namespace.name,
+              // Separate creation ownership keeps ordinary reconciliation from pruning
+              // the origin fact. Existing claims are never relabeled by this path.
+              fieldManager: "openclaw-native-state-origin",
+              body: {
+                ...desired,
+                metadata: {
+                  ...desired.metadata,
+                  annotations: {
+                    ...desired.metadata.annotations,
+                    [GATEWAY_STATE_ORIGIN_ANNOTATION]: GATEWAY_PRIVATE_STATE_ORIGIN,
+                  },
+                },
+              },
+            }),
+          { mutating: true },
+        );
+      } catch (error) {
+        if (numericErrorStatus(error) !== 409) {
+          throw error;
+        }
+        // Another creator won. Its state must stand on its own origin metadata.
+      }
+    }
+    await this.reconcile(desired, ownership, namespace);
+    return this.gatewayStateOriginUid(revision, namespace);
   }
 
   private gatewayPrivateStateClaim(
@@ -15651,6 +16026,13 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       (role === "agent" || role === "gateway") &&
       statusRevisionId !== undefined;
     const needsPrivateStatus = needsPluginStatus || needsRuntimeStatus;
+    const recoversGatewayState =
+      dedicated &&
+      role === "gateway" &&
+      needsRuntimeStatus &&
+      this.trustedGatewayToolBoundary === TRUSTED_GATEWAY_TOOL_BOUNDARY &&
+      configuration?.stateRecoveryStorageUid !== undefined &&
+      this.gatewayPrivateStatusReachable();
     if (needsPluginRuntime) {
       volumes.push({
         name: PLUGIN_RUNTIME_VOLUME,
@@ -15834,6 +16216,41 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         name: GATEWAY_PRIVATE_STATE_VOLUME,
         persistentVolumeClaim: { claimName: this.gatewayPrivateStateClaimName(agentId) },
       });
+      if (recoversGatewayState) {
+        volumes.push({
+          name: GATEWAY_STATE_RECOVERY_VOLUME,
+          downwardAPI: {
+            items: [
+              {
+                path: "request.json",
+                fieldRef: {
+                  fieldPath: `metadata.annotations['${GATEWAY_STATE_RECOVERY_ANNOTATION}']`,
+                },
+              },
+            ],
+          },
+        });
+        volumeMounts.push({
+          name: GATEWAY_STATE_RECOVERY_VOLUME,
+          mountPath: GATEWAY_STATE_RECOVERY_DIRECTORY,
+          readOnly: true,
+        });
+        variables.push({
+          name: "OPENCLAW_STATE_OWNER_RECOVERY_PATH",
+          value: GATEWAY_STATE_RECOVERY_PATH,
+        });
+        variables.push({
+          name: "OPENCLAW_TRUSTED_GATEWAY_TOOL_BOUNDARY",
+          value: TRUSTED_GATEWAY_TOOL_BOUNDARY,
+        });
+        variables.push(
+          { name: "OPENCLAW_STATE_RECOVERY_ORIGIN", value: GATEWAY_PRIVATE_STATE_ORIGIN },
+          {
+            name: "OPENCLAW_STATE_RECOVERY_STORAGE_ID",
+            value: configuration.stateRecoveryStorageUid,
+          },
+        );
+      }
       volumeMounts.push(...this.gatewayPrivateStateVolumeMounts(embedded), {
         name: "runtime-state",
         mountPath: "/home/node/.openclaw/agents/main/agent/codex-home",
@@ -16139,6 +16556,12 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
                 name: role,
                 image,
                 imagePullPolicy: "IfNotPresent",
+                ...(recoversGatewayState
+                  ? {
+                      terminationMessagePath: GATEWAY_STATE_TERMINATION_PATH,
+                      terminationMessagePolicy: "File",
+                    }
+                  : {}),
                 ...(variables.length === 0 ? {} : { env: variables }),
                 ports: [
                   { containerPort: port, name: role === "agent" && runtime ? "websocket" : "http" },

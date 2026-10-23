@@ -53,6 +53,24 @@ import {
 } from "../native-gateway-transport.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import { unsupportedNativeGatewayAuthFields } from "../../../gateway/auth-fields.ts";
+import {
+  NATIVE_GATEWAY_STATE_RECOVERY_RUNTIME,
+  nativeGatewayRecoveryConfigurationEligible,
+} from "../native-state-recovery-runtime.ts";
+import {
+  TRUSTED_GATEWAY_TOOL_BOUNDARY,
+  GATEWAY_PRIVATE_STATE_ORIGIN,
+  GATEWAY_RECOVERY_SOURCE_PROTECTION,
+  GATEWAY_STATE_DATABASE_PATH,
+  parseNativeGatewayStateOwner,
+  parseNativeGatewayOwnerRecords,
+  nativeGatewayOwnersMatch,
+  parseDockerGatewayStateOwnerBinding,
+  dockerGatewayOwnerTermination,
+  NATIVE_GATEWAY_STATE_OBSERVATION_VALIDATORS,
+  parseNativeGatewayStateObservation,
+  type DockerGatewayStateOwnerBinding,
+} from "../native-state-owner.ts";
 
 export interface DockerComputeDriverOptions {
   readonly images: {
@@ -62,24 +80,83 @@ export interface DockerComputeDriverOptions {
   readonly loggingAddress?: string;
 }
 
+interface DockerComputeDriverSelection {
+  readonly trustedGatewayToolBoundary?: typeof TRUSTED_GATEWAY_TOOL_BOUNDARY;
+}
+
 interface DockerContainerInspect {
+  readonly Id?: string;
   readonly Image?: string;
   readonly Config?: {
     readonly Image?: string;
     readonly Labels?: Readonly<Record<string, string>>;
     readonly Env?: readonly string[];
+    readonly User?: string;
+    readonly Healthcheck?: { readonly Test?: readonly string[] };
+  };
+  readonly HostConfig?: {
+    readonly Mounts?: readonly {
+      readonly Type?: string;
+      readonly Source?: string;
+      readonly Target?: string;
+      readonly ReadOnly?: boolean;
+    }[];
+    readonly ReadonlyRootfs?: boolean;
+    readonly PidMode?: string;
+    readonly Privileged?: boolean;
+    readonly NetworkMode?: string;
   };
   readonly State?: {
     readonly Running?: boolean;
+    readonly Paused?: boolean;
+    readonly Restarting?: boolean;
+    readonly Dead?: boolean;
     readonly ExitCode?: number;
+    readonly Status?: string;
+    readonly Pid?: number;
+    readonly StartedAt?: string;
+    readonly FinishedAt?: string;
     readonly Health?: {
       readonly Status?: string;
+      readonly FailingStreak?: number;
+      readonly Log?: readonly {
+        readonly Start?: string;
+        readonly End?: string;
+        readonly ExitCode?: number;
+        readonly Output?: string;
+      }[];
     };
+  };
+  readonly NetworkSettings?: {
+    readonly Ports?: Readonly<
+      Record<string, readonly { readonly HostIp: string; readonly HostPort: string }[] | null>
+    >;
   };
 }
 
 interface DockerLabeledResourceInspect {
+  readonly Name?: string;
   readonly Labels?: Readonly<Record<string, string>>;
+}
+
+interface DockerGatewayRecoveryStorage {
+  readonly ownership: Ownership;
+  readonly stateVolume: string;
+  readonly metadataVolume: string;
+  readonly nonce: string;
+  readonly storageId: string;
+  readonly holderId: string;
+}
+
+interface DockerGatewayRecoverySnapshot {
+  readonly version: 1;
+  readonly stateOrigin: typeof GATEWAY_PRIVATE_STATE_ORIGIN;
+  readonly storageId: string;
+  readonly stateInstance: string;
+  readonly binding?: DockerGatewayStateOwnerBinding;
+  readonly revisionId?: string;
+  readonly instanceId?: string;
+  readonly owner?: DockerGatewayStateOwnerBinding["owner"];
 }
 
 interface DockerVersion {
@@ -105,6 +182,7 @@ interface RuntimeContainerInput {
   readonly exposedPort: number;
   readonly labels?: Readonly<Record<string, string>>;
   readonly workspaceSetup?: boolean;
+  readonly stateRecovery?: DockerGatewayRecoveryStorage;
   readonly portBindings?: Readonly<
     Record<string, readonly { readonly HostIp: string; readonly HostPort: string }[]>
   >;
@@ -145,6 +223,26 @@ const MODEL_API_KEY = "OPENAI_API_KEY";
 const CONFIGURATION_DOCUMENT = "/home/node/.openclaw/openclaw.json";
 const GATEWAY_PASSWORD_ENV = "OPENCLAW_GATEWAY_PASSWORD";
 const GATEWAY_PASSWORD_REFERENCE = `\${${GATEWAY_PASSWORD_ENV}}`;
+const STATE_ORIGIN_LABEL = "org.openclaw.enterprise.state-origin";
+const STATE_INSTANCE_LABEL = "org.openclaw.enterprise.state-instance";
+const STATE_RECOVERY_PORT = 18_791;
+const STATE_RECOVERY_DIRECTORY = "/etc/openclaw-state-recovery";
+const STATE_RECOVERY_ROLE = "gateway-state-recovery";
+const STATE_RECOVERY_FILE = "request.json";
+const STATE_RECOVERY_MANUAL_FILE = "manual";
+const MAX_STATE_RECOVERY_BYTES = 16_384;
+const STATE_HEALTH_PREFIX = "OCE_GATEWAY_OWNER_V1 ";
+const MAX_STATE_HEALTH_BYTES = 3072;
+const STATE_RECOVERY_ENVIRONMENT = [
+  "OPENCLAW_STATE_OWNER_RECOVERY_PATH",
+  "OPENCLAW_TRUSTED_GATEWAY_TOOL_BOUNDARY",
+  "OPENCLAW_STATE_RECOVERY_ORIGIN",
+  "OPENCLAW_STATE_RECOVERY_STORAGE_ID",
+  "OPENCLAW_RUNTIME_STATUS_PORT",
+  "OPENCLAW_RUNTIME_STATUS_CONTAINER",
+  "OPENCLAW_RUNTIME_STATUS_TOKEN",
+  "OPENCLAW_POD_UID",
+] as const;
 
 function dockerGatewayConfigurationDocument(configuration: OpenClawConfigurationDocument): {
   readonly configuration: OpenClawConfigurationDocument;
@@ -223,12 +321,16 @@ function gatewayPasswordEnvironmentReference(
 }
 
 export const GATEWAY_RUNTIME_ENTRYPOINT = String.raw`
-const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
+const { chmodSync, mkdirSync, writeFileSync, renameSync, lstatSync, realpathSync } = require("node:fs");
 const { spawn } = require("node:child_process");
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${gatewayStateMigrationHelper("deploy the Agent again")}
+let child;
+let childRunning = false;
+function gatewayEnvironment() { return { ...process.env }; }
+${NATIVE_GATEWAY_STATE_RECOVERY_RUNTIME}
 
 function forwardTermination(child) {
   let terminating = false;
@@ -243,29 +345,39 @@ function forwardTermination(child) {
 }
 
 function startGateway() {
-  const child = spawn(
+  child = spawn(
     "node",
     ["/app/openclaw.mjs", "gateway", "--port", process.env.OPENCLAW_GATEWAY_PORT],
     { stdio: "inherit" },
   );
+  childRunning = true;
   forwardTermination(child);
-  child.on("exit", (code, signal) => process.exit(code ?? (signal === "SIGTERM" ? 0 : 1)));
+  child.on("exit", (code, signal) => {
+    childRunning = false;
+    process.exit(code ?? (signal === "SIGTERM" ? 0 : 1));
+  });
 }
 
 mkdirSync("/home/node/.openclaw", { recursive: true, mode: 0o700 });
 mkdirSync("/home/node/workspace", { recursive: true, mode: 0o700 });
 chmodSync("/home/node/.openclaw", 0o700);
 chmodSync("/home/node/workspace", 0o700);
-writeFileSync(process.env.OPENCLAW_CONFIG_PATH, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600 });
+// The old shared state may contain a config symlink into the Harness workspace.
+// Replace that directory entry; never funnel a trusted config write through it.
+if (process.env.OPENCLAW_CONFIG_PATH !== "/home/node/.openclaw/openclaw.json" ||
+    !lstatSync("/home/node/.openclaw").isDirectory() ||
+    realpathSync("/home/node/.openclaw") !== "/home/node/.openclaw") {
+  throw new Error("Gateway configuration directory is not the managed state directory.");
+}
+const stagedConfig = process.env.OPENCLAW_CONFIG_PATH + ".oce-" + pluginRandomUUID();
+writeFileSync(stagedConfig, process.env.OPENCLAW_CONFIG_JSON, { mode: 0o600, flag: "wx" });
+renameSync(stagedConfig, process.env.OPENCLAW_CONFIG_PATH);
 delete process.env.OPENCLAW_CONFIG_JSON;
 delete process.env.OPENCLAW_LOG_LEVEL;
 const pluginRuntime = readGatewayPluginRuntime();
-try {
-if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
-// State on the Agent's state volume outlives runtime image upgrades. Doctor
-// reads the configuration written above; current state adds no await before
-// the spawn. A failure exits: the Driver reports the container that stopped
-// before readiness and nothing restarts it.
+function launchGateway() {
+// The state volume outlives image upgrades. A failed migration exits instead
+// of restarting a Gateway against an incompatible database.
 const outdatedDatabases = outdatedAgentDatabases();
 if (outdatedDatabases.length === 0) {
   startGateway();
@@ -281,8 +393,29 @@ if (outdatedDatabases.length === 0) {
     },
   );
 }
-} catch (error) {
-  if (!holdPluginApproverConfigurationFailure(error)) throw error;
+}
+// The private status transport is available while Native recovery is waiting;
+// the normal port and startup timing remain unchanged when recovery is absent.
+startPluginRuntimeStatusServer(() => childRunning);
+if (nativeStateRecoveryEnabled) {
+  (async () => {
+    if (!(await prepareNativeGatewayStateRecovery())) return;
+    // Inspect sources before any Native plugin/config work, then recheck the
+    // configuration the installer emitted before starting the Gateway child.
+    await qualifyNativeGatewayStateSources();
+    if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
+    await qualifyNativeGatewayStateSources();
+    launchGateway();
+  })().catch((error) => {
+    if (!holdPluginApproverConfigurationFailure(error)) process.exit(1);
+  });
+} else {
+  try {
+    if (pluginRuntime !== undefined) installOpenClawPlugins(pluginRuntime);
+    launchGateway();
+  } catch (error) {
+    if (!holdPluginApproverConfigurationFailure(error)) throw error;
+  }
 }
 `;
 
@@ -385,6 +518,140 @@ function healthcheckCommand(script: string): string {
   return `eval(Buffer.from("${encoded}","base64").toString())`;
 }
 
+function protectedGatewayHealthcheck(): string {
+  return String.raw`
+${NATIVE_GATEWAY_STATE_OBSERVATION_VALIDATORS}
+(async () => {
+  const ready = Promise.all(["startupz", "readyz"].map((path) =>
+    fetch("http://127.0.0.1:${GATEWAY_PORT}/" + path).then((response) => response.ok).catch(() => false)));
+  const observation = (async () => {
+    try {
+      const response = await fetch("http://127.0.0.1:${STATE_RECOVERY_PORT}/openclaw/runtime/status", {
+        headers: { authorization: "Bearer " + process.env.OPENCLAW_RUNTIME_STATUS_TOKEN },
+        signal: AbortSignal.timeout(1500), redirect: "error",
+      });
+      if (!response.ok || response.body === null) return;
+      const chunks = [];
+      let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 65536) return;
+        chunks.push(chunk);
+      }
+      const projected = parseNativeGatewayStateObservation(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      if (projected === undefined) return;
+      const line = ${JSON.stringify(STATE_HEALTH_PREFIX)} + JSON.stringify(projected) + "\n";
+      if (Buffer.byteLength(line) <= ${MAX_STATE_HEALTH_BYTES}) process.stdout.write(line);
+    } catch {}
+  })();
+  const [checks] = await Promise.all([ready, observation]);
+  process.exit(checks.every(Boolean) ? 0 : 1);
+})().catch(() => process.exit(1));`;
+}
+
+function dockerOwnerHealthObservation(
+  entry: { readonly ExitCode?: number; readonly Output?: string } | undefined,
+): ReturnType<typeof parseNativeGatewayStateObservation> {
+  const output = entry?.Output;
+  if (
+    ![0, 1].includes(entry?.ExitCode ?? -1) ||
+    typeof output !== "string" ||
+    Buffer.byteLength(output) > MAX_STATE_HEALTH_BYTES ||
+    !output.startsWith(STATE_HEALTH_PREFIX) ||
+    !output.endsWith("\n")
+  ) {
+    return undefined;
+  }
+  try {
+    return parseNativeGatewayStateObservation(
+      JSON.parse(output.slice(STATE_HEALTH_PREFIX.length, -1)),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+function dockerArchiveEntry(name: string, payload: Buffer): Buffer {
+  const header = Buffer.alloc(512);
+  header.write(name, 0);
+  for (const [offset, value, width] of [
+    [100, 0o600, 8],
+    [108, 1000, 8],
+    [116, 1000, 8],
+    [124, payload.length, 12],
+    [136, 0, 12],
+  ] as const) {
+    header.write(value.toString(8).padStart(width - 1, "0") + "\0", offset);
+  }
+  header.fill(32, 148, 156);
+  header.write("0", 156);
+  header.write("ustar\0", 257);
+  header.write("00", 263);
+  header.write(
+    header
+      .reduce((sum, byte) => sum + byte, 0)
+      .toString(8)
+      .padStart(6, "0") + "\0 ",
+    148,
+  );
+  return Buffer.concat([
+    header,
+    payload,
+    Buffer.alloc(((512 - (payload.length % 512)) % 512) + 1024),
+  ]);
+}
+
+function dockerArchiveFile(archive: Buffer, name: string): string {
+  let file: string | undefined;
+  for (let offset = 0; offset + 512 <= archive.length;) {
+    const header = archive.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) {
+      break;
+    }
+    const field = (start: number, length: number) =>
+      header
+        .subarray(start, start + length)
+        .toString("utf8")
+        .replace(/\0.*$/s, "");
+    const sizeText = field(124, 12).trim();
+    const size = /^[0-7]+$/.test(sizeText) ? Number.parseInt(sizeText, 8) : NaN;
+    if (
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
+      size > MAX_STATE_RECOVERY_BYTES ||
+      offset + 512 + size > archive.length
+    ) {
+      throw new ConfigurationFailure("Docker recovery metadata archive is invalid.");
+    }
+    const type = field(156, 1);
+    if (!["x", "g"].includes(type)) {
+      if (
+        file !== undefined ||
+        field(0, 100) !== name ||
+        !["", "0"].includes(type) ||
+        field(345, 155) !== ""
+      ) {
+        throw new ConfigurationFailure("Docker recovery metadata must be one regular file.");
+      }
+      file = archive.subarray(offset + 512, offset + 512 + size).toString("utf8");
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  if (file === undefined) {
+    throw new ConfigurationFailure("Docker recovery metadata file is missing.");
+  }
+  return file;
+}
+
+function containerEnvironment(inspect: DockerContainerInspect): Record<string, string> {
+  return Object.fromEntries(
+    (inspect.Config?.Env ?? []).map((entry) => {
+      const separator = entry.indexOf("=");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }),
+  );
+}
+
 function loopbackHost(host: string): boolean {
   if (host === "localhost" || host === "::1") {
     return true;
@@ -431,6 +698,8 @@ export class DockerComputeDriver implements ComputeDriver {
   private lifecycle = new ComputeLifecycleDispatcher([]);
   private lifecycleStarted = false;
   private podmanApi = false;
+  private nativeStateRecoverySupported = false;
+  private readonly trustedGatewayToolBoundary: typeof TRUSTED_GATEWAY_TOOL_BOUNDARY | undefined;
 
   /**
    * Every topology runs one gateway container per Agent, so a candidate replaces the active
@@ -441,7 +710,7 @@ export class DockerComputeDriver implements ComputeDriver {
     return true;
   }
 
-  constructor(options: DockerComputeDriverOptions) {
+  constructor(options: DockerComputeDriverOptions, selection: DockerComputeDriverSelection = {}) {
     required(options.images.gateway, "Docker gateway image");
     required(options.images.agent, "Docker Codex Agent image");
     const loggingAddress = dockerLoggingAddress(options.loggingAddress);
@@ -449,6 +718,7 @@ export class DockerComputeDriver implements ComputeDriver {
       ...options,
       ...(loggingAddress === undefined ? {} : { loggingAddress }),
     });
+    this.trustedGatewayToolBoundary = selection.trustedGatewayToolBoundary;
   }
 
   setLifecycleDrivers(drivers: readonly Driver[]): void {
@@ -467,6 +737,9 @@ export class DockerComputeDriver implements ComputeDriver {
     this.podmanApi =
       version.Components?.some((component) => component.Name === "Podman Engine") === true ||
       /podman/i.test(version.Platform?.Name ?? "");
+    this.nativeStateRecoverySupported =
+      !this.podmanApi &&
+      version.Components?.some((component) => component.Name === "Engine") === true;
     await this.image(this.options.images.gateway);
     await this.image(this.options.images.agent);
   }
@@ -745,7 +1018,7 @@ export class DockerComputeDriver implements ComputeDriver {
         this.agentOwnership(revision),
         `container ${agentName}`,
       );
-      await this.removeContainer(agentName);
+      await this.removeContainer(agentName, agent);
     }
     const gatewayName = this.gatewayContainerName(revision.namespaceId, revision.agentId);
     const gateway = await this.container(gatewayName);
@@ -756,7 +1029,7 @@ export class DockerComputeDriver implements ComputeDriver {
         `container ${gatewayName}`,
       );
       if (gateway.Config?.Labels?.[REVISION_LABEL] === revision.id) {
-        await this.removeContainer(gatewayName);
+        await this.removeContainer(gatewayName, gateway);
       }
     }
   }
@@ -770,12 +1043,15 @@ export class DockerComputeDriver implements ComputeDriver {
     const initializer = await this.container(initializerName);
     if (initializer !== undefined) {
       this.verifyOwnership(initializer.Config?.Labels, ownership, `container ${initializerName}`);
-      await this.removeContainer(initializerName);
+      await this.removeContainer(initializerName, initializer);
     }
     await this.removeWorkspaceVolumes(ownership);
   }
 
-  private workspaceMounts(ownership: Ownership): readonly {
+  private workspaceMounts(
+    ownership: Ownership,
+    role: "agent" | "gateway" = "gateway",
+  ): readonly {
     readonly Type: "volume";
     readonly Source: string;
     readonly Target: string;
@@ -785,7 +1061,11 @@ export class DockerComputeDriver implements ComputeDriver {
     }
     const prefix = `oce-${sha256Hex(ownership.namespaceId, 12)}-${sha256Hex(ownership.agentId, 12)}`;
     return [
-      { Type: "volume", Source: `${prefix}-state`, Target: "/home/node/.openclaw" },
+      {
+        Type: "volume",
+        Source: `${prefix}-${role === "agent" ? "harness-state" : "state"}`,
+        Target: "/home/node/.openclaw",
+      },
       { Type: "volume", Source: `${prefix}-workspace`, Target: "/home/node/workspace" },
       { Type: "volume", Source: `${prefix}-workspace`, Target: "/home/node/.openclaw/workspace" },
     ];
@@ -793,6 +1073,589 @@ export class DockerComputeDriver implements ComputeDriver {
 
   private workspaceDirectory(revision: Readonly<AgentRevision>): string {
     return dockerSetupWorkspace(revision.configuration, preparationSettingError);
+  }
+
+  private recoveryConfigurationEligible(revision: Readonly<AgentRevision>): boolean {
+    // Dedicated Codex artifacts install executable plugin code in the Harness,
+    // not the Gateway. Other artifact targets have no qualified recovery path.
+    const runtime = this.pluginRuntimeForRevision(revision);
+    return (
+      this.trustedGatewayToolBoundary === TRUSTED_GATEWAY_TOOL_BOUNDARY &&
+      this.nativeStateRecoverySupported &&
+      revision.harness.mode === "dedicated" &&
+      (runtime === undefined || runtime.kind === "codex") &&
+      nativeGatewayRecoveryConfigurationEligible(revision.configuration)
+    );
+  }
+
+  private recoveryVolumeName(ownership: Ownership): string {
+    return `${this.workspaceMounts(ownership)[0]!.Source}-recovery`;
+  }
+
+  private verifyRecoveryVolume(
+    volume: DockerLabeledResourceInspect | undefined,
+    ownership: Ownership,
+    name: string,
+    nonce: string,
+  ): void {
+    this.verifyOwnership(volume?.Labels, ownership, `volume ${name}`);
+    if (
+      volume?.Name !== name ||
+      volume.Labels?.[ROLE_LABEL] !== STATE_RECOVERY_ROLE ||
+      volume.Labels[STATE_INSTANCE_LABEL] !== nonce ||
+      volume.Labels[STATE_ORIGIN_LABEL] !== GATEWAY_PRIVATE_STATE_ORIGIN
+    ) {
+      throw new OwnershipFailure("Refusing unrelated Docker recovery metadata.");
+    }
+  }
+
+  private async recoveryStorage(
+    ownership: Ownership,
+    creation?: { readonly freshNonce: string } | { readonly manual: true },
+  ): Promise<DockerGatewayRecoveryStorage | undefined> {
+    const stateVolume = this.workspaceMounts(ownership)[0]!.Source;
+    const state = await this.volume(stateVolume);
+    if (state === undefined) {
+      return undefined;
+    }
+    this.verifyOwnership(state.Labels, ownership, `volume ${stateVolume}`);
+    const nonce = state.Labels?.[STATE_INSTANCE_LABEL];
+    if (
+      state.Name !== stateVolume ||
+      state.Labels?.[ROLE_LABEL] !== "workspace" ||
+      state.Labels[STATE_ORIGIN_LABEL] !== GATEWAY_PRIVATE_STATE_ORIGIN ||
+      !/^[a-f0-9]{32}$/.test(nonce ?? "")
+    ) {
+      return undefined;
+    }
+    const metadataVolume = this.recoveryVolumeName(ownership);
+    let metadata = await this.volume(metadataVolume);
+    if (metadata === undefined) {
+      // A label on retained data is not a replacement for the missing custody
+      // snapshot. Only the caller that just created this private state may seed it.
+      if (creation === undefined || ("freshNonce" in creation && creation.freshNonce !== nonce)) {
+        return undefined;
+      }
+      const created = (await this.request(
+        "POST",
+        "/volumes/create",
+        {
+          Name: metadataVolume,
+          Labels: {
+            ...this.ownershipMetadata(ownership),
+            [ROLE_LABEL]: STATE_RECOVERY_ROLE,
+            [STATE_ORIGIN_LABEL]: GATEWAY_PRIVATE_STATE_ORIGIN,
+            [STATE_INSTANCE_LABEL]: nonce,
+          },
+        },
+        [201],
+      )) as DockerLabeledResourceInspect;
+      this.verifyRecoveryVolume(created, ownership, metadataVolume, nonce!);
+      metadata = await this.volume(metadataVolume);
+    }
+    this.verifyRecoveryVolume(metadata, ownership, metadataVolume, nonce!);
+    const holderName = `${this.gatewayContainerName(ownership.namespaceId, ownership.agentId!)}-recovery`;
+    let holder = await this.container(holderName);
+    if (holder === undefined) {
+      try {
+        await this.request(
+          "POST",
+          `/containers/create?name=${encodeURIComponent(holderName)}`,
+          {
+            Image: this.options.images.gateway,
+            User: "1000:1000",
+            Entrypoint: ["node"],
+            Cmd: ["-e", "process.exit(1)"],
+            Env: [],
+            Labels: {
+              ...this.ownershipMetadata(ownership),
+              [ROLE_LABEL]: STATE_RECOVERY_ROLE,
+              [STATE_INSTANCE_LABEL]: nonce,
+              [STATE_ORIGIN_LABEL]: GATEWAY_PRIVATE_STATE_ORIGIN,
+            },
+            HostConfig: {
+              NetworkMode: "none",
+              ReadonlyRootfs: true,
+              CapDrop: ["ALL"],
+              SecurityOpt: ["no-new-privileges"],
+              Mounts: [
+                { Type: "volume", Source: metadataVolume, Target: STATE_RECOVERY_DIRECTORY },
+              ],
+            },
+          },
+          [201],
+        );
+      } catch (error) {
+        if (statusCode(error) !== 409) {
+          throw error;
+        }
+      }
+      holder = await this.container(holderName);
+    }
+    if (holder?.Id === undefined || !/^[a-f0-9]{64}$/.test(holder.Id)) {
+      throw new OwnershipFailure("Docker recovery holder identity is incomplete.");
+    }
+    const storage = {
+      ownership,
+      stateVolume,
+      metadataVolume,
+      nonce: nonce!,
+      storageId: `${stateVolume}:${nonce}`,
+      holderId: holder.Id,
+    };
+    await this.verifyRecoveryStorage(storage);
+    return storage;
+  }
+
+  private async verifyRecoveryStorage(storage: DockerGatewayRecoveryStorage): Promise<void> {
+    const state = await this.volume(storage.stateVolume);
+    this.verifyOwnership(state?.Labels, storage.ownership, `volume ${storage.stateVolume}`);
+    if (
+      state?.Name !== storage.stateVolume ||
+      state.Labels?.[ROLE_LABEL] !== "workspace" ||
+      state.Labels[STATE_INSTANCE_LABEL] !== storage.nonce ||
+      state.Labels[STATE_ORIGIN_LABEL] !== GATEWAY_PRIVATE_STATE_ORIGIN
+    ) {
+      throw new OwnershipFailure("Docker Gateway storage identity changed.");
+    }
+    await this.verifyRecoveryHolder(storage);
+  }
+
+  private async verifyRecoveryHolder(storage: DockerGatewayRecoveryStorage): Promise<void> {
+    this.verifyRecoveryVolume(
+      await this.volume(storage.metadataVolume),
+      storage.ownership,
+      storage.metadataVolume,
+      storage.nonce,
+    );
+    const holder = await this.container(storage.holderId);
+    this.verifyOwnership(holder?.Config?.Labels, storage.ownership, "recovery holder");
+    const mounts = holder?.HostConfig?.Mounts ?? [];
+    if (
+      holder?.Id !== storage.holderId ||
+      holder.Config?.Labels?.[ROLE_LABEL] !== STATE_RECOVERY_ROLE ||
+      holder.Config.Labels[STATE_INSTANCE_LABEL] !== storage.nonce ||
+      holder.Config.Labels[STATE_ORIGIN_LABEL] !== GATEWAY_PRIVATE_STATE_ORIGIN ||
+      holder.Config.User !== "1000:1000" ||
+      holder.HostConfig?.NetworkMode !== "none" ||
+      holder.HostConfig.ReadonlyRootfs !== true ||
+      holder.HostConfig.Privileged === true ||
+      ![undefined, ""].includes(holder.HostConfig.PidMode) ||
+      holder.State?.Running !== false ||
+      holder.State.Pid !== 0 ||
+      holder.State.Status !== "created" ||
+      !(Date.parse(holder.State.StartedAt ?? "") <= 0) ||
+      mounts.length !== 1 ||
+      mounts[0]?.Type !== "volume" ||
+      mounts[0].Source !== storage.metadataVolume ||
+      mounts[0].Target !== STATE_RECOVERY_DIRECTORY ||
+      mounts[0].ReadOnly === true
+    ) {
+      throw new OwnershipFailure("Recovery metadata requires its never-started private holder.");
+    }
+  }
+
+  private async readRecoveryFile(
+    storage: DockerGatewayRecoveryStorage,
+    name: string,
+  ): Promise<string | undefined> {
+    await this.verifyRecoveryStorage(storage);
+    try {
+      const archive = (await this.request(
+        "GET",
+        `/containers/${storage.holderId}/archive?path=${encodeURIComponent(`${STATE_RECOVERY_DIRECTORY}/${name}`)}`,
+        undefined,
+        [200],
+        "archive",
+      )) as Buffer;
+      await this.verifyRecoveryStorage(storage);
+      return dockerArchiveFile(archive, name);
+    } catch (error) {
+      if (statusCode(error) === 404) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  private async writeRecoveryFile(
+    storage: DockerGatewayRecoveryStorage,
+    name: string,
+    value: string,
+  ): Promise<void> {
+    if (Buffer.byteLength(value) >= MAX_STATE_RECOVERY_BYTES) {
+      throw new ConfigurationFailure("Docker recovery metadata is too large.");
+    }
+    await this.verifyRecoveryStorage(storage);
+    await this.request(
+      "PUT",
+      `/containers/${storage.holderId}/archive?path=${encodeURIComponent(STATE_RECOVERY_DIRECTORY)}`,
+      dockerArchiveEntry(name, Buffer.from(value)),
+      [200],
+    );
+    await this.verifyRecoveryStorage(storage);
+  }
+
+  private async readRecoverySnapshot(
+    storage: DockerGatewayRecoveryStorage,
+  ): Promise<DockerGatewayRecoverySnapshot | undefined> {
+    if ((await this.readRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE)) !== undefined) {
+      return undefined;
+    }
+    const text = await this.readRecoveryFile(storage, STATE_RECOVERY_FILE);
+    if (text === undefined) {
+      return undefined;
+    }
+    let snapshot;
+    try {
+      snapshot = asRecord(JSON.parse(text));
+    } catch {
+      return undefined;
+    }
+    const binding =
+      snapshot?.binding === undefined
+        ? undefined
+        : parseDockerGatewayStateOwnerBinding(snapshot.binding);
+    if (
+      snapshot?.version !== 1 ||
+      snapshot.stateOrigin !== GATEWAY_PRIVATE_STATE_ORIGIN ||
+      snapshot.storageId !== storage.storageId ||
+      snapshot.stateInstance !== storage.nonce ||
+      (snapshot.binding !== undefined &&
+        (binding === undefined ||
+          binding.storageId !== storage.storageId ||
+          binding.owner.databasePath !== GATEWAY_STATE_DATABASE_PATH))
+    ) {
+      return undefined;
+    }
+    const owner = parseNativeGatewayStateOwner(snapshot.owner);
+    const requestPresent =
+      snapshot.owner !== undefined ||
+      snapshot.instanceId !== undefined ||
+      snapshot.revisionId !== undefined;
+    if (
+      requestPresent &&
+      (owner === undefined ||
+        binding?.termination === undefined ||
+        !nativeGatewayOwnersMatch([{ kind: "state-owner", owner }], binding.owner) ||
+        !isNonEmptyString(snapshot.revisionId) ||
+        !isNonEmptyString(snapshot.instanceId))
+    ) {
+      return undefined;
+    }
+    return {
+      version: 1,
+      stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+      storageId: storage.storageId,
+      stateInstance: storage.nonce,
+      ...(binding === undefined ? {} : { binding }),
+      ...(requestPresent
+        ? {
+            owner: owner!,
+            revisionId: snapshot.revisionId as string,
+            instanceId: snapshot.instanceId as string,
+          }
+        : {}),
+    };
+  }
+
+  private async writeRecoverySnapshot(
+    storage: DockerGatewayRecoveryStorage,
+    snapshot: DockerGatewayRecoverySnapshot,
+  ): Promise<void> {
+    if ((await this.readRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE)) !== undefined) {
+      throw new ConfigurationFailure("Gateway state requires manual recovery.");
+    }
+    await this.writeRecoveryFile(storage, STATE_RECOVERY_FILE, JSON.stringify(snapshot));
+  }
+
+  private async invalidateRecoveryOrigin(ownership: Ownership): Promise<void> {
+    const storage = await this.recoveryStorage(ownership, { manual: true });
+    if (storage !== undefined) {
+      // This separate monotonic entry survives a stale writer's complete snapshot.
+      await this.writeRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE, "manual\n");
+    }
+  }
+
+  private async gatewayRecoveryStorage(
+    revision: Readonly<AgentRevision>,
+    workspaceSetup: Readonly<WorkspaceSetup> | undefined,
+  ): Promise<DockerGatewayRecoveryStorage | undefined> {
+    if (workspaceSetup === undefined || !this.recoveryConfigurationEligible(revision)) {
+      return undefined;
+    }
+    const ownership = this.gatewayOwnership(revision);
+    const storage = await this.recoveryStorage(ownership);
+    if (storage !== undefined && (await this.readRecoverySnapshot(storage)) !== undefined) {
+      return storage;
+    }
+    // Missing custody is permanently manual. This also closes the creation race
+    // in which another reconciliation sees the data volume before its origin.
+    await this.invalidateRecoveryOrigin(ownership);
+    return undefined;
+  }
+
+  private protectedGatewayLayout(
+    inspect: DockerContainerInspect,
+    storage: DockerGatewayRecoveryStorage,
+  ): boolean {
+    const env = containerEnvironment(inspect);
+    const mounts = inspect.HostConfig?.Mounts ?? [];
+    return (
+      inspect.Config?.User === "1000:1000" &&
+      inspect.HostConfig?.ReadonlyRootfs === true &&
+      inspect.HostConfig.Privileged !== true &&
+      [undefined, ""].includes(inspect.HostConfig.PidMode) &&
+      env.OPENCLAW_TRUSTED_GATEWAY_TOOL_BOUNDARY === TRUSTED_GATEWAY_TOOL_BOUNDARY &&
+      env.OPENCLAW_STATE_RECOVERY_ORIGIN === GATEWAY_PRIVATE_STATE_ORIGIN &&
+      env.OPENCLAW_STATE_RECOVERY_STORAGE_ID === storage.storageId &&
+      env.OPENCLAW_STATE_OWNER_RECOVERY_PATH ===
+        `${STATE_RECOVERY_DIRECTORY}/${STATE_RECOVERY_FILE}` &&
+      env.OPENCLAW_RUNTIME_STATUS_PORT === String(STATE_RECOVERY_PORT) &&
+      env.OPENCLAW_RUNTIME_STATUS_CONTAINER === "gateway" &&
+      /^[a-f0-9]{64}$/.test(env.OPENCLAW_RUNTIME_STATUS_TOKEN ?? "") &&
+      JSON.stringify(inspect.Config.Healthcheck?.Test) ===
+        JSON.stringify(["CMD", "node", "-e", healthcheckCommand(protectedGatewayHealthcheck())]) &&
+      mounts.some(
+        (mount) => mount.Source === storage.stateVolume && mount.Target === "/home/node/.openclaw",
+      ) &&
+      mounts.filter((mount) => mount.Source === storage.metadataVolume).length === 1 &&
+      mounts.some(
+        (mount) =>
+          mount.Source === storage.metadataVolume &&
+          mount.Type === "volume" &&
+          mount.Target === STATE_RECOVERY_DIRECTORY &&
+          mount.ReadOnly === true,
+      )
+    );
+  }
+
+  private gatewayRuntimeStatus(
+    inspect: DockerContainerInspect,
+  ): ReturnType<typeof parseNativeGatewayStateObservation> {
+    // Moby resets status/streak on each start but retains old log entries.
+    // Its monitor appends a result and updates status/streak under the inspect
+    // lock. Starting+zero therefore cannot authorize a retained old report.
+    const state = inspect.State;
+    const health = state?.Health;
+    const entry = health?.Log?.at(-1);
+    const start = Date.parse(entry?.Start ?? "");
+    const end = Date.parse(entry?.End ?? "");
+    const currentMonitor =
+      (health?.Status === "healthy" && entry?.ExitCode === 0) ||
+      (Number.isSafeInteger(health?.FailingStreak) && (health?.FailingStreak ?? 0) > 0);
+    if (
+      state?.Running !== true ||
+      state.Status !== "running" ||
+      state.Paused === true ||
+      state.Restarting === true ||
+      state.Dead === true ||
+      !currentMonitor ||
+      !(Date.parse(state.StartedAt ?? "") > 0) ||
+      !(start > 0) ||
+      !(end >= start) ||
+      ![0, 1].includes(entry?.ExitCode ?? -1)
+    ) {
+      return undefined;
+    }
+    return dockerOwnerHealthObservation(entry);
+  }
+
+  private async observeGatewayState(
+    inspected: DockerContainerInspect,
+    storage: DockerGatewayRecoveryStorage,
+    prepareIntent = true,
+  ): Promise<DockerContainerInspect> {
+    if (
+      inspected.State?.Running !== true ||
+      inspected.State.Status !== "running" ||
+      inspected.State.Paused === true ||
+      inspected.State.Restarting === true ||
+      inspected.State.Dead === true
+    ) {
+      return inspected;
+    }
+    this.verifyOwnership(inspected.Config?.Labels, storage.ownership, "Gateway container");
+    if (
+      !this.protectedGatewayLayout(inspected, storage) ||
+      !/^[a-f0-9]{64}$/.test(inspected.Id ?? "") ||
+      !(Date.parse(inspected.State?.StartedAt ?? "") > 0)
+    ) {
+      throw new OwnershipFailure("Docker Gateway recovery layout or identity changed.");
+    }
+    const snapshot = await this.readRecoverySnapshot(storage);
+    const after = await this.container(inspected.Id!);
+    if (
+      after === undefined ||
+      after.Id !== inspected.Id ||
+      after.State?.StartedAt !== inspected.State?.StartedAt ||
+      after.State?.Running !== true ||
+      !this.protectedGatewayLayout(after, storage)
+    ) {
+      throw new OwnershipFailure("Docker Gateway changed during owner observation.");
+    }
+    if (snapshot === undefined) {
+      await this.writeRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE, "manual\n");
+      return after;
+    }
+    // A newer incomplete probe cannot be replaced by an older qualified one.
+    const status = this.gatewayRuntimeStatus(after);
+    if (status === undefined) {
+      return after;
+    }
+    const state = asRecord(status.gatewayState);
+    const revisionId = inspected.Config?.Labels?.[REVISION_LABEL];
+    if (
+      status.container !== "gateway" ||
+      status.revisionId !== revisionId ||
+      state?.storageId !== storage.storageId ||
+      state.stateOrigin !== GATEWAY_PRIVATE_STATE_ORIGIN ||
+      state.toolBoundary !== TRUSTED_GATEWAY_TOOL_BOUNDARY ||
+      !isNonEmptyString(state.instanceId) ||
+      state.instanceId.length > 128
+    ) {
+      throw new OwnershipFailure("Docker Gateway status does not match its observed instance.");
+    }
+    const recovery = asRecord(state.recovery);
+    if (recovery?.state === "manual") {
+      await this.writeRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE, "manual\n");
+      return after;
+    }
+    if (recovery?.state === "refused") {
+      return after;
+    }
+    const owner = parseNativeGatewayStateOwner(state.liveOwner);
+    if (
+      owner !== undefined &&
+      owner.databasePath === GATEWAY_STATE_DATABASE_PATH &&
+      state.sourceProtection === GATEWAY_RECOVERY_SOURCE_PROTECTION
+    ) {
+      const binding = parseDockerGatewayStateOwnerBinding({
+        version: 1,
+        toolBoundary: TRUSTED_GATEWAY_TOOL_BOUNDARY,
+        sourceProtection: GATEWAY_RECOVERY_SOURCE_PROTECTION,
+        stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+        storageId: storage.storageId,
+        revisionId,
+        instanceId: state.instanceId,
+        containerId: inspected.Id,
+        startedAt: inspected.State!.StartedAt,
+        owner,
+      });
+      if (binding === undefined) {
+        throw new OwnershipFailure("Docker Gateway owner identity is incomplete.");
+      }
+      if (
+        snapshot.owner !== undefined ||
+        JSON.stringify(snapshot.binding) !== JSON.stringify(binding)
+      ) {
+        await this.writeRecoverySnapshot(storage, {
+          version: 1,
+          stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+          storageId: storage.storageId,
+          stateInstance: storage.nonce,
+          binding,
+        });
+      }
+      return after;
+    }
+    // A qualified runtime without Native owner support grants no authority;
+    // its pristine origin can survive a later clean capability upgrade.
+    if (
+      prepareIntent &&
+      recovery?.state === "waiting" &&
+      snapshot.binding?.termination !== undefined
+    ) {
+      const records = parseNativeGatewayOwnerRecords(recovery.ownerRecords);
+      if (records !== undefined && nativeGatewayOwnersMatch(records, snapshot.binding.owner)) {
+        if (snapshot.instanceId !== state.instanceId || snapshot.revisionId !== revisionId) {
+          await this.writeRecoverySnapshot(storage, {
+            ...snapshot,
+            revisionId,
+            instanceId: state.instanceId,
+            owner: snapshot.binding.owner,
+          });
+        }
+      }
+    }
+    return after;
+  }
+
+  private async stopObservedGatewayOwner(
+    inspected: DockerContainerInspect,
+  ): Promise<DockerGatewayStateOwnerBinding | undefined> {
+    if (
+      this.trustedGatewayToolBoundary !== TRUSTED_GATEWAY_TOOL_BOUNDARY ||
+      !this.nativeStateRecoverySupported ||
+      inspected.Config?.Labels?.[ROLE_LABEL] !== "gateway"
+    ) {
+      return undefined;
+    }
+    const namespaceId = inspected.Config.Labels[NAMESPACE_LABEL];
+    const agentId = inspected.Config.Labels[AGENT_LABEL];
+    if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
+      return undefined;
+    }
+    const storage = await this.recoveryStorage({ namespaceId, agentId });
+    if (storage === undefined || !this.protectedGatewayLayout(inspected, storage)) {
+      return undefined;
+    }
+    if (inspected.State?.Running === true) {
+      await this.observeGatewayState(inspected, storage, false);
+    } else {
+      // A scoped source denial remains a denial after stop; it never grants an
+      // owner binding or borrows an earlier epoch's positive observation.
+      const denial = dockerOwnerHealthObservation(inspected.State?.Health?.Log?.at(-1));
+      if (
+        denial !== undefined &&
+        denial.revisionId === inspected.Config.Labels[REVISION_LABEL] &&
+        denial.gatewayState.storageId === storage.storageId &&
+        denial.gatewayState.recovery?.state === "manual"
+      ) {
+        await this.writeRecoveryFile(storage, STATE_RECOVERY_MANUAL_FILE, "manual\n");
+      }
+    }
+    const snapshot = await this.readRecoverySnapshot(storage);
+    const binding = snapshot?.binding;
+    if (
+      binding === undefined ||
+      binding.containerId !== inspected.Id ||
+      binding.startedAt !== inspected.State?.StartedAt ||
+      binding.revisionId !== inspected.Config.Labels[REVISION_LABEL]
+    ) {
+      return undefined;
+    }
+    await this.request(
+      "POST",
+      `/containers/${binding.containerId}/stop?t=8`,
+      undefined,
+      [204, 304],
+    );
+    const actual = await this.container(binding.containerId);
+    const termination = dockerGatewayOwnerTermination(actual, binding);
+    if (
+      termination === undefined ||
+      actual === undefined ||
+      !this.protectedGatewayLayout(actual, storage)
+    ) {
+      throw new OwnershipFailure(
+        "Docker did not prove termination of the observed Gateway instance.",
+      );
+    }
+    const stopped = { ...binding, termination };
+    // Persist the Engine's actual termination before deleting its evidence.
+    await this.writeRecoverySnapshot(storage, {
+      version: 1,
+      stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+      storageId: storage.storageId,
+      stateInstance: storage.nonce,
+      binding: stopped,
+    });
+    const retained = await this.readRecoverySnapshot(storage);
+    if (JSON.stringify(retained?.binding) !== JSON.stringify(stopped)) {
+      throw new OwnershipFailure("Docker Gateway termination custody was not retained.");
+    }
+    return stopped;
   }
 
   private async initializeWorkspace(
@@ -804,26 +1667,73 @@ export class DockerComputeDriver implements ComputeDriver {
     }
     const workspace = this.workspaceDirectory(revision);
     const ownership = this.gatewayOwnership(revision);
-    const mounts = this.workspaceMounts(ownership);
+    const protectedState = this.recoveryConfigurationEligible(revision);
+    if (!protectedState) {
+      await this.invalidateRecoveryOrigin(ownership);
+    }
+    let freshStateNonce: string | undefined;
+    const harnessState =
+      revision.harness.mode === "dedicated"
+        ? this.workspaceMounts(ownership, "agent")[0]
+        : undefined;
+    const mounts = [
+      ...this.workspaceMounts(ownership),
+      ...(harnessState === undefined ? [] : [{ ...harnessState, Target: "/harness-local-state" }]),
+    ];
     for (const mount of new Map(mounts.map((mount) => [mount.Source, mount])).values()) {
       let volume = await this.volume(mount.Source);
       if (volume === undefined) {
-        if (setup.completed) {
+        if (setup.completed && mount.Source !== harnessState?.Source) {
           throw new ConfigurationFailure("Initialized workspace storage is missing.");
         }
+        const nonce =
+          protectedState && mount.Source === this.workspaceMounts(ownership)[0]!.Source
+            ? randomBytes(16).toString("hex")
+            : undefined;
         volume = (await this.request(
           "POST",
           "/volumes/create",
           {
             Name: mount.Source,
-            Labels: { ...this.ownershipMetadata(ownership), [ROLE_LABEL]: "workspace" },
+            Labels: {
+              ...this.ownershipMetadata(ownership),
+              [ROLE_LABEL]: "workspace",
+              ...(nonce === undefined
+                ? {}
+                : {
+                    [STATE_ORIGIN_LABEL]: GATEWAY_PRIVATE_STATE_ORIGIN,
+                    [STATE_INSTANCE_LABEL]: nonce,
+                  }),
+            },
           },
           [201],
-        )) as typeof volume;
+        )) as DockerLabeledResourceInspect;
+        if (
+          nonce !== undefined &&
+          volume?.Name === mount.Source &&
+          volume.Labels?.[STATE_INSTANCE_LABEL] === nonce
+        ) {
+          const actual = await this.volume(mount.Source);
+          if (actual?.Name === mount.Source && actual.Labels?.[STATE_INSTANCE_LABEL] === nonce) {
+            freshStateNonce = nonce;
+          }
+          volume = actual;
+        }
       }
       this.verifyOwnership(volume?.Labels, ownership, `volume ${mount.Source}`);
       if (volume?.Labels?.[ROLE_LABEL] !== "workspace") {
         throw new OwnershipFailure("Refusing unrelated Docker workspace storage.");
+      }
+    }
+    if (freshStateNonce !== undefined) {
+      const storage = await this.recoveryStorage(ownership, { freshNonce: freshStateNonce });
+      if (storage !== undefined) {
+        await this.writeRecoverySnapshot(storage, {
+          version: 1,
+          stateOrigin: GATEWAY_PRIVATE_STATE_ORIGIN,
+          storageId: storage.storageId,
+          stateInstance: storage.nonce,
+        });
       }
     }
     const name = `${this.gatewayContainerName(revision.namespaceId, revision.agentId)}-setup`;
@@ -833,7 +1743,7 @@ export class DockerComputeDriver implements ComputeDriver {
       if (existing.State?.Running) {
         throw new Error("Workspace initialization is already running.");
       }
-      await this.removeContainer(name);
+      await this.removeContainer(name, existing);
     }
     await this.request(
       "POST",
@@ -846,7 +1756,11 @@ export class DockerComputeDriver implements ComputeDriver {
           "-e",
           `
 const setupFs = require("node:fs");
-for (const path of ["/home/node/.openclaw", "/home/node/workspace"]) {
+for (const path of ${JSON.stringify([
+            "/home/node/.openclaw",
+            "/home/node/workspace",
+            ...(harnessState === undefined ? [] : ["/harness-local-state"]),
+          ])}) {
   setupFs.chownSync(path, 1000, 1000);
   setupFs.chmodSync(path, 0o700);
 }
@@ -877,28 +1791,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       // Docker's archive endpoint keeps the payload out of container arguments and metadata.
       // A single fixed-name, owner-only ustar entry is sufficient; no host files are staged.
       const payload = Buffer.from(JSON.stringify(setup));
-      const header = Buffer.alloc(512);
-      header.write("oce-workspace-setup.json", 0);
-      for (const [offset, value, width] of [
-        [100, 0o600, 8],
-        [108, 1000, 8],
-        [116, 1000, 8],
-        [124, payload.length, 12],
-        [136, 0, 12],
-      ] as const) {
-        header.write(value.toString(8).padStart(width - 1, "0") + "\0", offset);
-      }
-      header.fill(32, 148, 156);
-      header.write("0", 156);
-      header.write("ustar\0", 257);
-      header.write("00", 263);
-      const checksum = header.reduce((sum, byte) => sum + byte, 0);
-      header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148);
-      const archive = Buffer.concat([
-        header,
-        payload,
-        Buffer.alloc(((512 - (payload.length % 512)) % 512) + 1024),
-      ]);
+      const archive = dockerArchiveEntry("oce-workspace-setup.json", payload);
       await this.request(
         "PUT",
         `/containers/${encodeURIComponent(name)}/archive?path=%2Frun`,
@@ -932,6 +1825,68 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   }
 
   private async removeWorkspaceVolumes(ownership: Ownership): Promise<void> {
+    const metadataFilters = encodeURIComponent(
+      JSON.stringify({
+        label: Object.entries({
+          ...this.ownershipMetadata(ownership),
+          [ROLE_LABEL]: STATE_RECOVERY_ROLE,
+        }).map(([key, value]) => `${key}=${value}`),
+      }),
+    );
+    const metadata = (await this.request(
+      "GET",
+      `/volumes?filters=${metadataFilters}`,
+      undefined,
+      [200],
+    )) as {
+      Volumes?: readonly DockerLabeledResourceInspect[];
+    };
+    for (const listed of metadata.Volumes ?? []) {
+      if (listed.Name === undefined) {
+        continue;
+      }
+      const volume = await this.volume(listed.Name);
+      if (volume === undefined) {
+        continue;
+      }
+      this.verifyOwnership(volume.Labels, ownership, `volume ${listed.Name}`);
+      const agentId = volume.Labels?.[AGENT_LABEL];
+      const nonce = volume.Labels?.[STATE_INSTANCE_LABEL];
+      if (!isNonEmptyString(agentId) || !/^[a-f0-9]{32}$/.test(nonce ?? "")) {
+        throw new OwnershipFailure("Docker recovery metadata ownership is incomplete.");
+      }
+      const exact = { namespaceId: ownership.namespaceId, agentId };
+      if (listed.Name !== this.recoveryVolumeName(exact)) {
+        throw new OwnershipFailure("Docker recovery volume name is unrelated.");
+      }
+      this.verifyRecoveryVolume(volume, exact, listed.Name, nonce!);
+      const holderName = `${this.gatewayContainerName(exact.namespaceId, agentId)}-recovery`;
+      const holder = await this.container(holderName);
+      if (holder !== undefined) {
+        const storage = {
+          ownership: exact,
+          stateVolume: this.workspaceMounts(exact)[0]!.Source,
+          metadataVolume: listed.Name,
+          nonce: nonce!,
+          storageId: `${this.workspaceMounts(exact)[0]!.Source}:${nonce}`,
+          holderId: holder.Id ?? "",
+        };
+        await this.verifyRecoveryHolder(storage);
+        await this.request(
+          "DELETE",
+          `/containers/${storage.holderId}?force=true&v=true`,
+          undefined,
+          [204, 404],
+        );
+      }
+      this.verifyRecoveryVolume(await this.volume(listed.Name), exact, listed.Name, nonce!);
+      await this.request(
+        "DELETE",
+        `/volumes/${encodeURIComponent(listed.Name)}`,
+        undefined,
+        [204, 404],
+      );
+    }
     const labels = { ...this.ownershipMetadata(ownership), [ROLE_LABEL]: "workspace" };
     const filters = encodeURIComponent(
       JSON.stringify({ label: Object.entries(labels).map(([key, value]) => `${key}=${value}`) }),
@@ -974,7 +1929,20 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     const containerName = this.gatewayContainerName(revision.namespaceId, revision.agentId);
     const ownership = this.gatewayOwnership(revision);
     const existing = await this.container(containerName);
+    const stateRecovery = await this.gatewayRecoveryStorage(revision, workspaceSetup);
+    if (
+      existing !== undefined &&
+      stateRecovery === undefined &&
+      containerEnvironment(existing).OPENCLAW_STATE_RECOVERY_ORIGIN === GATEWAY_PRIVATE_STATE_ORIGIN
+    ) {
+      await this.invalidateRecoveryOrigin(ownership);
+    }
     const gatewayConfiguration = dockerGatewayConfigurationDocument(revision.configuration);
+    const runtimeEnvironment = { ...environment };
+    // These are trusted Compute facts, never an environment-based opt-in.
+    for (const key of STATE_RECOVERY_ENVIRONMENT) {
+      delete runtimeEnvironment[key];
+    }
     const configuration = JSON.stringify(gatewayConfiguration.configuration);
     const configurationHash = sha256Hex(configuration, 32);
     if (existing !== undefined) {
@@ -996,13 +1964,20 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         const transportMatches =
           revision.harness.mode === "embedded" ||
           containerTransportToken(existing) === environment.APP_SERVER_TOKEN;
-        if (healthy(existing) && transportMatches) {
+        if (
+          healthy(existing) &&
+          transportMatches &&
+          (stateRecovery === undefined || this.protectedGatewayLayout(existing, stateRecovery))
+        ) {
+          if (stateRecovery !== undefined) {
+            await this.waitForHealthyContainer(containerName, stateRecovery);
+          }
           return { containerName, created: false, ready: true };
         }
-        await this.removeContainer(containerName);
+        await this.removeContainer(containerName, existing);
       }
       if (currentRevision !== revision.revision || currentRevisionId !== revision.id) {
-        await this.removeContainer(containerName);
+        await this.removeContainer(containerName, existing);
       }
     }
 
@@ -1013,8 +1988,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       ownership,
       role: "gateway",
       workspaceSetup: workspaceSetup !== undefined,
+      ...(stateRecovery === undefined ? {} : { stateRecovery }),
       environment: {
-        ...environment,
+        ...runtimeEnvironment,
         ...(gatewayConfiguration.requiresManagedPassword
           ? { [GATEWAY_PASSWORD_ENV]: randomBytes(32).toString("hex") }
           : {}),
@@ -1023,13 +1999,28 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         OPENCLAW_GATEWAY_PORT: String(GATEWAY_PORT),
         OPENCLAW_STATE_DIR: "/home/node/.openclaw",
         HOME: "/home/node",
+        ...(stateRecovery === undefined
+          ? {}
+          : {
+              OPENCLAW_STATE_OWNER_RECOVERY_PATH: `${STATE_RECOVERY_DIRECTORY}/${STATE_RECOVERY_FILE}`,
+              OPENCLAW_TRUSTED_GATEWAY_TOOL_BOUNDARY: TRUSTED_GATEWAY_TOOL_BOUNDARY,
+              OPENCLAW_STATE_RECOVERY_ORIGIN: GATEWAY_PRIVATE_STATE_ORIGIN,
+              OPENCLAW_STATE_RECOVERY_STORAGE_ID: stateRecovery.storageId,
+              OPENCLAW_RUNTIME_STATUS_PORT: String(STATE_RECOVERY_PORT),
+              OPENCLAW_RUNTIME_STATUS_CONTAINER: "gateway",
+              OPENCLAW_RUNTIME_STATUS_TOKEN: randomBytes(32).toString("hex"),
+              OPENCLAW_AGENT_REVISION_ID: revision.id,
+            }),
       },
       command:
         (workspaceSetup === undefined
           ? ""
           : workspaceSetupVerifier(workspaceSetup, this.workspaceDirectory(revision))) +
         GATEWAY_RUNTIME_ENTRYPOINT,
-      healthcheckScript: `fetch("http://127.0.0.1:${GATEWAY_PORT}/readyz").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));`,
+      healthcheckScript:
+        stateRecovery === undefined
+          ? `fetch("http://127.0.0.1:${GATEWAY_PORT}/readyz").then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1));`
+          : protectedGatewayHealthcheck(),
       exposedPort: GATEWAY_PORT,
       labels: {
         [REVISION_LABEL]: revision.id,
@@ -1065,14 +2056,27 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     const existing = await this.container(containerName);
     if (existing !== undefined) {
       this.verifyOwnership(existing.Config?.Labels, ownership, `container ${containerName}`);
-      if (healthy(existing)) {
+      const stateMounts = existing.HostConfig?.Mounts ?? [];
+      const isolatedState =
+        workspaceSetup === undefined ||
+        stateMounts.some(
+          (mount) =>
+            mount.Target === "/home/node/.openclaw" &&
+            mount.Source === this.workspaceMounts(ownership, "agent")[0]!.Source,
+        );
+      const noGatewayState = stateMounts.every(
+        (mount) =>
+          mount.Source !== this.workspaceMounts(ownership)[0]!.Source &&
+          mount.Source !== this.recoveryVolumeName(ownership),
+      );
+      if (healthy(existing) && isolatedState && noGatewayState) {
         return {
           containerName,
           created: false,
           appServerToken: required(containerTransportToken(existing), "Codex transport token"),
         };
       }
-      await this.removeContainer(containerName);
+      await this.removeContainer(containerName, existing);
     }
     // OCC admission requires all native entries to share the same primary model.
     const agents = asRecord(revision.configuration.agents);
@@ -1121,13 +2125,16 @@ ${WORKSPACE_SETUP_RUNTIME}`,
   private async createRuntimeContainer(
     input: RuntimeContainerInput,
   ): Promise<DockerContainerInspect> {
+    if (input.stateRecovery !== undefined && input.role !== "gateway") {
+      throw new OwnershipFailure("Recovery metadata belongs only to the Gateway.");
+    }
     const labels = {
       ...this.ownershipMetadata(input.ownership),
       [ROLE_LABEL]: input.role,
       ...input.labels,
       [VERSION_LABEL]: input.image,
     };
-    await this.request(
+    const created = await this.request(
       "POST",
       `/containers/create?name=${encodeURIComponent(input.name)}`,
       {
@@ -1137,7 +2144,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         Entrypoint: ["node"],
         Cmd: ["-e", ...nodeProgramArguments(input.command)],
         Labels: labels,
-        ExposedPorts: { [`${input.exposedPort}/tcp`]: {} },
+        ExposedPorts: {
+          [`${input.exposedPort}/tcp`]: {},
+          ...(input.stateRecovery === undefined ? {} : { [`${STATE_RECOVERY_PORT}/tcp`]: {} }),
+        },
         Healthcheck: {
           // Podman's Docker-compatible API splits CMD healthcheck arguments on
           // whitespace, so keep the script argument opaque and whitespace-free.
@@ -1148,7 +2158,25 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         },
         HostConfig: {
           NetworkMode: input.network,
-          ...(input.workspaceSetup ? { Mounts: this.workspaceMounts(input.ownership) } : {}),
+          ...(input.workspaceSetup || input.stateRecovery !== undefined
+            ? {
+                Mounts: [
+                  ...(input.workspaceSetup
+                    ? this.workspaceMounts(input.ownership, input.role)
+                    : []),
+                  ...(input.stateRecovery === undefined
+                    ? []
+                    : [
+                        {
+                          Type: "volume",
+                          Source: input.stateRecovery.metadataVolume,
+                          Target: STATE_RECOVERY_DIRECTORY,
+                          ReadOnly: true,
+                        },
+                      ]),
+                ],
+              }
+            : {}),
           ReadonlyRootfs: true,
           CapDrop: ["ALL"],
           SecurityOpt: ["no-new-privileges"],
@@ -1174,16 +2202,36 @@ ${WORKSPACE_SETUP_RUNTIME}`,
       },
       [201],
     );
+    const createdId = asRecord(created)?.Id;
+    const actualId =
+      typeof createdId === "string" && /^[a-f0-9]{64}$/.test(createdId) ? createdId : undefined;
+    if (input.stateRecovery !== undefined && actualId === undefined) {
+      throw new OwnershipFailure(
+        "Docker did not return the protected Gateway's immutable identity.",
+      );
+    }
+    const target = actualId ?? input.name;
+    let startedInstance: DockerContainerInspect | undefined;
     try {
+      if (actualId !== undefined) {
+        const observed = await this.container(actualId);
+        this.verifyOwnership(observed?.Config?.Labels, input.ownership, "created container");
+        if (observed?.Id !== actualId || observed.Config?.Labels?.[ROLE_LABEL] !== input.role) {
+          throw new OwnershipFailure("Docker created another runtime instance.");
+        }
+      }
       await this.request(
         "POST",
-        `/containers/${encodeURIComponent(input.name)}/start`,
+        `/containers/${encodeURIComponent(target)}/start`,
         undefined,
         [204, 304],
       );
-      return await this.waitForHealthyContainer(input.name);
+      if (input.stateRecovery !== undefined) {
+        startedInstance = await this.container(target);
+      }
+      return await this.waitForHealthyContainer(target, input.stateRecovery, startedInstance);
     } catch (error) {
-      await this.removeContainer(input.name).catch(() => {});
+      await this.removeContainer(target, startedInstance).catch(() => {});
       throw error;
     }
   }
@@ -1386,27 +2434,81 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     return containerIds;
   }
 
-  private async removeContainer(name: string): Promise<void> {
+  private async removeContainer(name: string, expected?: DockerContainerInspect): Promise<void> {
+    const inspected = await this.container(expected?.Id ?? name);
+    if (
+      expected?.Id !== undefined &&
+      (inspected?.Id !== expected.Id || inspected.State?.StartedAt !== expected.State?.StartedAt)
+    ) {
+      throw new OwnershipFailure("Docker instance changed before removal.");
+    }
+    if (inspected?.Config?.Labels?.[ROLE_LABEL] === STATE_RECOVERY_ROLE) {
+      const labels = inspected.Config.Labels;
+      const ownership = {
+        namespaceId: required(labels[NAMESPACE_LABEL], "Recovery namespace"),
+        agentId: required(labels[AGENT_LABEL], "Recovery Agent"),
+      };
+      const nonce = required(labels[STATE_INSTANCE_LABEL], "Recovery storage instance");
+      const stateVolume = this.workspaceMounts(ownership)[0]!.Source;
+      await this.verifyRecoveryHolder({
+        ownership,
+        stateVolume,
+        metadataVolume: this.recoveryVolumeName(ownership),
+        nonce,
+        storageId: `${stateVolume}:${nonce}`,
+        holderId: inspected.Id ?? "",
+      });
+    }
+    const stopped =
+      inspected === undefined ? undefined : await this.stopObservedGatewayOwner(inspected);
+    const target = inspected?.Id ?? name;
+    if (
+      stopped !== undefined &&
+      dockerGatewayOwnerTermination(await this.container(target), stopped) === undefined
+    ) {
+      throw new OwnershipFailure("Docker Gateway instance changed before removal.");
+    }
     await this.request(
       "DELETE",
-      `/containers/${encodeURIComponent(name)}?force=true&v=true`,
+      `/containers/${encodeURIComponent(target)}?force=true&v=true`,
       undefined,
       [204, 404],
     );
   }
 
-  private async waitForHealthyContainer(name: string): Promise<DockerContainerInspect> {
+  private async waitForHealthyContainer(
+    name: string,
+    recovery?: DockerGatewayRecoveryStorage,
+    expected?: DockerContainerInspect,
+  ): Promise<DockerContainerInspect> {
     const started = Date.now();
     while (Date.now() - started < STARTUP_TIMEOUT_MS) {
       const inspected = await this.container(name);
       if (inspected === undefined) {
         throw new Error(`Docker container ${name} disappeared.`);
       }
-      if (healthy(inspected)) {
-        return inspected;
+      if (
+        expected !== undefined &&
+        (inspected.Id !== expected.Id || inspected.State?.StartedAt !== expected.State?.StartedAt)
+      ) {
+        throw new OwnershipFailure("Docker runtime instance changed during readiness.");
       }
       if (inspected.State?.Running === false) {
         throw new Error(`Docker container ${name} exited before readiness.`);
+      }
+      // Observation may withhold recovery authority, but it is not a second
+      // readiness condition. Native health remains available without telemetry.
+      const current =
+        recovery === undefined ? inspected : await this.observeGatewayState(inspected, recovery);
+      const lastExit = current.State?.Health?.Log?.at(-1)?.ExitCode;
+      const currentProtectedHealth =
+        current.State?.Status === "running" &&
+        current.State.Paused !== true &&
+        current.State.Restarting !== true &&
+        current.State.Dead !== true &&
+        (lastExit === undefined || lastExit === 0);
+      if (healthy(current) && (recovery === undefined || currentProtectedHealth)) {
+        return current;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
     }
@@ -1418,6 +2520,7 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     path: string,
     body: unknown,
     expected: readonly number[],
+    responseType: "json" | "archive" = "json",
   ): Promise<unknown> {
     const ownerSignal = currentComputeAbortSignal();
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -1467,9 +2570,17 @@ ${WORKSPACE_SETUP_RUNTIME}`,
               });
               response.on("end", () => {
                 const status = response.statusCode ?? 0;
-                const text = Buffer.concat(chunks).toString("utf8");
+                const bytes = Buffer.concat(chunks);
+                const text =
+                  responseType === "archive" && expected.includes(status)
+                    ? ""
+                    : bytes.toString("utf8");
                 if (!expected.includes(status)) {
                   reject(new DockerApiError(status, text || `Docker API returned HTTP ${status}.`));
+                  return;
+                }
+                if (responseType === "archive") {
+                  resolve(bytes);
                   return;
                 }
                 const contentType = response.headers["content-type"];

@@ -63,6 +63,8 @@ test(
       "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
       "apps/controller/src/drivers/compute/node-program.ts",
       "apps/controller/src/drivers/compute/runtime-startup.ts",
+      "apps/controller/src/drivers/compute/native-state-owner.ts",
+      "apps/controller/src/drivers/compute/native-state-recovery-runtime.ts",
       "apps/controller/src/drivers/plugin/runtime-translator.ts",
       "packages/contracts/src/runtime-failure.mjs",
     ];
@@ -161,9 +163,13 @@ const schemaResult = cp.spawnSync("node", ["/app/openclaw.mjs", "config", "schem
 assert.equal(schemaResult.status, 0, schemaResult.stderr);
 const supportsSlackApprovers = JSON.parse(schemaResult.stdout).properties?.approvals?.properties?.plugin?.properties?.slack !== undefined;
 async function scenario(entrypoint, channel, label) {
-  const directory = fs.mkdtempSync("/tmp/oce-approver-startup-");
+  // Docker's producer writes directly into its private managed state directory;
+  // Kubernetes reads an immutable input artifact before publishing a writable copy.
+  const docker = label.startsWith("docker");
+  const directory = docker ? "/home/node/.openclaw" : fs.mkdtempSync("/tmp/oce-approver-startup-");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const config = { ...base, ...(channel === undefined ? {} : { channels: { slack: channel } }) };
-  const configPath = directory + "/base.json";
+  const configPath = directory + (docker ? "/openclaw.json" : "/base.json");
   fs.writeFileSync(configPath, JSON.stringify(config));
   const environment = { ...process.env, HOME: "/home/node", OPENCLAW_CONFIG_PATH: configPath,
     OPENCLAW_STATE_DIR: directory, OPENCLAW_CONFIG_JSON: JSON.stringify(config),
@@ -191,7 +197,9 @@ async function scenario(entrypoint, channel, label) {
     }
     assert.ok(observed, label + " did not report its expected startup outcome: " + output);
     if (incompatible) {
-      assert.equal(fs.existsSync(directory + "/openclaw.json"), false, "Rejected policy must not replace the native config");
+      if (!docker) assert.equal(fs.existsSync(directory + "/openclaw.json"), false, "Rejected policy must not publish the native config");
+      // Docker already has its base config at the managed target; a rejected
+      // approval overlay must leave that input unchanged on both launchers.
       assert.deepEqual(JSON.parse(fs.readFileSync(configPath, "utf8")), config);
       await assert.rejects(fetch("http://127.0.0.1:18789/healthz", { signal: AbortSignal.timeout(1000) }));
       if (label.startsWith("kubernetes")) {

@@ -2,6 +2,8 @@
 // returns program text that a wrapper embeds in its generated Node program.
 
 const STARTUP_PHASE_EVENT = "runtime.startup_phase";
+// Existing native configuration validation uses this bounded CLI phase.
+export const NATIVE_GATEWAY_COMMAND_TIMEOUT_MS = 30_000;
 
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.

@@ -19,6 +19,8 @@
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
     "tests/conformance/kubernetes-compute.test.mjs",
+    "tests/conformance/kubernetes-native-state-recovery.test.mjs",
+    "tests/conformance/native-gateway-state-owner.test.mjs",
     "tests/conformance/kubernetes-provider-harness.test.mjs",
     "tests/conformance/kubernetes-harness-workspace-volume.test.mjs",
     "tests/conformance/workspace-node-supervisor.test.mjs",
@@ -184,6 +186,12 @@
     },
     {
       "path": "tests/conformance/kubernetes-compute.test.mjs"
+    },
+    {
+      "path": "tests/conformance/kubernetes-native-state-recovery.test.mjs"
+    },
+    {
+      "path": "tests/conformance/native-gateway-state-owner.test.mjs"
     },
     {
       "path": "tests/conformance/kubernetes-provider-harness.test.mjs"

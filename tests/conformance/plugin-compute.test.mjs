@@ -32,6 +32,7 @@ import {
   pluginRuntimeEarlierConfigMapData,
   pluginRuntimeEnvironment,
   pluginRuntimeSpecForRevision,
+  nativeGatewayRecoveryPluginInputsEligible,
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
@@ -627,6 +628,7 @@ test("compute serializes selected Codex plugins for startup-time resolution", ()
   const runtime = pluginRuntimeSpecForRevision(revision({ plugins: state }));
 
   assert.equal(runtime.kind, "codex");
+  assert.equal(nativeGatewayRecoveryPluginInputsEligible(runtime), true);
   assert.deepEqual(runtime.selections, state.plugins);
 
   const data = pluginRuntimeConfigMapData(runtime);
@@ -659,6 +661,11 @@ test("compute serializes selected OpenClaw plugins for startup-time resolution",
   );
 
   assert.deepEqual(runtime.selections, state.plugins);
+  assert.equal(nativeGatewayRecoveryPluginInputsEligible(runtime), false);
+  assert.equal(
+    nativeGatewayRecoveryPluginInputsEligible({ kind: "openclaw", selections: {} }),
+    true,
+  );
   const data = pluginRuntimeConfigMapData(runtime);
   assert.deepEqual(Object.keys(data), [PLUGIN_RUNTIME_MANIFEST]);
   assert.deepEqual(JSON.parse(data[PLUGIN_RUNTIME_MANIFEST]), {

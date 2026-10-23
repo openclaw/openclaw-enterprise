@@ -239,6 +239,8 @@ Agent containers. Each replacement gateway then runs read-only
 `openclaw doctor --lint --json --severity-min error`. Failures retain dispatch,
 status, Pod, and Doctor evidence for inspection.
 
+See [native owner recovery](../reference/drivers/kubernetes-compute/native-owner-recovery.md).
+
 ### 6. Hand off application verification
 
 `docs/guides/deploy/production-upgrade.md:Verify the release`

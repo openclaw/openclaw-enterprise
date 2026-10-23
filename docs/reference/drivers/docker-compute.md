@@ -159,6 +159,41 @@ The Driver then removes the container, so Doctor's output survives only
 through the Docker logging address. A slow migration can also outlast the
 Driver's 120-second readiness budget; deploying again retries it.
 
+## Dedicated state and native-owner recovery
+
+For dedicated Codex with persistent workspace inputs, the Gateway keeps the
+original Agent state volume. The Harness receives a separate OpenClaw state
+volume; both still mount the workspace volume. This preserves existing Gateway
+data and removes the shared state mount from the Harness.
+Deployments without persistent inputs retain separate ephemeral container state.
+
+Automatic native-owner recovery additionally requires the private constructor
+input `trustedGatewayToolBoundary: "oce-gateway-tools/v1"`, a supported Docker
+Engine, qualified Gateway code/configuration and state created with private-origin
+metadata. The ordinary factory leaves recovery disabled; trusted wiring and
+Native-runtime qualification remain pending. Driver JSON cannot enable it.
+Podman, legacy state and unreviewed configuration shapes retain operator recovery.
+Gateway-native MCP servers, custom browser executables and CLI-backed channels
+need that fallback. Codex MCP/plugin selections run in the Harness.
+
+The Driver keeps recovery metadata in an Agent-owned volume mounted read-only by
+the Gateway and never mounted by the Harness. A never-started metadata container
+lets the Driver use the existing Engine archive API to update it. Missing metadata
+does not recreate trust from a label on the data volume. Embedded or unsafe reuse
+invalidates that trust before the volume is exposed again.
+
+The Gateway's protected healthcheck emits bounded owner observations from its
+authenticated loopback status endpoint. The Driver reads current health records
+through Engine inspection; it adds no host-published status port or management
+network attachment. Both startup and readiness checks still control health.
+
+Before removing a Gateway, the Driver verifies that the exact observed container
+instance has stopped and saves that proof. A replacement receives an intent for
+its own wrapper instance and uses Native's existing snapshot confirmation and
+live-owner checks. Container absence, elapsed time or retained health logs alone
+cannot authorize recovery. A refused native attempt holds the replacement without
+retrying that intent. See the shared [native-owner contract](kubernetes-compute/storage-and-credentials.md#native-owner-recovery).
+
 ## Gateway authentication
 
 The native listener must serve HTTP for readiness and private traffic.

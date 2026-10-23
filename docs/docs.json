@@ -313,6 +313,10 @@
                             "label": "Storage and Credentials"
                           },
                           {
+                            "page": "reference/drivers/kubernetes-compute/native-owner-recovery",
+                            "label": "Native Owner Recovery"
+                          },
+                          {
                             "page": "reference/drivers/kubernetes-compute/codex-oauth-storage",
                             "label": "Codex OAuth Storage"
                           }

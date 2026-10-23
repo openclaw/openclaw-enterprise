@@ -12,6 +12,7 @@ import {
   publicGithubReadSkill,
 } from "../repo/github/public-read/codex.ts";
 import { harnessEgressEnrollment, type HarnessEgressEnrollment } from "./egress-enrollment.ts";
+import { openClawRuntimeArtifact } from "../plugin/runtime-translator.ts";
 
 export const PLUGIN_RUNTIME_DIRECTORY = "/etc/openclaw/plugin-runtime";
 export const PLUGIN_RUNTIME_MANIFEST = "runtime.json";
@@ -71,6 +72,17 @@ export type PluginRuntimeSpec =
       readonly providerTools?: "none";
       readonly egressEnrollment?: HarnessEgressEnrollment;
     };
+
+/** Use the installer's artifact facts; Codex selections execute in the Harness. */
+export function nativeGatewayRecoveryPluginInputsEligible(
+  runtime: PluginRuntimeSpec | undefined,
+): boolean {
+  if (runtime === undefined || runtime.kind === "codex") {
+    return true;
+  }
+  const artifact = openClawRuntimeArtifact(runtime.selections, [], runtime.pluginApprovers);
+  return Array.isArray(artifact.installs) && artifact.installs.length === 0;
+}
 
 function validateDriverMatchesRuntime(
   revision: Readonly<AgentRevision>,
