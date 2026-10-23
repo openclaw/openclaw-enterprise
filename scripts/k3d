@@ -202,6 +202,7 @@ case "$harness" in
 esac
 if [ "$harness" = "openclaw" ]; then
   export OCC_TEST_OPENSHELL_HARNESS=openclaw
+  export OCC_K3D_HARNESS=openclaw
   prepared_lane="openshell"
   integration_file="tests/integration/sandbox-driver-openshell-k3d-real.test.mjs"
 else

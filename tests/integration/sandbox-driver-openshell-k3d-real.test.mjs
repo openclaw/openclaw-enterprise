@@ -1,6 +1,7 @@
 import { defaultAgentModel } from "../../apps/controller/src/console/agents/starter-model.mjs";
 import { RUNTIME_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import { normalizeOpenAiBaseUrl } from "../../apps/controller/src/drivers/openai-endpoint.ts";
 import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
 import {
   failureSecrets,
@@ -1534,7 +1535,10 @@ function assertBridgedNativeStateMount(pod) {
   const nativeInference = JSON.parse(
     environment.find(({ name }) => name === "OPENCLAW_NATIVE_INFERENCE_CONFIG")?.value,
   );
-  assert.equal(nativeInference.models.providers.openai.baseUrl, modelBaseUrl);
+  assert.equal(
+    nativeInference.models.providers.openai.baseUrl,
+    normalizeOpenAiBaseUrl(modelBaseUrl),
+  );
   assert.equal(nativeInference.models.providers.openai.models[0].id, providerModel);
   assert.deepEqual(nativeInference.models.providers.openai.apiKey, {
     source: "env",
@@ -1673,7 +1677,7 @@ function createIntegrationSandboxDriverFactory(
   // once the upstream gateway can bind each Sandbox to Compute's exact Agent ServiceAccount.
   function agentSandboxServiceAccount(context) {
     return (
-      context.requirements.workloadIdentity?.serviceAccountName ??
+      context.requirements?.workloadIdentity?.serviceAccountName ??
       openShellAgentName(context.revision.agentId)
     );
   }
@@ -1974,14 +1978,10 @@ function createIntegrationSandboxDriverFactory(
       async withdrawHarnessExposure(context) {
         const endpoint = await endpointForNamespace(context, {
           sandboxServiceAccountName: agentSandboxServiceAccount(context),
-          exact: context.requirements.workloadIdentity !== undefined,
         });
-        await delegate(
-          context.requirements,
-          context.namespace.name,
-          endpoint,
+        await delegate(undefined, context.namespace.name, endpoint).withdrawHarnessExposure(
           context,
-        ).withdrawHarnessExposure(context);
+        );
       },
       // Compute asks for the OpenShell-exposed Codex endpoint and points the Agent Gateway at it.
       // The real Driver supports this only for dedicated Codex, so the bridge proof omits it.
@@ -2956,6 +2956,7 @@ async function prepareProductionInstallation(
     policyFixturePool,
     pauseWorker,
     resumeWorker: startWorker,
+    workerEvents: events,
     provisioningFailure: (revisionId) => createSandboxDriver.provisioningFailures.get(revisionId),
     diagnoseAgentRevision: (agentId, revisionId) =>
       writeWorkerCompletionDiagnostics({
@@ -7260,6 +7261,23 @@ test(
           );
           await holdNativeOpenClawDemo(context, topology);
         } else {
+          // Restarting OCC exercises its active-revision sweep, which withdraws native
+          // exposure without rendered Harness requirements or a preparation pass.
+          await topology.pauseWorker();
+          const sweepStart = topology.workerEvents.length;
+          await topology.resumeWorker();
+          await waitFor("native exposure withdrawal after worker restart", () =>
+            topology.workerEvents
+              .slice(sweepStart)
+              .some(
+                (event) =>
+                  event.event === "worker.harness-exposure-withdrawn" &&
+                  event.revisionId === topology.revision.id &&
+                  event.agentId === topology.agent.id,
+              )
+              ? true
+              : undefined,
+          );
           process.stderr.write(
             "OpenShell integration: starting successive native worker sessions through Gateway.\n",
           );

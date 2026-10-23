@@ -162,7 +162,10 @@ Set `OPENAI_API_KEY` privately to the endpoint's authorized key. The URL must
 use HTTPS port 443 and end in `/v1`. Use the provider's exact model ID, including
 its namespace. Both `test` and `demo` accept these flags. Without flags,
 `OCC_TEST_OPENSHELL_MODEL_BASE_URL` and `OCC_TEST_OPENAI_MODEL` select the endpoint
-and model. Explicit flags override inherited and prepared settings.
+and model. Explicit flags override inherited and prepared settings. Native helper
+bootstrap and its selected native test use `OPENAI_API_KEY`, not `CODEX_ACCESS_TOKEN`.
+Full OpenShell lane preparation and the first-Agent workflows still require their
+Codex token.
 
 Both commands use the test-only bridge. `test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the

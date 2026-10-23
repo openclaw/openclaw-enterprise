@@ -604,13 +604,29 @@ test("Linux Podman uses its native API socket", (context) =>
 
 test("native OpenClaw preparation requires its API key instead of a Codex token", async (context) => {
   const root = await temporaryDirectory(context, "oce-k3d-native-inputs-");
-  for (const [harness, apiKey, expected] of [
-    ["openclaw", "test-only-value", /requires a prior prepareLane/],
-    ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
-    ["", "test-only-value", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+  const nativeFile = "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs";
+  const firstAgentFile = "tests/integration/local-first-agent-openshell-k3d-real.test.mjs";
+  for (const [harness, apiKey, file, helperHarness, expected] of [
+    ["openclaw", "test-only-value", nativeFile, "", /requires a prior prepareLane/],
+    ["openclaw", "", nativeFile, "", /Missing required CI input\(s\): OPENAI_API_KEY/],
+    ["", "test-only-value", nativeFile, "", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+    [
+      "openclaw",
+      "test-only-value",
+      firstAgentFile,
+      "",
+      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
+    ],
+    [
+      "openclaw",
+      "test-only-value",
+      firstAgentFile,
+      "openclaw",
+      /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/,
+    ],
   ]) {
-    // File preparation must reach its owned-state check with native credentials alone.
-    // The full lane still needs Codex, and a missing native key must fail first.
+    // Only the native file may reach its owned-state check without Codex credentials.
+    // The first-Agent workflow still creates a Codex Agent, even under a native selector.
     await assert.rejects(
       execute(
         process.execPath,
@@ -619,17 +635,54 @@ test("native OpenClaw preparation requires its API key instead of a Codex token"
           "--lane",
           "openshell",
           "--file",
-          "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",
+          file,
           "--state",
           join(root, "missing-state.json"),
         ],
         {
           env: {
             ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
             CODEX_ACCESS_TOKEN: "",
             OPENAI_API_KEY: apiKey,
             OCC_TEST_OPENAI_MODEL: "vendor/model",
             OCC_TEST_OPENSHELL_HARNESS: harness,
+            OCC_K3D_HARNESS: helperHarness,
+          },
+        },
+      ),
+      expected,
+    );
+  }
+
+  const existingState = join(root, "existing-state.json");
+  await writeFile(
+    existingState,
+    JSON.stringify(preparedState(repositoryRoot, 1, undefined, "openshell")),
+    { mode: 0o600 },
+  );
+  for (const [helperHarness, apiKey, expected] of [
+    ["", "test-only-value", /Missing required CI input\(s\): CODEX_ACCESS_TOKEN/],
+    ["openclaw", "test-only-value", /CI state already exists/],
+    ["openclaw", "", /Missing required CI input\(s\): OPENAI_API_KEY/],
+  ]) {
+    // An existing owned state stops bootstrap before infrastructure effects. Only the
+    // native helper's explicit selection may pass credential admission without Codex.
+    await assert.rejects(
+      execute(
+        process.execPath,
+        ["scripts/ci/prepare.mjs", "--lane", "openshell", "--state", existingState],
+        {
+          env: {
+            ...process.env,
+            GITHUB_ENV: "",
+            GITHUB_OUTPUT: "",
+            CODEX_ACCESS_TOKEN: "",
+            OPENAI_API_KEY: apiKey,
+            OCC_TEST_OPENAI_MODEL: "vendor/model",
+            OCC_TEST_OPENSHELL_HARNESS: "openclaw",
+            OCC_K3D_HARNESS: helperHarness,
           },
         },
       ),

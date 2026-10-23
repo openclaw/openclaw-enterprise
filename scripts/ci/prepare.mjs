@@ -780,7 +780,7 @@ function assertImmutableOptionalEnvImages(names, env = process.env) {
   }
 }
 
-async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
+async function validateLaneInputsBeforeSideEffects(lane, { file } = {}) {
   const name = laneName(lane);
   // TODO: Remove this refusal once installed repository qualification can remove its
   // remote branch and pull request only while they still match what the run created.
@@ -792,14 +792,20 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
     );
   }
   const prepare = lanePrepare(name);
-  const effectiveEnv = effectiveLaneEnv(name, env);
+  const effectiveEnv = effectiveLaneEnv(name);
   if (prepare.k3d && name !== "openshell" && effectiveEnv.OPENCLAW_CI_K3S_IMAGE) {
     assertImmutableImageReference(effectiveEnv.OPENCLAW_CI_K3S_IMAGE, "OPENCLAW_CI_K3S_IMAGE");
   }
-  const requiredInputs =
-    name === "openshell" && effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw"
-      ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
-      : (prepare.requireEnv ?? []);
+  // Native-only file preparation and the k3d helper bootstrap need no Codex token.
+  // Other OpenShell files and full-lane preparation still include a Codex Agent.
+  const nativeOnly =
+    name === "openshell" &&
+    effectiveEnv.OCC_TEST_OPENSHELL_HARNESS === "openclaw" &&
+    (file === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs" ||
+      (file === undefined && effectiveEnv.OCC_K3D_HARNESS === "openclaw"));
+  const requiredInputs = nativeOnly
+    ? ["OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"]
+    : (prepare.requireEnv ?? []);
   requireEnv(requiredInputs, effectiveEnv);
   if (prepare.nodeBaseImage) {
     assertNodeBaseImage(effectiveEnv.NODE_BASE_IMAGE);
@@ -3128,8 +3134,8 @@ async function prepareFile({ lane, file, statePath, template }) {
   if (!file) {
     throw new Error("prepareFile requires a file.");
   }
-  await validateLaneInputsBeforeSideEffects(name);
   const relativeFile = toRepositoryRelative(filePath(file));
+  await validateLaneInputsBeforeSideEffects(name, { file: relativeFile });
   const resolvedStatePath = normalizeStatePath(statePath);
   // A test may prepare databases from its own process while the runner prepares and
   // cleans other files. The lock keeps either side from writing back a stale state.
