@@ -249,10 +249,13 @@ can require runtime retirement instead. An empty OpenShell profile workspace
 selects the platform profile, not a same-named Workspace profile.
 
 A failed read closes the route until the same installation verifies, with retry
-backoff from 1 s to 10 s. After restart, the worker reads durable delivery facts,
-re-observes the installation and reads eligible prepared material. It does not
-replay an uncertain provider write. Generic fences and pending-write rules are
-in [Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
+backoff from 1 s to 10 s. A failed read before the route's first provider write
+is retried by the next preparation pass; a refused identity still closes the
+route. A provider write runs to its own deadline, not the rest of a pass's read
+budget. After restart, the worker reads durable delivery facts, re-observes the
+installation and reads eligible prepared material. It does not replay an
+uncertain provider write. Generic fences and pending-write rules are in
+[Credential Proxy lifecycle](../drivers/credential-proxy.md#cancellation-retries-and-uncertainty).
 Prepared-material expiry, quarantine and retirement belong to
 [Token Service lifecycle](../repository-credentials.md#token-service-lifecycle) and
 its [source flow](../../flows/credential-source-refresh.md#6-oce-prepared-github-core).

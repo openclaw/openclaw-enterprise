@@ -858,7 +858,9 @@ capabilities:
 {{- end -}}
 
 {{/* Decimal, matching JavaScript Number. Sprig int is octal, so it must not parse these.
-     A values file delivers a float64, and toString prints 1000000 and above as an exponent. */}}
+     A values file delivers a float64, and toString prints 1000000 and above as an exponent.
+     With "port", also refuse leading zeros: callers pass the value through Sprig int, and
+     startup's listener comparison refuses "08443". */}}
 {{- define "openclaw.positiveSafeInteger" -}}
 {{- $raw := toString .value -}}
 {{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}
@@ -867,6 +869,9 @@ capabilities:
 {{- $parsed := atoi $raw -}}
 {{- if or (not (regexMatch "^[0-9]+$" $raw)) (lt $parsed 1) (gt $parsed 9007199254740991) -}}
 {{- fail (printf "%s must be a positive safe integer" .name) -}}
+{{- end -}}
+{{- if and .port (hasPrefix "0" $raw) -}}
+{{- fail (printf "%s must be a TCP port without leading zeros" .name) -}}
 {{- end -}}
 {{- $raw -}}
 {{- end -}}
@@ -878,7 +883,7 @@ capabilities:
 {{- define "openclaw.listenerEnv" -}}
 {{- range $listener := list (dict "name" "OCC_EGRESS_AUTHORITY_PORT" "label" "egressAuthority.port" "values" .Values.egressAuthority) (dict "name" "OCC_OPENSHELL_GIT_PORT" "label" "openshellGit.port" "values" .Values.openshellGit) }}
 - name: {{ $listener.name }}
-  value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port) | quote }}{{ else }}"disabled"{{ end }}
+  value: {{ if $listener.values.enabled }}{{ include "openclaw.positiveSafeInteger" (dict "name" $listener.label "value" $listener.values.port "port" true) | quote }}{{ else }}"disabled"{{ end }}
 {{- end }}
 {{- end -}}
 

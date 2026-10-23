@@ -5,6 +5,11 @@ import {
   resolveGitHubRepositoryBinding,
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
+import {
+  openShellProfileEndpoint,
+  type OpenShellProviderCreateRequest,
+  type OpenShellProviderProfile,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import type { routeStore } from "../fixtures/openshell-git-route-store.mjs";
 
 type Entry = NonNullable<Awaited<ReturnType<OpenShellGitRuntime["entries"]["get"]>>>;
@@ -17,6 +22,12 @@ type Faults = {
   observeAfterRotate?: boolean;
   environmentLag?: boolean;
   duringObserve?: () => void;
+  /** The error a named gateway call throws instead of answering, if any. */
+  gatewayCall?: (method: string, name?: string) => unknown;
+  /** Runs while the provider write is in flight, before it answers; given the caller's signal. */
+  duringWrite?: (signal: AbortSignal) => unknown;
+  /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
+  sandboxMissing?: boolean;
 };
 type Material = {
   value: string;
@@ -56,6 +67,7 @@ interface World {
     observe: number;
     rotate: number;
     material: number;
+    providerWrites: number;
     observedWith: (Entry["installed"] | undefined)[];
   };
   faults: Faults;
@@ -137,23 +149,80 @@ export function openShellGitRuntimeFixture({
     observe: 0,
     rotate: 0,
     material: 0,
+    providerWrites: 0,
     observedWith: [] as (Entry["installed"] | undefined)[],
   };
   const faults: Faults = world?.faults ?? {};
+  // The gateway's own prepared Git profiles and providers, which a route's bootstrap writes
+  // (oce-git- plus 32 hex digits). Any other name is the Agent's model provider.
+  const prepared = /^oce-git-[0-9a-f]{32}$/;
+  const profiles = new Map<string, Record<string, unknown>>();
+  const providers = new Map<string, Record<string, unknown>>();
+  const answer = (method: string, name?: string) => {
+    const error = faults.gatewayCall?.(method, name);
+    if (error) {
+      throw error;
+    }
+  };
   const client = {
-    getProvider: async () => ({ type: "openai", profileWorkspace: "" }),
-    getProviderProfile: async () => ({
-      definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] },
-    }),
+    getProvider: async (_workspace: string, name: string) => {
+      answer("getProvider", name);
+      return prepared.test(name) ? providers.get(name) : { type: "openai", profileWorkspace: "" };
+    },
+    getProviderProfile: async (_workspace: string | null, id: string) => {
+      answer("getProviderProfile", id);
+      return prepared.test(id)
+        ? profiles.get(id)
+        : { definition: { endpoints: [{ host: "api.openai.com" }], credentials: [] } };
+    },
+    importProviderProfile: async (_workspace: string, profile: OpenShellProviderProfile) => {
+      calls.providerWrites += 1;
+      answer("importProviderProfile");
+      profiles.set(profile.id, {
+        id: profile.id,
+        resourceVersion: "1",
+        annotations: profile.annotations,
+        definition: {
+          credentials: profile.credentials.map((credential) => ({
+            name: credential.name,
+            env_vars: credential.envVars,
+            required: credential.required,
+            auth_style: credential.authStyle,
+            header_name: credential.headerName,
+            stable_placeholder: credential.stablePlaceholder,
+          })),
+          binaries: profile.binaries.map((path) => ({ path })),
+          endpoints: profile.endpoints.map(openShellProfileEndpoint),
+        },
+      });
+    },
+    createProvider: async (request: OpenShellProviderCreateRequest) => {
+      calls.providerWrites += 1;
+      answer("createProvider");
+      const provider = {
+        id: `${request.name}-id`,
+        name: request.name,
+        type: request.type,
+        workspace: request.workspace,
+        profileWorkspace: request.workspace,
+        labels: request.labels,
+        config: {},
+        resourceVersion: "1",
+      };
+      providers.set(request.name, provider);
+      return provider;
+    },
     getSandbox: async () => {
       calls.getSandbox += 1;
       faults.onRead?.();
+      answer("getSandbox");
       if (faults.gateway) {
         throw faults.gateway;
       }
-      return { ...sandbox };
+      return faults.sandboxMissing ? undefined : { ...sandbox };
     },
     getGatewayInfo: async () => {
+      answer("getGatewayInfo");
       if (faults.gateway) {
         throw faults.gateway;
       }
@@ -167,7 +236,10 @@ export function openShellGitRuntimeFixture({
         ],
       };
     },
-    getWorkspace: async () => ({ id: "workspace-id-one", name: sandbox.workspace }),
+    getWorkspace: async () => {
+      answer("getWorkspace");
+      return { id: "workspace-id-one", name: sandbox.workspace };
+    },
   };
   const provider = {
     observe: async (
@@ -196,12 +268,19 @@ export function openShellGitRuntimeFixture({
         ...supervisor,
       });
     },
-    rotate: async (binding: Entry["binding"], release: () => Promise<Material | undefined>) => {
+    rotate: async (
+      binding: Entry["binding"],
+      release: () => Promise<Material | undefined>,
+      signal: AbortSignal,
+    ) => {
       const token = await release();
-      if (!token) {
+      // Like the real rotate(): a caller out of time sends nothing; once sent, the write is
+      // not tied to the caller's signal.
+      if (!token || signal.aborted) {
         return;
       }
       calls.rotate += 1;
+      await faults.duringWrite?.(signal);
       if (faults.rotate) {
         throw faults.rotate;
       }
@@ -357,6 +436,22 @@ export async function reconciledOpenShellGitRuntimeFixture(
 ) {
   const fixture = openShellGitRuntimeFixture(options);
   await fixture.reconcile();
+  return fixture;
+}
+
+/**
+ * A worker about to bootstrap the route of a revision whose Sandbox does not exist yet: no
+ * local entry, no persisted route, and the gateway's prepared provider written for real by the
+ * runtime's own provider (finding 2210).
+ */
+export function bootstrappingOpenShellGitRuntimeFixture(
+  options?: Parameters<typeof openShellGitRuntimeFixture>[0],
+) {
+  const fixture = openShellGitRuntimeFixture(options);
+  fixture.runtime["entries"].clear();
+  fixture.runtime["states"].clear();
+  fixture.store?.rows.delete(fixture.revision.id);
+  fixture.faults.sandboxMissing = true;
   return fixture;
 }
 

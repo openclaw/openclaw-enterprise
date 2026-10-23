@@ -14,6 +14,7 @@ import {
   validateGitHubRepositoryRegistry,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import {
+  bootstrappingOpenShellGitRuntimeFixture as bootstrapping,
   openShellGitRuntimeFixture as fixture,
   openShellGitRuntimeWorkerAfterRestart as workerAfterRestart,
   reconciledOpenShellGitRuntimeFixture as reconciledFixture,
@@ -816,6 +817,312 @@ test("a restarted worker names why it cannot adopt a revision's Sandbox, once pe
   ]);
   assert.equal(f.calls.getSandbox, 1, "the retained failure is not re-observed");
   assert.equal(openShellGitRouteReadiness(f.runtime.route(f.revision.id)), "blocked");
+});
+
+test("a failed read while the Git route bootstraps is read again; a refused identity still closes it", async () => {
+  // Finding 2210: one gateway read that failed during the bootstrap closed the route for good.
+  const preparedName = (name) => /^oce-git-[0-9a-f]{32}$/.test(name ?? "");
+  const observationFailure = (failure) => (error) =>
+    error.name === "OpenShellGitObservationError" && error.failure === failure;
+  const store = routeStore();
+  let f = bootstrapping({ store });
+  // Before the route is on record: nothing is written, and the next pass starts over.
+  for (const [method, fault, failure] of [
+    [
+      "getProvider",
+      new DependencyUnavailableError("OpenShell GetProvider failed."),
+      "gateway_request_failed",
+    ],
+    [
+      "getSandbox",
+      new SandboxGatewayUnavailableError("OpenShell GetSandbox failed."),
+      "gateway_unavailable",
+    ],
+    ["getWorkspace", Object.assign(new Error("timed out"), { name: "TimeoutError" }), "timeout"],
+  ]) {
+    f.faults.gatewayCall = (called) => (called === method ? fault : undefined);
+    await assert.rejects(f.prepare(), observationFailure(failure), method);
+    assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" }, method);
+    assert.equal(store.rows.has(f.revision.id), false, method);
+  }
+  // A read inside the provider's bootstrap, after the route is on record with its write
+  // pending: the write was never sent. Should the store not answer as the reservation is
+  // cleared, the next pass clears it first; nothing is tombstoned.
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name)
+      ? new DependencyUnavailableError("OpenShell GetProvider failed.")
+      : undefined;
+  const cancel = store.cancelWriting;
+  store.cancelWriting = async () => {
+    throw new Error("connection terminated");
+  };
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  const row = () => store.rows.get(f.revision.id);
+  assert.deepEqual([row().fence, row().writePending, row().blocked], [1, "bootstrap", undefined]);
+  store.cancelWriting = cancel;
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  // Cleared at fence 1, adopted at 2, reserved again at 3 and cleared.
+  assert.deepEqual(
+    [row().fence, row().writePending, row().blocked, row().generation],
+    [3, undefined, undefined, undefined],
+  );
+  assert.equal(f.calls.providerWrites, 0);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.deepEqual(f.errors(), []);
+  // The gateway answers again: the same route bootstraps.
+  f.faults.gatewayCall = undefined;
+  const { bindingId } = row();
+  const prepared = await f.prepare();
+  assert.equal(
+    prepared.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue,
+    bindingId,
+  );
+  assert.deepEqual(
+    [row().fence, row().writePending, row().blocked, row().generation?.credentialState],
+    [5, undefined, undefined, "bootstrap"],
+  );
+  assert.equal(f.calls.providerWrites, 2);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
+  assert.deepEqual(f.errors(), []);
+
+  // A worker that restarts after such a failure bootstraps the recorded route too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProviderProfile" && preparedName(name)
+      ? Object.assign(new Error("timed out"), { name: "TimeoutError" })
+      : undefined;
+  await assert.rejects(f.prepare(), observationFailure("timeout"));
+  f.faults.gatewayCall = undefined;
+  const replacement = workerAfterRestart(f);
+  await replacement.prepare();
+  assert.equal(f.store.rows.get(f.revision.id).generation?.credentialState, "bootstrap");
+  assert.deepEqual(replacement.errors(), []);
+
+  // A bootstrap write whose answer was lost may have been sent: never written again. A
+  // replacement worker finds it pending and closes the route.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called) =>
+    called === "createProvider"
+      ? new DependencyUnavailableError("OpenShell CreateProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), (error) => error.outcome === "unknown");
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "bootstrap");
+  f.faults.gatewayCall = undefined;
+  const writes = f.calls.providerWrites;
+  await assert.rejects(
+    workerAfterRestart(f).prepare(),
+    (error) => error instanceof OpenShellGitRouteBlockedError && error.reason === "write_unknown",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "write_unknown");
+  assert.equal(f.calls.providerWrites, writes);
+
+  // The gateway refuses the worker's identity: closed, never read again.
+  const denied = () => Object.assign(new Error("7 PERMISSION_DENIED: workspace"), { code: 7 });
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called) => (called === "getWorkspace" ? denied() : undefined);
+  await assert.rejects(f.prepare(), /refused the worker's identity/);
+  f.faults.gatewayCall = undefined;
+  const reads = f.calls.getSandbox;
+  await assert.rejects(f.prepare(), /refused the worker's identity/);
+  assert.equal(f.calls.getSandbox, reads, "the refusal is retained, not read again");
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "bootstrap_failed",
+  });
+  // Refused while bootstrapping a route already on record: closed in the store too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name)
+      ? new DependencyUnavailableError("OpenShell GetProvider failed.")
+      : undefined;
+  await assert.rejects(f.prepare(), observationFailure("gateway_request_failed"));
+  f.faults.gatewayCall = (called) => (called === "getGatewayInfo" ? denied() : undefined);
+  await assert.rejects(
+    f.prepare(),
+    (error) =>
+      error instanceof OpenShellGitRouteBlockedError && error.reason === "gateway_unauthorized",
+  );
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "gateway_unauthorized");
+  assert.deepEqual(
+    f.errors().map(({ reason }) => reason),
+    ["gateway_unauthorized"],
+  );
+  // Refused inside the provider's bootstrap: the route is a tombstone, in the store too.
+  f = bootstrapping({ store: routeStore() });
+  f.faults.gatewayCall = (called, name) =>
+    called === "getProvider" && preparedName(name) ? denied() : undefined;
+  await assert.rejects(f.prepare(), (error) => error instanceof OpenShellPreparedGitProviderError);
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "bootstrap_failed");
+  f.faults.gatewayCall = undefined;
+  await assert.rejects(
+    workerAfterRestart(f).prepare(),
+    (error) =>
+      error instanceof OpenShellGitRouteBlockedError && error.reason === "bootstrap_failed",
+  );
+});
+
+test("a reconcile pass that runs out of time before the provider write sends nothing", async () => {
+  // Finding 2211: one budget covers the whole pass. Run out before the write, and the pass
+  // writes nothing, clears its reservation and is observed again; it is not an unknown write.
+  const store = routeStore();
+  const f = fixture({ store });
+  f.runtime.observeTimeoutMs = 1_000;
+  const readMaterial = f.owner.readOpenShellMaterial;
+  let reads = 0;
+  f.owner.readOpenShellMaterial = async (revisionId, signal, ...rest) => {
+    reads += 1;
+    if (reads === 2 && !signal.aborted) {
+      // The last read before the write, inside the release, answers once the budget is spent.
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+    return readMaterial(revisionId, signal, ...rest);
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "pending",
+    reason: "unobserved",
+    failure: "timeout",
+  });
+  assert.equal(f.calls.rotate, 0);
+  const row = store.rows.get(f.revision.id);
+  assert.deepEqual([row.writePending, row.blocked], [undefined, undefined]);
+  assert.deepEqual(f.errors(), []);
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(store.rows.get(f.revision.id).material?.materialVersion, "version-one");
+});
+
+test("a rotation the store did not confirm clearing is cleared on the next pass, never unknown", async () => {
+  // The writer sent nothing (the material went away during the release), but the store did not
+  // answer as the reservation was cleared: the next pass clears it before anything else.
+  const pass = async (cancelWriting, between = () => {}) => {
+    const store = routeStore();
+    const f = fixture({ store });
+    const material = f.owner.material;
+    let reads = 0;
+    const readMaterial = f.owner.readOpenShellMaterial;
+    f.owner.readOpenShellMaterial = async (...args) => {
+      reads += 1;
+      return reads === 2 ? undefined : readMaterial(...args);
+    };
+    const cancel = store.cancelWriting;
+    store.cancelWriting = (...args) => cancelWriting(cancel, ...args);
+    await f.reconcile();
+    assert.deepEqual(f.runtime.route(f.revision.id), {
+      state: "pending",
+      reason: "unobserved",
+      failure: "read_failed",
+    });
+    store.cancelWriting = cancel;
+    f.owner.readOpenShellMaterial = readMaterial;
+    f.owner.material = material;
+    between(f);
+    await f.reconcile();
+    return f;
+  };
+  const lost = () => {
+    throw new Error("connection terminated");
+  };
+  // The store committed the clear and only its answer was lost.
+  let f = await pass(async (cancel, ...args) => (await cancel(...args), lost()));
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // The store never cleared it: the reservation is still there until the next pass.
+  f = await pass(async () => lost());
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
+  // Another worker adopted the route meanwhile: this one stops, without writing.
+  f = await pass(
+    async () => lost(),
+    (f) => f.store.adopt(f.revision.id, "worker-two"),
+  );
+  assert.equal(f.calls.rotate, 0);
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  assert.equal(warnings(f).at(-1).reason, "worker_replaced");
+});
+
+test("a provider write that answers after withdrawal or replacement opens nothing", async () => {
+  // A write, once sent, runs to its own deadline (finding 2211). Whatever happened while it was
+  // in flight decides: a withdrawn, adopted or replaced route never opens, and every request is
+  // denied before it reaches GitHub.
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  let f = fixture({ store: routeStore() });
+  f.faults.duringWrite = async () => {
+    f.runtime.withdraw(f.revision.id);
+    await settle();
+  };
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+
+  // Withdrawn by another worker, in the store only: the write's result is not recorded and
+  // the route is dropped.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.withdraw({ revisionId: f.revision.id });
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  assert.equal(f.store.rows.get(f.revision.id).material, undefined);
+  await expectDenied(f, "no_binding");
+
+  // Another worker adopted the route: this one drops it, and the pending write stays for the
+  // adopter to read as unknown.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.adopt(f.revision.id, "worker-two");
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  await expectDenied(f, "no_binding");
+
+  // The Sandbox restarted under the same name.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => {
+    f.sandbox.restartCount = 1;
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "execution_replaced",
+  });
+  await expectDenied(f, "route_blocked");
+
+  // Nothing changed meanwhile: the same slow write installs, and a request is allowed.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = settle;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal((await f.lookup())?.executionId, f.revision.id);
+
+  // The write answers only after the pass's budget is spent: its result is recorded, the
+  // route is verified again by the next pass, and nothing is written twice.
+  f = fixture({ store: routeStore() });
+  f.runtime.observeTimeoutMs = 1_000;
+  f.faults.duringWrite = async (signal) => {
+    if (!signal.aborted) {
+      await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+    }
+  };
+  await f.reconcile();
+  const row = f.store.rows.get(f.revision.id);
+  assert.deepEqual(
+    [row.writePending, row.generation.credentialState, row.material?.materialVersion],
+    [undefined, "active", "version-one"],
+  );
+  // Not installed by a pass out of time, even though this fake gateway still answers.
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "pending", reason: "unverified" });
+  await expectDenied(f, "route_pending");
+  f.faults.duringWrite = undefined;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.errors(), []);
 });
 
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {

@@ -210,8 +210,8 @@ It allows DNS, database egress to every `database.cidrs` host, and
 Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
 DNS, API, and exporter policy; unknown or missing component labels retain
 default-deny. Pre-install initialization has only its hook DNS/database grants.
-Each configured database or API destination must be an explicit IPv4 `/32`;
-refresh the values when a managed endpoint's addresses change.
+Destinations must be explicit IPv4 `/32` hosts; refresh them when managed
+endpoint addresses change. Chart ports take no leading zeros: `0443` fails.
 
 `deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
 an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains

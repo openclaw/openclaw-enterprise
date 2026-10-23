@@ -193,7 +193,7 @@ repositoryCredentials:
   publicCaSecretName: ""
   publicCaKey: ca.crt
   upstreamCidrs: []
-  upstreamPort: 443
+  upstreamPort: 443 # decimal, without leading zeros
 
 # Anonymous reads of known public GitHub repositories, for ordinary dedicated
 # Codex Agents whose authored proxy allows the exact Service IP. No GitHub App or token required.
@@ -347,7 +347,7 @@ worker:
 # host 0.0.0.0 or ::; startup and the upgrade check refuse a mismatch.
 egressAuthority:
   enabled: false
-  port: 9444
+  port: 9444 # decimal, without leading zeros
   tlsSecretName: ""
   issuerSecretName: ""
   # Only public.pem is projected from the Gateway's issuer Secret.
@@ -365,7 +365,7 @@ openshellGit:
   # protected requires repositoryCredentials.enabled: false and a qualified sender.
   # Drain an earlier broker trial on its original owner before switching.
   mode: protected
-  port: 8445
+  port: 8445 # decimal, without leading zeros
   tlsSecretName: ""
   issuerPublicKeyConfigMapName: ""
   # Trusted OpenShell Gateway and supervisor callers: namespace and Pod labels required.
@@ -381,7 +381,7 @@ preparedGitHub:
   custodySecretName: ""
   # Operator-maintained, exact api.github.com IPv4 destinations for issue/retire.
   issuerCidrs: []
-  issuerPort: 443
+  issuerPort: 443 # decimal, without leading zeros
   # Optional public ca.crt for an explicitly configured private HTTPS issuer.
   issuerCaConfigMapName: ""
 

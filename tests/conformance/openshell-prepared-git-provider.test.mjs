@@ -122,12 +122,21 @@ async function wire(t) {
     workspaceId: scope.workspaceId,
     workspaceReads: 0,
     status: undefined,
+    // Runs as each recorded request arrives, before the server answers it.
+    onRequest: undefined,
+    // Holds the provider write's answer this long (a slow but healthy gateway).
+    writeDelayMs: 0,
   };
   const server = new grpc.Server();
   const record = (call) => {
     state.requests.push(call.request);
     assert.equal(call.request.workspace_scope.workspace, scope.workspace);
+    state.onRequest?.(call.request);
   };
+  const answerWrite = (callback, ...answer) =>
+    state.writeDelayMs
+      ? setTimeout(() => callback(...answer), state.writeDelayMs)
+      : callback(...answer);
   server.addService(OpenShell.service, {
     GetSandboxProviderStatus(call, callback) {
       record(call);
@@ -142,6 +151,10 @@ async function wire(t) {
     },
     GetProviderProfile(call, callback) {
       record(call);
+      if (state.denyReads) {
+        callback({ code: grpc.status.PERMISSION_DENIED, details: "workspace" });
+        return;
+      }
       if (!state.profile) {
         callback({ code: grpc.status.NOT_FOUND });
         return;
@@ -174,7 +187,7 @@ async function wire(t) {
           resource_version: "1",
         },
       };
-      callback(null, { provider: state.provider });
+      answerWrite(callback, null, { provider: state.provider });
     },
     UpdateProvider(call, callback) {
       record(call);
@@ -199,7 +212,7 @@ async function wire(t) {
         });
         return;
       }
-      callback(null, { provider: state.provider });
+      answerWrite(callback, null, { provider: state.provider });
     },
   });
   const port = await new Promise((resolve, reject) =>
@@ -339,6 +352,94 @@ test("prepared Git preserves uncertain write outcomes and redacts private gatewa
     "2",
     "lost reply cannot justify resubmission",
   );
+});
+
+test("prepared Git writes outlive the caller's read budget, and a caller out of time sends nothing", async (t) => {
+  // Finding 2211: the caller's signal is a reconcile pass's read budget. A write, once sent,
+  // runs to its own deadline: abandoning it would leave its outcome unknown and close the route.
+  const { state, binding } = await wire(t);
+  const abortOn = (sent) => {
+    const caller = new AbortController();
+    state.onRequest = (request) => {
+      if (sent(request)) {
+        caller.abort(new Error("the pass ran out of time"));
+      }
+    };
+    return caller.signal;
+  };
+  state.writeDelayMs = 200;
+  const bootstrap = await binding.bootstrap(abortOn((request) => "profiles" in request));
+  assert.equal(bootstrap.credentialState, "bootstrap");
+  assert.equal(state.provider.credentials.GITHUB_TOKEN, "oce-unprivileged-bootstrap-sentinel");
+  const isUpdate = (request) => !!request.provider?.metadata?.resource_version;
+  const active = await binding.rotate(bootstrap, async () => token(), abortOn(isUpdate));
+  assert.equal(active.credentialState, "active");
+  assert.equal(active.resourceVersion, "2");
+  state.writeDelayMs = 0;
+
+  // Out of time before the write, for any reason (here the worker's claim ended): nothing is
+  // sent, and the refusal is a timeout the caller retries, not a verdict on the provider.
+  const late = new AbortController();
+  const skipped = await binding.rotate(
+    active,
+    async () => {
+      late.abort(new Error("claim lost"));
+      return token("late");
+    },
+    late.signal,
+  );
+  assert.equal(skipped, undefined);
+  assert.equal(state.requests.filter(isUpdate).length, 1);
+  const fresh = await wire(t);
+  const caller = new AbortController();
+  fresh.state.onRequest = (request) => {
+    if (request.name !== undefined) {
+      caller.abort(new Error("claim lost"));
+    }
+  };
+  await assert.rejects(
+    fresh.binding.bootstrap(caller.signal),
+    (error) =>
+      error instanceof OpenShellPreparedGitProviderError &&
+      error.outcome === "refused" &&
+      error.readFailure === "timeout",
+  );
+  assert.deepEqual([fresh.state.profile, fresh.state.provider], [undefined, undefined]);
+  // Out of time just after the last read answered: the write does not start.
+  const between = await wire(t);
+  const ended = new AbortController();
+  const getProvider = between.client.getProvider.bind(between.client);
+  between.client.getProvider = async (...args) => {
+    const answer = await getProvider(...args);
+    ended.abort(new Error("claim lost"));
+    return answer;
+  };
+  await assert.rejects(
+    between.binding.bootstrap(ended.signal),
+    (error) => error.outcome === "refused" && error.readFailure === "timeout",
+  );
+  assert.deepEqual([between.state.profile, between.state.provider], [undefined, undefined]);
+
+  // A gateway that refuses the worker's identity is a refusal, never a retryable read failure,
+  // even when the caller's signal ends at the same moment.
+  const denied = await wire(t);
+  denied.state.denyReads = true;
+  const refusedAs = (readFailure) => (error) =>
+    error instanceof OpenShellPreparedGitProviderError &&
+    error.outcome === "refused" &&
+    error.readFailure === readFailure;
+  await assert.rejects(denied.binding.bootstrap(signal()), refusedAs(undefined));
+  const deniedCaller = new AbortController();
+  const getProfile = denied.client.getProviderProfile.bind(denied.client);
+  denied.client.getProviderProfile = async (...args) => {
+    try {
+      return await getProfile(...args);
+    } finally {
+      deniedCaller.abort(new Error("claim lost"));
+    }
+  };
+  await assert.rejects(denied.binding.bootstrap(deniedCaller.signal), refusedAs(undefined));
+  assert.equal(denied.state.provider, undefined);
 });
 
 test("prepared Git sends a CAS precondition and fails closed on a concurrent gateway update", async (t) => {
