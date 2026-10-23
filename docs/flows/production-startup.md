@@ -125,7 +125,7 @@ refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persist
 IPv4 admission does not establish TLS.
 `validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
 Correct Helm values and Installation YAML with the
-[hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4)
+[hostname correction procedure](../guides/deploy/breaking-changes-before-2026-10-15.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4)
 before upgrade/restart.
 
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
@@ -237,14 +237,14 @@ preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
 observations; neither process mounts the bootstrap PVC.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
+`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
 
-When selected, both processes load the same canonical registry and public CA,
-construct the GitHub Backend with a lazy Unix client, and register
-`GitHubRepoDriver` under the optional `repo` capability. The configured Backend
-member and `drivers.repo` must select the same Driver ID. API startup performs no control operation and loads no App key or
-session engine. The worker owns subsequent session lifecycle calls through the
-selected Driver; API readiness remains database-backed.
+With `repository` selected, both processes load the same registry and construct
+`GitHubRepositoryPolicy`; the GitHub Backend's `drivers.repo` member must equal
+`repository.id`. Native delivery adds the public CA and a lazy Unix client for
+`GitHubNativeRepositorySender`. Startup refuses the retired Installation
+`drivers.repo`. API startup performs no control operation and loads no App key.
+The worker owns session lifecycle; API readiness remains database-backed.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 

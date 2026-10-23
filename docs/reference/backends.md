@@ -127,7 +127,11 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+The OpenShell Backend holds the connection to one OpenShell gateway deployment.
+These paths are the files Helm `backend.openshell.clientSecretName` projects
+(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
+mounts no bearer token file or separate `operatorTls` pair; packaging that uses
+those must mount them itself.
 
 ```yaml
 backend:
@@ -136,12 +140,10 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
-      operatorTls:
-        certificatePath: /etc/openclaw/openshell/operator.crt
-        privateKeyPath: /etc/openclaw/openshell/operator.key
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials

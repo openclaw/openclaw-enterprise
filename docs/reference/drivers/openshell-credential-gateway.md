@@ -24,8 +24,9 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
     drivers:
       sandbox: openshell-sandbox
