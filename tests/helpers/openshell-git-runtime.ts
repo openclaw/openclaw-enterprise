@@ -24,6 +24,8 @@ type Faults = {
   duringObserve?: () => void;
   /** The error a named gateway call throws instead of answering, if any. */
   gatewayCall?: (method: string, name?: string) => unknown;
+  /** Runs while the provider write is in flight, before it answers. */
+  duringWrite?: () => unknown;
   /** The Sandbox does not exist yet: a first preparation bootstraps the route. */
   sandboxMissing?: boolean;
 };
@@ -272,6 +274,7 @@ export function openShellGitRuntimeFixture({
         return;
       }
       calls.rotate += 1;
+      await faults.duringWrite?.();
       if (faults.rotate) {
         throw faults.rotate;
       }

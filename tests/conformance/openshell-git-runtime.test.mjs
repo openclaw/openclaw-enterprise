@@ -1044,6 +1044,53 @@ test("a rotation the store did not confirm clearing is cleared on the next pass,
   assert.equal(warnings(f).at(-1).reason, "worker_replaced");
 });
 
+test("a provider write that answers after withdrawal or replacement opens nothing", async () => {
+  // A write, once sent, runs to its own deadline (finding 2211). Whatever happened while it was
+  // in flight decides: a withdrawn, adopted or replaced route never opens, and every request is
+  // denied before it reaches GitHub.
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  let f = fixture({ store: routeStore() });
+  f.faults.duringWrite = async () => {
+    f.runtime.withdraw(f.revision.id);
+    await settle();
+  };
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "blocked", reason: "withdrawn" });
+  assert.equal(f.store.rows.get(f.revision.id).blocked, "withdrawn");
+  await expectDenied(f, "route_blocked");
+  assert.equal(f.denials().at(-1).reasonCode, "access_withdrawn");
+
+  // Another worker adopted the route: this one drops it, and the pending write stays for the
+  // adopter to read as unknown.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => f.store.adopt(f.revision.id, "worker-two");
+  await f.reconcile();
+  assert.equal(f.calls.rotate, 1);
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "none" });
+  assert.equal(f.store.rows.get(f.revision.id).writePending, "rotate");
+  await expectDenied(f, "no_binding");
+
+  // The Sandbox restarted under the same name.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = () => {
+    f.sandbox.restartCount = 1;
+  };
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), {
+    state: "blocked",
+    reason: "execution_replaced",
+  });
+  await expectDenied(f, "route_blocked");
+
+  // Nothing changed meanwhile: the same slow write installs, and a request is allowed.
+  f = fixture({ store: routeStore() });
+  f.faults.duringWrite = settle;
+  await f.reconcile();
+  assert.deepEqual(f.runtime.route(f.revision.id), { state: "installed" });
+  assert.equal((await f.lookup())?.executionId, f.revision.id);
+});
+
 test("the Git route refuses overlapping policies at startup and again at deploy", async () => {
   // Finding 2131: the Sandbox Driver checks its configured policies when it is built; prepare()
   // keeps refusing hosts that reach GitHub outside the route: github.com and, since finding 2148,
