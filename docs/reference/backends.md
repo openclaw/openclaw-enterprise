@@ -97,18 +97,22 @@ backend:
       registryPath: /etc/openclaw/repository-registry/registry.json
     drivers:
       repo: repository-credentials
-drivers:
-  repo:
-    id: repository-credentials
-    configuration:
-      controlSocket: /run/openclaw/repository-control/private/control.sock
-      sessionDurationSeconds: 86400
-      publicCaPath: /etc/openclaw/repository-ca/ca.crt
+repository:
+  id: repository-credentials
+  configuration:
+    sessionDurationSeconds: 86400
+  nativeSender:
+    controlSocket: /run/openclaw/repository-control/private/control.sock
+    publicCaPath: /etc/openclaw/repository-ca/ca.crt
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem
 ```
 
 Keep the ordinary required Driver settings alongside this fragment. One GitHub
 Backend is supported and may coexist with one ChatGPT Backend. Its member ID
-must match the selected `repo` Driver. The registry's Backend
+must match `repository.id`. Startup rejects the retired Installation `drivers.repo`
+selection; see [prepared native Git](repository-credentials/prepared-native-git.md#install-and-check). The registry's Backend
 ID must match the definition, and the session duration must fit the registry's
 maximum. Unsupported Driver packages or configuration keys fail startup.
 
@@ -123,7 +127,12 @@ Driver; admitted Agents must use a supported
 
 ### OpenShell gateway
 
-The OpenShell Backend holds the connection to one OpenShell gateway deployment:
+The OpenShell Backend holds the connection to one OpenShell gateway deployment.
+These paths are the files Helm `backend.openshell.clientSecretName` projects
+(`ca.crt`, `tls.crt`, `tls.key` under `/etc/openclaw/openshell`). The chart
+mounts no bearer token file or separate `operatorTls` pair, so chart installs
+cannot retrieve Codex OAuth access tokens; other packaging must mount those files
+itself.
 
 ```yaml
 backend:
@@ -132,18 +141,20 @@ backend:
     configuration:
       endpoint: https://openshell-gateway.openshell-system.svc:8080
       auth:
-        mode: bearerTokenFile
-        path: /etc/openclaw/openshell/token
+        mode: mtls
+        certificatePath: /etc/openclaw/openshell/tls.crt
+        privateKeyPath: /etc/openclaw/openshell/tls.key
       rootCertificatePath: /etc/openclaw/openshell/ca.crt
     drivers:
       sandbox: openshell-sandbox
       credential_gateway: openshell-credentials
+      credential_refresh: openshell-refresh
 ```
 
 Its closed `configuration` accepts:
 
 - `endpoint`: `host:port` (bracket IPv6 literals, such as `[2001:db8::1]:8080`),
-  or an `http` or `https` origin without credentials,
+  or an `http` or `https` origin (scheme letters are case-insensitive) without credentials,
   path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
   `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
   Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`), which URL parsing
@@ -159,8 +170,10 @@ Its closed `configuration` accepts:
   hosts in the gateway's namespace only when OCE knows it: from a bare or
   `<service>.<namespace>` `serviceName`, or a `serviceName` or `endpoint` host
   `<service>.<namespace>.svc[.<cluster domain>]`.
-- `auth`: `{ mode: unauthenticated }` or `{ mode: bearerTokenFile, path }` with
-  an absolute path.
+- `auth`: `{ mode: unauthenticated }`, `{ mode: bearerTokenFile, path }`, or
+  `{ mode: mtls, certificatePath, privateKeyPath }`. File paths must be absolute.
+  mTLS requires HTTPS and supplies the client certificate and key to gRPC only.
+  Service HTTP/WebSocket requests retain their separate scoped bearer identity.
 - `requestTimeoutMs`: the per-call deadline, from 1000 to 30000 ms. The bound
   limits how late a timed-out credential registration can land. Sandbox
   deletion has its own 120-second bound: OpenShell answers only after the
@@ -168,8 +181,13 @@ Its closed `configuration` accepts:
 - `rootCertificatePath`: an absolute path to the gateway CA. An `https`
   `endpoint` at an IP address sends no TLS server name, so the gateway
   certificate must carry that IP address.
+- `operatorTls`: optional `{ certificatePath, privateKeyPath }`, both absolute
+  paths. Required for OAuth access-token retrieval; requires HTTPS. It opens a
+  separate certificate-only channel to the same gateway, using the same server
+  CA and no bearer header. Ordinary RPCs keep the configured `auth` identity.
 - `insecureTransport: network-policy`: required when the connection lacks TLS or
-  bearer-token authentication, and rejected otherwise. It declares that
+  bearer/mTLS authentication, and rejected otherwise. It cannot enable plaintext
+  mTLS. It declares that
   NetworkPolicy restricts the gateway to the OCE API, worker, and OpenShell
   supervisors. Credential registration sends resolved values over this
   connection, and OCC cannot verify the NetworkPolicy itself.
@@ -181,9 +199,29 @@ Either `endpoint` or `serviceName` is required. Both `drivers.sandbox` and
 optional `drivers.credential_refresh` member must match the selected
 [Credential Refresh Driver](drivers/credential-refresh.md); OpenShell keeps
 refresh state on the gateway's provider records, so the two roles share this
-Backend. One OpenShell Backend is supported. Composition builds one gateway client object
-and injects it into both members, which cache one client per resolved endpoint.
-The API and the worker each construct it, so both need the token file and gateway access.
+Backend. One
+OpenShell Backend is supported. Composition builds one gateway client object
+and injects it into all members. It caches ordinary and credential-export
+clients separately per resolved endpoint. The API and worker each construct it,
+so mount their required credential files there, never in the Harness or Agent
+Gateway. Restart these processes after rotating an operator certificate to replace
+cached TLS channels. See the [operator trust requirements](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc).
+
+Optional `drivers.credential_proxy` selects the paired
+[protected egress adapter](credential-sources/protected-inference.md). It requires an
+authenticated HTTPS gateway and the credential-access protocol. Released OpenShell
+`v0.1.4` supports OAuth refresh and operator `GetProviderCredentials`, but lacks
+the protected credential-access and loaded-enforcement contract. The protected
+counterpart has that contract, not the OAuth export RPC. Select and verify the
+deployed capability; the combined client schema is not a supplier capability claim.
+Protected revision admission refuses legacy credential attachments.
+
+For native OpenShell mTLS, a verified client certificate's CN becomes the User
+subject and OU values become roles. Without an OIDC administrator role configured,
+an authenticated User has platform administrator authority. Treat the dedicated
+client CA and every certificate it signs as administrator credentials. Keep the
+client key in the trusted control plane, never an Agent or Sandbox. With OIDC
+configured, its administrator-role check still applies; mTLS does not bypass it.
 
 ## Driver and client contract
 
@@ -223,7 +261,7 @@ PATCH still requires `configurationId`. Malformed/empty IDs return
 No Backend is inferred from model configuration or an account, and saving an
 Agent makes no upstream call. Deployment copies `backendId` into an immutable
 AgentRevision; later draft edits cannot change that snapshot. PostgreSQL stores
-the snapshot in the immutable revision row's `backend_id` column.
+the snapshot in the immutable Agent revision row's `backend_id` column.
 
 A GitHub Backend ID is invalid in this field; the general `/backends` inventory
 includes both types. Configure this association through the Agent API or a Preset.
@@ -310,7 +348,7 @@ request. Successful issuance does not prove that an Agent can reach its model.
 The [lifecycle flow](../flows/service-account-driver-credential-delivery.md) names code and proof
 boundaries. Local API, PostgreSQL, Driver, and packaging tests do not prove live
 provider calls or model execution. See
-[service-account testing](../testing/service-accounts.md) for real provider
+[service-account testing](../testing/slack.md#chatgpt-service-accounts) for real provider
 verification requirements.
 
 ## Deferred behavior

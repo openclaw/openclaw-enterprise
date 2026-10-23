@@ -65,12 +65,9 @@ permission or protected-environment credentials.
 
 `.github/workflows/container-publish.yml:jobs.prepare` calls the reusable
 `.github/workflows/container-check.yml:jobs.prepare` image/architecture matrix. Controller and runtime each build on native AMD64 and ARM64 Linux runners.
-The defaults are `blacksmith-16vcpu-ubuntu-2404` and
-`blacksmith-8vcpu-ubuntu-2404-arm`; `CONTAINER_AMD64_RUNNER` and
-`CONTAINER_ARM64_RUNNER` repository variables can select other provisioned labels.
+See [shared CI settings](../release/configuration.md#build-settings) for native runner defaults and overrides.
 Each job checks its architecture and logs CPU, memory, and available disk.
-Jobs require at least four CPUs and 12 GiB RAM; the reported runner label alone
-is not evidence of allocated capacity.
+The reported runner label alone is not evidence of allocated capacity.
 `scripts/ci/setup-tools.sh` installs checksum-pinned kubectl, k3d, Helm, and yq
 for both native Linux architectures before runtime smoke tests.
 The standard AMD64 override requires 36 GiB free and, only below that, runs
@@ -157,7 +154,7 @@ run attempt, CI identity, and approved base. Both prepared artifacts must exist
 before `.github/workflows/container-publish.yml:jobs.publish` can start. The
 publish job runs only when the operator selected `publish: true`.
 
-No-push runs end with artifacts. See [operator instructions](../../.github/containers.md)
+No-push runs end with artifacts. See [operator instructions](../release/containers.md)
 for retention and package access.
 
 ### 4. Publish and hand off immutable references
@@ -206,7 +203,7 @@ assumes the protected publication workflows and trusted package administrators
 are the only package writers; their workflow concurrency group does not exclude
 independent GHCR writers. A tag change between the pull and digest lookup could
 make the receipt refer to a different manifest. The operator's
-[single-writer requirement](../../.github/chart-publication.md#choose-one-release-version)
+[single-writer requirement](../release/chart-publication.md#choose-one-release-version)
 owns package-write access and coordination.
 
 ## Debugging and Verification
@@ -214,7 +211,7 @@ owns package-write access and coordination.
 - Run `node --test tests/integration/container-{release,resume,promote}.test.mjs`
   for platform/archive validation and release gate coverage. The archive case uses
   real OCI blobs and tar; recovery uses transport fixtures.
-- Run the [registry integration](../testing/images.md#container-publication-registry-proof)
+- Run the [registry integration](../testing/docker.md#container-publication-registry-proof)
   to check real Skopeo alias replacement against a disposable local registry.
   This does not prove GHCR access.
 - Run `actionlint .github/workflows/container-publish.yml` for workflow syntax.
@@ -230,10 +227,10 @@ owns package-write access and coordination.
 
 ## Related docs
 
-- [Publication and recovery instructions](../../.github/containers.md)
-- [Chart publication and pull](../../.github/chart-publication.md)
+- [Publication and recovery instructions](../release/containers.md)
+- [Chart publication and pull](../release/chart-publication.md)
 - [Package bootstrap flow](container-package-bootstrap.md)
-- [Image startup checks](../testing/images.md)
+- [Image startup checks](../testing/docker.md#images-and-helm)
 
 ## Manual Notes
 
@@ -298,7 +295,7 @@ owns package-write access and coordination.
 
 - 2026-09-22 03:04: Use manual dispatch without an independent approval or linkage comment (codex/01a0c70f-8a8f-7c62-ac81-ee1a3e99f48b - 149ac0fe)
 
-- 2026-09-22 01:34: Record bounded QEMU smoke timeouts while retaining native deadlines and startup assertions (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 473d9b45ee5aa8d8a081cca7664973fee5bd7e11)
+- 2026-09-22 01:34: Record QEMU smoke test deadlines while retaining native deadlines and startup assertions (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 473d9b45ee5aa8d8a081cca7664973fee5bd7e11)
 
 - 2026-09-22 01:10: Bound disk use by pruning the job-owned build cache and removing each successfully checked image variant (codex/01a0c179-19f7-7111-8bb4-fc7680da5545 - 1e486bffadbe5f5f9f6437bfc8da2e4176ffefd6)
 

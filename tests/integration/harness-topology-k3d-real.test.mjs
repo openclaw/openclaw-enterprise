@@ -33,14 +33,18 @@ import {
   resources,
   secretRotationProbe,
 } from "../helpers/harness-topology-k3d-real.mjs";
+import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
+
+// The topology registers its platform Namespace delete before the worker and port-forward stops.
+// Run them newest-first, each bounded and all attempted (finding 1711).
+const topologyTeardown = (testContext) =>
+  boundedTeardown(testContext, { label: "production topology teardown" });
 
 test(
-  "candidate dedicated Skill source uploads honor default and denied node-write policy",
-  {
-    skip: process.env.OCC_TEST_SKILL_SOURCE_LIFECYCLE !== "1",
-    timeout: 1_200_000,
-  },
-  async (context) => {
+  "production dedicated Skill source uploads honor default and denied node-write policy",
+  { ...requiresProductionCluster, timeout: 1_200_000 },
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated");
     await assertDedicatedSkillSources(topology);
   },
@@ -49,7 +53,8 @@ test(
 test(
   "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
   { ...requiresProductionCluster, timeout: 1_200_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       gatewayPassword: true,
     });
@@ -159,7 +164,8 @@ test(
 test(
   "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",
   { ...requiresProductionCluster, timeout: 900_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "embedded", undefined, {
       legacyRuntimeCredentials: true,
     });
@@ -216,7 +222,8 @@ test(
 test(
   "production Secret API powers embedded OpenClaw through exact Namespace-owned native bindings",
   { ...requiresProductionCluster, timeout: 480_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "embedded", undefined, {
       secretLifecycle: true,
     });
@@ -274,7 +281,8 @@ test(
 test(
   "production dedicated Codex startup failure status survives Pod deletion and controller restart with plugins disabled",
   { ...requiresProductionCluster, timeout: 660_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       worker: { convergenceTimeoutMs: 60_000, maxAttempts: 100 },
     });
@@ -285,7 +293,8 @@ test(
 test(
   "production dedicated Codex startup failure status survives Pod deletion and controller restart with plugins enabled",
   { ...requiresProductionCluster, timeout: 660_000 },
-  async (context) => {
+  async (testContext) => {
+    const { context } = topologyTeardown(testContext);
     const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
       worker: { convergenceTimeoutMs: 60_000, maxAttempts: 100 },
     });

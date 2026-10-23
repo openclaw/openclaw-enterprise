@@ -1,5 +1,7 @@
 # SSH host tests
 
+## Overview
+
 Verify the SSH Compute Driver against a disposable Linux host with real
 OpenClaw and systemd. The default real-host run checks readiness only; the model selector below adds provider execution.
 
@@ -26,21 +28,10 @@ provision an SSH host.
 Prepare the disposable rig below before selecting this lane; missing inputs or
 skipped tests fail the lane.
 
-The bundled [SSH Compute Driver](../reference/drivers/ssh-compute.md) has an opt-in
-real-host integration. Use a disposable Linux systemd host only. The test
-checks gateway readiness, two-revision cutover, state persistence, retirement,
-and Namespace deletion over real SSH. It also checks distinct Agent UID/GID
-assignments and sibling state/configuration read denial using Linux `runuser`. It makes no model call and needs no
-model credential. The ordinary local test command reports an explicit skip:
-
-The same suite exercises repeated stop, reactivation, retirement and Agent deletion
-while a sibling remains ready, followed by Namespace deletion. To cover a directory
-outside systemd's unit load path, create an owned host directory and set
-`OCC_TEST_SSH_UNIT_DIRECTORY` to its absolute path; also run with the default directory.
-
-```sh
-node --test tests/integration/ssh-compute-real.test.mjs
-```
+Use a disposable Linux systemd host. This suite verifies readiness, version
+cutover, state persistence, cleanup, and Unix account isolation over real SSH.
+It makes no model call. Without `OCC_TEST_SSH_REAL=1` it skips; a selected run
+fails when prerequisites are missing.
 
 The fixture image builds on the runtime image's `docker.io/library/node:24-bookworm` base and
 adds systemd as PID 1, sshd, an `openclaw` system user, and the pinned
@@ -52,6 +43,7 @@ and arm64. Start it on a Docker Engine with privileged systemd/cgroup support
 disposable test rig, not production packaging. If the Engine cannot run
 systemd, use an explicitly selected disposable Linux VM instead; do not
 substitute the conformance fixture and call it host proof.
+Make sure `oce-ssh-host` is not an existing container before starting the rig.
 
 ```sh
 SSH_RIG=$(mktemp -d)
@@ -73,12 +65,8 @@ docker exec oce-ssh-host cat /etc/ssh/ssh_host_ed25519_key.pub \
 chmod 600 "$SSH_RIG/known_hosts"
 ```
 
-The read-only `/run/occ-authorized_keys` mount is the fixture's public-key
-input; copying it gives sshd's `/root/.ssh/authorized_keys` the required root
-ownership and mode. Root login permits keys only (`PermitRootLogin
-prohibit-password`). The known-host entry above comes directly from this
-task-owned container, without disabling strict host-key verification. Wait for
-`systemctl is-active ssh` to report `active` before selecting the suite.
+Wait for `systemctl is-active ssh` to report `active`. The known-host entry
+comes from this disposable container; host-key verification remains enabled.
 
 ```sh
 OCC_TEST_SSH_REAL=1 \
@@ -95,13 +83,9 @@ OCC_TEST_SSH_UNIT_DIRECTORY=/etc/systemd/system \
 node --test tests/integration/ssh-compute-real.test.mjs
 ```
 
-The gateway port range is `18800`–`18899`; it is checked on the host through
-SSH and does not need a published container port. The suite creates unique
-Namespace and Agent identities and removes only its Namespace and units. When
-selected, missing settings, unreachable SSH, failed systemd, or unready OpenClaw
-fail the test. Successful local conformance or an unselected skip does not
-establish real-host proof; rerun this suite after changing the Driver, helper,
-or fixture.
+The host must have ports `18800`–`18899` available. The suite creates unique
+Namespace and Agent identities and removes only its own Namespace and units.
+An unselected skip or a fixture pass is not real-host proof.
 
 After testing, remove only the rig and its generated keys:
 
@@ -110,9 +94,8 @@ docker rm -f oce-ssh-host
 rm -r "$SSH_RIG"
 ```
 
-See [SSH test settings](#ssh-real-host-test-environment)
-for every input and default. Inspect the Agent's exact unit with `journalctl -u`
-inside the container when readiness fails; keep logs free of credential values.
+Inspect the Agent's exact unit with `journalctl -u` inside the container when
+readiness fails; keep logs free of credential values.
 
 ## Runtime credential model proof
 
@@ -123,48 +106,15 @@ same `tests/integration/ssh-compute-real.test.mjs` file. This selector requires
 the SSH inputs and fails if the host or credential is unavailable; it never
 substitutes the local systemd fixture.
 
-The test checks the key/model against the provider first, then provisions the
-host's protected `<agentDir>/env` as an operator via SSH stdin. It deploys with
-`{ "method": "runtime" }`, verifies readiness and a real model turn, and counts
-provider requests through a loopback forwarding server. Startup and readiness
-must make zero model requests. After replacing the key with a synthetic invalid
-one and restarting the existing revision, readiness must still succeed while a
-real model request fails. Redeployment, retirement, and stop must preserve the
-operator file's bytes, mode, inode, and modification time. Cleanup stops the
-forwarder and deletes only the test Namespace.
-
-This test exercises the real SSH Driver/helper, systemd, OpenClaw, and provider;
-API admission, immutable PostgreSQL snapshots, and worker reauthorization have
-separate integration coverage. It is not a whole-controller production rollout.
+This checks a real provider request and runtime credential handling. It does
+not prove API admission or a whole-controller rollout. Cleanup removes only the
+test Namespace and forwarder.
 
 ## SSH real-host test environment
 
-`node --test tests/integration/ssh-compute-real.test.mjs` is selected only by
-`OCC_TEST_SSH_REAL=1` or `OCC_TEST_SSH_MODEL=1`. Otherwise it explicitly skips and lists its inputs. When
-selected, missing inputs or unavailable hosts fail; there is no fixture fallback.
-
-| Variable                        | Meaning                                                                 |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `OCC_TEST_SSH_REAL`             | Set to `1` for a disposable Linux systemd/sshd host with real OpenClaw. |
-| `OCC_TEST_SSH_ADDRESS`          | Required host address.                                                  |
-| `OCC_TEST_SSH_PORT`             | Required SSH port, `1`–`65535`.                                         |
-| `OCC_TEST_SSH_USER`             | Required; currently `root`.                                             |
-| `OCC_TEST_SSH_IDENTITY_FILE`    | Required absolute private-key path on the test worker.                  |
-| `OCC_TEST_SSH_KNOWN_HOSTS_FILE` | Required absolute verified known-hosts path on the test worker.         |
-| `OCC_TEST_SSH_NODE_PATH`        | Required absolute Node.js 24 executable path on the host.               |
-| `OCC_TEST_SSH_OPENCLAW_PATH`    | Required absolute OpenClaw entrypoint path on the host.                 |
-| `OCC_TEST_SSH_RUNTIME_USER`     | Required prefix for Driver-managed per-Agent Unix accounts.             |
-| `OCC_TEST_SSH_ROOT`             | Optional host state root, default `/var/lib/openclaw-enterprise`.       |
-| `OCC_TEST_SSH_UNIT_DIRECTORY`   | Optional host unit directory, default `/etc/systemd/system`.            |
-
-The suite uses ports `18800`–`18899`, creates unique Namespace/Agent identities,
-verifies readiness through SSH, cuts over two revisions, checks private Agent
-UID/GID isolation and state persistence, retires the first snapshot, and deletes its Namespace.
-The readiness-only selector requires no model credential and proves no model turn;
-the model selector adds the credential proof above. Use the
-[container rig](#ssh-raw-hosts) or a disposable host of your own.
-
-## Related
-
-- [Choose another test suite](README.md).
-- [Results, cleanup, and troubleshooting](README.md#results-cleanup-and-troubleshooting).
+The command above supplies the required SSH address, port, root user, private
+key, verified known-hosts file, Node path, OpenClaw path, and runtime account
+prefix. `OCC_TEST_SSH_ROOT` and `OCC_TEST_SSH_UNIT_DIRECTORY` select the state
+root and systemd directory. Run again with an owned directory outside systemd's
+unit load path when checking that configuration. Inspect the exact unit with
+`journalctl -u` for readiness failures; do not expose credentials in logs.

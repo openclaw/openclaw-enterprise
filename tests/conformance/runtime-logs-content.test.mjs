@@ -5,14 +5,19 @@ import test from "node:test";
 
 import {
   maskRuntimeEventText,
+  redactArgvCredentials,
   redactRuntimeLogText,
+  stripRuntimeLogControls,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
-import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
+import {
+  runtimeLogEvidence,
+  sanitizeRuntimeLogChunk,
+} from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import {
   compareRuntimeLogTime,
   readRuntimeLogPage,
 } from "../../packages/occ/src/runtime-logs/read.ts";
-import { cpuTimeMs, cpuTimeMsAsync } from "../helpers/cpu-time.mjs";
+import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
@@ -88,16 +93,66 @@ async function corpusLines(values) {
   return lines.map((raw, index) => ({ time: lineTime(index), raw }));
 }
 
-test("runtime status refuses an invalid Driver timestamp instead of normalizing it", async () => {
+const gatewayStream = { source: "gateway", pod: "gateway-0", container: "gateway" };
+const agentStream = { source: "agent", pod: "gateway-0", container: "agent" };
+const agentPodStream = { source: "agent", pod: "agent-0", container: "agent" };
+
+// One sanitizer pass over raw lines timed lineTime(first), lineTime(first + 1), ...
+function sanitize(stream, raws, { first = 0, truncated = false } = {}) {
+  return sanitizeRuntimeLogChunk({
+    stream,
+    truncated,
+    lines: raws.map((raw, index) => ({ time: lineTime(first + index), raw })),
+  });
+}
+function pick(records, keys) {
+  return records.map((record) => Object.fromEntries(keys.map((key) => [key, record[key]])));
+}
+function gatewayJson(message) {
+  return JSON.stringify({ level: "info", subsystem: "gateway", message });
+}
+
+// The production controller app over the in-memory runtime-log Compute Driver
+// (tests/helpers/runtime-logs.mjs) with one deployed Agent. `wrap` decorates the Driver.
+async function logsRoute({ label, state, wrap, ...options } = {}) {
   const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
     await import("../helpers/runtime-logs.mjs");
-  const computeDriver = createRuntimeLogComputeDriver({
-    state: { observedAt: "2026-02-30" },
+  const driver = createRuntimeLogComputeDriver(state === undefined ? {} : { state });
+  const fixture = await createRuntimeLogFixture({
+    ...options,
+    computeDriver: wrap === undefined ? driver : wrap(driver),
   });
-  const fixture = await createRuntimeLogFixture({ computeDriver });
-  const target = await fixture.deployAgent();
+  const target = await fixture.deployAgent(label);
+  return {
+    fixture,
+    target,
+    state: driver.state,
+    get: (path) => fixture.request("GET", path),
+    // GET the gateway source's logs; undefined query values are left out.
+    read(query = {}) {
+      const params = new URLSearchParams({ source: "gateway" });
+      for (const [name, value] of Object.entries(query)) {
+        if (value !== undefined) {
+          params.set(name, String(value));
+        }
+      }
+      return fixture.request("GET", target.logsPath(params.toString()));
+    },
+  };
+}
 
-  const runtime = await fixture.request("GET", target.runtimePath);
+function assertNoCanary(text, values, where) {
+  for (const [name, value] of Object.entries(values)) {
+    if (name !== "CONTROL") {
+      assert.equal(text.includes(value), false, `canary ${name} leaked ${where}`);
+    }
+  }
+}
+
+test("runtime status refuses an invalid Driver timestamp instead of normalizing it", async () => {
+  const route = await logsRoute({ state: { observedAt: "2026-02-30" } });
+
+  const runtime = await route.get(route.target.runtimePath);
 
   assert.equal(runtime.status, 503, runtime.text);
   assert.equal(runtime.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
@@ -105,8 +160,6 @@ test("runtime status refuses an invalid Driver timestamp instead of normalizing 
 });
 
 test("runtime log route bodies never contain planted credentials, prompts or protocol output", async () => {
-  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
-    await import("../helpers/runtime-logs.mjs");
   const values = {
     ...canaries(),
     DEEP: `deep-canary-${randomUUID()}`,
@@ -115,55 +168,43 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
   // Hex split at the 1 MiB boundary: the fragment is below every redaction threshold,
   // so only dropping the partial final line keeps it out of the page.
   const splitFragment = randomBytes(10).toString("hex");
+  const planted = { ...values, SPLIT: splitFragment };
   const eventBearer = randomString(30);
-  const computeDriver = createRuntimeLogComputeDriver();
-  const fixture = await createRuntimeLogFixture({ computeDriver });
-  const target = await fixture.deployAgent();
-  computeDriver.state.lines = [
-    ...(await corpusLines(values)),
-    { time: lineTime(90), raw: `export GIT_TOKEN_PART=${splitFragment}` },
-  ];
-  computeDriver.state.truncated = true;
-  computeDriver.state.restartCount = 1;
-  computeDriver.state.terminationReason = `Error: token ${values.GITHUB_PAT}`;
-  computeDriver.state.events = [
-    {
-      type: "Warning",
-      reason: "Failed",
-      message: `Failed to pull image: Authorization: Bearer ${eventBearer}`,
-      count: 3,
-      lastObservedAt: "2026-09-30T11:59:00Z",
-    },
-  ];
+  const route = await logsRoute();
+  Object.assign(route.state, {
+    lines: [
+      ...(await corpusLines(values)),
+      { time: lineTime(90), raw: `export GIT_TOKEN_PART=${splitFragment}` },
+    ],
+    truncated: true,
+    restartCount: 1,
+    terminationReason: `Error: token ${values.GITHUB_PAT}`,
+    events: [
+      {
+        type: "Warning",
+        reason: "Failed",
+        message: `Failed to pull image: Authorization: Bearer ${eventBearer}`,
+        count: 3,
+        lastObservedAt: "2026-09-30T11:59:00Z",
+      },
+    ],
+  });
 
-  const runtime = await fixture.request("GET", target.runtimePath);
+  const runtime = await route.get(route.target.runtimePath);
   assert.equal(runtime.status, 200, runtime.text);
   assert.equal(runtime.headers.get("cache-control"), "no-store");
   assert.equal(runtime.text.includes(eventBearer), false, "Event messages are redacted");
   assert.equal(runtime.text.includes(values.GITHUB_PAT), false, "termination reasons are redacted");
   assert.match(runtime.data.pods[0].events[0].message, /\[redacted:header\]/);
 
-  const logs = await fixture.request("GET", target.logsPath("source=gateway&tailLines=1000"));
+  const logs = await route.read({ tailLines: 1000 });
   assert.equal(logs.status, 200, logs.text);
   assert.equal(logs.headers.get("cache-control"), "no-store");
-  for (const [name, value] of Object.entries({ ...values, SPLIT: splitFragment })) {
-    if (name === "CONTROL") {
-      continue;
-    }
-    assert.equal(logs.text.includes(value), false, `canary ${name} leaked into the response`);
-  }
+  assertNoCanary(logs.text, planted, "into the response");
   // A level floor only removes sanitized records; it never reaches unsanitized text.
-  const floored = await fixture.request(
-    "GET",
-    target.logsPath("source=gateway&tailLines=1000&minLevel=warn"),
-  );
+  const floored = await route.read({ tailLines: 1000, minLevel: "warn" });
   assert.equal(floored.status, 200, floored.text);
-  for (const [name, value] of Object.entries({ ...values, SPLIT: splitFragment })) {
-    if (name === "CONTROL") {
-      continue;
-    }
-    assert.equal(floored.text.includes(value), false, `canary ${name} leaked at minLevel=warn`);
-  }
+  assertNoCanary(floored.text, planted, "at minLevel=warn");
   assert.ok(
     floored.data.records.every(
       (record) => record.type !== "line" || ["error", "warn", "unknown"].includes(record.level),
@@ -171,15 +212,10 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
   );
   assert.equal(floored.data.records.at(-1).reason, "truncated");
   // The download is the same sanitized page in a second serializer.
-  const download = await fixture.request("GET", target.logsPath("source=gateway&download=true"));
+  const download = await route.read({ download: true });
   assert.equal(download.status, 200, download.text);
   assert.equal(download.headers.get("cache-control"), "no-store");
-  for (const [name, value] of Object.entries({ ...values, SPLIT: splitFragment })) {
-    if (name === "CONTROL") {
-      continue;
-    }
-    assert.equal(download.text.includes(value), false, `canary ${name} leaked into the download`);
-  }
+  assertNoCanary(download.text, planted, "into the download");
   assert.match(download.text, /\[redacted:/);
   assert.match(download.text, / WITHHELD 3 unrecognised_structured$/m);
   assert.match(download.text, / GAP truncated: /);
@@ -207,9 +243,11 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
     ms: 12,
     sinceStartMs: 40,
   });
-  const codex = lines.filter((record) => record.kind === "codex");
   assert.deepEqual(
-    codex.map(({ level, message, subsystem }) => ({ level, message, subsystem })),
+    pick(
+      lines.filter((record) => record.kind === "codex"),
+      ["level", "message", "subsystem"],
+    ),
     [
       {
         level: "warn",
@@ -225,9 +263,11 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
   assert.ok(lines.some((record) => record.message.includes("[redacted:userinfo]@github.com")));
   assert.ok(lines.some((record) => record.message.includes("visible-control-text")));
   assert.equal(logs.text.includes("\\u001b"), false, "ANSI escapes are stripped");
-  const withheld = logs.data.records.filter((record) => record.type === "withheld");
   assert.deepEqual(
-    withheld.map(({ reason, count }) => ({ reason, count })),
+    pick(
+      logs.data.records.filter((record) => record.type === "withheld"),
+      ["reason", "count"],
+    ),
     [
       { reason: "unrecognised_structured", count: 3 },
       { reason: "malformed", count: 2 },
@@ -241,28 +281,21 @@ test("runtime log route bodies never contain planted credentials, prompts or pro
 });
 
 test("OpenClaw console records without a subsystem are withheld below warn", () => {
-  const stream = { source: "gateway", pod: "gateway-0", container: "gateway" };
   const reply = `reply-canary-${randomUUID()}`;
-  const { records } = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      { time: lineTime(1), raw: JSON.stringify({ level: "info", message: reply }) },
-      { time: lineTime(2), raw: JSON.stringify({ level: "debug", message: reply, subsystem: "" }) },
-      {
-        time: lineTime(3),
-        raw: JSON.stringify({
-          level: "error",
-          message: "Gateway failed to start: gateway.bind=custom requires gateway.customBindHost",
-        }),
-      },
-      { time: lineTime(4), raw: JSON.stringify({ level: "warn", message: "config reloaded" }) },
-      {
-        time: lineTime(5),
-        raw: JSON.stringify({ level: "info", subsystem: "gateway", message: "listening" }),
-      },
+  const { records } = sanitize(
+    gatewayStream,
+    [
+      JSON.stringify({ level: "info", message: reply }),
+      JSON.stringify({ level: "debug", message: reply, subsystem: "" }),
+      JSON.stringify({
+        level: "error",
+        message: "Gateway failed to start: gateway.bind=custom requires gateway.customBindHost",
+      }),
+      JSON.stringify({ level: "warn", message: "config reloaded" }),
+      JSON.stringify({ level: "info", subsystem: "gateway", message: "listening" }),
     ],
-  });
+    { first: 1 },
+  );
   assert.deepEqual(
     records.map((record) =>
       record.type === "withheld"
@@ -279,7 +312,6 @@ test("OpenClaw console records without a subsystem are withheld below warn", () 
 });
 
 test("credential shapes outside key names are masked in messages and kept fields", () => {
-  const stream = { source: "agent", pod: "gateway-0", container: "agent" };
   const password = `pw${randomString(14)}`;
   const hf = `hf_${randomString(34)}`;
   const stripe = `sk_live_${randomString(24)}`;
@@ -288,31 +320,25 @@ test("credential shapes outside key names are masked in messages and kept fields
   const netrc = `n${randomString(15)}`;
   const serviceKey = randomBytes(16).toString("hex");
   const turn = `curl --user ops:${password} https://x.example.invalid`;
-  const { records } = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      { time: lineTime(1), raw: `curl -u admin:${password} https://x.example.invalid` },
-      { time: lineTime(2), raw: `token ${hf} ${stripe} ${restricted}` },
-      { time: lineTime(3), raw: `Proxy auth Basic ${basic}` },
-      { time: lineTime(4), raw: `machine github.com login bob password ${netrc}` },
-      { time: lineTime(5), raw: `MY_SERVICE_KEY=${serviceKey}` },
-      {
-        time: lineTime(6),
-        raw: JSON.stringify({
-          level: "warn",
-          target: "codex_core::tools::parallel",
-          fields: { message: "tool failed", turn_id: turn },
-        }),
-      },
-      {
-        time: lineTime(7),
-        raw: JSON.stringify({ level: "warn", subsystem: "x", message: "m", code: stripe }),
-      },
+  const { records } = sanitize(
+    agentStream,
+    [
+      `curl -u admin:${password} https://x.example.invalid`,
+      `token ${hf} ${stripe} ${restricted}`,
+      `Proxy auth Basic ${basic}`,
+      `machine github.com login bob password ${netrc}`,
+      `MY_SERVICE_KEY=${serviceKey}`,
+      JSON.stringify({
+        level: "warn",
+        target: "codex_core::tools::parallel",
+        fields: { message: "tool failed", turn_id: turn },
+      }),
+      JSON.stringify({ level: "warn", subsystem: "x", message: "m", code: stripe }),
       // Prose and identifiers stay readable.
-      { time: lineTime(8), raw: "basic authentication failed; see hf_hub_download and sort -u" },
+      "basic authentication failed; see hf_hub_download and sort -u",
     ],
-  });
+    { first: 1 },
+  );
   const text = JSON.stringify(records);
   for (const value of [password, hf, stripe, restricted, basic, netrc, serviceKey]) {
     assert.equal(text.includes(value), false, `${value.slice(0, 6)}... leaked`);
@@ -326,121 +352,107 @@ test("credential shapes outside key names are masked in messages and kept fields
 });
 
 test("the wrapper's fixed plain-text failure line is a wrapper error, not unknown text", () => {
-  const stream = { source: "agent", pod: "gateway-0", container: "agent" };
-  const { records } = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      { time: lineTime(1), raw: "Harness model authentication probe failed." },
-      { time: lineTime(2), raw: "Harness model authentication probe failed. extra" },
-    ],
-  });
-  assert.deepEqual(
-    records.map(({ kind, level, message }) => ({ kind, level, message })),
+  const { records } = sanitize(
+    agentStream,
     [
-      { kind: "wrapper", level: "error", message: "Harness model authentication probe failed." },
-      {
-        kind: "text",
-        level: "unknown",
-        message: "Harness model authentication probe failed. extra",
-      },
+      "Harness model authentication probe failed.",
+      "Harness model authentication probe failed. extra",
     ],
+    { first: 1 },
   );
+  assert.deepEqual(pick(records, ["kind", "level", "message"]), [
+    { kind: "wrapper", level: "error", message: "Harness model authentication probe failed." },
+    {
+      kind: "text",
+      level: "unknown",
+      message: "Harness model authentication probe failed. extra",
+    },
+  ]);
 });
 
+const wrapperKeys = ["kind", "level", "message", "fields"];
+
 test("a failed startup phase keeps its fixed cause code", () => {
-  const { records } = sanitizeRuntimeLogChunk({
-    stream: { source: "agent", pod: "agent-0", container: "agent" },
-    truncated: false,
-    lines: [
-      {
-        time: lineTime(1),
-        raw: '{"event":"runtime.startup_phase","container":"agent","phase":"plugin-install","outcome":"failed","ms":60000,"sinceStartMs":62000,"code":"PLUGIN_NOT_IN_CATALOG"}',
-      },
-    ],
-  });
-  assert.deepEqual(
-    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+  const { records } = sanitize(
+    agentPodStream,
     [
-      {
-        kind: "wrapper",
-        level: "error",
-        message: "runtime.startup_phase",
-        fields: {
-          container: "agent",
-          phase: "plugin-install",
-          outcome: "failed",
-          ms: 60000,
-          sinceStartMs: 62000,
-          code: "PLUGIN_NOT_IN_CATALOG",
-        },
-      },
+      '{"event":"runtime.startup_phase","container":"agent","phase":"plugin-install","outcome":"failed","ms":60000,"sinceStartMs":62000,"code":"PLUGIN_NOT_IN_CATALOG"}',
     ],
+    { first: 1 },
   );
+  assert.deepEqual(pick(records, wrapperKeys), [
+    {
+      kind: "wrapper",
+      level: "error",
+      message: "runtime.startup_phase",
+      fields: {
+        container: "agent",
+        phase: "plugin-install",
+        outcome: "failed",
+        ms: 60000,
+        sinceStartMs: 62000,
+        code: "PLUGIN_NOT_IN_CATALOG",
+      },
+    },
+  ]);
 });
 
 test("a failed model probe keeps its closed-vocabulary cause, never other cause text", () => {
-  const probe = (event, cause) =>
-    JSON.stringify({ event, elapsedMs: 2340, code: "MODEL_PROBE_FAILED", cause });
-  const { records, withheld } = sanitizeRuntimeLogChunk({
-    stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
-    truncated: false,
-    lines: [
-      {
-        time: lineTime(1),
-        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "format" }),
-      },
-      {
-        time: lineTime(2),
-        // The provider's HTTP status and known error code, never its text, are kept.
-        raw: JSON.stringify({
-          event: "codex.model_probe",
-          elapsedMs: 2340,
-          code: "MODEL_PROBE_FAILED",
-          cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+  const probe = (event, cause, extra) =>
+    JSON.stringify({ event, elapsedMs: 2340, code: "MODEL_PROBE_FAILED", cause, ...extra });
+  const { records, withheld } = sanitize(
+    gatewayStream,
+    [
+      probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "format" }),
+      // The provider's HTTP status and known error code, never its text, are kept.
+      probe(
+        "codex.model_probe",
+        { kind: "PROBE_STATUS", detail: "rate_limit" },
+        {
           providerStatus: 429,
           providerCode: "usage_limit_reached",
           providerMessage: "You've hit your usage limit.",
-        }),
-      },
-      { time: lineTime(3), raw: probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }) },
+        },
+      ),
+      probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }),
+      // The upfront 401 reports which header names it saw and its body's shape and
+      // closed-set error code and type; the Codex probe has none of these fields,
+      // and provider text never passes.
+      probe("openclaw.model_probe", undefined, {
+        providerStatus: 401,
+        providerCode: "missing_api_key",
+        responseHeaderMarker: "provider-like",
+        bodyShape: "json-error-code",
+        providerErrorCode: "no_organization",
+        providerErrorType: "invalid_request_error",
+        providerMessage: "Missing bearer or basic authentication in header",
+        error: { code: "no_organization", message: "sk-live-abc" },
+        body: '{"error":{"message":"sk-live-abc"}}',
+      }),
+      probe("codex.model_probe", undefined, {
+        responseHeaderMarker: "provider-like",
+        bodyShape: "json-error-code",
+        providerErrorCode: "no_organization",
+        providerErrorType: "invalid_request_error",
+      }),
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
-      {
-        time: lineTime(4),
-        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
-      },
-      { time: lineTime(5), raw: probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }) },
-      {
-        time: lineTime(6),
-        raw: probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "format", text: "x" }),
-      },
-      { time: lineTime(7), raw: probe("codex.model_probe", "PROBE_STATUS") },
-      {
-        time: lineTime(8),
-        raw: probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: 42 }),
-      },
+      probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
+      probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }),
+      probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "format", text: "x" }),
+      probe("codex.model_probe", "PROBE_STATUS"),
+      probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: 42 }),
       // Only a failed check carries a cause, and only probe records keep one.
-      {
-        time: lineTime(9),
-        raw: JSON.stringify({
-          event: "codex.model_probe",
-          elapsedMs: 2340,
-          code: "READY",
-          cause: { kind: "PROBE_STATUS", detail: "format" },
-        }),
-      },
-      {
-        time: lineTime(10),
-        raw: JSON.stringify({
-          event: "runtime.startup_phase",
-          phase: "model-probe",
-          outcome: "failed",
-          code: "MODEL_PROBE_FAILED",
-          cause: { kind: "PROBE_STATUS", detail: "format" },
-        }),
-      },
+      probe("codex.model_probe", { kind: "PROBE_STATUS", detail: "format" }, { code: "READY" }),
+      JSON.stringify({
+        event: "runtime.startup_phase",
+        phase: "model-probe",
+        outcome: "failed",
+        code: "MODEL_PROBE_FAILED",
+        cause: { kind: "PROBE_STATUS", detail: "format" },
+      }),
     ],
-  });
+    { first: 1 },
+  );
   assert.equal(withheld, 0);
   const fields = (event, cause = {}) => ({
     kind: "wrapper",
@@ -448,36 +460,133 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
     message: event,
     fields: { elapsedMs: 2340, code: "MODEL_PROBE_FAILED", ...cause },
   });
-  assert.deepEqual(
-    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+  assert.deepEqual(pick(records, wrapperKeys), [
+    fields("openclaw.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "format" }),
+    fields("codex.model_probe", {
+      providerStatus: 429,
+      providerCode: "usage_limit_reached",
+      causeKind: "PROBE_STATUS",
+      causeDetail: "rate_limit",
+    }),
+    fields("openclaw.model_probe", { causeKind: "WRAPPER_ERROR" }),
+    fields("openclaw.model_probe", {
+      providerStatus: 401,
+      providerCode: "missing_api_key",
+      responseHeaderMarker: "provider-like",
+      bodyShape: "json-error-code",
+      providerErrorCode: "no_organization",
+      providerErrorType: "invalid_request_error",
+    }),
+    fields("codex.model_probe"),
+    fields("openclaw.model_probe"),
+    fields("openclaw.model_probe"),
+    fields("codex.model_probe"),
+    fields("codex.model_probe"),
+    fields("openclaw.model_probe"),
+    {
+      kind: "wrapper",
+      level: "info",
+      message: "codex.model_probe",
+      fields: { elapsedMs: 2340, code: "READY" },
+    },
+    {
+      kind: "wrapper",
+      level: "error",
+      message: "runtime.startup_phase",
+      fields: { phase: "model-probe", outcome: "failed", code: "MODEL_PROBE_FAILED" },
+    },
+  ]);
+});
+
+// Finding 2017: a failed Codex login or model check names the class of Codex's error
+// output. Only a value from the contract's closed list passes, and only on those events.
+test("a failed Codex login or model check keeps its closed-list failure class, never other text", () => {
+  const login = (failureClass) =>
+    JSON.stringify({
+      event: "runtime.startup_phase",
+      container: "agent",
+      phase: "codex-login",
+      outcome: "failed",
+      ms: 812,
+      sinceStartMs: 900,
+      failureClass,
+    });
+  const probe = (event, failureClass) =>
+    JSON.stringify({
+      event,
+      elapsedMs: 2340,
+      exitCode: 1,
+      code: "MODEL_PROBE_FAILED",
+      cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
+      failureClass,
+    });
+  const loginAttempt = (failureClass) =>
+    JSON.stringify({ event: "codex.login", attempt: 1, elapsedMs: 640, exitCode: 1, failureClass });
+  const { records, withheld } = sanitize(
+    agentPodStream,
     [
-      fields("openclaw.model_probe", { causeKind: "PROBE_STATUS", causeDetail: "format" }),
-      fields("codex.model_probe", {
-        providerStatus: 429,
-        providerCode: "usage_limit_reached",
-        causeKind: "PROBE_STATUS",
-        causeDetail: "rate_limit",
-      }),
-      fields("openclaw.model_probe", { causeKind: "WRAPPER_ERROR" }),
-      fields("openclaw.model_probe"),
-      fields("openclaw.model_probe"),
-      fields("codex.model_probe"),
-      fields("codex.model_probe"),
-      fields("openclaw.model_probe"),
-      {
-        kind: "wrapper",
-        level: "info",
-        message: "codex.model_probe",
-        fields: { elapsedMs: 2340, code: "READY" },
-      },
-      {
-        kind: "wrapper",
-        level: "error",
-        message: "runtime.startup_phase",
-        fields: { phase: "model-probe", outcome: "failed", code: "MODEL_PROBE_FAILED" },
-      },
+      login("network"),
+      probe("codex.model_probe", "http_5xx"),
+      loginAttempt("network"),
+      loginAttempt("Error: error sending request for url (https://auth.example.invalid/?a=b)"),
+      // Off-list values, token-shaped text and non-strings are dropped, never the line.
+      login("sk-proj-0123456789abcdefghijklmnop"),
+      probe(
+        "codex.model_probe",
+        "error sending request for url (https://auth.example.invalid/?a=b)",
+      ),
+      probe("codex.model_probe", { class: "network" }),
+      probe("codex.model_probe", "NETWORK"),
+      // Other wrapper events never carry a class.
+      probe("openclaw.model_probe", "network"),
     ],
+    { first: 1 },
   );
+  assert.equal(withheld, 0);
+  const loginFields = (extra = {}) => ({
+    kind: "wrapper",
+    level: "error",
+    message: "runtime.startup_phase",
+    fields: {
+      container: "agent",
+      phase: "codex-login",
+      outcome: "failed",
+      ms: 812,
+      sinceStartMs: 900,
+      ...extra,
+    },
+  });
+  const probeFields = (event, extra = {}) => ({
+    kind: "wrapper",
+    level: "error",
+    message: event,
+    fields: {
+      elapsedMs: 2340,
+      code: "MODEL_PROBE_FAILED",
+      ...(event === "codex.model_probe" ? { exitCode: 1 } : {}),
+      causeKind: "PROCESS_EXIT",
+      causeDetail: "exit-1",
+      ...extra,
+    },
+  });
+  const loginAttemptFields = (extra = {}) => ({
+    kind: "wrapper",
+    level: "warn",
+    message: "codex.login",
+    fields: { attempt: 1, elapsedMs: 640, exitCode: 1, ...extra },
+  });
+  assert.deepEqual(pick(records, wrapperKeys), [
+    loginFields({ failureClass: "network" }),
+    probeFields("codex.model_probe", { failureClass: "http_5xx" }),
+    loginAttemptFields({ failureClass: "network" }),
+    loginAttemptFields(),
+    loginFields(),
+    probeFields("codex.model_probe"),
+    probeFields("codex.model_probe"),
+    probeFields("codex.model_probe"),
+    probeFields("openclaw.model_probe"),
+  ]);
+  assert.doesNotMatch(JSON.stringify(records), /sk-proj|error sending|example\.invalid|NETWORK/);
 });
 
 test("a Gateway settings override keeps its setting names, never values (D322)", () => {
@@ -487,96 +596,78 @@ test("a Gateway settings override keeps its setting names, never values (D322)",
       container: "gateway",
       settings,
     });
-  const { records, withheld } = sanitizeRuntimeLogChunk({
-    stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
-    truncated: false,
-    lines: [
-      {
-        time: lineTime(1),
-        raw: event([
-          "cron.triggers.enabled",
-          "models.providers.codex.baseUrl",
-          "models.providers.codex.apiKey",
-          "models.providers.codex.models[].headers",
-        ]),
-      },
-      // An item that is not a key path drops the list, never the event.
-      { time: lineTime(2), raw: event(["cron.triggers.enabled", "models.providers.sk-live x"]) },
-      { time: lineTime(3), raw: event("cron.triggers.enabled") },
-    ],
-  });
-  assert.equal(withheld, 0);
-  assert.deepEqual(
-    records.map(({ kind, level, message, fields }) => ({ kind, level, message, fields })),
+  const { records, withheld } = sanitize(
+    gatewayStream,
     [
-      {
-        kind: "wrapper",
-        level: "warn",
-        message: "runtime.gateway_settings_overridden",
-        fields: {
-          container: "gateway",
-          settings:
-            "cron.triggers.enabled, models.providers.codex.baseUrl, models.providers.codex.apiKey, models.providers.codex.models[].headers",
-        },
-      },
-      ...[2, 3].map(() => ({
-        kind: "wrapper",
-        level: "warn",
-        message: "runtime.gateway_settings_overridden",
-        fields: { container: "gateway" },
-      })),
+      event([
+        "cron.triggers.enabled",
+        "models.providers.codex.baseUrl",
+        "models.providers.codex.apiKey",
+        "models.providers.codex.models[].headers",
+      ]),
+      // An item that is not a key path drops the list, never the event.
+      event(["cron.triggers.enabled", "models.providers.sk-live x"]),
+      event("cron.triggers.enabled"),
     ],
+    { first: 1 },
   );
+  assert.equal(withheld, 0);
+  const override = (fields) => ({
+    kind: "wrapper",
+    level: "warn",
+    message: "runtime.gateway_settings_overridden",
+    fields: { container: "gateway", ...fields },
+  });
+  assert.deepEqual(pick(records, wrapperKeys), [
+    override({
+      settings:
+        "cron.triggers.enabled, models.providers.codex.baseUrl, models.providers.codex.apiKey, models.providers.codex.models[].headers",
+    }),
+    override(),
+    override(),
+  ]);
 });
 
 test("the sanitizer drops a partial final line and bounds oversized input", () => {
-  const stream = { source: "gateway", pod: "gateway-0", container: "gateway" };
   const fragment = randomBytes(10).toString("hex");
-  const partial = sanitizeRuntimeLogChunk({
-    stream,
+  const partial = sanitize(gatewayStream, ["complete line", `partial ${fragment}`], {
+    first: 1,
     truncated: true,
-    lines: [
-      { time: lineTime(1), raw: "complete line" },
-      { time: lineTime(2), raw: `partial ${fragment}` },
-    ],
   });
   assert.deepEqual(
     partial.records.map((record) => record.message),
     ["complete line"],
   );
-  const oversized = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      { time: lineTime(1), raw: `plain ${"x".repeat(5 * 1024)}` },
-      { time: lineTime(2), raw: `{"level":"info","message":"${"y".repeat(33 * 1024)}"}` },
-    ],
-  });
-  assert.deepEqual(
-    oversized.records.map(({ type, reason, count }) => ({ type, reason, count })),
-    [{ type: "withheld", reason: "oversized", count: 2 }],
+  const oversized = sanitize(
+    gatewayStream,
+    [`plain ${"x".repeat(5 * 1024)}`, `{"level":"info","message":"${"y".repeat(33 * 1024)}"}`],
+    { first: 1 },
   );
-  const long = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      {
-        time: lineTime(1),
-        raw: `{"level":"info","subsystem":"gateway","message":"${"z ".repeat(6000)}"}`,
-      },
-    ],
-  });
+  assert.deepEqual(pick(oversized.records, ["type", "reason", "count"]), [
+    { type: "withheld", reason: "oversized", count: 2 },
+  ]);
+  const long = sanitize(
+    gatewayStream,
+    [`{"level":"info","subsystem":"gateway","message":"${"z ".repeat(6000)}"}`],
+    { first: 1 },
+  );
   assert.equal(long.records[0].truncated, true);
   assert.ok(Buffer.byteLength(long.records[0].message) <= 8 * 1024);
   assert.match(long.records[0].message, /…\[truncated\]$/);
 });
 
+// Line messages, and withheld runs as `withheld <count>`.
+function withheldSummary(page) {
+  return page.records.map((record) =>
+    record.type === "withheld" ? `withheld ${record.count}` : record.message,
+  );
+}
+
 test("pretty-printed JSON is withheld as one run, not shown line by line", () => {
-  const stream = { source: "agent", pod: "agent-0", container: "agent" };
   const prompt = `prompt-canary-${randomUUID()}`;
   const element = `element-canary-${randomUUID()}`;
   const tail = `tail-canary-${randomUUID()}`;
-  const raw = [
+  const result = sanitize(agentPodStream, [
     "setup starting",
     "{",
     '  "event": "setup",',
@@ -589,12 +680,7 @@ test("pretty-printed JSON is withheld as one run, not shown line by line", () =>
     "}",
     '{"event":"runtime.startup_phase","container":"agent","phase":"node-setup","outcome":"ok","ms":5,"sinceStartMs":9}',
     "node host connected",
-  ];
-  const result = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: raw.map((line, index) => ({ time: lineTime(index), raw: line })),
-  });
+  ]);
   const body = JSON.stringify(result);
   assert.equal(body.includes(prompt), false, "a pretty-printed prompt value leaked");
   assert.equal(body.includes(element), false, "a pretty-printed array element leaked");
@@ -606,110 +692,72 @@ test("pretty-printed JSON is withheld as one run, not shown line by line", () =>
   );
 
   // A page that starts inside a value has no `{` line; its members are still withheld.
-  const midValue = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [`    "prompt": "${tail}",`, '    "n": 1', "  }", "}", "after"].map((line, index) => ({
-      time: lineTime(index),
-      raw: line,
-    })),
-  });
+  const midValue = sanitize(agentPodStream, [
+    `    "prompt": "${tail}",`,
+    '    "n": 1',
+    "  }",
+    "}",
+    "after",
+  ]);
   assert.equal(JSON.stringify(midValue).includes(tail), false, "a mid-value member leaked");
-  assert.deepEqual(
-    midValue.records.map((record) =>
-      record.type === "withheld" ? `withheld ${record.count}` : record.message,
-    ),
-    ["withheld 3", "}", "after"],
-  );
+  assert.deepEqual(withheldSummary(midValue), ["withheld 3", "}", "after"]);
 
   // An unclosed `{` does not swallow the plain text that follows it.
-  const stray = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: ["{ unbalanced", "plain text resumes"].map((line, index) => ({
-      time: lineTime(index),
-      raw: line,
-    })),
-  });
+  const stray = sanitize(agentPodStream, ["{ unbalanced", "plain text resumes"]);
   assert.deepEqual(
     stray.records.map((record) => (record.type === "withheld" ? record.type : record.message)),
     ["withheld", "plain text resumes"],
   );
 
   // A bracket-tagged text line ends an open block instead of reading as its continuation.
-  const tagged = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: ["{ x", "[node-host] advertised commands: a, b"].map((line, index) => ({
-      time: lineTime(index),
-      raw: line,
-    })),
-  });
-  assert.deepEqual(
-    tagged.records.map((record) =>
-      record.type === "withheld" ? `withheld ${record.count}` : record.message,
-    ),
-    ["withheld 1", "[node-host] advertised commands: a, b"],
-  );
+  const tagged = sanitize(agentPodStream, ["{ x", "[node-host] advertised commands: a, b"]);
+  assert.deepEqual(withheldSummary(tagged), [
+    "withheld 1",
+    "[node-host] advertised commands: a, b",
+  ]);
 });
 
 test("a PEM block printed over several lines is masked on every line", () => {
-  const stream = { source: "gateway", pod: "gateway-0", container: "gateway" };
   const body = randomBytes(48).toString("base64");
   const tail = `PEMTAIL${randomString(12)}`;
   const header = `DEK-Info: AES-128-CBC,${randomBytes(8).toString("hex").toUpperCase()}`;
-  const lines = [
-    "before the key",
-    "-----BEGIN ENCRYPTED PRIVATE KEY-----",
-    header,
-    "",
-    body,
-    tail,
-    "-----END ENCRYPTED PRIVATE KEY----- after the key",
-    "ordinary line",
-  ];
-  const chunk = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: lines.map((raw, index) => ({ time: lineTime(index), raw })),
-  });
-  const messages = chunk.records.map((record) => record.message);
-  assert.deepEqual(messages, [
-    "before the key",
-    "[redacted:pem]",
-    "[redacted:pem]",
-    "[redacted:pem]",
-    "[redacted:pem]",
-    "[redacted:pem]",
-    "[redacted:pem] after the key",
-    "ordinary line",
-  ]);
+  const shown = (raws) => sanitize(gatewayStream, raws).records.map((record) => record.message);
+  assert.deepEqual(
+    shown([
+      "before the key",
+      "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+      header,
+      "",
+      body,
+      tail,
+      "-----END ENCRYPTED PRIVATE KEY----- after the key",
+      "ordinary line",
+    ]),
+    [
+      "before the key",
+      "[redacted:pem]",
+      "[redacted:pem]",
+      "[redacted:pem]",
+      "[redacted:pem]",
+      "[redacted:pem]",
+      "[redacted:pem] after the key",
+      "ordinary line",
+    ],
+  );
 
   // A page that starts inside a block has no BEGIN line; the END line and the body
   // lines directly above it are masked.
-  const midBlock = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: ["page start", body, tail, "-----END PRIVATE KEY-----", "next"].map((raw, index) => ({
-      time: lineTime(index),
-      raw,
-    })),
-  });
-  assert.deepEqual(
-    midBlock.records.map((record) => record.message),
-    ["page start", "[redacted:pem]", "[redacted:pem]", "[redacted:pem]", "next"],
-  );
+  assert.deepEqual(shown(["page start", body, tail, "-----END PRIVATE KEY-----", "next"]), [
+    "page start",
+    "[redacted:pem]",
+    "[redacted:pem]",
+    "[redacted:pem]",
+    "next",
+  ]);
 
   // A BEGIN marker quoted in prose ends at the first line that is not PEM-shaped.
-  const prose = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: ["expected a -----BEGIN CERTIFICATE----- header", "retrying in 5s", "done"].map(
-      (raw, index) => ({ time: lineTime(index), raw }),
-    ),
-  });
   assert.deepEqual(
-    prose.records.map((record) => record.message),
+    shown(["expected a -----BEGIN CERTIFICATE----- header", "retrying in 5s", "done"]),
     ["expected a [redacted:pem]", "retrying in 5s", "done"],
   );
 
@@ -720,13 +768,12 @@ test("a PEM block printed over several lines is masked on every line", () => {
       const budgetMs = 400;
       const elapsed = cpuTimeMs(
         () =>
-          sanitizeRuntimeLogChunk({
-            stream,
-            truncated: false,
-            lines: ["-----BEGIN X-----", hostile + suffix, hostile + suffix, "-----END X-----"].map(
-              (raw, index) => ({ time: lineTime(index), raw }),
-            ),
-          }),
+          sanitize(gatewayStream, [
+            "-----BEGIN X-----",
+            hostile + suffix,
+            hostile + suffix,
+            "-----END X-----",
+          ]),
         { budgetMs },
       );
       assert.ok(elapsed < budgetMs, `${JSON.stringify(unit)} took ${elapsed.toFixed(0)} ms of CPU`);
@@ -735,7 +782,6 @@ test("a PEM block printed over several lines is masked on every line", () => {
 });
 
 test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON arrays", () => {
-  const stream = { source: "agent", pod: "agent-0", container: "agent" };
   const canary = `array-canary-${randomUUID()}`;
   const tagged = [
     "[node-host] advertised commands: dir.list, file.create, file.fetch",
@@ -752,11 +798,7 @@ test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON
     `[true] ${canary}`,
     `[${canary}`,
   ];
-  const page = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [...tagged, ...arrays].map((raw, index) => ({ time: lineTime(index), raw })),
-  });
+  const page = sanitize(agentPodStream, [...tagged, ...arrays]);
   assert.deepEqual(
     page.records.map(({ type, kind, message, reason, count }) =>
       type === "line" ? { kind, message } : { reason, count },
@@ -772,39 +814,27 @@ test("the sanitizer keeps bracket-tagged text lines but withholds malformed JSON
 // The redactor runs synchronously on workload-controlled lines of up to 32 KiB, before
 // the 8 KiB output cut. A pattern that backtracks quadratically on such a line would stall
 // the API replica's event loop for every caller, so each hostile shape has a budget.
+function redactionCpuMs(input, budgetMs) {
+  return cpuTimeMs(
+    () => {
+      redactRuntimeLogText(input);
+      maskRuntimeEventText(input);
+    },
+    { budgetMs },
+  );
+}
+
 test("redaction stays linear on hostile 32 KiB lines", () => {
   const budgetMs = 100;
   const line = (unit, suffix = "") =>
     unit.repeat(Math.ceil((32 * 1024) / unit.length)).slice(0, 32 * 1024 - suffix.length) + suffix;
   redactRuntimeLogText(line("warm-up "));
   maskRuntimeEventText(line("warm-up "));
-  const units = [
-    "a-",
-    "a.",
-    "-",
-    "--a-",
-    "=/",
-    "(/",
-    '"a-',
-    "a0a",
-    "tokena-",
-    "bearer ",
-    "-eyJa",
-    "-eyJ_",
-    "_eyJa",
-    "-eyJa-",
-    "-eyJaaaa",
-  ];
+  const units = ["a-", "a.", "-", "--a-", "=/", "(/", '"a-', "a0a", "tokena-", "bearer "];
+  units.push("-eyJa", "-eyJ_", "_eyJa", "-eyJa-", "-eyJaaaa");
   for (const unit of units) {
     for (const suffix of ["", "?", "token", "=x"]) {
-      const input = line(unit, suffix);
-      const elapsed = cpuTimeMs(
-        () => {
-          redactRuntimeLogText(input);
-          maskRuntimeEventText(input);
-        },
-        { budgetMs },
-      );
+      const elapsed = redactionCpuMs(line(unit, suffix), budgetMs);
       assert.ok(
         elapsed < budgetMs,
         `${JSON.stringify(unit)} + ${JSON.stringify(suffix)} took ${elapsed.toFixed(0)} ms of CPU`,
@@ -812,18 +842,10 @@ test("redaction stays linear on hostile 32 KiB lines", () => {
     }
   }
   // A whole page of such messages stays well inside one request's budget.
-  const elapsed = cpuTimeMs(
-    () =>
-      sanitizeRuntimeLogChunk({
-        stream: { source: "gateway", pod: "gateway-0", container: "gateway" },
-        truncated: false,
-        lines: Array.from({ length: 50 }, (_, index) => ({
-          time: lineTime(index),
-          raw: JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
-        })),
-      }),
-    { budgetMs: 50 * budgetMs },
+  const page = Array.from({ length: 50 }, () =>
+    JSON.stringify({ level: "info", message: "a-".repeat(15 * 1024) }),
   );
+  const elapsed = cpuTimeMs(() => sanitize(gatewayStream, page), { budgetMs: 50 * budgetMs });
   assert.ok(elapsed < 50 * budgetMs, `50 hostile lines took ${elapsed.toFixed(0)} ms of CPU`);
 });
 
@@ -832,39 +854,15 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   // pattern delimiters and prefix letters, every 3-character unit over a smaller one, and
   // each delimiter ahead of the JWT, token and bearer prefixes.
   const budgetMs = 100;
-  const alphabet = [
-    "a",
-    "-",
-    ".",
-    "=",
-    "/",
-    "?",
-    '"',
-    ":",
-    "_",
-    "+",
-    "@",
-    "e",
-    "y",
-    "J",
-    "t",
-    "o",
-    "k",
-    "n",
-    " ",
-  ];
+  const alphabet = [...'a-.=/?":_+@eyJtokn '];
+  const short = [...'a-.=/"_eJ '];
   const units = [];
   for (const x of alphabet) {
-    for (const y of alphabet) {
-      units.push(x + y);
-    }
+    units.push(...alphabet.map((y) => x + y));
   }
-  const short = ["a", "-", ".", "=", "/", '"', "_", "e", "J", " "];
   for (const x of short) {
     for (const y of short) {
-      for (const z of short) {
-        units.push(x + y + z);
-      }
+      units.push(...short.map((z) => x + y + z));
     }
   }
   for (const x of alphabet) {
@@ -876,13 +874,7 @@ test("redaction stays linear on a generated sweep of short repeated units", () =
   const started = performance.now();
   for (const unit of units) {
     const input = unit.repeat(Math.ceil(length / unit.length)).slice(0, length);
-    const elapsed = cpuTimeMs(
-      () => {
-        redactRuntimeLogText(input);
-        maskRuntimeEventText(input);
-      },
-      { budgetMs },
-    );
+    const elapsed = redactionCpuMs(input, budgetMs);
     if (elapsed > worst.elapsed) {
       worst = { unit, elapsed };
     }
@@ -911,10 +903,14 @@ test("the jwt rule masks tokens in every delimiter context but not inside a long
     assert.match(output, /\[redacted:/);
   }
   // `-` and `.` are word boundaries inside a run; a word character ahead of `eyJ` is not.
-  assert.equal(redactRuntimeLogText(`x-token-${jwt} next`), "x-token-[redacted:jwt] next");
-  assert.equal(redactRuntimeLogText(`a.${jwt}.b`), "a.[redacted:jwt].b");
-  assert.equal(redactRuntimeLogText(`${jwt}.${jwt}`), "[redacted:jwt].[redacted:jwt]");
-  assert.equal(redactRuntimeLogText("xeyJabcd.efgh.ij"), "xeyJabcd.efgh.ij");
+  for (const [input, expected] of [
+    [`x-token-${jwt} next`, "x-token-[redacted:jwt] next"],
+    [`a.${jwt}.b`, "a.[redacted:jwt].b"],
+    [`${jwt}.${jwt}`, "[redacted:jwt].[redacted:jwt]"],
+    ["xeyJabcd.efgh.ij", "xeyJabcd.efgh.ij"],
+  ]) {
+    assert.equal(redactRuntimeLogText(input), expected);
+  }
 });
 
 test("the linear jwt scan matches the reference regex on random runs", () => {
@@ -958,9 +954,44 @@ test("bounded key and path patterns still mask the shapes they did before", () =
   }
 });
 
+test("rule prefilters skip only text a rule cannot change", () => {
+  for (const [input, expected] of [
+    // Long-token rules run only on a 40-character run of their joint alphabet.
+    [`k=${"Ab1x".repeat(9)}Ab1`, `k=${"Ab1x".repeat(9)}Ab1`],
+    [`k=${"Ab1x".repeat(10)}`, "k=[redacted:long-token]"],
+    // A joint run of 40 that is no single rule's run of 40 stays.
+    [`k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`, `k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`],
+    [`${"A1".repeat(20)}==${"B2".repeat(20)}`, "[redacted:long-token][redacted:long-token]"],
+    [`x${"a1B_".repeat(10)} eyJ, a://b, why?`, "[redacted:long-token] eyJ, a://b, why?"],
+  ]) {
+    assert.equal(redactRuntimeLogText(input), expected, input);
+  }
+  // Every character of either long-token alphabet counts toward the 40-character run.
+  for (const character of "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-") {
+    assert.equal(
+      redactRuntimeLogText(`k=${`Ab1${character}`.repeat(10)}`),
+      "k=[redacted:long-token]",
+      character,
+    );
+  }
+  assert.equal(
+    stripRuntimeLogControls(
+      "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
+    ),
+    "a bcdefg\u00a0h🙂\ud800\u2028",
+  );
+  for (const [input, expected] of [
+    ["/usr/local/bin/redis-cli -a pw1", "/usr/local/bin/redis-cli -a [redacted:argv]"],
+    // A client name inside a longer token names no client.
+    ["redis-cli-wrapper -a pw2", "redis-cli-wrapper -a pw2"],
+    ["echo mysql; ls -pfoo", "echo mysql; ls -pfoo"],
+    ["sudo mysql -uroot -ppw3", "sudo mysql -uroot -p[redacted:argv]"],
+  ]) {
+    assert.equal(redactArgvCredentials(input), expected, input);
+  }
+});
+
 test("Event messages hide node names, image references and Secret names", async () => {
-  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
-    await import("../helpers/runtime-logs.mjs");
   const node = `ip-10-0-${randomInt(255)}-${randomInt(255)}.ec2.internal`;
   const image = `registry.example.com/team-${randomString(8).toLowerCase()}/gateway:1.2.3`;
   const secret = `db-creds-${randomString(8).toLowerCase()}`;
@@ -987,17 +1018,15 @@ test("Event messages hide node names, image references and Secret names", async 
   );
 
   // The Tier 1 route applies the masking to every Event message.
-  const computeDriver = createRuntimeLogComputeDriver();
-  const fixture = await createRuntimeLogFixture({ computeDriver });
-  const target = await fixture.deployAgent();
-  computeDriver.state.events = messages.map((message) => ({
+  const route = await logsRoute();
+  route.state.events = messages.map((message) => ({
     type: "Warning",
     reason: "Failed",
     message,
     count: 1,
     lastObservedAt: "2026-09-30T11:59:00Z",
   }));
-  const runtime = await fixture.request("GET", target.runtimePath);
+  const runtime = await route.get(route.target.runtimePath);
   assert.equal(runtime.status, 200, runtime.text);
   assert.equal(runtime.data.pods[0].events.length, messages.length);
   for (const name of [node, image, secret]) {
@@ -1007,12 +1036,11 @@ test("Event messages hide node names, image references and Secret names", async 
 });
 
 test("Codex span lifecycle records: turns are info events, other spans are debug, no span payload leaves", () => {
-  const stream = { source: "agent", pod: "gateway-0", container: "agent" };
   const canary = `codex-span-canary-${randomUUID()}`;
-  const tracing = (level, target, fields, span) =>
+  const tracing = (target, fields, span) =>
     JSON.stringify({
       timestamp: "2026-10-01T07:49:44.100970Z",
-      level,
+      level: "INFO",
       fields,
       target,
       ...(span === undefined ? {} : { span, spans: [] }),
@@ -1033,14 +1061,13 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
     "codex.turn.token_usage.output_tokens": 80,
     "codex.turn.token_usage.total_tokens": 1280,
   };
-  const { records } = sanitizeRuntimeLogChunk({
-    stream,
-    truncated: false,
-    lines: [
-      tracing("INFO", "codex_core::tasks", { message: "new" }, turn),
-      tracing("INFO", "codex_core::tasks", { message: "enter" }, turn),
-      tracing("INFO", "codex_core::tasks", { message: "exit" }, turn),
-      tracing("INFO", "codex_core::tools::parallel", {
+  const { records } = sanitize(
+    agentStream,
+    [
+      tracing("codex_core::tasks", { message: "new" }, turn),
+      tracing("codex_core::tasks", { message: "enter" }, turn),
+      tracing("codex_core::tasks", { message: "exit" }, turn),
+      tracing("codex_core::tools::parallel", {
         message: "tool call completed",
         tool_name: "shell",
         turn_id: "turn-1",
@@ -1049,21 +1076,27 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
         arguments: canary,
       }),
       tracing(
-        "INFO",
         "codex_core::tasks",
         { message: "close", "time.busy": "2.1s", "time.idle": "9ms" },
         closed,
       ),
       tracing(
-        "INFO",
         "codex_exec_server::local_file_system",
         { message: "close", "time.busy": "35µs" },
         { name: "fs.read_file", path: canary },
       ),
-      tracing("INFO", "codex_core::client", { message: "new" }, { name: `${canary} x` }),
+      tracing("codex_core::client", { message: "new" }, { name: `${canary} x` }),
       // A plain event whose message happens to be a lifecycle word is not a span record.
-      tracing("INFO", "codex_core::client", { message: "close" }),
-    ].map((raw, index) => ({ time: lineTime(index + 1), raw })),
+      tracing("codex_core::client", { message: "close" }),
+    ],
+    { first: 1 },
+  );
+  const codex = (level, message, subsystem, fields) => ({
+    kind: "codex",
+    level,
+    message,
+    subsystem,
+    ...(fields === undefined ? {} : { fields }),
   });
   assert.deepEqual(
     records.map(({ kind, level, message, subsystem, fields }) => ({
@@ -1074,49 +1107,28 @@ test("Codex span lifecycle records: turns are info events, other spans are debug
       ...(fields === undefined ? {} : { fields }),
     })),
     [
-      {
-        kind: "codex",
-        level: "info",
-        message: "turn started",
-        subsystem: "codex_core::tasks",
-        fields: { model: "gpt-5.6-luna", turn_id: "turn-1" },
-      },
-      { kind: "codex", level: "debug", message: "span enter turn", subsystem: "codex_core::tasks" },
-      { kind: "codex", level: "debug", message: "span exit turn", subsystem: "codex_core::tasks" },
-      {
-        kind: "codex",
-        level: "info",
-        message: "tool call completed",
-        subsystem: "codex_core::tools::parallel",
-        fields: { tool_name: "shell", turn_id: "turn-1", total_duration_ms: 42 },
-      },
-      {
-        kind: "codex",
-        level: "info",
-        message: "turn completed",
-        subsystem: "codex_core::tasks",
-        fields: {
-          model: "gpt-5.6-luna",
-          turn_id: "turn-1",
-          input_tokens: 1200,
-          output_tokens: 80,
-          total_tokens: 1280,
-          busy: "2.1s",
-        },
-      },
-      {
-        kind: "codex",
-        level: "debug",
-        message: "span close fs.read_file",
-        subsystem: "codex_exec_server::local_file_system",
-      },
-      { kind: "codex", level: "debug", message: "span new span", subsystem: "codex_core::client" },
-      {
-        kind: "codex",
-        level: "info",
-        message: "Codex message withheld",
-        subsystem: "codex_core::client",
-      },
+      codex("info", "turn started", "codex_core::tasks", {
+        model: "gpt-5.6-luna",
+        turn_id: "turn-1",
+      }),
+      codex("debug", "span enter turn", "codex_core::tasks"),
+      codex("debug", "span exit turn", "codex_core::tasks"),
+      codex("info", "tool call completed", "codex_core::tools::parallel", {
+        tool_name: "shell",
+        turn_id: "turn-1",
+        total_duration_ms: 42,
+      }),
+      codex("info", "turn completed", "codex_core::tasks", {
+        model: "gpt-5.6-luna",
+        turn_id: "turn-1",
+        input_tokens: 1200,
+        output_tokens: 80,
+        total_tokens: 1280,
+        busy: "2.1s",
+      }),
+      codex("debug", "span close fs.read_file", "codex_exec_server::local_file_system"),
+      codex("debug", "span new span", "codex_core::client"),
+      codex("info", "Codex message withheld", "codex_core::client"),
     ],
   );
   assert.equal(JSON.stringify(records).includes(canary), false, "no span payload or call ID leaks");
@@ -1149,6 +1161,10 @@ function pollReader({ secret = randomBytes(32).toString("hex") } = {}) {
     requests,
     get cursor() {
       return cursor;
+    },
+    // The signed position of the current cursor.
+    get position() {
+      return codec.decode(cursor, binding).position;
     },
     get reads() {
       return reads;
@@ -1192,7 +1208,17 @@ function pollReader({ secret = randomBytes(32).toString("hex") } = {}) {
       cursor = result.cursor;
       return result;
     },
+    // The messages of the delivered lines.
+    async shown(lines, options) {
+      return messages(await this.poll(lines, options));
+    },
   };
+}
+// A view that has delivered a PEM BEGIN line at second 0.
+async function pemOpenReader() {
+  const reader = pollReader();
+  await reader.poll([timedLog(pemBegin, 0)]);
+  return reader;
 }
 const pemBegin = "-----BEGIN PRIVATE KEY-----";
 const pemEnd = "-----END PRIVATE KEY-----";
@@ -1209,25 +1235,40 @@ function timedLog(raw, second) {
 function messages(page) {
   return page.records.filter((record) => record.type === "line").map((record) => record.message);
 }
+// Gap reasons and line messages, in page order.
+function summary(page) {
+  return page.records.map((record) => record.reason ?? record.message);
+}
 function assertTailMasked(page) {
   assert.equal(JSON.stringify(page.records).includes(syntheticPemTail), false);
   assert.ok(messages(page).some((message) => message.includes("[redacted:pem]")));
 }
+function assertTailShown(page) {
+  assert.ok(messages(page).includes(syntheticPemTail));
+}
+// Lines larger than the page budget leaves for them: 70 of these cut a page.
+function largeDiagnostics(count, firstSecond) {
+  return Array.from({ length: count }, (_, i) =>
+    timedLog(gatewayJson("ordinary diagnostic ".repeat(500)), firstSecond + i),
+  );
+}
+function workers(count, second = 0) {
+  return Array.from({ length: count }, (_, index) => timedLog(`worker ${index} ready`, second));
+}
+const retrying = (second) => timedLog("retrying in 5s", second);
 
 test("runtime log cursor carries PEM context over three polls and empty polls", async () => {
   const reader = pollReader();
   await reader.poll([timedLog(pemBegin, 0), timedLog(randomBytes(48).toString("base64"), 1)]);
-  const beforeEmpty = reader.codec.decode(reader.cursor, reader.binding).position;
+  const beforeEmpty = reader.position;
   await reader.poll([]);
-  const afterEmpty = reader.codec.decode(reader.cursor, reader.binding).position;
+  const afterEmpty = reader.position;
   assert.equal(afterEmpty.pemOpen, beforeEmpty.pemOpen);
   assert.equal(afterEmpty.pemAfterTime, beforeEmpty.pemAfterTime);
   assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 2)]));
-  const final = await reader.poll([timedLog(pemEnd, 3), timedLog("retrying in 5s", 4)]);
+  const final = await reader.poll([timedLog(pemEnd, 3), retrying(4)]);
   assert.ok(messages(final).includes("retrying in 5s"));
-  assert.ok(
-    messages(await reader.poll([timedLog(syntheticPemTail, 5)])).includes(syntheticPemTail),
-  );
+  assertTailShown(await reader.poll([timedLog(syntheticPemTail, 5)]));
   assert.equal(reader.admissions, 1);
 });
 
@@ -1245,10 +1286,12 @@ test("a cursor from a page with no lines reads only output newer than that page"
   // The first line the view sees is delivered once, and a full tail is labelled.
   const burst = Array.from({ length: 3 }, (_, i) => timedLog(`retrying in ${i}s`, 600 + i));
   const full = await reader.poll(burst, { elapsed: 10_000, query: { tailLines: 3 } });
-  assert.deepEqual(
-    full.records.map((record) => record.reason ?? record.message),
-    ["window_exceeded", "retrying in 0s", "retrying in 1s", "retrying in 2s"],
-  );
+  assert.deepEqual(summary(full), [
+    "window_exceeded",
+    "retrying in 0s",
+    "retrying in 1s",
+    "retrying in 2s",
+  ]);
   const again = await reader.poll(burst, { elapsed: 11_000 });
   assert.deepEqual(messages(again), []);
   assert.equal(reader.admissions, 1);
@@ -1262,10 +1305,12 @@ test("a cursor from a page with no lines reads only output newer than that page"
     [timedLog("retrying in 600s", 600), timedLog("retrying in 601s", 601), timedLog("retr", 602)],
     { elapsed: 10_000, truncated: true, query: { tailLines: 5 } },
   );
-  assert.deepEqual(
-    cut.records.map((record) => record.reason ?? record.message),
-    ["window_exceeded", "retrying in 600s", "retrying in 601s", "truncated"],
-  );
+  assert.deepEqual(summary(cut), [
+    "window_exceeded",
+    "retrying in 600s",
+    "retrying in 601s",
+    "truncated",
+  ]);
 });
 
 test("a resumed page cut by the byte limit still reports lines lost before it", async () => {
@@ -1277,19 +1322,18 @@ test("a resumed page cut by the byte limit still reports lines lost before it", 
     [timedLog("retrying in 600s", 600), timedLog("retrying in 601s", 601), timedLog("retr", 602)],
     { elapsed: 600_000, truncated: true },
   );
-  assert.deepEqual(
-    cut.records.map((record) => record.reason ?? record.message),
-    ["window_exceeded", "retrying in 600s", "retrying in 601s", "truncated"],
-  );
+  assert.deepEqual(summary(cut), [
+    "window_exceeded",
+    "retrying in 600s",
+    "retrying in 601s",
+    "truncated",
+  ]);
   // A cut page that still re-reads the last delivered line lost nothing before it.
   const overlap = await reader.poll(
     [timedLog("retrying in 601s", 601), timedLog("retrying in 700s", 700), timedLog("retr", 701)],
     { elapsed: 700_000, truncated: true },
   );
-  assert.deepEqual(
-    overlap.records.map((record) => record.reason ?? record.message),
-    ["retrying in 700s", "truncated"],
-  );
+  assert.deepEqual(summary(overlap), ["retrying in 700s", "truncated"]);
   // One line longer than the byte limit fills the page; its leading time still dates the
   // loss, and the view skips past it (one gap, not a "request fewer lines" truncation).
   const single = await reader.poll([timedLog("retr", 900)], {
@@ -1307,11 +1351,7 @@ test("a resumed view moves past a line longer than the read limit", async () => 
   const gaps = (page) =>
     page.records
       .filter((record) => record.type === "gap")
-      .map(({ reason, time, remedy }) => ({
-        reason,
-        time,
-        remedy,
-      }));
+      .map(({ reason, time, remedy }) => ({ reason, time, remedy }));
   // The view delivers second 0 with a PEM block open; `now` is second 600.
   await reader.poll([timedLog(pemBegin, 0)]);
   // Every resumed read starts before the cursor time, so it re-reads the overlap line and
@@ -1324,10 +1364,7 @@ test("a resumed view moves past a line longer than the read limit", async () => 
     ["truncated"],
   );
   assert.match(gaps(recent)[0].remedy, /longer than the rest of the 1 MiB read limit/);
-  assert.equal(
-    reader.codec.decode(reader.cursor, reader.binding).position.lastTime,
-    timedLog("", 0).time,
-  );
+  assert.equal(reader.position.lastTime, timedLog("", 0).time);
   // Once the line is older than where the next read starts, the view skips past it and
   // says that lines were lost behind it.
   const skipped = await reader.poll(stuck, { elapsed: 3_000, truncated: true });
@@ -1337,7 +1374,7 @@ test("a resumed view moves past a line longer than the read limit", async () => 
   );
   assert.match(gaps(skipped)[0].remedy, /longer than the rest of the 1 MiB read limit/);
   assert.doesNotMatch(JSON.stringify(skipped.records), /fewer lines/);
-  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  const position = reader.position;
   assert.equal(position.lastTime, null);
   // The cursor cannot keep a delivered PEM frontier, so the open block stays masked.
   assert.equal(position.pemOpen, true);
@@ -1345,9 +1382,7 @@ test("a resumed view moves past a line longer than the read limit", async () => 
   // The next read starts from the previous read, past the oversized line, not from second 0.
   const next = await reader.poll(
     [timedLog(syntheticPemTail, 604), timedLog("retrying in 604s", 604)],
-    {
-      elapsed: 5_000,
-    },
+    { elapsed: 5_000 },
   );
   assert.equal(reader.requests.at(-1).sinceSeconds, 4);
   assertTailMasked(next);
@@ -1360,26 +1395,19 @@ test("a resumed view moves past a line longer than the read limit", async () => 
     { elapsed: 7_000, truncated: true },
   );
   assert.equal(reader.requests.at(-1).sinceSeconds, 5);
-  assert.deepEqual(
-    resumed.records.map((record) => record.reason ?? record.message),
-    ["retrying in 606s", "truncated"],
-  );
+  assert.deepEqual(summary(resumed), ["retrying in 606s", "truncated"]);
   assert.match(gaps(resumed)[0].remedy, /Request fewer lines/);
-  assert.equal(
-    reader.codec.decode(reader.cursor, reader.binding).position.lastTime,
-    timedLog("", 606).time,
-  );
+  assert.equal(reader.position.lastTime, timedLog("", 606).time);
   assert.equal(reader.admissions, 1);
 });
 
 test("a resumed view skips a stalled read only when every poll would stall", async () => {
   const reader = pollReader();
-  const summary = (page) =>
+  const stalls = (page) =>
     page.records.map((record) => [
       record.reason ?? record.message,
       ...(record.type === "gap" ? [/fewer lines/.test(record.remedy)] : []),
     ]);
-  const lastTime = () => reader.codec.decode(reader.cursor, reader.binding).position.lastTime;
   // `now` is second 600; the view has delivered second 596.
   await reader.poll([timedLog("retrying in 590s", 590), timedLog("retrying in 596s", 596)]);
   // A line older than the overlap every read covers is re-read only on some polls, so a
@@ -1388,23 +1416,23 @@ test("a resumed view skips a stalled read only when every poll would stall", asy
     [timedLog("retrying in 593s", 593), timedLog("retrying in 596s", 596), timedLog("retr", 606)],
     { elapsed: 8_000, truncated: true },
   );
-  assert.deepEqual(summary(partial), [["truncated", true]]);
-  assert.equal(lastTime(), timedLog("", 596).time);
+  assert.deepEqual(stalls(partial), [["truncated", true]]);
+  assert.equal(reader.position.lastTime, timedLog("", 596).time);
   // Exactly at the guard the view stays put.
   const atGuard = await reader.poll([timedLog("retrying in 596s", 596), timedLog("retr", 605)], {
     elapsed: 8_000,
     truncated: true,
   });
-  assert.deepEqual(summary(atGuard), [["truncated", false]]);
-  assert.equal(lastTime(), timedLog("", 596).time);
+  assert.deepEqual(stalls(atGuard), [["truncated", false]]);
+  assert.equal(reader.position.lastTime, timedLog("", 596).time);
   // A cut line at the cursor time also stalls every poll; untimed lines are not progress.
   const sameTime = await reader.poll(
     [timedLog("retrying in 596s", 596), timedLog("untimed", null), timedLog("retr", 596)],
     { elapsed: 8_001, truncated: true },
   );
-  assert.deepEqual(summary(sameTime), [["untimed"], ["window_exceeded", false]]);
+  assert.deepEqual(stalls(sameTime), [["untimed"], ["window_exceeded", false]]);
   assert.equal(sameTime.records.at(-1).time, timedLog("", 596).time);
-  assert.equal(lastTime(), null);
+  assert.equal(reader.position.lastTime, null);
 
   // A stream replaced during the read is not a stalled read.
   const replaced = pollReader();
@@ -1414,7 +1442,7 @@ test("a resumed view skips a stalled read only when every poll would stall", asy
     truncated: true,
     stream: { restartCount: 1 },
   });
-  assert.deepEqual(summary(page), [
+  assert.deepEqual(stalls(page), [
     ["stream_replaced", false],
     ["truncated", true],
   ]);
@@ -1433,9 +1461,7 @@ test("runtime log cursor does not let an evicted same-time old END erase a later
   assertTailMasked(await reader.poll([...overlap, timedLog(syntheticPemTail, 0)]));
   assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 1)]));
   await reader.poll([timedLog(pemEnd, 2)]);
-  assert.ok(
-    messages(await reader.poll([timedLog(syntheticPemTail, 3)])).includes(syntheticPemTail),
-  );
+  assertTailShown(await reader.poll([timedLog(syntheticPemTail, 3)]));
 });
 
 test("runtime log cursor retains uncertain context after an untimestamped BEGIN", async () => {
@@ -1443,7 +1469,7 @@ test("runtime log cursor retains uncertain context after an untimestamped BEGIN"
   await reader.poll([timedLog("started worker", 0), timedLog(pemBegin, null)]);
   const page = await reader.poll([
     timedLog(pemEnd, 1),
-    timedLog("retrying in 5s", 2),
+    retrying(2),
     timedLog(syntheticPemTail, null),
   ]);
   assertTailMasked(page);
@@ -1451,8 +1477,7 @@ test("runtime log cursor retains uncertain context after an untimestamped BEGIN"
 });
 
 test("runtime log cursor ignores an undelivered byte-cut END", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
+  const reader = await pemOpenReader();
   assertTailMasked(
     await reader.poll([timedLog(syntheticPemTail, 1), timedLog(pemEnd, 2)], { truncated: true }),
   );
@@ -1463,16 +1488,7 @@ test("runtime log cursor context stops at the page byte bound before a future EN
   const reader = pollReader();
   const page = await reader.poll([
     timedLog(pemBegin, 0),
-    ...Array.from({ length: 70 }, (_, i) =>
-      timedLog(
-        JSON.stringify({
-          level: "info",
-          subsystem: "gateway",
-          message: "ordinary diagnostic ".repeat(500),
-        }),
-        i + 1,
-      ),
-    ),
+    ...largeDiagnostics(70, 1),
     timedLog(pemEnd, 72),
   ]);
   assert.equal(page.truncated, true);
@@ -1480,22 +1496,19 @@ test("runtime log cursor context stops at the page byte bound before a future EN
 });
 
 test("runtime log cursor verifies context authentication before any Driver read", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
+  const reader = await pemOpenReader();
   const parts = reader.cursor.split(".");
   const payload = JSON.parse(Buffer.from(parts[1], "base64url"));
   payload.po = false;
   parts[1] = Buffer.from(JSON.stringify(payload)).toString("base64url");
   const before = reader.reads;
-  await assert.rejects(reader.poll([], { query: { cursor: parts.join(".") } }), {
-    reason: "cursor_invalid",
-  });
-  assert.equal(reader.reads, before);
-  await assert.rejects(
-    reader.poll([], { binding: { ...reader.binding, principalId: "other-person" } }),
-    { reason: "cursor_invalid" },
-  );
-  assert.equal(reader.reads, before);
+  for (const options of [
+    { query: { cursor: parts.join(".") } },
+    { binding: { ...reader.binding, principalId: "other-person" } },
+  ]) {
+    await assert.rejects(reader.poll([], options), { reason: "cursor_invalid" });
+    assert.equal(reader.reads, before);
+  }
 });
 
 test("runtime log cursor context resets for changed stream, view, expiry and mid-read replacement", async (t) => {
@@ -1510,139 +1523,105 @@ test("runtime log cursor context resets for changed stream, view, expiry and mid
     ["mid-read restart", { stream: { restartCount: 1 } }],
   ]) {
     await t.test(name, async () => {
-      const reader = pollReader();
-      await reader.poll([timedLog(pemBegin, 0)]);
+      const reader = await pemOpenReader();
       // A new/unknown tail cannot infer a BEGIN from the old stream/view.
-      assert.ok(
-        messages(await reader.poll([timedLog(syntheticPemTail, 1)], options)).includes(
-          syntheticPemTail,
-        ),
-      );
+      assertTailShown(await reader.poll([timedLog(syntheticPemTail, 1)], options));
     });
   }
 });
 
+// The same polls through the controller's logs route: the cursor is serialized and
+// parsed again on every request.
 async function runtimeLogRoutePoller() {
-  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
-    await import("../helpers/runtime-logs.mjs");
-  const computeDriver = createRuntimeLogComputeDriver();
-  const fixture = await createRuntimeLogFixture({ computeDriver });
-  const target = await fixture.deployAgent();
+  const route = await logsRoute();
   let cursor;
+  let response;
   return {
     startView() {
       cursor = undefined;
     },
+    // The last response, with its headers and serialized text.
+    get response() {
+      return response;
+    },
     async poll(lines, { tailLines = "1000", truncated = false } = {}) {
-      computeDriver.state.lines = lines;
-      computeDriver.state.truncated = truncated;
-      const query = new URLSearchParams({
-        source: "gateway",
-        tailLines,
-        ...(cursor === undefined ? {} : { cursor }),
-      });
-      const response = await fixture.request("GET", target.logsPath(query.toString()));
+      route.state.lines = lines;
+      route.state.truncated = truncated;
+      response = await route.read({ tailLines, cursor });
       assert.equal(response.status, 200, response.text);
       assert.equal(typeof response.data.cursor, "string");
       cursor = response.data.cursor;
       return response.data;
+    },
+    async shown(lines, options) {
+      return messages(await this.poll(lines, options));
     },
   };
 }
 
 test("runtime log route polling preserves identical same-time line occurrences", async () => {
   const reader = await runtimeLogRoutePoller();
-  const repeated = timedLog("retrying in 5s", 0);
+  const repeated = retrying(0);
   // The Driver contract supplies raw lines without requiring unique timestamps.
   // A later poll must subtract the two delivered occurrences, not all equal text.
-  assert.deepEqual(messages(await reader.poll([repeated, repeated])), [
-    "retrying in 5s",
-    "retrying in 5s",
-  ]);
+  assert.deepEqual(await reader.shown([repeated, repeated]), ["retrying in 5s", "retrying in 5s"]);
   const burst = [repeated, repeated, repeated, timedLog("worker connected", 0)];
-  assert.deepEqual(messages(await reader.poll(burst)), ["retrying in 5s", "worker connected"]);
+  assert.deepEqual(await reader.shown(burst), ["retrying in 5s", "worker connected"]);
   assert.deepEqual(
-    messages(await reader.poll(burst)),
+    await reader.shown(burst),
     [],
     "replaying the whole overlap must show no duplicate",
   );
-  assert.deepEqual(messages(await reader.poll([...burst, timedLog("retrying in 5s", 1)])), [
-    "retrying in 5s",
-  ]);
+  assert.deepEqual(await reader.shown([...burst, retrying(1)]), ["retrying in 5s"]);
 
   // A new view can deliver more occurrences than its bounded cursor remembers.
   // An incomplete count cannot establish a new copy on unchanged follow polls.
   reader.startView();
-  const saturated = Array.from({ length: 17 }, () => timedLog("retrying in 5s", 0));
-  assert.equal(messages(await reader.poll(saturated)).length, 17);
-  assert.deepEqual(
-    messages(await reader.poll(saturated)),
-    [],
+  const saturated = Array.from({ length: 17 }, () => retrying(0));
+  assert.equal((await reader.shown(saturated)).length, 17);
+  for (const message of [
     "a saturated frontier must not replay old copies",
-  );
-  assert.deepEqual(
-    messages(await reader.poll(saturated)),
-    [],
     "repeated unchanged polls must remain empty",
-  );
-  assert.deepEqual(messages(await reader.poll([...saturated, timedLog("worker connected", 1)])), [
+  ]) {
+    assert.deepEqual(await reader.shown(saturated), [], message);
+  }
+  assert.deepEqual(await reader.shown([...saturated, timedLog("worker connected", 1)]), [
     "worker connected",
   ]);
 });
 
 test("runtime log route polling keeps a cut timestamp group conservative when the tail expands", async () => {
   const reader = await runtimeLogRoutePoller();
-  const old = Array.from({ length: 3 }, () => timedLog("retrying in 5s", 0));
-  assert.equal(messages(await reader.poll(old, { tailLines: "2" })).length, 2);
+  const old = Array.from({ length: 3 }, () => retrying(0));
+  const connected = timedLog("worker connected", 1);
+  assert.equal((await reader.shown(old, { tailLines: "2" })).length, 2);
+  assert.deepEqual(await reader.shown(old), [], "expanding the tail does not make an old copy new");
   assert.deepEqual(
-    messages(await reader.poll(old)),
-    [],
-    "expanding the tail does not make an old copy new",
-  );
-  assert.deepEqual(
-    messages(await reader.poll([...old, timedLog("retrying in 5s", 0)])),
+    await reader.shown([...old, retrying(0)]),
     [],
     "an incomplete frontier cannot distinguish another identical copy",
   );
-  assert.deepEqual(messages(await reader.poll([...old, timedLog("worker connected", 1)])), [
-    "worker connected",
-  ]);
-  assert.deepEqual(
-    messages(
-      await reader.poll([...old, timedLog("worker connected", 1), timedLog("worker connected", 1)]),
-    ),
-    ["worker connected"],
-  );
+  assert.deepEqual(await reader.shown([...old, connected]), ["worker connected"]);
+  assert.deepEqual(await reader.shown([...old, connected, connected]), ["worker connected"]);
 
   reader.startView();
-  assert.equal(messages(await reader.poll(old, { truncated: true })).length, 2);
+  assert.equal((await reader.shown(old, { truncated: true })).length, 2);
   assert.deepEqual(
-    messages(await reader.poll(old)),
+    await reader.shown(old),
     [],
     "a Driver byte cut cannot establish a complete first timestamp group",
   );
 });
 
+// About 8 KiB per line: some tens of these fill a 512 KiB page.
+function bigLine(text, second) {
+  return timedLog(gatewayJson(`${text} ${"x ".repeat(4096)}`), second);
+}
+
 test("runtime log route polling counts undelivered copies after its page byte cut", async () => {
   const reader = await runtimeLogRoutePoller();
-  const padding = Array.from({ length: 20 }, (_, index) =>
-    timedLog(
-      JSON.stringify({
-        level: "info",
-        subsystem: "gateway",
-        message: `line ${index} ${"x ".repeat(4096)}`,
-      }),
-      0,
-    ),
-  );
-  const repeated = timedLog(
-    JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `retrying ${"x ".repeat(4096)}`,
-    }),
-    1,
-  );
+  const padding = Array.from({ length: 20 }, (_, index) => bigLine(`line ${index}`, 0));
+  const repeated = bigLine("retrying", 1);
   const lines = [...padding, ...Array.from({ length: 80 }, () => repeated)];
   const first = await reader.poll(lines);
   assert.equal(first.truncated, true);
@@ -1655,23 +1634,19 @@ test("runtime log route polling counts undelivered copies after its page byte cu
     lines.length - delivered,
     "a page cut leaves the remaining copies to deliver at the complete frontier",
   );
-  assert.deepEqual(messages(await reader.poll(lines)), []);
+  assert.deepEqual(await reader.shown(lines), []);
 });
 
 test("runtime log cursor keeps legacy frontier counts conservative", async () => {
   const reader = pollReader();
-  const repeated = timedLog("retrying in 5s", 0);
+  const repeated = retrying(0);
   await reader.poll([repeated, repeated]);
-  const position = reader.codec.decode(reader.cursor, reader.binding).position;
-  const cursor = reader.codec.encode(reader.binding, { ...position, frontierComplete: undefined });
-  assert.deepEqual(
-    messages(await reader.poll([repeated, repeated, repeated], { query: { cursor } })),
-    [],
-  );
-  assert.deepEqual(
-    messages(await reader.poll([repeated, repeated, timedLog("retrying in 5s", 1)])),
-    ["retrying in 5s"],
-  );
+  const cursor = reader.codec.encode(reader.binding, {
+    ...reader.position,
+    frontierComplete: undefined,
+  });
+  assert.deepEqual(await reader.shown([repeated, repeated, repeated], { query: { cursor } }), []);
+  assert.deepEqual(await reader.shown([repeated, repeated, retrying(1)]), ["retrying in 5s"]);
 });
 
 test("runtime log polling delivers a timestamp group larger than the hash history once", async () => {
@@ -1679,23 +1654,20 @@ test("runtime log polling delivers a timestamp group larger than the hash histor
     for (const lead of [[timedLog("boot", -1)], []]) {
       const reader = pollReader();
       const label = `${size} distinct lines${lead.length === 0 ? " without an earlier line" : ""}`;
-      const group = Array.from({ length: size }, (_, index) =>
-        timedLog(`worker ${index} ready`, 0),
-      );
-      const lines = [...lead, ...group];
-      assert.equal(messages(await reader.poll(lines)).length, lines.length, label);
+      const lines = [...lead, ...workers(size)];
+      assert.equal((await reader.shown(lines)).length, lines.length, label);
       for (let poll = 0; poll < 3; poll += 1) {
-        assert.deepEqual(messages(await reader.poll(lines)), [], `${label}: poll ${poll} replays`);
+        assert.deepEqual(await reader.shown(lines), [], `${label}: poll ${poll} replays`);
       }
       lines.push(timedLog("worker late ready", 0), timedLog("worker 0 ready", 0));
       assert.deepEqual(
-        messages(await reader.poll(lines)),
+        await reader.shown(lines),
         ["worker late ready", "worker 0 ready"],
         `${label}: later lines at the same time`,
       );
-      assert.deepEqual(messages(await reader.poll(lines)), [], `${label}: after later lines`);
+      assert.deepEqual(await reader.shown(lines), [], `${label}: after later lines`);
       lines.push(timedLog("worker connected", 1));
-      assert.deepEqual(messages(await reader.poll(lines)), ["worker connected"], label);
+      assert.deepEqual(await reader.shown(lines), ["worker connected"], label);
     }
   }
 });
@@ -1704,39 +1676,25 @@ test("runtime log polling counts mixed identical and distinct lines at one times
   const reader = pollReader();
   const lines = [timedLog("boot", -1)];
   for (let index = 0; index < 12; index += 1) {
-    lines.push(timedLog("retrying in 5s", 0), timedLog(`attempt ${index}`, 0));
+    lines.push(retrying(0), timedLog(`attempt ${index}`, 0));
   }
-  assert.equal(messages(await reader.poll(lines)).length, 25);
-  assert.deepEqual(messages(await reader.poll(lines)), []);
-  lines.push(
-    timedLog("retrying in 5s", 0),
-    timedLog("attempt 0", 0),
-    timedLog("retrying in 5s", 0),
-  );
-  assert.deepEqual(messages(await reader.poll(lines)), [
-    "retrying in 5s",
-    "attempt 0",
-    "retrying in 5s",
-  ]);
-  assert.deepEqual(messages(await reader.poll(lines)), []);
+  assert.equal((await reader.shown(lines)).length, 25);
+  assert.deepEqual(await reader.shown(lines), []);
+  lines.push(retrying(0), timedLog("attempt 0", 0), retrying(0));
+  assert.deepEqual(await reader.shown(lines), ["retrying in 5s", "attempt 0", "retrying in 5s"]);
+  assert.deepEqual(await reader.shown(lines), []);
 });
 
 test("runtime log polling pages through a large timestamp group and ends", async () => {
   const reader = pollReader();
-  const big = (index) =>
-    timedLog(
-      JSON.stringify({
-        level: "info",
-        subsystem: "gateway",
-        message: `line ${index} ${"x ".repeat(4096)}`,
-      }),
-      0,
-    );
-  const lines = [timedLog("boot", -1), ...Array.from({ length: 200 }, (_, index) => big(index))];
+  const lines = [
+    timedLog("boot", -1),
+    ...Array.from({ length: 200 }, (_, index) => bigLine(`line ${index}`, 0)),
+  ];
   const seen = [];
   let polls = 0;
   for (; polls < 20; polls += 1) {
-    const page = messages(await reader.poll(lines));
+    const page = await reader.shown(lines);
     if (page.length === 0) {
       break;
     }
@@ -1745,111 +1703,88 @@ test("runtime log polling pages through a large timestamp group and ends", async
   assert.ok(polls < 20, "pagination must end");
   assert.equal(seen.length, 201);
   assert.equal(new Set(seen).size, 201, "no line is delivered twice");
-  assert.deepEqual(messages(await reader.poll(lines)), []);
+  assert.deepEqual(await reader.shown(lines), []);
 });
 
 test("runtime log polling suppresses a forgotten timestamp group when completeness is unknown", async () => {
   const reader = pollReader();
-  const all = Array.from({ length: 30 }, (_, index) => timedLog(`worker ${index} ready`, 0));
+  const all = workers(30);
   // The requested tail clips the group, so the cursor cannot count it from its start.
   const tail = all.slice(-20);
   const query = { tailLines: 20 };
-  assert.equal(messages(await reader.poll(tail, { query })).length, 20);
-  assert.deepEqual(messages(await reader.poll(tail, { query })), []);
-  assert.deepEqual(messages(await reader.poll(all)), [], "an expanded tail adds no old line");
-  assert.deepEqual(messages(await reader.poll([...all, timedLog("worker connected", 1)])), [
+  assert.equal((await reader.shown(tail, { query })).length, 20);
+  assert.deepEqual(await reader.shown(tail, { query }), []);
+  assert.deepEqual(await reader.shown(all), [], "an expanded tail adds no old line");
+  assert.deepEqual(await reader.shown([...all, timedLog("worker connected", 1)]), [
     "worker connected",
   ]);
 });
 
 test("runtime log polling checks a counted timestamp group against its hashes", async () => {
   const reader = pollReader();
-  const group = Array.from({ length: 10 }, (_, index) => timedLog(`worker ${index} ready`, 0));
-  assert.equal(messages(await reader.poll([timedLog("boot", -1), ...group])).length, 11);
+  const group = workers(10);
+  assert.equal((await reader.shown([timedLog("boot", -1), ...group])).length, 11);
   // Rotation removed the start of the group; a short page no longer begins with it.
   const fresh = Array.from({ length: 5 }, (_, index) => timedLog(`worker ${index} joined`, 0));
   assert.deepEqual(
-    messages(await reader.poll([...group.slice(5), ...fresh])),
+    await reader.shown([...group.slice(5), ...fresh]),
     fresh.map(({ raw }) => raw),
   );
-  assert.deepEqual(messages(await reader.poll([...group.slice(5), ...fresh])), []);
+  assert.deepEqual(await reader.shown([...group.slice(5), ...fresh]), []);
 });
 
 test("runtime log polling counts a timestamp group past an untimed line", async () => {
   const reader = pollReader();
-  const lines = [
-    timedLog("boot", -1),
-    ...Array.from({ length: 20 }, (_, index) => timedLog(`worker ${index} ready`, 0)),
-  ];
-  assert.equal(messages(await reader.poll(lines)).length, 21);
+  const lines = [timedLog("boot", -1), ...workers(20)];
+  assert.equal((await reader.shown(lines)).length, 21);
   lines.push(timedLog("untimed", null), timedLog("worker late ready", 0));
-  assert.deepEqual(messages(await reader.poll(lines)), ["untimed", "worker late ready"]);
-  assert.deepEqual(messages(await reader.poll(lines)), ["untimed"]);
+  assert.deepEqual(await reader.shown(lines), ["untimed", "worker late ready"]);
+  assert.deepEqual(await reader.shown(lines), ["untimed"]);
 });
 
 test("runtime log polling stops counting by position after tail-clipped polls", async () => {
   const reader = pollReader();
-  const group = [timedLog("worker 0 ready", 0)];
-  const seen = messages(await reader.poll([timedLog("boot", -1), ...group]));
+  const group = workers(25);
+  const seen = await reader.shown([timedLog("boot", -1), group[0]]);
   assert.equal(seen.length, 2);
-  for (let index = 1; index < 25; index += 1) {
-    group.push(timedLog(`worker ${index} ready`, 0));
-  }
   // The view's tail changes between polls, so some polls cannot see the group start.
   for (const tailLines of [4, 20, 1000]) {
     const lines = [timedLog("boot", -1), ...group].slice(-tailLines);
-    seen.push(...messages(await reader.poll(lines, { query: { tailLines } })));
+    seen.push(...(await reader.shown(lines, { query: { tailLines } })));
   }
   assert.equal(new Set(seen).size, seen.length, "no line is delivered twice");
-  assert.deepEqual(messages(await reader.poll([timedLog("boot", -1), ...group])), []);
+  assert.deepEqual(await reader.shown([timedLog("boot", -1), ...group]), []);
 });
 
 test("runtime log cursor without a frontier count keeps legacy cursors usable", async () => {
   const strip = (reader) => {
-    const { frontierCount: _count, ...position } = reader.codec.decode(
-      reader.cursor,
-      reader.binding,
-    ).position;
+    const { frontierCount: _count, ...position } = reader.position;
     return reader.codec.encode(reader.binding, position);
   };
   const full = pollReader();
-  const lines = [
-    timedLog("boot", -1),
-    ...Array.from({ length: 20 }, (_, index) => timedLog(`worker ${index} ready`, 0)),
-  ];
+  const lines = [timedLog("boot", -1), ...workers(20)];
   await full.poll(lines);
-  assert.equal(full.codec.decode(full.cursor, full.binding).position.frontierCount, 20);
-  assert.deepEqual(messages(await full.poll(lines, { query: { cursor: strip(full) } })), []);
-  assert.deepEqual(messages(await full.poll([...lines, timedLog("worker connected", 1)])), [
+  assert.equal(full.position.frontierCount, 20);
+  assert.deepEqual(await full.shown(lines, { query: { cursor: strip(full) } }), []);
+  assert.deepEqual(await full.shown([...lines, timedLog("worker connected", 1)]), [
     "worker connected",
   ]);
 
   const short = pollReader();
-  const few = [timedLog("boot", -1), timedLog("retrying in 5s", 0), timedLog("retrying in 5s", 0)];
+  const few = [timedLog("boot", -1), retrying(0), retrying(0)];
   await short.poll(few);
-  assert.deepEqual(
-    messages(
-      await short.poll([...few, timedLog("retrying in 5s", 0)], {
-        query: { cursor: strip(short) },
-      }),
-    ),
-    ["retrying in 5s"],
-  );
+  assert.deepEqual(await short.shown([...few, retrying(0)], { query: { cursor: strip(short) } }), [
+    "retrying in 5s",
+  ]);
 
-  const position = full.codec.decode(full.cursor, full.binding).position;
-  const inconsistent = full.codec.encode(full.binding, {
-    ...position,
-    lastHashes: ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"],
-    frontierCount: 1,
-  });
-  assert.equal(full.codec.decode(inconsistent, full.binding).status, "invalid");
-  const untimed = full.codec.encode(full.binding, {
-    ...position,
-    lastTime: null,
-    lastHashes: [],
-    frontierCount: 1,
-  });
-  assert.equal(full.codec.decode(untimed, full.binding).status, "invalid");
+  const position = full.position;
+  for (const change of [
+    { lastHashes: ["AAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBB"], frontierCount: 1 },
+    { lastTime: null, lastHashes: [], frontierCount: 1 },
+  ]) {
+    const inconsistent = full.codec.encode(full.binding, { ...position, ...change });
+    assert.equal(full.codec.decode(inconsistent, full.binding).status, "invalid");
+  }
 });
 
 function cursorCodecFixture() {
@@ -1903,10 +1838,14 @@ test("runtime log cursor codec refuses other bindings, altered envelopes and fut
     assert.equal(status(forged), "invalid", label);
   }
   // Expiry starts strictly after the TTL; up to one minute of clock skew is tolerated.
-  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS }), "valid");
-  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS + 1 }), "expired");
-  assert.equal(status(cursor, { now: issuedAt - 60_000 }), "valid");
-  assert.equal(status(cursor, { now: issuedAt - 60_001 }), "invalid");
+  for (const [now, expected] of [
+    [issuedAt + RUNTIME_LOG_CURSOR_TTL_MS, "valid"],
+    [issuedAt + RUNTIME_LOG_CURSOR_TTL_MS + 1, "expired"],
+    [issuedAt - 60_000, "valid"],
+    [issuedAt - 60_001, "invalid"],
+  ]) {
+    assert.equal(status(cursor, { now }), expected, `${now - issuedAt} ms`);
+  }
 });
 
 test("runtime log cursor codec keeps the newest 48 hashes, hashes raw lines exactly and needs a 32-character secret", () => {
@@ -1943,8 +1882,7 @@ test("runtime log cursor line hashes are keyed by the server secret, not plain S
   const lines = [timedLog("worker ready", 0), timedLog(secretLine, 0)];
   const page = await reader.poll(lines);
   assert.equal(JSON.stringify(page.records).includes("hunter2"), false);
-  const payload = cursorPayload(reader.cursor);
-  const carried = payload.h.match(/.{16}/g);
+  const carried = cursorPayload(reader.cursor).h.match(/.{16}/g);
   assert.deepEqual(
     carried,
     lines.map(({ raw }) => reader.codec.lineHash(raw)),
@@ -1952,19 +1890,17 @@ test("runtime log cursor line hashes are keyed by the server secret, not plain S
   for (const { raw } of lines) {
     assert.equal(carried.includes(plainLineHash(raw)), false, raw);
   }
+  const keyed = reader.codec.lineHash(secretLine);
   // Same secret, same digest; another secret cannot reproduce it.
-  assert.equal(
-    createRuntimeLogCursorCodec(secret).lineHash(secretLine),
-    reader.codec.lineHash(secretLine),
-  );
+  assert.equal(createRuntimeLogCursorCodec(secret).lineHash(secretLine), keyed);
   assert.notEqual(
     createRuntimeLogCursorCodec(randomBytes(32).toString("hex")).lineHash(secretLine),
-    reader.codec.lineHash(secretLine),
+    keyed,
   );
   // Nor is the line hash the cursor MAC key applied directly.
   assert.notEqual(
     createHmac("sha256", secret).update(secretLine).digest("base64url").slice(0, 16),
-    reader.codec.lineHash(secretLine),
+    keyed,
   );
   // Frontier hashes and byte-cut window checkpoints (container and Sandbox) all go
   // through the keyed codec; the readers have no unkeyed digest of their own.
@@ -1980,13 +1916,10 @@ test("runtime log cursor line hashes are keyed by the server secret, not plain S
 test("runtime log cursor keyed hashes still de-duplicate and resume", async () => {
   const reader = pollReader();
   const first = [timedLog("worker ready", 0), timedLog("worker ready", 0), timedLog("a", 1)];
-  assert.deepEqual(messages(await reader.poll(first)), ["worker ready", "worker ready", "a"]);
+  assert.deepEqual(await reader.shown(first), ["worker ready", "worker ready", "a"]);
   // The overlap at the frontier is consumed; a new copy and later lines are kept.
-  assert.deepEqual(messages(await reader.poll([...first, timedLog("a", 1), timedLog("b", 2)])), [
-    "a",
-    "b",
-  ]);
-  assert.deepEqual(messages(await reader.poll([timedLog("a", 1), timedLog("b", 2)])), []);
+  assert.deepEqual(await reader.shown([...first, timedLog("a", 1), timedLog("b", 2)]), ["a", "b"]);
+  assert.deepEqual(await reader.shown([timedLog("a", 1), timedLog("b", 2)]), []);
   assert.equal(reader.admissions, 1);
 });
 
@@ -2002,16 +1935,16 @@ test("runtime log cursors from before keyed hashes expire into a new audited vie
   assert.equal(decoded.status, "expired");
   assert.deepEqual(decoded.position.lastHashes, []);
   assert.equal(decoded.position.containerWindow, undefined);
-  // Forged, foreign or malformed legacy envelopes stay invalid.
-  assert.equal(reader.codec.decode(`${legacy.slice(0, -2)}AA`, reader.binding).status, "invalid");
-  assert.equal(
-    reader.codec.decode(legacy, { ...reader.binding, principalId: "other-person" }).status,
-    "invalid",
-  );
-  assert.equal(
-    reader.codec.decode(legacyCursor(secret, { ...current, r: -1 }), reader.binding).status,
-    "invalid",
-  );
+  // Forged, foreign or malformed legacy envelopes stay invalid. The forged MAC always
+  // differs: about one MAC in 1024 already ends in "AA".
+  const forgedEnd = legacy.endsWith("AA") ? "AE" : "AA";
+  for (const [cursor, binding] of [
+    [`${legacy.slice(0, -2)}${forgedEnd}`, reader.binding],
+    [legacy, { ...reader.binding, principalId: "other-person" }],
+    [legacyCursor(secret, { ...current, r: -1 }), reader.binding],
+  ]) {
+    assert.equal(reader.codec.decode(cursor, binding).status, "invalid");
+  }
   const before = reader.admissions;
   const page = await reader.poll([...lines, timedLog("b", 2)], { query: { cursor: legacy } });
   // A visible gap and a fresh audited view, never a silent de-duplication.
@@ -2065,51 +1998,34 @@ test("runtime log frontier times accept only kubelet UTC and order trimmed fract
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
-  const { createRuntimeLogComputeDriver, createRuntimeLogFixture } =
-    await import("../helpers/runtime-logs.mjs");
-  const computeDriver = createRuntimeLogComputeDriver();
-  const fixture = await createRuntimeLogFixture({ computeDriver });
-  const target = await fixture.deployAgent();
+  const reader = await runtimeLogRoutePoller();
   const lines = [
     timedLog(pemBegin, 0),
     timedLog(randomBytes(48).toString("base64"), 1),
     timedLog(syntheticPemTail, 2),
     timedLog(pemEnd, 3),
-    timedLog("retrying in 5s", 4),
+    retrying(4),
   ];
-  let cursor;
   for (const count of [2, 3, 5]) {
-    computeDriver.state.lines = lines.slice(0, count);
-    const query = new URLSearchParams({
-      source: "gateway",
-      tailLines: "1000",
-      ...(cursor === undefined ? {} : { cursor }),
-    });
-    const response = await fixture.request("GET", target.logsPath(query.toString()));
-    assert.equal(response.status, 200, response.text);
-    assert.equal(response.headers.get("cache-control"), "no-store");
+    const page = await reader.poll(lines.slice(0, count));
+    assert.equal(reader.response.headers.get("cache-control"), "no-store");
     assert.equal(
-      response.text.includes(syntheticPemTail),
+      reader.response.text.includes(syntheticPemTail),
       false,
       "the actual handler must not serialize the middle-poll fragment",
     );
-    assert.equal(typeof response.data.cursor, "string");
-    cursor = response.data.cursor;
     if (count === 5) {
-      assert.ok(response.data.records.some((record) => record.message === "retrying in 5s"));
+      assert.ok(page.records.some((record) => record.message === "retrying in 5s"));
     }
   }
 });
 
 test("runtime log cursor keeps an ambiguous same-time close conservative", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
-  await reader.poll([timedLog(pemEnd, 0), timedLog("retrying in 5s", 0)]);
+  const reader = await pemOpenReader();
+  await reader.poll([timedLog(pemEnd, 0), retrying(0)]);
   assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 1)]));
-  await reader.poll([timedLog("retrying in 5s", 2)]);
-  assert.ok(
-    messages(await reader.poll([timedLog(syntheticPemTail, 3)])).includes(syntheticPemTail),
-  );
+  await reader.poll([retrying(2)]);
+  assertTailShown(await reader.poll([timedLog(syntheticPemTail, 3)]));
 });
 
 test("runtime log cursor retains uncertainty for missing, malformed and reordered times", async (t) => {
@@ -2119,8 +2035,7 @@ test("runtime log cursor retains uncertainty for missing, malformed and reordere
     ["reordered", [timedLog(pemEnd, 3), timedLog(syntheticPemTail, 2)]],
   ]) {
     await t.test(name, async () => {
-      const reader = pollReader();
-      await reader.poll([timedLog(pemBegin, 0)]);
+      const reader = await pemOpenReader();
       assertTailMasked(await reader.poll(lines));
       // Later timestamps cannot reconstruct the missing chronology of this view.
       await reader.poll([timedLog(pemEnd, 4)]);
@@ -2130,16 +2045,14 @@ test("runtime log cursor retains uncertainty for missing, malformed and reordere
 });
 
 test("runtime log cursor keeps a later BEGIN on the same line as END", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
+  const reader = await pemOpenReader();
   await reader.poll([timedLog(`${pemEnd} ${pemBegin}`, 1)]);
   assertTailMasked(await reader.poll([timedLog(syntheticPemTail, 2)]));
 });
 
 test("runtime log cursor rejects malformed or inconsistent signed PEM field pairs before reading", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
-  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  const reader = await pemOpenReader();
+  const position = reader.position;
   for (const change of [
     { pemOpen: undefined },
     { pemAfterTime: undefined },
@@ -2161,45 +2074,33 @@ test("runtime log cursor rejects malformed or inconsistent signed PEM field pair
 
 test("runtime log cursor preserves legacy absent context as unknown", async () => {
   const reader = pollReader();
-  await reader.poll([timedLog("retrying in 5s", 0)]);
-  const position = reader.codec.decode(reader.cursor, reader.binding).position;
+  await reader.poll([retrying(0)]);
   const legacy = reader.codec.encode(reader.binding, {
-    ...position,
+    ...reader.position,
     pemOpen: undefined,
     pemAfterTime: undefined,
   });
   assert.equal(reader.codec.decode(legacy, reader.binding).position.pemOpen, undefined);
   // No observed BEGIN and no END: short arbitrary text remains best-effort.
-  const page = await reader.poll([timedLog(syntheticPemTail, 1)], { query: { cursor: legacy } });
-  assert.ok(messages(page).includes(syntheticPemTail));
-  assert.equal(reader.codec.decode(page.cursor, reader.binding).position.pemOpen, undefined);
+  assertTailShown(
+    await reader.poll([timedLog(syntheticPemTail, 1)], { query: { cursor: legacy } }),
+  );
+  assert.equal(reader.position.pemOpen, undefined);
 });
 
 test("runtime log cursor keeps the frontier stable on replay and does not inspect undelivered lookahead", async () => {
   const reader = pollReader();
   const begin = timedLog(pemBegin, 0);
   await reader.poll([begin]);
-  const prior = reader.codec.decode(reader.cursor, reader.binding).position;
+  const prior = reader.position;
   await reader.poll([begin]);
-  const replay = reader.codec.decode(reader.cursor, reader.binding).position;
+  const replay = reader.position;
   assert.equal(replay.pemOpen, true);
   assert.equal(replay.pemAfterTime, prior.pemAfterTime);
   // A malformed future line beyond the response cut is not consumed evidence.
-  const page = await reader.poll([
-    ...Array.from({ length: 70 }, (_, i) =>
-      timedLog(
-        JSON.stringify({
-          level: "info",
-          subsystem: "gateway",
-          message: "ordinary diagnostic ".repeat(500),
-        }),
-        i + 1,
-      ),
-    ),
-    { raw: pemEnd, time: null },
-  ]);
+  const page = await reader.poll([...largeDiagnostics(70, 1), { raw: pemEnd, time: null }]);
   assert.equal(page.truncated, true);
-  const frontier = reader.codec.decode(page.cursor, reader.binding).position;
+  const frontier = reader.position;
   assert.equal(frontier.pemOpen, true);
   assert.notEqual(frontier.pemAfterTime, null);
   assert.equal(frontier.pemAfterTime, frontier.lastTime);
@@ -2213,8 +2114,7 @@ test("runtime log cursor detects reordered overlap even when deduplication remov
 });
 
 test("runtime log cursor preserves known-open context across a lost overlap window", async () => {
-  const reader = pollReader();
-  await reader.poll([timedLog(pemBegin, 0)]);
+  const reader = await pemOpenReader();
   const page = await reader.poll([timedLog(syntheticPemTail, 100)], { query: { tailLines: 1 } });
   assert.ok(
     page.records.some((record) => record.type === "gap" && record.reason === "window_exceeded"),
@@ -2230,20 +2130,14 @@ test("runtime log cursor preserves an observed BEGIN on uncertain initial and le
         async () => {
           const reader = pollReader();
           if (legacy) {
-            await reader.poll([timedLog("retrying in 5s", 0)]);
-            assert.equal(
-              reader.codec.decode(reader.cursor, reader.binding).position.pemOpen,
-              undefined,
-            );
+            await reader.poll([retrying(0)]);
+            assert.equal(reader.position.pemOpen, undefined);
           }
           // BEGIN is observed in this very page. Missing earlier cursor context does
           // not make this older END valid evidence of a close.
           await reader.poll([timedLog(pemBegin, beginTime), timedLog(pemEnd, 1)]);
-          const context = reader.codec.decode(reader.cursor, reader.binding).position;
-          const next = await reader.poll([
-            timedLog(syntheticPemTail, 4),
-            timedLog("retrying in 5s", 5),
-          ]);
+          const context = reader.position;
+          const next = await reader.poll([timedLog(syntheticPemTail, 4), retrying(5)]);
           assertTailMasked(next);
           assert.ok(messages(next).includes("retrying in 5s"));
           assert.equal(context.pemOpen, true);
@@ -2254,132 +2148,151 @@ test("runtime log cursor preserves an observed BEGIN on uncertain initial and le
   }
 });
 
-test("runtime container wire pages include escaped messages, cursor and HTTP metadata in the limit", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-budget");
-  const started = Date.now() - 1000;
-  fixture.computeDriver.state.lines = Array.from({ length: 70 }, (_, index) => ({
-    time: new Date(started + index).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; 网络🙂 process arguments: ${'--option="value" '.repeat(500)}`,
-    }),
-  }));
-  const seen = [];
-  let cursor;
+const lineRecords = (page) => page.records.filter(({ type }) => type === "line");
+const gapCount = (page, reason) =>
+  page.records.filter((record) => record.type === "gap" && record.reason === reason).length;
+const range = (count) => Array.from({ length: count }, (_, index) => index);
+// The `row=<n>` index of each delivered line, from JSON messages or `[info]` text lines.
+const rowIds = (page) =>
+  lineRecords(page).map(({ message }) => {
+    const match = /^(?:\[info\] )?row=(\d+);/.exec(message);
+    assert.ok(match, `not a row line: ${message.slice(0, 80)}`);
+    return Number(match[1]);
+  });
+// Raw bytes plus 32 bytes of timestamp per line: what the kubelet's 1 MiB read covers.
+const rawBytes = (lines) =>
+  lines.reduce((bytes, line) => bytes + Buffer.byteLength(line.raw) + 32, 0);
+const iso = (milliseconds) => new Date(milliseconds).toISOString();
+
+// One page of the route's response, within the 512 KiB response bound.
+async function boundedPage(route, query, message) {
+  const response = await route.read(query);
+  assert.equal(response.status, 200, message ?? response.text.slice(0, 200));
+  assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+  return response;
+}
+// A first page that the response bound cut.
+async function cutPage(route, query) {
+  const response = await boundedPage(route, query);
+  assert.equal(response.data.truncated, true);
+  return response;
+}
+// Follows a view until a page is not truncated (at most 10 pages).
+async function drain(route, { tailLines, cursor, message, onPage = () => {} }) {
+  const lines = [];
   let pages = 0;
-  let firstCount;
-  do {
-    const response = await fixture.request(
-      "GET",
-      target.logsPath(
-        `source=gateway&tailLines=200${cursor === undefined ? "" : `&cursor=${cursor}`}`,
-      ),
-    );
-    assert.equal(response.status, 200, response.text.slice(0, 200));
-    assert.equal(response.body.meta.requestId.length, 40);
-    assert.equal(
-      Buffer.byteLength(response.text, "utf8"),
-      Buffer.byteLength(JSON.stringify(response.body), "utf8"),
-      "the actual formatter matches measured JSON, including Unicode",
-    );
-    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
-    const lines = response.data.records.filter(({ type }) => type === "line");
-    if (pages === 0) {
-      firstCount = lines.length;
-      assert.equal(response.data.truncated, true);
-    }
-    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
+  while (pages < 10) {
+    const response = await boundedPage(route, { tailLines, cursor }, message);
+    onPage(response, pages);
+    lines.push(...lineRecords(response.data));
     cursor = response.data.cursor;
     pages += 1;
     if (!response.data.truncated) {
       break;
     }
-    assert.ok(lines.length > 0, "a byte-cut page must advance");
-  } while (pages < 10);
+  }
+  return {
+    lines,
+    cursor,
+    pages,
+    get rows() {
+      return rowIds({ records: lines });
+    },
+  };
+}
+// Every truncated page delivers at least one line.
+function advances(response) {
+  if (response.data.truncated) {
+    assert.ok(lineRecords(response.data).length > 0, "a byte-cut page must advance");
+  }
+}
+
+test("runtime container wire pages include escaped messages, cursor and HTTP metadata in the limit", async () => {
+  const route = await logsRoute({ label: "wire-budget" });
+  const started = Date.now() - 1000;
+  route.state.lines = Array.from({ length: 70 }, (_, index) => ({
+    time: iso(started + index),
+    raw: gatewayJson(`row=${index}; 网络🙂 process arguments: ${'--option="value" '.repeat(500)}`),
+  }));
+  let firstCount;
+  const { rows, cursor, pages } = await drain(route, {
+    tailLines: 200,
+    onPage(response, page) {
+      assert.equal(response.body.meta.requestId.length, 40);
+      assert.equal(
+        Buffer.byteLength(response.text, "utf8"),
+        Buffer.byteLength(JSON.stringify(response.body), "utf8"),
+        "the actual formatter matches measured JSON, including Unicode",
+      );
+      if (page === 0) {
+        firstCount = lineRecords(response.data).length;
+        assert.equal(response.data.truncated, true);
+      }
+      advances(response);
+    },
+  });
   assert.ok(firstCount > 0 && firstCount < 70);
-  assert.deepEqual(
-    seen,
-    Array.from({ length: 70 }, (_, index) => index),
-  );
-  const replay = await fixture.request("GET", target.logsPath(`source=gateway&cursor=${cursor}`));
+  assert.deepEqual(rows, range(70));
+  const replay = await route.read({ cursor });
   assert.deepEqual(replay.data.records, []);
   assert.equal(
-    fixture.computeDriver.calls.filter(({ operation }) => operation === "read").length,
+    route.fixture.computeDriver.calls.filter(({ operation }) => operation === "read").length,
     pages + 1,
     "prefix builds do not read the Driver again",
   );
   assert.equal(
-    fixture.auditSink.events.filter(({ action }) => action === "openclaw.agents.runtime_logs.view")
-      .length,
+    route.fixture.auditSink.events.filter(
+      ({ action }) => action === "openclaw.agents.runtime_logs.view",
+    ).length,
     1,
     "prefix builds and continuation do not open extra views",
   );
-  const download = await fixture.request("GET", target.logsPath("source=gateway&download=true"));
+  const download = await route.read({ download: true });
   assert.equal(download.status, 200);
   assert.ok(Buffer.byteLength(download.text, "utf8") <= 512 * 1024);
 });
 
 test("runtime container checkpoint suffixes survive append-only growth to a full tail", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const { tail, identical } of [
     { tail: 100, identical: false },
     { tail: 300, identical: false },
     { tail: 100, identical: true },
   ]) {
     const cursorSecret = randomBytes(32).toString("hex");
-    const fixture = await createRuntimeLogFixture({
+    const route = await logsRoute({
+      label: "wire-budget-growing-tail",
       agentRuntimeLogs: { enabled: true, cursorSecret },
     });
-    const target = await fixture.deployAgent("wire-budget-growing-tail");
-    const time = new Date(Date.now() - 1000).toISOString();
+    const time = iso(Date.now() - 1000);
     const row = (index, large = false) => ({
       time,
       raw:
         large && tail === 300
           ? `[info] row=${index}; process arguments: ${'"'.repeat(3000)}`
-          : JSON.stringify({
-              level: "info",
-              subsystem: "gateway",
-              message: `row=${identical ? 7 : index}; ${large || identical ? '--option="value" '.repeat(500) : "anchor"}`,
-            }),
+          : gatewayJson(
+              `row=${identical ? 7 : index}; ${large || identical ? '--option="value" '.repeat(500) : "anchor"}`,
+            ),
     });
-    const ids = (page) => messages(page).map((message) => Number(/row=(\d+);/.exec(message)[1]));
-    fixture.computeDriver.state.lines = Array.from({ length: 20 }, (_, index) => row(index));
-    const prime = await fixture.request("GET", target.logsPath(`source=gateway&tailLines=${tail}`));
+    route.state.lines = Array.from({ length: 20 }, (_, index) => row(index));
+    const prime = await route.read({ tailLines: tail });
     assert.equal(prime.status, 200);
-    const seen = ids(prime.data);
+    const seen = rowIds(prime.data);
     assert.equal(seen.length, 20, "the baseline exceeds the retained frontier hash history");
-    fixture.computeDriver.state.lines.push(
+    route.state.lines.push(
       ...Array.from({ length: tail - 21 }, (_, index) => row(index + 20, true)),
     );
-    assert.ok(
-      fixture.computeDriver.state.lines.reduce(
-        (bytes, line) => bytes + Buffer.byteLength(line.raw) + 32,
-        0,
-      ) <
-        1024 * 1024,
-    );
+    assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
     let cursor = prime.data.cursor;
     let cuts = 0;
     for (let page = 0; page < 10; page += 1) {
-      const response = await fixture.request(
-        "GET",
-        target.logsPath(`source=gateway&tailLines=${tail}&cursor=${cursor}`),
-      );
-      assert.equal(response.status, 200);
-      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      const response = await boundedPage(route, { tailLines: tail, cursor });
       assert.ok(response.data.cursor.length <= 2048);
-      seen.push(...ids(response.data));
+      seen.push(...rowIds(response.data));
       cuts += response.data.truncated ? 1 : 0;
       cursor = response.data.cursor;
       if (identical && page > 0) {
         assert.ok(
-          response.data.records.some(
-            ({ type, reason }) => type === "gap" && reason === "window_exceeded",
-          ),
+          gapCount(response.data, "window_exceeded") > 0,
           "full identical-value windows retain the conservative gap even when their checkpoint drains",
         );
       }
@@ -2391,8 +2304,7 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
         );
         if (tail === 100 && !identical) {
           // The previous compact cursor had ten window entries and no inherited proof.
-          const parts = cursor.split(".");
-          const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString());
+          const payload = cursorPayload(cursor);
           if (payload.cw.length === 11) {
             payload.cw.pop();
           }
@@ -2401,21 +2313,18 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
             .update("occ-runtime-logs-cursor\0v2\0")
             .update(legacyPayload)
             .digest("base64url");
-          const legacy = await fixture.request(
-            "GET",
-            target.logsPath(`source=gateway&tailLines=100&cursor=v2.${legacyPayload}.${mac}`),
-          );
+          const legacy = await route.read({ tailLines: 100, cursor: `v2.${legacyPayload}.${mac}` });
           assert.equal(
             legacy.status,
             200,
             "legacy windows remain usable on their stable short source",
           );
           assert.deepEqual(
-            ids(legacy.data),
+            rowIds(legacy.data),
             Array.from({ length: 99 - seen.length }, (_, index) => index + seen.length),
           );
         }
-        fixture.computeDriver.state.lines.push(row(tail - 1, true));
+        route.state.lines.push(row(tail - 1, true));
       }
       if (!response.data.truncated) {
         break;
@@ -2423,14 +2332,11 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
     }
     assert.deepEqual(
       seen,
-      Array.from({ length: tail }, (_, index) => (identical ? 7 : index)),
+      range(tail).map((index) => (identical ? 7 : index)),
     );
-    const replay = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=${tail}&cursor=${cursor}`),
-    );
+    const replay = await route.read({ tailLines: tail, cursor });
     assert.equal(replay.status, 200);
-    assert.deepEqual(ids(replay.data), []);
+    assert.deepEqual(rowIds(replay.data), []);
     if (tail === 300) {
       assert.ok(cuts >= 2, "positional proof survives multiple full-tail cuts");
     }
@@ -2438,42 +2344,27 @@ test("runtime container checkpoint suffixes survive append-only growth to a full
 });
 
 test("container byte-cut checkpoints retain untimed progress or advance mixed windows", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const mixed of [false, true]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-untimed-driver-cut");
+    const route = await logsRoute({ label: "container-untimed-driver-cut" });
     const count = 330;
     const started = Date.now() - 40_000;
-    fixture.computeDriver.state.lines = [
+    route.state.lines = [
       ...Array.from({ length: count }, (_, index) => ({
-        time: mixed && index > 0 ? new Date(started + index * 118).toISOString() : null,
+        time: mixed && index > 0 ? iso(started + index * 118) : null,
         raw: `[info] row=${index}; process arguments: ${'"'.repeat(3000)}`,
       })),
       { time: null, raw: "partial trailing row" },
     ];
-    fixture.computeDriver.state.truncated = true;
-    assert.ok(
-      fixture.computeDriver.state.lines.reduce(
-        (bytes, line) => bytes + Buffer.byteLength(line.raw) + 32,
-        0,
-      ) <
-        1024 * 1024,
-    );
+    route.state.truncated = true;
+    assert.ok(rawBytes(route.state.lines) < 1024 * 1024);
     const seen = [];
     let cursor;
     let pages = 0;
     let drained;
     while (seen.length < count && pages < 10) {
-      const response = await fixture.request(
-        "GET",
-        target.logsPath(
-          `source=gateway&tailLines=1000${cursor === undefined ? "" : `&cursor=${cursor}`}`,
-        ),
-      );
-      assert.equal(response.status, 200);
-      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
+      const response = await boundedPage(route, { tailLines: 1000, cursor });
       assert.equal(response.data.truncated, true, "the underlying Driver cut remains visible");
-      const rows = messages(response.data).map((message) => Number(/row=(\d+);/.exec(message)[1]));
+      const rows = rowIds(response.data);
       assert.ok(rows.length > 0, "each wire cut advances through the complete fetched prefix");
       seen.push(...rows);
       cursor = response.data.cursor;
@@ -2481,21 +2372,15 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
       pages += 1;
     }
     assert.ok(pages > 1);
-    assert.deepEqual(
-      seen,
-      Array.from({ length: count }, (_, index) => index),
-    );
+    assert.deepEqual(seen, range(count));
     if (mixed) {
       assert.ok(
-        drained.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
+        gapCount(drained, "window_exceeded") > 0,
         "timed advancement explicitly resets the uncertain window",
       );
-      const next = await fixture.request(
-        "GET",
-        target.logsPath(`source=gateway&tailLines=1000&cursor=${cursor}`),
-      );
+      const next = await route.read({ tailLines: 1000, cursor });
       assert.equal(next.status, 200);
-      const resumedRead = fixture.computeDriver.calls
+      const resumedRead = route.fixture.computeDriver.calls
         .filter(({ operation }) => operation === "read")
         .at(-1);
       assert.ok(
@@ -2505,10 +2390,7 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
       continue;
     }
     for (let poll = 0; poll < 2; poll += 1) {
-      const replay = await fixture.request(
-        "GET",
-        target.logsPath(`source=gateway&tailLines=1000&cursor=${cursor}`),
-      );
+      const replay = await route.read({ tailLines: 1000, cursor });
       assert.equal(replay.status, 200);
       assert.equal(
         messages(replay.data).length,
@@ -2522,37 +2404,21 @@ test("container byte-cut checkpoints retain untimed progress or advance mixed wi
 });
 
 test("runtime container wire budgeting handles empty, single and grouped withheld pages", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-budget-boundaries");
-  const row = (raw, index = 0) => ({
-    raw,
-    time: new Date(Date.now() - 1000 + index).toISOString(),
-  });
+  const route = await logsRoute({ label: "wire-budget-boundaries" });
+  const row = (raw, index = 0) => ({ raw, time: iso(Date.now() - 1000 + index) });
   for (const lines of [
     [],
-    [
-      row(
-        JSON.stringify({
-          level: "info",
-          subsystem: "gateway",
-          message: `single 网络🙂 ${'--option="value" '.repeat(500)}`,
-        }),
-      ),
-    ],
+    [row(gatewayJson(`single 网络🙂 ${'--option="value" '.repeat(500)}`))],
   ]) {
-    fixture.computeDriver.state.lines = lines;
-    const response = await fixture.request("GET", target.logsPath("source=gateway&tailLines=200"));
-    assert.equal(response.status, 200);
+    route.state.lines = lines;
+    const response = await boundedPage(route, { tailLines: 200 });
     assert.equal(response.data.truncated, false);
-    assert.equal(response.data.records.filter(({ type }) => type === "line").length, lines.length);
-    assert.ok(Buffer.byteLength(response.text, "utf8") <= 512 * 1024);
+    assert.equal(lineRecords(response.data).length, lines.length);
   }
-  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) =>
+  route.state.lines = Array.from({ length: 80 }, (_, index) =>
     row(JSON.stringify({ ordinary_metadata: "diagnostic ".repeat(900) }), index),
   );
-  const withheld = await fixture.request("GET", target.logsPath("source=gateway&tailLines=200"));
-  assert.equal(withheld.status, 200);
+  const withheld = await boundedPage(route, { tailLines: 200 });
   assert.equal(
     withheld.data.truncated,
     false,
@@ -2560,43 +2426,64 @@ test("runtime container wire budgeting handles empty, single and grouped withhel
   );
   assert.equal(withheld.data.withheld, 80);
   assert.equal(withheld.data.records[0].count, 80);
-  assert.ok(Buffer.byteLength(withheld.text, "utf8") <= 512 * 1024);
-  const replay = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&cursor=${withheld.data.cursor}`),
-  );
+  const replay = await route.read({ cursor: withheld.data.cursor });
   assert.deepEqual(replay.data.records, []);
 });
 
-test("a full 1 MiB container window is cut for about the cost of sanitizing it once", async () => {
+test("a full 1 MiB container window is cut after sanitizing it once", async (t) => {
   // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
   // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
   // the window again for each candidate prefix (a binary search did about five
-  // window sanitizations per poll). Both costs are process CPU time, min of 3, so
-  // the bound holds on slow or loaded runners.
+  // window sanitizations per poll). Sanitizing a line classifies it (one JSON.parse of
+  // the raw line) and redacts its message (one argv split of the message text), so
+  // call-through spies on both count per-line work without depending on runner load.
+  // Every spied call returns the real result.
   const started = Date.parse("2026-09-30T12:00:00Z");
   const lines = Array.from({ length: 1000 }, (_, index) => ({
-    time: new Date(started + index).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; ${"diagnostic detail ".repeat(56)}`,
-    }),
+    time: iso(started + index),
+    raw: gatewayJson(`row=${index}; ${"diagnostic detail ".repeat(56)}`),
   }));
   assert.ok(lines.reduce((sum, { raw }) => sum + Buffer.byteLength(raw), 0) > 1024 * 1024);
   const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
-  const once = cpuTimeMs(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  const raws = new Set(lines.map(({ raw }) => raw));
+  const texts = new Set(lines.map(({ raw }) => JSON.parse(raw).message));
+  const parse = t.mock.method(JSON, "parse");
+  const split = t.mock.method(String.prototype, "split");
+  const work = async (run) => {
+    parse.mock.resetCalls();
+    split.mock.resetCalls();
+    await run();
+    return {
+      classified: parse.mock.calls.filter(({ arguments: [text] }) => raws.has(text)).length,
+      redacted: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
+    };
+  };
+  // The Driver's byte cut drops the final, partial line before any classification.
+  const complete = lines.slice(0, -1);
+  const evidence = await work(() => runtimeLogEvidence(complete));
+  const once = await work(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  // The proxies hold: one sanitization classifies and redacts each complete line once,
+  // and the evidence pass classifies without redacting.
+  assert.deepEqual(once, { classified: complete.length, redacted: complete.length });
+  assert.equal(evidence.redacted, 0);
   let page;
-  const cut = await cpuTimeMsAsync(async () => {
+  const cut = await work(async () => {
     page = await pollReader().poll(lines, { truncated: true });
   });
-  const delivered = page.records.filter(({ type }) => type === "line").length;
+  const delivered = lineRecords(page).length;
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // The fetched safety evidence classifies every complete line once; the prefix
+  // builds then share one sanitization. Both bounds are exact today: classifying or
+  // redacting even the delivered prefix once more adds at least 300 lines.
   assert.ok(
-    cut < 2.5 * once,
-    `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
+    cut.classified <= evidence.classified + once.classified,
+    `the cut page classified ${cut.classified} window lines; the evidence pass and one sanitization classify ${evidence.classified + once.classified}`,
+  );
+  assert.ok(
+    cut.redacted <= once.redacted,
+    `the cut page redacted ${cut.redacted} window messages; one sanitization redacts ${once.redacted}`,
   );
 });
 
@@ -2649,295 +2536,169 @@ test("the page budget measures every page it returns, whatever its prefix estima
   assert.ok(missed.page.records.length < estimated.page.records.length);
 });
 
+// 60 rows of about 8.5 KiB at one time (or untimed): a 60-line tail is cut.
 function wireContainerRows(time, count = 60) {
   return Array.from({ length: count }, (_, index) => ({
     time,
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; diagnostic ${'--option="value" '.repeat(500)}`,
-    }),
+    raw: gatewayJson(`row=${index}; diagnostic ${'--option="value" '.repeat(500)}`),
   }));
 }
+const recently = () => iso(Date.now() - 1000);
 
 test("container byte-window checkpoints drain full same-time and untimed tails", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  for (const time of [new Date(Date.now() - 1000).toISOString(), null]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-window");
-    fixture.computeDriver.state.lines = wireContainerRows(time);
-    const seen = [];
-    let cursor;
+  for (const time of [recently(), null]) {
+    const route = await logsRoute({ label: "container-window" });
+    route.state.lines = wireContainerRows(time);
     let first;
-    for (let page = 0; page < 10; page += 1) {
-      const response = await fixture.request(
-        "GET",
-        target.logsPath(
-          `source=gateway&tailLines=60${cursor === undefined ? "" : `&cursor=${cursor}`}`,
-        ),
-      );
-      assert.equal(response.status, 200);
-      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
-      const lines = response.data.records.filter(({ type }) => type === "line");
-      if (page === 0) {
-        first = lines.length;
-        assert.equal(response.data.truncated, true);
-      }
-      seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
-      cursor = response.data.cursor;
-      if (!response.data.truncated) {
-        break;
-      }
-      assert.ok(lines.length > 0);
-    }
+    const { rows, cursor } = await drain(route, {
+      tailLines: 60,
+      onPage(response, page) {
+        if (page === 0) {
+          first = lineRecords(response.data).length;
+          assert.equal(response.data.truncated, true);
+        }
+        advances(response);
+      },
+    });
     assert.ok(first > 16 && first < 60);
-    assert.deepEqual(
-      seen,
-      Array.from({ length: 60 }, (_, index) => index),
-    );
-    const replay = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=60&cursor=${cursor}`),
-    );
-    assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+    assert.deepEqual(rows, range(60));
+    const replay = await route.read({ tailLines: 60, cursor });
+    assert.equal(lineRecords(replay.data).length, 0);
   }
 });
 
 test("container byte-window changes expose a fresh snapshot and fitting untimed progress", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const changed of ["value", "tail", "buffer"]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-window-change");
-    fixture.computeDriver.state.lines = wireContainerRows(null);
-    const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
-    assert.equal(first.data.truncated, true);
+    const route = await logsRoute({ label: "container-window-change" });
+    route.state.lines = wireContainerRows(null);
+    const first = await cutPage(route, { tailLines: 60 });
     if (changed === "value") {
-      fixture.computeDriver.state.lines[59] = {
+      route.state.lines[59] = {
         time: null,
         raw: JSON.stringify({ level: "info", message: "changed suffix" }),
       };
     }
     if (changed === "buffer") {
-      fixture.computeDriver.state.lines.splice(25);
+      route.state.lines.splice(25);
     }
-    const tail = changed === "tail" ? 25 : 60;
-    const next = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=${tail}&cursor=${first.data.cursor}`),
-    );
-    assert.equal(next.status, 200);
-    assert.ok(Buffer.byteLength(next.text) <= 512 * 1024);
-    assert.ok(
-      next.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
-      changed,
-    );
-    assert.ok(
-      next.data.records.some(({ type }) => type === "line"),
-      changed,
-    );
+    const tailLines = changed === "tail" ? 25 : 60;
+    const next = await boundedPage(route, { tailLines, cursor: first.data.cursor });
+    assert.ok(gapCount(next.data, "window_exceeded") > 0, changed);
+    assert.ok(lineRecords(next.data).length > 0, changed);
     if (changed !== "value") {
       assert.equal(next.data.truncated, false);
-      const replay = await fixture.request(
-        "GET",
-        target.logsPath(`source=gateway&tailLines=${tail}&cursor=${next.data.cursor}`),
-      );
-      assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0, changed);
+      const replay = await route.read({ tailLines, cursor: next.data.cursor });
+      assert.equal(lineRecords(replay.data).length, 0, changed);
     }
   }
 });
 
 test("container byte-window checkpoints retain the pre-cut deduplication baseline", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("container-window-baseline");
-  const time = new Date(Date.now() - 1000).toISOString();
-  const anchor = { time, raw: JSON.stringify({ level: "info", message: "previous diagnostic" }) };
-  fixture.computeDriver.state.lines = [anchor];
-  const initial = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
-  fixture.computeDriver.state.lines = [
-    anchor,
-    ...wireContainerRows(new Date(Date.parse(time) + 1).toISOString()),
-  ];
-  let cursor = initial.data.cursor;
-  const seen = [];
-  for (let page = 0; page < 10; page += 1) {
-    const response = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=100&cursor=${cursor}`),
-    );
-    const lines = response.data.records.filter(({ type }) => type === "line");
-    assert.ok(lines.every(({ message }) => message !== "previous diagnostic"));
-    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
-    cursor = response.data.cursor;
-    if (!response.data.truncated) {
-      break;
-    }
-  }
-  assert.deepEqual(
-    seen,
-    Array.from({ length: 60 }, (_, index) => index),
-  );
+  const route = await logsRoute({ label: "container-window-baseline" });
+  const time = recently();
+  const anchor = { time, raw: gatewayJson("previous diagnostic") };
+  route.state.lines = [anchor];
+  const initial = await route.read({ tailLines: 100 });
+  assert.deepEqual(messages(initial.data), ["previous diagnostic"]);
+  route.state.lines = [anchor, ...wireContainerRows(iso(Date.parse(time) + 1))];
+  const { rows } = await drain(route, {
+    tailLines: 100,
+    cursor: initial.data.cursor,
+    onPage(response) {
+      assert.ok(messages(response.data).every((message) => message !== "previous diagnostic"));
+    },
+  });
+  assert.deepEqual(rows, range(60));
 });
 
 test("container byte-window progress does not cross UID or restart changes", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const changed of ["uid", "restart"]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-window-instance");
-    fixture.computeDriver.state.lines = wireContainerRows(
-      new Date(Date.now() - 1000).toISOString(),
-    );
-    const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
-    assert.equal(first.data.truncated, true);
+    const route = await logsRoute({ label: "container-window-instance" });
+    route.state.lines = wireContainerRows(recently());
+    const first = await cutPage(route, { tailLines: 60 });
     if (changed === "uid") {
-      fixture.computeDriver.state.podUid = randomUUID();
+      route.state.podUid = randomUUID();
     } else {
-      fixture.computeDriver.state.restartCount += 1;
+      route.state.restartCount += 1;
     }
-    const next = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
-    );
+    const next = await route.read({ tailLines: 60, cursor: first.data.cursor });
     assert.equal(next.status, 200);
-    assert.ok(
-      next.data.records.some(({ type, reason }) => type === "gap" && reason === "stream_replaced"),
-    );
-    assert.ok(
-      next.data.records.some(
-        ({ type, message }) => type === "line" && message.startsWith("row=0;"),
-      ),
-    );
+    assert.ok(gapCount(next.data, "stream_replaced") > 0);
+    assert.ok(messages(next.data).some((message) => message.startsWith("row=0;")));
   }
 });
 
 test("container changed byte-windows keep PEM masking conservative", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("container-window-pem");
-  const time = new Date(Date.now() - 1000).toISOString();
-  fixture.computeDriver.state.lines = wireContainerRows(time);
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
-  assert.equal(first.data.truncated, true);
-  fixture.computeDriver.state.lines[30] = {
-    time,
-    raw: pemBegin,
-  };
-  fixture.computeDriver.state.lines[31] = {
-    time,
-    raw: syntheticPemTail,
-  };
-  const replacement = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
-  );
+  const route = await logsRoute({ label: "container-window-pem" });
+  const time = recently();
+  route.state.lines = wireContainerRows(time);
+  const first = await cutPage(route, { tailLines: 60 });
+  route.state.lines[30] = { time, raw: pemBegin };
+  route.state.lines[31] = { time, raw: syntheticPemTail };
+  const replacement = await route.read({ tailLines: 60, cursor: first.data.cursor });
   assert.equal(replacement.status, 200);
-  assert.ok(
-    replacement.data.records.some(
-      ({ type, reason }) => type === "gap" && reason === "window_exceeded",
-    ),
-  );
+  assert.ok(gapCount(replacement.data, "window_exceeded") > 0);
   assertTailMasked(replacement.data);
-  fixture.computeDriver.state.lines = [
-    {
-      time: new Date(Date.parse(time) + 1).toISOString(),
-      raw: syntheticPemTail,
-    },
-  ];
-  const carried = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=60&cursor=${replacement.data.cursor}`),
-  );
+  route.state.lines = [{ time: iso(Date.parse(time) + 1), raw: syntheticPemTail }];
+  const carried = await route.read({ tailLines: 60, cursor: replacement.data.cursor });
   assertTailMasked(carried.data);
 });
 
 test("container byte-window baselines reset when the Driver observes an instance change during read", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const changed of ["uid", "restart"]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-window-reread");
-    const time = new Date(Date.now() - 1000).toISOString();
-    fixture.computeDriver.state.lines = [
+    const route = await logsRoute({ label: "container-window-reread" });
+    const { state } = route;
+    const time = recently();
+    state.lines = [
       {
-        time: new Date(Date.parse(time) + 100).toISOString(),
+        time: iso(Date.parse(time) + 100),
         raw: JSON.stringify({ level: "info", message: "prior instance" }),
       },
     ];
-    const initial = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
-    fixture.computeDriver.state.lines = wireContainerRows(time);
+    const initial = await route.read({ tailLines: 60 });
+    state.lines = wireContainerRows(time);
     if (changed === "uid") {
-      fixture.computeDriver.state.readPodUid = randomUUID();
+      state.readPodUid = randomUUID();
     } else {
-      fixture.computeDriver.state.readRestartCount = 1;
+      state.readRestartCount = 1;
     }
-    const replaced = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=60&cursor=${initial.data.cursor}`),
-    );
+    const replaced = await route.read({ tailLines: 60, cursor: initial.data.cursor });
     assert.equal(replaced.data.truncated, true);
-    assert.ok(
-      replaced.data.records.some(
-        ({ type, reason }) => type === "gap" && reason === "stream_replaced",
-      ),
-    );
+    assert.ok(gapCount(replaced.data, "stream_replaced") > 0);
     if (changed === "uid") {
-      fixture.computeDriver.state.podUid = fixture.computeDriver.state.readPodUid;
+      state.podUid = state.readPodUid;
     } else {
-      fixture.computeDriver.state.restartCount = fixture.computeDriver.state.readRestartCount;
+      state.restartCount = state.readRestartCount;
     }
-    const rest = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=60&cursor=${replaced.data.cursor}`),
-    );
+    const rest = await route.read({ tailLines: 60, cursor: replaced.data.cursor });
     assert.equal(rest.status, 200);
-    const seen = [...replaced.data.records, ...rest.data.records]
-      .filter(({ type }) => type === "line")
-      .map(({ message }) => Number(/^row=(\d+);/.exec(message)[1]));
-    assert.deepEqual(
-      seen,
-      Array.from({ length: 60 }, (_, index) => index),
-    );
+    assert.deepEqual([...rowIds(replaced.data), ...rowIds(rest.data)], range(60));
   }
 });
 
 test("container expanded byte-windows preserve valid conservative PEM cursors", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
   for (const changed of ["expanded", "empty"]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-window-recovery");
-    const time = new Date(Date.now() - 1000).toISOString();
-    const before = new Date(Date.parse(time) - 2000).toISOString();
-    fixture.computeDriver.state.lines = [{ time: before, raw: pemEnd }];
-    const prime = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
+    const route = await logsRoute({ label: "container-window-recovery" });
+    const time = recently();
+    route.state.lines = [{ time: iso(Date.parse(time) - 2000), raw: pemEnd }];
+    const prime = await route.read({ tailLines: 60 });
     const older = Array.from({ length: 100 }, (_, i) => ({
-      time: new Date(Date.parse(time) - 1000).toISOString(),
+      time: iso(Date.parse(time) - 1000),
       raw: `[info] older row=${i}; diagnostic ${'"a" '.repeat(1000)}`,
     }));
     const current = wireContainerRows(time);
-    fixture.computeDriver.state.lines = [...older, ...current];
-    const first = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=60&cursor=${prime.data.cursor}`),
-    );
+    route.state.lines = [...older, ...current];
+    const first = await route.read({ tailLines: 60, cursor: prime.data.cursor });
     assert.equal(first.data.truncated, true);
     if (changed === "empty") {
-      fixture.computeDriver.state.lines = [];
+      route.state.lines = [];
     }
-    const seen = [];
-    let cursor = first.data.cursor;
-    for (let page = 0; page < 10; page += 1) {
-      const response = await fixture.request(
-        "GET",
-        target.logsPath(`source=gateway&tailLines=160&cursor=${cursor}`),
-      );
-      assert.equal(response.status, 200, "recovery must not poison the next signed cursor");
-      assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
-      const lines = response.data.records.filter(({ type }) => type === "line");
-      seen.push(...lines.map(({ message }) => message.split(";", 1)[0]));
-      cursor = response.data.cursor;
-      if (!response.data.truncated) {
-        break;
-      }
-    }
+    const { lines, cursor } = await drain(route, {
+      tailLines: 160,
+      cursor: first.data.cursor,
+      message: "recovery must not poison the next signed cursor",
+    });
+    const seen = lines.map(({ message }) => message.split(";", 1)[0]);
     if (changed === "expanded") {
       assert.deepEqual(
         seen,
@@ -2950,411 +2711,332 @@ test("container expanded byte-windows preserve valid conservative PEM cursors", 
     } else {
       assert.equal(seen.length, 0);
     }
-    const replay = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=160&cursor=${cursor}`),
-    );
+    const replay = await route.read({ tailLines: 160, cursor });
     assert.equal(replay.status, 200);
-    assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+    assert.equal(lineRecords(replay.data).length, 0);
   }
 });
 
 test("container empty checkpoint recovery suppresses the next single untimed snapshot", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("container-empty-window");
-  fixture.computeDriver.state.lines = wireContainerRows(null);
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=60"));
-  assert.equal(first.data.truncated, true);
-  fixture.computeDriver.state.lines = [];
-  const empty = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=60&cursor=${first.data.cursor}`),
-  );
+  const route = await logsRoute({ label: "container-empty-window" });
+  route.state.lines = wireContainerRows(null);
+  const first = await cutPage(route, { tailLines: 60 });
+  route.state.lines = [];
+  const empty = await route.read({ tailLines: 60, cursor: first.data.cursor });
   assert.equal(empty.status, 200);
-  fixture.computeDriver.state.lines = [
-    {
-      time: null,
-      raw: JSON.stringify({ level: "info", subsystem: "gateway", message: "worker ready" }),
-    },
-  ];
-  const single = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=60&cursor=${empty.data.cursor}`),
-  );
-  assert.equal(single.data.records.filter(({ type }) => type === "line").length, 1);
-  const replay = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=60&cursor=${single.data.cursor}`),
-  );
-  assert.equal(replay.data.records.filter(({ type }) => type === "line").length, 0);
+  route.state.lines = [{ time: null, raw: gatewayJson("worker ready") }];
+  const single = await route.read({ tailLines: 60, cursor: empty.data.cursor });
+  assert.equal(lineRecords(single.data).length, 1);
+  const replay = await route.read({ tailLines: 60, cursor: single.data.cursor });
+  assert.equal(lineRecords(replay.data).length, 0);
 });
 
-test("container checkpoints preserve the existing overlap through backend processing delay", async () => {
-  const { createRuntimeLogFixture, createRuntimeLogComputeDriver } =
-    await import("../helpers/runtime-logs.mjs");
-  const underlying = createRuntimeLogComputeDriver();
-  const read = underlying.readAgentRuntimeLogs.bind(underlying);
+// The Driver fakes below cut lines against the clock, as kubelet `sinceSeconds` does. The
+// clock is frozen so the windows do not depend on how long the host takes between reads.
+function freezeClock(t) {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+}
+
+test("container checkpoints preserve the existing overlap through backend processing delay", async (t) => {
+  freezeClock(t);
   let calls = 0;
-  const driver = {
-    ...underlying,
-    async readAgentRuntimeLogs(binding, request) {
-      calls += 1;
-      if (calls === 1) {
-        const time = new Date(Date.now() - request.sinceSeconds * 1000 + 500).toISOString();
-        underlying.state.lines = wireContainerRows(time);
-      }
-      const chunk = await read(binding, request);
-      // Equivalent backend processing time, without changing the host clock or reader.
-      const floor = Date.now() + (calls === 1 ? 0 : 1800) - request.sinceSeconds * 1000;
-      return { ...chunk, lines: chunk.lines.filter(({ time }) => Date.parse(time) >= floor) };
+  const route = await logsRoute({
+    label: "container-processing-delay",
+    wrap: (underlying) => {
+      const read = underlying.readAgentRuntimeLogs.bind(underlying);
+      return {
+        ...underlying,
+        async readAgentRuntimeLogs(binding, request) {
+          calls += 1;
+          if (calls === 1) {
+            underlying.state.lines = wireContainerRows(
+              iso(Date.now() - request.sinceSeconds * 1000 + 500),
+            );
+          }
+          const chunk = await read(binding, request);
+          // Equivalent backend processing time, without changing the reader.
+          const floor = Date.now() + (calls === 1 ? 0 : 1800) - request.sinceSeconds * 1000;
+          return { ...chunk, lines: chunk.lines.filter(({ time }) => Date.parse(time) >= floor) };
+        },
+      };
     },
-  };
-  const fixture = await createRuntimeLogFixture({ computeDriver: driver });
-  const target = await fixture.deployAgent("container-processing-delay");
-  const first = await fixture.request(
-    "GET",
-    target.logsPath("source=gateway&tailLines=200&sinceSeconds=60"),
-  );
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
-  const next = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=200&cursor=${first.data.cursor}`),
-  );
+  });
+  const first = await cutPage(route, { tailLines: 200, sinceSeconds: 60 });
+  const next = await route.read({ tailLines: 200, cursor: first.data.cursor });
   assert.equal(next.status, 200);
-  const seen = [...messages(first.data), ...messages(next.data)].map((message) =>
-    Number(/^row=(\d+);/.exec(message)[1]),
-  );
-  assert.deepEqual(
-    seen,
-    Array.from({ length: 60 }, (_, index) => index),
-  );
+  assert.deepEqual([...rowIds(first.data), ...rowIds(next.data)], range(60));
 });
 
-test("container checkpoint windows remain stable when relative seconds round outward", async () => {
-  const { createRuntimeLogFixture, createRuntimeLogComputeDriver } =
-    await import("../helpers/runtime-logs.mjs");
+test("container checkpoint windows remain stable when relative seconds round outward", async (t) => {
+  freezeClock(t);
   for (const skew of [0, 2000]) {
-    const underlying = createRuntimeLogComputeDriver();
-    const read = underlying.readAgentRuntimeLogs.bind(underlying);
-    const driver = {
-      ...underlying,
-      async readAgentRuntimeLogs(binding, request) {
-        const chunk = await read(binding, request);
-        const floor = Date.now() - skew - request.sinceSeconds * 1000;
+    const route = await logsRoute({
+      label: "container-relative-window",
+      wrap: (underlying) => {
+        const read = underlying.readAgentRuntimeLogs.bind(underlying);
         return {
-          ...chunk,
-          lines:
-            request.sinceSeconds === undefined
-              ? chunk.lines
-              : chunk.lines.filter(({ time }) => time === null || Date.parse(time) >= floor),
+          ...underlying,
+          async readAgentRuntimeLogs(binding, request) {
+            const chunk = await read(binding, request);
+            const floor = Date.now() - skew - request.sinceSeconds * 1000;
+            return {
+              ...chunk,
+              lines:
+                request.sinceSeconds === undefined
+                  ? chunk.lines
+                  : chunk.lines.filter(({ time }) => time === null || Date.parse(time) >= floor),
+            };
+          },
         };
       },
-    };
-    const fixture = await createRuntimeLogFixture({ computeDriver: driver });
-    const target = await fixture.deployAgent("container-relative-window");
+    });
     const now = Date.now();
-    const time = new Date(now - (skew === 0 ? 1000 : 11000)).toISOString();
-    const rows = wireContainerRows(time);
-    underlying.state.lines = [
-      {
-        time: new Date(now - skew - 10050).toISOString(),
-        raw: JSON.stringify({
-          level: "info",
-          subsystem: "gateway",
-          message: "older than original window",
-        }),
-      },
+    const rows = wireContainerRows(iso(now - (skew === 0 ? 1000 : 11000)));
+    route.state.lines = [
+      { time: iso(now - skew - 10050), raw: gatewayJson("older than original window") },
       ...rows,
     ];
-    const first = await fixture.request(
-      "GET",
-      target.logsPath("source=gateway&tailLines=61&sinceSeconds=10"),
-    );
+    const first = await route.read({ tailLines: 61, sinceSeconds: 10 });
     assert.equal(first.data.truncated, true);
-    const rest = await fixture.request(
-      "GET",
-      target.logsPath(`source=gateway&tailLines=61&cursor=${first.data.cursor}`),
-    );
+    // A fraction of a second passes, so the resumed relative window rounds outward.
+    t.mock.timers.tick(400);
+    const rest = await route.read({ tailLines: 61, cursor: first.data.cursor });
     assert.equal(rest.status, 200);
     assert.equal(rest.data.truncated, false);
-    const seen = [...first.data.records, ...rest.data.records]
-      .filter(({ type }) => type === "line")
-      .map(({ message }) => message.split(";", 1)[0]);
-    assert.deepEqual(
-      seen,
-      rows.map(({ raw }) => JSON.parse(raw).message.split(";", 1)[0]),
-    );
-    assert.ok(
-      !rest.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
-    );
+    assert.deepEqual([...rowIds(first.data), ...rowIds(rest.data)], range(60));
+    assert.equal(gapCount(rest.data, "window_exceeded"), 0);
   }
 });
 
 test("container wire-prefix builds retain fetched masking evidence without advancing PEM state", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("container-mask-evidence");
+  const route = await logsRoute({ label: "container-mask-evidence" });
   const start = Date.now() - 1000;
-  fixture.computeDriver.state.lines = [
+  route.state.lines = [
     ...wireContainerRows(null, 50),
     ...Array.from({ length: 300 }, () => ({ time: null, raw: "QUJD" })),
     { time: null, raw: pemEnd },
-  ].map((line, index) => ({ ...line, time: new Date(start + index).toISOString() }));
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=1000"));
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
+  ].map((line, index) => ({ ...line, time: iso(start + index) }));
+  const first = await cutPage(route, { tailLines: 1000 });
   assert.ok(!messages(first.data).includes("QUJD"));
-  const payload = JSON.parse(Buffer.from(first.data.cursor.split(".")[1], "base64url").toString());
-  assert.equal(payload.po, undefined, "an undelivered END must not advance persistent PEM state");
-  const rest = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=1000&cursor=${first.data.cursor}`),
+  assert.equal(
+    cursorPayload(first.data.cursor).po,
+    undefined,
+    "an undelivered END must not advance persistent PEM state",
   );
+  const rest = await route.read({ tailLines: 1000, cursor: first.data.cursor });
   assert.equal(rest.status, 200);
   assert.ok(!messages(rest.data).includes("QUJD"));
 });
 
 test("container wire continuation retains fetched JSON withholding decisions", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  for (const offset of [0]) {
-    const fixture = await createRuntimeLogFixture();
-    const target = await fixture.deployAgent("container-json-evidence");
-    const start = Date.now() - 1000;
-    const rows = [
-      ...wireContainerRows(null, 42).map((line, index) => ({
-        ...line,
-        raw: JSON.stringify({
-          level: "info",
-          subsystem: "gateway",
-          message: `row=${index}; diagnostic ${" ".repeat(500)}${'"a" '.repeat(2100)}`,
-        }),
-      })),
-      ...Array.from({ length: offset }, () => ({
-        raw: JSON.stringify({ ordinary_metadata: "padding" }),
-        time: null,
-      })),
-      { raw: "[", time: null },
-      ...Array.from({ length: 15 }, () => [
-        { raw: "1".repeat(32769) + ",", time: null },
-        { raw: "  true,", time: null },
-      ]).flat(),
-      { raw: "]", time: null },
-    ];
-    fixture.computeDriver.state.lines = rows.map((line, index) => ({
-      ...line,
-      time: new Date(start + index).toISOString(),
-    }));
-    assert.ok(
-      fixture.computeDriver.state.lines.reduce(
-        (bytes, line) => bytes + Buffer.byteLength(line.raw) + Buffer.byteLength(line.time) + 2,
-        0,
-      ) <=
-        1024 * 1024,
-      "the whole fetched fixture respects the Driver read bound",
-    );
-    let cursor;
-    let cut = false;
-    for (let page = 0; page < 10; page += 1) {
-      const response = await fixture.request(
-        "GET",
-        target.logsPath(
-          `source=gateway&tailLines=1000${cursor === undefined ? "" : `&cursor=${cursor}`}`,
-        ),
-      );
-      assert.equal(response.status, 200);
+  const route = await logsRoute({ label: "container-json-evidence" });
+  const start = Date.now() - 1000;
+  const rows = [
+    ...range(42).map((index) => ({
+      raw: gatewayJson(`row=${index}; diagnostic ${" ".repeat(500)}${'"a" '.repeat(2100)}`),
+      time: null,
+    })),
+    { raw: "[", time: null },
+    ...Array.from({ length: 15 }, () => [
+      { raw: "1".repeat(32769) + ",", time: null },
+      { raw: "  true,", time: null },
+    ]).flat(),
+    { raw: "]", time: null },
+  ];
+  route.state.lines = rows.map((line, index) => ({ ...line, time: iso(start + index) }));
+  assert.ok(
+    route.state.lines.reduce(
+      (bytes, line) => bytes + Buffer.byteLength(line.raw) + Buffer.byteLength(line.time) + 2,
+      0,
+    ) <=
+      1024 * 1024,
+    "the whole fetched fixture respects the Driver read bound",
+  );
+  let cut = false;
+  await drain(route, {
+    tailLines: 1000,
+    onPage(response) {
       assert.ok(!messages(response.data).some((message) => message.trim() === "true,"));
-      cursor = response.data.cursor;
       cut ||= response.data.truncated;
-      if (!response.data.truncated) {
-        break;
-      }
-    }
-    assert.equal(cut, true);
-  }
+    },
+  });
+  assert.equal(cut, true);
 });
 
+// Rows of about 7 KiB, one second apart from `start`: a 100-line tail is cut.
+function ordinaryRow(start, index, name = "row") {
+  return {
+    time: iso(start + index * 1000),
+    raw: gatewayJson(`${name}=${index}; ${"ordinary diagnostic ".repeat(350)}`),
+  };
+}
+
 test("container follows a growing full wire-cut tail without replaying its delivered prefix", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("full-growing-wire-tail");
+  const route = await logsRoute({ label: "full-growing-wire-tail" });
   const start = Date.now() - 120_000;
-  const row = (index) => ({
-    time: new Date(start + index * 1000).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
-    }),
-  });
-  fixture.computeDriver.state.lines = Array.from({ length: 100 }, (_, index) => row(index));
+  route.state.lines = range(100).map((index) => ordinaryRow(start, index));
   let cursor;
   const seen = [];
   const counts = [];
   for (let poll = 0; poll < 6; poll += 1) {
     if (poll > 0) {
-      const offset = fixture.computeDriver.state.lines.length;
-      fixture.computeDriver.state.lines.push(
-        ...Array.from({ length: 3 }, (_, index) => row(offset + index)),
-      );
+      const offset = route.state.lines.length;
+      route.state.lines.push(...range(3).map((index) => ordinaryRow(start, offset + index)));
     }
-    const response = await fixture.request(
-      "GET",
-      target.logsPath(
-        `source=gateway&tailLines=100${cursor === undefined ? "" : `&cursor=${cursor}`}`,
-      ),
-    );
-    assert.equal(response.status, 200);
-    assert.ok(Buffer.byteLength(response.text) <= 512 * 1024);
-    const lines = response.data.records.filter(({ type }) => type === "line");
-    seen.push(...lines.map(({ message }) => Number(/^row=(\d+);/.exec(message)[1])));
-    counts.push(lines.length);
+    const response = await boundedPage(route, { tailLines: 100, cursor });
+    const rows = rowIds(response.data);
+    seen.push(...rows);
+    counts.push(rows.length);
     if (poll === 0) {
       assert.equal(response.data.truncated, true);
     }
     cursor = response.data.cursor;
   }
-  assert.deepEqual(
-    seen,
-    Array.from({ length: 115 }, (_, index) => index),
-  );
+  assert.deepEqual(seen, range(115));
   assert.deepEqual(counts.slice(2), [3, 3, 3, 3]);
-  const replay = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=100&cursor=${cursor}`),
-  );
-  assert.deepEqual(
-    replay.data.records.filter(({ type }) => type === "line"),
-    [],
-  );
+  const replay = await route.read({ tailLines: 100, cursor });
+  assert.deepEqual(lineRecords(replay.data), []);
 });
 
+// A cut first page of 80 or 100 ordinary rows, then the rows a rotation leaves behind.
+// Returns both pages.
+async function rotatedWindow(label, rows, rotate) {
+  const route = await logsRoute({ label });
+  route.state.lines = rows;
+  const first = await cutPage(route, { tailLines: 100 });
+  route.state.lines = rotate(route.state.lines);
+  const second = await boundedPage(route, { tailLines: 100, cursor: first.data.cursor });
+  return [first.data, second.data];
+}
+
 test("container checkpoint recovery does not duplicate an observed window-loss gap", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-cut-burst-gap");
   const start = Date.now() - 120_000;
-  const row = (index) => ({
-    time: new Date(start + index * 1000).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
-    }),
-  });
-  fixture.computeDriver.state.lines = Array.from({ length: 100 }, (_, index) => row(index));
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
   // The burst replaces the whole tail before the byte-cut snapshot drains.
   // Actual missing rows still require one window gap, not a second gap for the
   // discarded checkpoint alongside that same observed loss.
-  fixture.computeDriver.state.lines.push(
-    ...Array.from({ length: 100 }, (_, index) => row(100 + index)),
+  const [, second] = await rotatedWindow(
+    "wire-cut-burst-gap",
+    range(100).map((index) => ordinaryRow(start, index)),
+    (lines) => [...lines, ...range(100).map((index) => ordinaryRow(start, 100 + index))],
   );
-  const second = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
-  );
-  assert.equal(second.status, 200);
-  assert.ok(Buffer.byteLength(second.text) <= 512 * 1024);
-  assert.equal(
-    second.data.records.filter(({ type, reason }) => type === "gap" && reason === "window_exceeded")
-      .length,
-    1,
-  );
+  assert.equal(gapCount(second, "window_exceeded"), 1);
 });
 
 test("container checkpoint recovery keeps an unknown-time reset visible", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-cut-unknown-reset");
   const start = Date.now() - 120_000;
-  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
-    time: index === 0 ? null : new Date(start + index * 1000).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
-    }),
-  }));
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
   // The timed frontier cannot locate an unknown row in a changed snapshot.
   // Recovering timed rows must keep that reset visible, even on a short tail.
-  fixture.computeDriver.state.lines[0] = { time: null, raw: "changed unknown-time diagnostic" };
-  const second = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  const [, second] = await rotatedWindow(
+    "wire-cut-unknown-reset",
+    range(80).map((index) => ({
+      ...ordinaryRow(start, index),
+      ...(index === 0 && { time: null }),
+    })),
+    ([, ...rest]) => [{ time: null, raw: "changed unknown-time diagnostic" }, ...rest],
   );
-  assert.equal(second.status, 200);
-  assert.ok(
-    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
-  );
+  assert.ok(gapCount(second, "window_exceeded") > 0);
 });
 
 test("container shortened timed checkpoints disclose missing undelivered rows", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-cut-shortened-timed-window");
   const start = Date.now() - 120_000;
-  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
-    time: new Date(start + index * 1000).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `row=${index}; ${"ordinary diagnostic ".repeat(350)}`,
-    }),
-  }));
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
   // Rotation can leave a short surviving window in the same container. Its
   // later times establish progress, not continuity with the unread snapshot.
-  fixture.computeDriver.state.lines = fixture.computeDriver.state.lines.slice(-5);
-  const second = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+  const [, second] = await rotatedWindow(
+    "wire-cut-shortened-timed-window",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => lines.slice(-5),
   );
-  assert.equal(second.status, 200);
-  assert.equal(second.data.records.filter(({ type }) => type === "line").length, 5);
-  assert.ok(
-    second.data.records.some(({ type, reason }) => type === "gap" && reason === "window_exceeded"),
-  );
+  assert.equal(lineRecords(second).length, 5);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
 });
 
 test("container same-size short replacements disclose missing undelivered rows", async () => {
-  const { createRuntimeLogFixture } = await import("../helpers/runtime-logs.mjs");
-  const fixture = await createRuntimeLogFixture();
-  const target = await fixture.deployAgent("wire-cut-same-size-short-window");
   const start = Date.now() - 120_000;
-  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
-    time: new Date(start + index * 1000).toISOString(),
-    raw: JSON.stringify({
-      level: "info",
-      subsystem: "gateway",
-      message: `old=${index}; ${"ordinary diagnostic ".repeat(350)}`,
-    }),
-  }));
-  const first = await fixture.request("GET", target.logsPath("source=gateway&tailLines=100"));
-  assert.equal(first.status, 200);
-  assert.equal(first.data.truncated, true);
   // Rotation retains the same row count but replaces the unread part with newer rows.
-  fixture.computeDriver.state.lines = Array.from({ length: 80 }, (_, index) => ({
-    time: new Date(start + (100 + index) * 1000).toISOString(),
-    raw: JSON.stringify({ level: "info", subsystem: "gateway", message: `new=${index}` }),
+  const [, second] = await rotatedWindow(
+    "wire-cut-same-size-short-window",
+    range(80).map((index) => ordinaryRow(start, index, "old")),
+    () =>
+      range(80).map((index) => ({
+        time: iso(start + (100 + index) * 1000),
+        raw: gatewayJson(`new=${index}`),
+      })),
+  );
+  assert.equal(lineRecords(second).length, 80);
+  assert.equal(gapCount(second, "window_exceeded"), 1);
+});
+
+test("container checkpoint recovery that still covers the delivered frontier reports no loss", async () => {
+  const start = Date.now() - 120_000;
+  // Rotation drops only the oldest, already delivered row. The changed window still
+  // starts before the delivered frontier, so every undelivered row survives.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-covered-frontier",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => lines.slice(1),
+  );
+  assert.deepEqual([...rowIds(first), ...rowIds(second)], range(80));
+  assert.equal(gapCount(second, "window_exceeded"), 0);
+});
+
+// Ordinary rows whose rows from `from` on share one timestamp group.
+function groupedRows(start, from) {
+  return range(80).map((index) => ({
+    ...ordinaryRow(start, index),
+    ...(index >= from && { time: iso(start + from * 1000) }),
   }));
-  const second = await fixture.request(
-    "GET",
-    target.logsPath(`source=gateway&tailLines=100&cursor=${first.data.cursor}`),
+}
+
+test("container checkpoint recovery discloses rows lost inside the frontier time group", async () => {
+  const start = Date.now() - 120_000;
+  // The surviving window starts at the delivered frontier time, so undelivered
+  // rows of that group can sit before it; a later row lets time recovery start.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-frontier-group-loss",
+    groupedRows(start, 60),
+    (lines) => [...lines.slice(-3), ordinaryRow(start, 80)],
   );
-  assert.equal(second.status, 200);
-  assert.equal(second.data.records.filter(({ type }) => type === "line").length, 80);
-  assert.equal(
-    second.data.records.filter(({ type, reason }) => type === "gap" && reason === "window_exceeded")
-      .length,
-    1,
+  assert.ok(rowIds(first).at(-1) >= 60 && rowIds(first).at(-1) < 76);
+  assert.deepEqual(rowIds(second), [77, 78, 79, 80]);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses a reordered changed window", async () => {
+  const start = Date.now() - 120_000;
+  // An undelivered row now dates before the frontier, so time resumption drops it.
+  const [, second] = await rotatedWindow(
+    "wire-cut-reordered-window",
+    range(80).map((index) => ordinaryRow(start, index)),
+    (lines) => [...lines.slice(1, -1), { ...lines.at(-1), time: iso(start) }],
   );
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses frontier rows its hash history cannot place", async () => {
+  const start = Date.now() - 120_000;
+  // The delivered group outgrows the frontier hashes and a changed row breaks the
+  // positional proof, so undelivered rows of that group cannot be told apart.
+  const [first, second] = await rotatedWindow(
+    "wire-cut-frontier-history-loss",
+    groupedRows(start, 3),
+    (lines) => [
+      ...lines.slice(1, 3),
+      { time: lines[3].time, raw: gatewayJson("changed group row") },
+      ...lines.slice(3),
+    ],
+  );
+  assert.ok(rowIds(first).length > 3 + 16);
+  assert.ok(gapCount(second, "window_exceeded") > 0);
+});
+
+test("container checkpoint recovery discloses a window whose clock stepped back", async () => {
+  const start = Date.now() - 120_000;
+  // Rotation dropped the delivered frontier and the rows after it, and the node
+  // clock stepped back: the new rows are ordered and all before the frontier.
+  const [, second] = await rotatedWindow(
+    "wire-cut-clock-step-back",
+    range(80).map((index) => ordinaryRow(start, index)),
+    () => range(6).map((index) => ordinaryRow(start, 40 + index, "after-step")),
+  );
+  assert.ok(gapCount(second, "window_exceeded") > 0);
 });

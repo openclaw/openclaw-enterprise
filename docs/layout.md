@@ -23,7 +23,7 @@ with its own manifest and lockfile. See [Console Storybook](contributing/console
 
 Within `internal/occcli/`, `cli.go` assembles the command tree and resource
 commands. `iam.go` owns IAM policy, ServicePrincipal, and service-key commands.
-`agent_runtime.go` owns runtime inspection, revision selection for runtime reads,
+`agent_runtime.go` owns runtime inspection, version selection for runtime reads,
 and log polling. `agent_runtime_output.go` owns runtime log text, notices, and Pod
 diagnostics. `output.go` owns resource tables, structured output, and shared
 formatting helpers.
@@ -82,6 +82,7 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 - `drivers/repo/credentials/`: private common sessions, custody, lifecycle,
   transport and contracts, including the private client-configuration type.
 - `drivers/repo/github/credentials/`: GitHub policy, backend and closed Git/gh client bundle.
+- `drivers/repo/github/public-read/`: credential-free public GitHub reader and its Agent skill.
 - `backends/repository-credentials/control-client.ts`: configured private-service
   connection and complete response validation.
 - `composition/repository-credentials/`: registry and protected-file loading,
@@ -90,7 +91,8 @@ uses `RepoDriver` in `packages/contracts/src/repo.ts` and the bundled
 OCC owns immutable Agent bindings and safe session State; worker helpers connect
 those records to Compute delivery. Public status omits private cleanup diagnostics.
 The common engine's `RepositoryBackend` protocol is separate from `RepoDriver`.
-Only the dedicated service process initializes signing and provider-token custody.
+The worker Token Service owns GitHub App signing and provider-token custody.
+The native sender consumes prepared material without an App key.
 See the [Agent repository flow](flows/agent-repository-credentials.md).
 
 ## Deployment, tooling, and checks
@@ -161,6 +163,7 @@ Do not install dependencies as a verification side effect.
 | `docs/contributing/`                  | Onboarding and workflows for people changing the platform source or docs.                          |
 | `docs/flows/`                         | Source-backed runtime execution traces.                                                            |
 | `docs/testing/`                       | Contributor test setup, environments, fixtures, and proof limits.                                  |
+| `docs/release/`                       | Release configuration, publication, promotion, and recovery procedures.                            |
 | `specs/README.md`                     | RFC index with linked numbers, names, and implementation statuses.                                 |
 | `specs/rfcs/`                         | Architectural proposals and decisions.                                                             |
 | `specs/plans/`                        | All implementation plans and historical delivery records; relevant RFCs are linked in frontmatter. |
@@ -173,7 +176,7 @@ documents with supporting material use `<number>-<topic>/index.md`, with
 companions in the same directory. Keep completed and superseded documents in
 place. Preserve historical names and content when grouping companions. This
 first phase does not reorganize `specs/.archive/`; removed image assets remain
-accessible through links to a preserved Git revision.
+accessible through links to a preserved Git commit.
 Update affected current references, guides, and flows with behavior changes;
 shipped specifications remain historical records. Keep Manual Notes unchanged.
 Put detailed contracts in their owning reference rather than expanding

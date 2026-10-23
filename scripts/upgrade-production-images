@@ -12,13 +12,16 @@ Usage: scripts/upgrade-production-images \
   [--runtime-image IMAGE@sha256:DIGEST] \
   --source-revision FULL_GIT_SHA --evidence-dir DIRECTORY \
   [--occ PATH] [--timeout-seconds SECONDS] [--resume] [--migration-history-checked] \
-  [--collector-config-reviewed]
+  [--collector-config-reviewed] [--preflight-only]
 
 Select at least one image. Candidate files contain reviewed settings changes;
 image fields are selected only by the image flags. A controller-only upgrade
 does not deploy Agent revisions. A runtime upgrade restarts OCC on its current image,
 then redeploys every Agent that was running when the command began. Resume with
 the same arguments and evidence directory after inspecting any unknown outcomes.
+Use --preflight-only to check the candidate before the maintenance window. It
+creates temporary resources with best-effort cleanup and stops before quiescence;
+its evidence cannot be resumed. To deploy, omit the flag and use a fresh evidence directory.
 OCC_URL, OCC_SERVICE_KEY_FILE, and OCC_CA_BUNDLE configure the OCC CLI connection.
 With the bundled Collector enabled, its config Secret must carry this checkout's
 deploy/logging collector.yaml and kubernetes.yaml; pass --collector-config-reviewed
@@ -174,6 +177,7 @@ evidence_dir=
 occ=occ
 timeout_seconds=900
 resume=0
+preflight_only=0
 migration_history_checked=0
 collector_config_reviewed=0
 
@@ -200,6 +204,10 @@ while (($#)); do
       esac
       shift 2
       ;;
+    --preflight-only)
+      preflight_only=1
+      shift
+      ;;
     --resume)
       resume=1
       shift
@@ -222,6 +230,8 @@ while (($#)); do
       ;;
   esac
 done
+
+((resume == 0 || preflight_only == 0)) || die "--resume cannot be combined with --preflight-only."
 
 for input in kubeconfig context namespace release values installation source_revision evidence_dir; do
   [[ -n "${!input}" ]] || die "--${input//_/-} is required."
@@ -306,7 +316,7 @@ print(json.dumps(values, sort_keys=True))
 PYTHON
   )
   [[ "$parameters" == "$original_parameters" ]] || die "resume inputs, kubeconfig, CA, scripts, image rule, chart, or flow changed; investigate before continuing."
-  [[ -f "$evidence_dir/prepared" ]] || die "preparation did not finish; no mutation was started. Start again with a new evidence directory."
+  [[ -f "$evidence_dir/prepared" ]] || die "evidence is not a prepared deployment. Inspect it and any remaining temporary preflight resources, then start with a new evidence directory."
 else
   printf '%s\n' "$parameters" >"$evidence_dir/parameters.json"
 fi
@@ -315,7 +325,7 @@ kube=(kubectl --kubeconfig "$kubeconfig" --context "$context")
 helm_args=(--kubeconfig "$kubeconfig" --kube-context "$context" --namespace "$namespace")
 occ_json=("$occ" --output json)
 
-# The startup preflight's temporary Secret and Pods; removed on every exit.
+# Best-effort cleanup of the startup preflight's temporary Secret, NetworkPolicy and Pods.
 preflight_resources=()
 cleanup_preflight() {
   local resource
@@ -422,7 +432,7 @@ preflight_startup() {
             if [[ "$refusal" == *split-layout* ]]; then
               message+=" See docs/reference/drivers/kubernetes-compute.md#existing-split-layout-installations."
             elif [[ "$refusal" == *"openclaw-execution chart"* ]]; then
-              message+=" Upgrade the execution release as in docs/testing/two-cluster-local.md#upgrade-the-execution-chart, then start again with a new evidence directory."
+              message+=" Upgrade the execution release as in docs/testing/kubernetes.md#upgrade-the-execution-chart, then start again with a new evidence directory."
             elif [[ "$refusal" == *"execution cluster tenant grant review failed"* ]]; then
               message+=" The Pod used its execution cluster kubeconfig, which must list Namespaces and create SelfSubjectAccessReviews there; fix that access and start again with a new evidence directory."
             else
@@ -631,8 +641,10 @@ mv "${candidate_installation}.requested" "$candidate_installation"
 if [[ "$repository_enabled" == true ]]; then
   [[ -n "$controller_image" && -n "$broker_image" ]] ||
     die "repository-enabled upgrades require explicit controller and broker image selections."
-  [[ $(yq -r '.drivers.repo.configuration.controlSocket // ""' "$candidate_installation") == "/run/openclaw/repository-control/private/control.sock" ]] ||
-    die "the repository Driver must use the worker's private broker socket."
+  [[ $(yq -r '.drivers.repo == null' "$candidate_installation") == true ]] ||
+    die "drain accepted repository work on its original owner before switching from drivers.repo."
+  [[ $(yq -r '.repository.nativeSender.controlSocket // ""' "$candidate_installation") == "/run/openclaw/repository-control/private/control.sock" ]] ||
+    die "repository.nativeSender must use the worker's private broker socket."
   for command in docker node openssl; do
     require_command "$command"
   done
@@ -724,6 +736,10 @@ helm upgrade --install "$release" deploy/helm/openclaw-enterprise "${helm_args[@
   --values "$candidate_values" --dry-run=server --hide-secret \
   >"$evidence_dir/server-dry-run.txt"
 preflight_startup
+if ((preflight_only)); then
+  printf 'Preflight passed; no OCC writer was stopped. To deploy, omit --preflight-only and use the same reviewed inputs with a fresh evidence directory.\n'
+  exit 0
+fi
 printf '%s\n' "$installation_id" >"$evidence_dir/installation-id"
 printf '%s\n' "$installation_secret" >"$evidence_dir/installation-secret-name"
 printf '%s\n' "$installation_key" >"$evidence_dir/installation-secret-key"
@@ -983,12 +999,11 @@ if [[ "$repository_enabled" == true ]]; then
   verify_deployed_pair capability-before
   capability_pod=$(jq -er '.podName' "$evidence_dir/capability-before-worker-identity.json")
   capability_code=$(cat <<'JAVASCRIPT'
-import { GitHubRepoDriver } from "/app/apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "/app/apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "/app/apps/controller/src/backends/repository-credentials/control-client.ts";
 const id = "compatibility-probe";
-const registry = { version: 1, backendId: id, providerInstanceId: id, appId: "1", githubInstallationId: "1", maximumDurationSeconds: 60, repositories: [{ repositoryRef: id, repositoryId: "1", repository: "fixture/repository", namespaces: [{ namespaceId: id, profiles: ["git-read"] }] }] };
 const client = new UnixRepositoryCredentialControlClient({ controlSocket: "/run/openclaw/repository-control/private/control.sock" });
-const driver = new GitHubRepoDriver({ id, drivers: { repo: id }, client }, registry, { sessionDurationSeconds: 60 });
+const driver = new GitHubNativeRepositorySender({ id, drivers: { repo: id }, client }, {});
 if (typeof driver.checkAdmissionReady !== "function") throw new Error("capability check unavailable");
 await driver.checkAdmissionReady(AbortSignal.timeout(5000));
 process.stdout.write("repository-admission-ready\n");

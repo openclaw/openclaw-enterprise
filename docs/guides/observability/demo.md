@@ -426,6 +426,6 @@ Except for a demo install wait timeout (see above), do not rerun failed or inter
 
 ## Remove only the demo
 
-Redirect external Collectors away from Loki first. [Remove only the demo](demo-cleanup.md#remove-only-the-demo) restores the saved OCC revision and verifies the Collector state.
+Redirect external Collectors away from Loki first. [Remove only the demo](demo-cleanup.md#remove-only-the-demo) restores the saved OCC Helm revision and verifies the Collector state.
 
-See [observability acceptance](../../testing/metrics.md#kubernetes-observability-acceptance) for local and CI proof.
+See [observability acceptance](../../testing/local.md#kubernetes-observability-acceptance) for local and CI proof.

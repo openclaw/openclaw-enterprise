@@ -360,6 +360,7 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
         const secretRef = await compute.storeServiceAccountCredential({
           namespaceId: account.namespaceId,
           serviceAccountId: account.id,
+          credentialId: `imported-credential-${account.id}`,
           accessToken: imported.accessToken,
           workspaceId: imported.workspaceId,
         });
@@ -489,6 +490,15 @@ const sessionEvidenceScript = String.raw`
     if (toolName) return name === toolName;
     return /(^|[._:-])list[_-]?calendars$/i.test(name);
   }
+  // A row that is not JSON establishes nothing. One written before the evidence window must not
+  // fail the evidence of a passing run (finding 2029); one inside it fails the evidence below.
+  function parseEvent(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
   try {
     db.exec("PRAGMA busy_timeout=5000");
     const session = db.prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
@@ -509,10 +519,25 @@ const sessionEvidenceScript = String.raw`
       .all(session.current_session_id);
     // Repeated calls share a session; an earlier allowed result cannot prove this turn.
     const start = allRows.findLastIndex((row) => {
-      const event = JSON.parse(row.event_json);
+      const event = parseEvent(row.event_json);
       return event?.type === "message" && event.message?.role === "user" && contains(event.message, marker);
     });
     const rows = start < 0 ? [] : allRows.slice(start);
+    // Every user message that carries the marker, in or before the window, so a turn without
+    // its prompt mirror shows where the prompt went (finding 2019): a second, unmirrored copy
+    // after the mirrored one moves the window past it. The newest ten.
+    const markerUserMessages = allRows
+      .map((row, index) => ({ row, index, event: parseEvent(row.event_json) }))
+      .filter(({ event }) => event?.type === "message" && event.message?.role === "user" && contains(event.message, marker))
+      .slice(-10)
+      .map(({ row, index, event }) => ({
+        seq: row.seq,
+        inWindow: index >= start,
+        mirrorIdentity: event.message.__openclaw?.mirrorIdentity ?? null,
+        mirrorOrigin: event.message.__openclaw?.mirrorOrigin ?? null,
+        idempotencyKey: typeof event.message.idempotencyKey === "string" ? event.message.idempotencyKey : null,
+        timestamp: event.message.timestamp ?? null,
+      }));
     const messages = [];
     const calls = [];
     const results = [];
@@ -550,7 +575,12 @@ const sessionEvidenceScript = String.raw`
       return index === -1 ? undefined : withoutSuffix.slice(0, index);
     }
     for (const row of rows) {
-      const event = JSON.parse(row.event_json);
+      const event = parseEvent(row.event_json);
+      // A row in the window that is not JSON could hide a tool call, so a check that this turn made
+      // none must not pass over it.
+      if (event === undefined) {
+        throw new Error("transcript row " + row.seq + " in the evidence window is not JSON");
+      }
       // Non-message rows, including null payloads, cannot establish tool or turn evidence.
       eventTypeCounts[event?.type ?? "unknown"] = (eventTypeCounts[event?.type ?? "unknown"] ?? 0) + 1;
       if (event?.type !== "message") continue;
@@ -606,9 +636,18 @@ const sessionEvidenceScript = String.raw`
             ? contains(message, resultPattern) || textOf(message.content).includes(resultPattern)
             : hasStructuredResult(message.content),
           mirrorIdentity,
+          // Codex records risk and authorization only with a completed judgement; a
+          // reviewer that failed closed or timed out leaves them out (finding 1980).
           approvalReviews: (message.details?.approvalReviews ?? []).map((review) => ({
             id: review.id,
             status: review.status,
+            ...(typeof review.riskLevel === "string" ? { riskLevel: review.riskLevel } : {}),
+            ...(typeof review.userAuthorization === "string"
+              ? { userAuthorization: review.userAuthorization }
+              : {}),
+            ...(typeof review.rationale === "string"
+              ? { rationale: review.rationale.slice(0, 500) }
+              : {}),
           })),
         });
       }
@@ -630,6 +669,7 @@ const sessionEvidenceScript = String.raw`
       calls,
       results,
       codexTurns: Array.from(codexTurns.values()),
+      markerUserMessages,
       diagnostics: {
         eventCount: rows.length,
         eventTypeCounts,
@@ -644,6 +684,68 @@ const sessionEvidenceScript = String.raw`
     db.close();
   }
 `;
+
+// Codex's automatic reviewer reports a judgement as approved or denied with a risk level
+// and user authorization. When the review itself cannot finish (session, parse or prompt
+// errors) Codex fails closed: "denied" with no risk or authorization and a rationale that
+// starts with this prefix. A review that ran out of time reports "timed_out". A changed
+// authorization fails closed the same way but may be the policy's own change, so it is
+// kept apart and never treated as a reviewer error.
+const reviewerFailedRationale = "Automatic approval review failed: ";
+const staleAuthorizationRationale = `${reviewerFailedRationale}authorization changed before approval could be applied`;
+
+export function approvalReviewKind(review) {
+  if (review?.status === "timed_out") {
+    return "reviewer-error";
+  }
+  if (review?.status !== "denied") {
+    return review?.status ?? "unknown";
+  }
+  if (typeof review.riskLevel === "string" || typeof review.userAuthorization === "string") {
+    return "judged-deny";
+  }
+  if (typeof review.rationale !== "string") {
+    return "denied-unclassified";
+  }
+  if (review.rationale.startsWith(staleAuthorizationRationale)) {
+    return "stale-authorization";
+  }
+  return review.rationale.startsWith(reviewerFailedRationale)
+    ? "reviewer-error"
+    : "denied-unclassified";
+}
+
+// One line per failure: rationales (session and parse errors among them) can span lines.
+export function describeApprovalReviews(results) {
+  const reviews = results.flatMap((result) => result.approvalReviews ?? []);
+  if (reviews.length === 0) {
+    return "no approval review recorded";
+  }
+  return reviews
+    .map((review) => {
+      const facts = [
+        review.riskLevel && `risk: ${review.riskLevel}`,
+        review.userAuthorization && `authorization: ${review.userAuthorization}`,
+      ].filter(Boolean);
+      const reason = review.rationale ? `: ${review.rationale.replace(/\s+/g, " ").trim()}` : "";
+      return `${approvalReviewKind(review)}${facts.length ? ` (${facts.join(", ")})` : ""}${reason}`;
+    })
+    .join("; ");
+}
+
+// True only when the call failed and every review of it is a reviewer error, so no
+// judgement (deny, approve or unclassified) was reached for it.
+export function automaticReviewerErrored(results) {
+  return (
+    results.length > 0 &&
+    results.every(
+      (result) =>
+        result.isError === true &&
+        (result.approvalReviews ?? []).length > 0 &&
+        result.approvalReviews.every((review) => approvalReviewKind(review) === "reviewer-error"),
+    )
+  );
+}
 
 function codexToolTurnPrefix(identity, suffix) {
   if (typeof identity !== "string" || !identity.endsWith(suffix)) {
@@ -1208,18 +1310,27 @@ export function createNativePluginAssertions({
           result.matchesResult === true,
       ),
     );
-    assert.ok(
-      matched,
-      `native transcript for ${options.sessionKey} did not include ${options.toolName ?? "a list_calendars tool"} with a matching successful result: ${JSON.stringify(
-        {
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          calls: evidence.calls,
-          results: evidence.results,
-          diagnostics: evidence.diagnostics,
-        },
-      )}`,
-    );
+    if (!matched) {
+      // Lead with the review outcome so the first line says whether a reviewer judged
+      // the read or failed to judge it (finding 1980).
+      const error = new assert.AssertionError({
+        message: `native transcript for ${options.sessionKey} did not include ${options.toolName ?? "a list_calendars tool"} with a matching successful result (approval reviews: ${describeApprovalReviews(evidence.results)}): ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            calls: evidence.calls,
+            results: evidence.results,
+            diagnostics: evidence.diagnostics,
+          },
+        )}`,
+        actual: matched,
+        expected: true,
+        operator: "==",
+      });
+      error.automaticReviewerErrored = automaticReviewerErrored(evidence.results);
+      error.approvalReviewSummary = describeApprovalReviews(evidence.results);
+      throw error;
+    }
     const result = evidence.results.find(
       (candidate) =>
         candidate.toolCallId === matched.id &&
@@ -1245,6 +1356,7 @@ export function createNativePluginAssertions({
             sessionId: evidence.sessionId,
             turnPrefix: callPrefix,
             turn,
+            markerUserMessages: evidence.markerUserMessages,
           },
         )}`,
       );
@@ -1296,6 +1408,15 @@ export function createNativePluginAssertions({
           turn.terminalAssistantSeen &&
           turn.toolCallMirrorSeen &&
           turn.toolResultMirrorSeen,
+        `${options.sessionKey} denied Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            turnPrefix: prefix,
+            turn,
+            markerUserMessages: evidence.markerUserMessages,
+          },
+        )}`,
       );
     }
     assert.equal(evidence.results[0].isError, true, "denial must prevent a successful native read");
@@ -1349,7 +1470,14 @@ export function createNativePluginAssertions({
       // the completed native turn as well as zero calls, not just an empty mirror.
       assert.ok(
         evidence.codexTurns.some((turn) => turn.promptSeen && turn.terminalAssistantSeen),
-        `${options.sessionKey} must include a completed marker-bearing native Codex turn.`,
+        `${options.sessionKey} must include a completed marker-bearing native Codex turn: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            codexTurns: evidence.codexTurns,
+            markerUserMessages: evidence.markerUserMessages,
+          },
+        )}`,
       );
     }
     assert.equal(

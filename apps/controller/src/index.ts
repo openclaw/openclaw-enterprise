@@ -1,3 +1,4 @@
+import { sandboxPolicyHandlers } from "./http/sandbox-policy.ts";
 import swagger from "@fastify/swagger";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 import { AuditEventFactory, type AuditSink } from "@openclaw-enterprise/audit";
@@ -36,6 +37,7 @@ import {
   type SandboxDriver,
   type SecretDriver,
   type SecretReference,
+  type CredentialSourceReference,
   type UpdateWorkspaceFileBody,
   type WorkspaceFileName,
 } from "@openclaw-enterprise/contracts";
@@ -63,8 +65,6 @@ import {
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
-import SerializerSelector from "@fastify/fast-json-stringify-compiler";
-import ajvFormats from "ajv-formats";
 import Fastify, {
   LogController,
   type FastifyBaseLogger,
@@ -74,6 +74,7 @@ import Fastify, {
   type FastifySchema,
   type HTTPMethods,
   type InjectOptions,
+  type RouteGenericInterface,
 } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -91,6 +92,7 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -122,6 +124,9 @@ import {
   createNativeAdminAccess,
   nativeAdminStatusOperation,
   nativeAdminStatusSchema,
+  nativeAdminReturnOperation,
+  nativeAdminReturnSchema,
+  limitNativeAdminReturn,
 } from "./http/native-admin.ts";
 import { presetHandlers } from "./http/presets.ts";
 import {
@@ -134,9 +139,18 @@ import {
   runtimeLogQuery,
   type AgentRuntimeLogsConfig,
 } from "./http/runtime-logs.ts";
+import { RequestRateLimiter } from "./http/request-rate-limiter.ts";
+import {
+  cachedRequestValidators,
+  cachedResponseSerializers,
+  defaultPrecompiledRouteCompilers,
+  formatsPlugin,
+} from "./http/route-compilers.ts";
 import { secretHandlers } from "./http/secrets.ts";
 import { serviceAccountHandlers } from "./http/service-accounts.ts";
 import type { RequestContext, ResourceHandlers } from "./http/types.ts";
+
+export { cachedRequestValidators, cachedResponseSerializers } from "./http/route-compilers.ts";
 
 export interface DevelopmentAdmission {
   readonly enabled: boolean;
@@ -147,6 +161,7 @@ export interface DevelopmentAdmission {
 }
 
 export interface ControllerAppOptions {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
   readonly createController?: (installation: Installation) => OpenClawController;
@@ -259,105 +274,6 @@ const RESOURCE_ID = Object.fromEntries(
     new RegExp(`^${prefix}[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`),
   ]),
 ) as Readonly<Record<keyof typeof RESOURCE_ID_PREFIX, RegExp>>;
-
-function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
-  return ajvFormats.default(ajv);
-}
-
-// Fastify compiles one response serializer per route and status code, and rebuilds its
-// serializer factory for every route in a plugin that added shared schemas; each
-// fast-json-stringify build then re-validates every shared schema. That was about 1,100
-// builds (830 of them the same ErrorResponse reference) and most of the API's boot at the
-// chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
-// the serializer options, so build each distinct combination once.
-//
-// Stored documents (Configuration values, Preset templates, revision snapshots) are
-// SafeJsonValue trees of up to 1 MiB each. fast-json-stringify writes that recursive anyOf by
-// running ajv on every node to pick a branch: about 160 ms per MiB against 3 ms for
-// JSON.stringify, in one synchronous call per list response (finding 1323). For any JSON value
-// the walk writes exactly JSON.stringify's bytes: the branches are the disjoint JSON types, the
-// object branch keeps every own key (additionalProperties is SafeJsonValue again), and strings,
-// numbers, booleans and null come out as JSON.stringify writes them. It strips, coerces and
-// redacts nothing. So serializers see SafeJsonValue as a typeless schema, which
-// fast-json-stringify writes with JSON.stringify. Request validation and OpenAPI keep the
-// full schema, and the fields around each document are serialized as before.
-const SAFE_JSON_VALUE_ID = "SafeJsonValue";
-const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
-
-export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
-  const buildSerializerCompiler = SerializerSelector();
-  // Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
-  // content. A different schema registered under that $id keeps its own serializer.
-  const contractSafeJsonValue = new WeakMap<object, boolean>();
-  const isContractSafeJsonValue = (schema: unknown): boolean => {
-    if (typeof schema !== "object" || schema === null) {
-      return false;
-    }
-    let known = contractSafeJsonValue.get(schema);
-    if (known === undefined) {
-      known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
-      contractSafeJsonValue.set(schema, known);
-    }
-    return known;
-  };
-  const serializedSchemas = (
-    externalSchemas: Parameters<SerializerSelector.SerializerFactory>[0],
-  ): Parameters<SerializerSelector.SerializerFactory>[0] => {
-    const shared = externalSchemas as Record<string, unknown> | undefined;
-    if (shared === undefined || !isContractSafeJsonValue(shared[SAFE_JSON_VALUE_ID])) {
-      return externalSchemas;
-    }
-    return {
-      ...shared,
-      [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
-    } as typeof externalSchemas;
-  };
-  const sharedSchemaIds = new WeakMap<object, number>();
-  // Never pruned. That is safe only while every serializer is built at route registration,
-  // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
-  // with a schema assembled at request time) would grow this Map without bound; such a
-  // route must set its own serializerCompiler.
-  const serializers = new Map<string, SerializerSelector.Serializer>();
-  let nextSharedSchemaId = 0;
-  const sharedSchemaId = (schema: object) => {
-    let id = sharedSchemaIds.get(schema);
-    if (id === undefined) {
-      id = nextSharedSchemaId++;
-      sharedSchemaIds.set(schema, id);
-    }
-    return id;
-  };
-  return (externalSchemas, options) => {
-    const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
-    const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
-    // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
-    // schema that is not a plain object compiles uncached instead.
-    if (sharedSchemas.some(([, schema]) => typeof schema !== "object" || schema === null)) {
-      return compile;
-    }
-    // Fastify passes the same stored schema objects each time; identity names the set.
-    const shared = sharedSchemas
-      .map(([id, schema]) => `${id}=${sharedSchemaId(schema as object)}`)
-      .join(",");
-    const prefix = `${JSON.stringify(options ?? {})}|${shared}|`;
-    // Route schemas are fixed at registration. A schema JSON cannot express (a cycle or a
-    // BigInt keyword) compiles uncached rather than failing registration here.
-    return (route) => {
-      let key: string;
-      try {
-        key = prefix + JSON.stringify(route.schema);
-      } catch {
-        return compile(route);
-      }
-      let serializer = serializers.get(key);
-      if (serializer === undefined) {
-        serializer = compile(route);
-        serializers.set(key, serializer);
-      }
-      return serializer;
-    };
-  };
-}
 
 function ipv4(value: string): number | undefined {
   const parts = value.split(".");
@@ -551,6 +467,7 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createAgent" ||
+      operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -582,6 +499,30 @@ function requiredPermissions(operation: OccApiRoute): readonly RequiredPermissio
     action: operation.iamAction,
     resourceKind: operation.resourceKind,
   };
+
+  if (
+    [
+      "getAgentSandboxPolicy",
+      "getAgentSandboxRecommendations",
+      "updateAgentSandboxPolicy",
+      "applyAgentSandboxPolicy",
+    ].includes(operation.operationId)
+  ) {
+    return [
+      { ...permission, scope: "requested" },
+      {
+        action: operation.iamAction === "read" ? "read" : "update",
+        resourceKind: "sandbox_policy",
+        scope: "requested",
+      },
+    ];
+  }
+  if (operation.operationId === "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing") {
+    return [
+      { ...permission, scope: "requested" },
+      { action: "administer", resourceKind: "installation", scope: "installation" },
+    ];
+  }
 
   if (operation.operationId.endsWith("DeviceAuthorization")) {
     const saved = operation.operationId.includes("SavedAgent");
@@ -992,8 +933,9 @@ function permissionDescription(
     service_account: "ServiceAccount",
     secret: "Secret",
     agent: "Agent",
-    agent_revision: "AgentRevision",
+    agent_revision: "Agent revision",
     credential_source: "CredentialSource",
+    sandbox_policy: "SandboxPolicy",
   };
 
   const description = permissions
@@ -1109,6 +1051,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     );
   }
   const bodyLimit = options.maxBodyBytes ?? DEFAULT_BODY_LIMIT;
+  const precompiledRouteCompilers = defaultPrecompiledRouteCompilers();
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1) {
     throw new Error("The controller request-body limit must be a positive integer.");
   }
@@ -1199,7 +1142,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       plugins: [formatsPlugin],
     },
-    schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
+    schemaController: {
+      compilersFactory: {
+        buildValidator: cachedRequestValidators(precompiledRouteCompilers),
+        buildSerializer: cachedResponseSerializers(precompiledRouteCompilers),
+      },
+    },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   // Shutdown (app.close) drains admitted requests, but Node and Fastify close only the
@@ -1611,6 +1559,31 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     return { selected, target, decision };
   }
 
+  // Report the primary IAM decision without auditing a mutation the caller never attempted.
+  async function callerMay(
+    actorId: string,
+    action: PermissionAction,
+    resource: ResourceRef,
+  ): Promise<boolean> {
+    const selected = selectedIAMDriver();
+    let decision;
+    try {
+      decision = await selected.authorize({ principalId: actorId, action, resource });
+    } catch {
+      throw dependencyUnavailable();
+    }
+    if (
+      !decision ||
+      typeof decision.allowed !== "boolean" ||
+      typeof decision.reason !== "string" ||
+      decision.driverId !== selected.id ||
+      !validAuthorizationEvidence(decision.evidence)
+    ) {
+      throw dependencyUnavailable();
+    }
+    return decision.allowed;
+  }
+
   async function denial(
     operation: OccApiRoute,
     request: FastifyRequest,
@@ -1691,6 +1664,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   const handlers: ResourceHandlers = {
     ...resourceHandlers,
+    ...sandboxPolicyHandlers,
     ...createAgentHandlers({
       resolveHarness: options.resolveHarness,
       requireCredentialCsrf: (request) => requireWorkspaceFileCsrf(request, true),
@@ -2084,6 +2058,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
 
+    if (operation.operationId === "discoverInstallationConfigurations") {
+      const configurations = await controller.discoverConfigurations(context.actorId, {
+        scope: "installation",
+      });
+      reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(
@@ -2162,6 +2144,18 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         data: await controller.getNamespace(context.actorId, namespaceId),
         meta: { requestId: request.id },
       });
+      return;
+    }
+
+    if (operation.operationId === "getNamespaceCallerPermissions") {
+      await controller.getNamespace(context.actorId, namespaceId);
+      // The Agent creation target matches operationTarget() for createAgent.
+      const create = await callerMay(context.actorId, "create", {
+        kind: "agent",
+        id: namespaceId,
+        namespaceId,
+      });
+      reply.send({ data: { agents: { create } }, meta: { requestId: request.id } });
       return;
     }
 
@@ -2253,9 +2247,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPlugins") {
       const catalog = await controller.discoverAgentPlugins(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2269,9 +2263,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
     if (operation.operationId === "discoverAgentPluginDetails") {
       const plugin = await controller.discoverAgentPluginDetails(context.actorId, namespaceId, {
-        ...(body?.oauthLogin === undefined
+        ...(body?.credentialSource === undefined
           ? {}
-          : { oauthLogin: body.oauthLogin as SecretReference }),
+          : { credentialSource: body.credentialSource as CredentialSourceReference }),
         ...(body?.secretRef === undefined
           ? { accessToken: body?.accessToken as string }
           : { secretRef: body.secretRef as SecretReference }),
@@ -2299,9 +2293,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         namespaceId,
         params.agentId as string,
         {
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
           ...(body?.cursor === undefined ? {} : { cursor: body.cursor as string }),
           ...(body?.q === undefined ? {} : { q: body.q as string }),
         },
@@ -2318,9 +2312,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params.agentId as string,
         {
           pluginId: body?.pluginId as string,
-          ...(body?.oauthLogin === undefined
+          ...(body?.credentialSource === undefined
             ? {}
-            : { oauthLogin: body.oauthLogin as SecretReference }),
+            : { credentialSource: body.credentialSource as CredentialSourceReference }),
         },
       );
       reply.header("cache-control", "no-store");
@@ -2355,6 +2349,24 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         params,
         body,
         namespaceId,
+        transactIAM: async (work) => {
+          const admitted = admissions.get(request);
+          if (admitted === undefined) {
+            throw failure(503, "DEPENDENCY_UNAVAILABLE", "The request admission is unavailable.");
+          }
+          if (admitted.method !== "session") {
+            return controller!.transact(work);
+          }
+          return options.auth.withSessionAuthority(admitted.session, () =>
+            controller!.transact(async (unit) => {
+              await options.auth.holdSession(unit, admitted.session, request);
+              const result = await work(unit);
+              // Recheck the session after the protected policy and audit work.
+              await options.auth.holdSession(unit, admitted.session, request);
+              return result;
+            }),
+          );
+        },
         mutationEvent: (resource, details, authorization, failure) => {
           const recorded = event(
             operation,
@@ -2380,6 +2392,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     const agentId = params.agentId;
     if (!agentId) {
       throw failure(400, "INVALID_REQUEST", "The request does not match the operation contract.");
+    }
+
+    if (operation.operationId === "getAgentCallerPermissions") {
+      // Route authorization already required Agent read; the read also proves the Agent
+      // exists before the mutating actions are probed.
+      await controller.getAgentForBrowsing(context.actorId, namespaceId, agentId);
+      const target: ResourceRef = { kind: "agent", id: agentId, namespaceId };
+      const [update, deploy, operate, remove] = await Promise.all(
+        (["update", "deploy", "operate", "delete"] as const).map((action) =>
+          callerMay(context.actorId, action, target),
+        ),
+      );
+      reply.send({
+        data: { update, deploy, operate, delete: remove },
+        meta: { requestId: request.id },
+      });
+      return;
     }
 
     if (
@@ -2627,12 +2656,13 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             [{ path: "/cursor", code: "INVALID_VALUE" }],
           );
         }
+        const logQuery = runtimeLogQuery(query);
         const page = await controller!.readAgentRuntimeLogs(
           context.actorId,
           namespaceId,
           agentId,
           params.deploymentId as string,
-          runtimeLogQuery(query),
+          logQuery,
           {
             codec: runtimeLogCursor,
             signal: disconnected.signal,
@@ -2662,9 +2692,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
             .header("content-type", "text/plain; charset=utf-8")
             .header(
               "content-disposition",
-              `attachment; filename="${runtimeLogDownloadFileName(page, agentId)}"`,
+              `attachment; filename="${runtimeLogDownloadFileName(page, agentId, logQuery.previous)}"`,
             )
-            .send(runtimeLogDownloadBody(page, agentId));
+            .send(runtimeLogDownloadBody(page, agentId, logQuery.previous));
           return;
         }
         reply.send({ data: runtimeLogPageBody(page), meta: { requestId: request.id } });
@@ -3969,6 +3999,21 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
     routes.addSchema(AgentRuntimeCredentialResponse);
     routes.addSchema(SecretResponse);
     routes.addSchema(CredentialSourceResponse);
+    routes.get<RouteGenericInterface, { rateLimit: RequestRateLimiter }>(
+      nativeAdminReturnOperation.path,
+      {
+        schema: nativeAdminReturnSchema,
+        // Bound session admission per direct peer. Proxies share this more generous budget;
+        // the resolver separately limits expensive lookups by authenticated principal.
+        config: { rateLimit: new RequestRateLimiter(60, 5) },
+        onRequest: async (request, reply) => {
+          limitNativeAdminReturn(request.routeOptions.config.rateLimit, request.ip, reply);
+          await admit(request, nativeAdminReturnOperation);
+        },
+        preHandler: async (request) => resolveIdentity(request, nativeAdminReturnOperation),
+      },
+      nativeAdmin.resolveReturn,
+    );
     routes.route({
       method: "GET",
       url: nativeAdminStatusOperation.path,
@@ -3995,7 +4040,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
             : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }
@@ -4051,9 +4098,23 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname);
+    const asset = await readConsoleAsset(
+      pathname,
+      request.headers["accept-encoding"],
+      options.consoleTheme,
+    );
+    if (asset.contentType.startsWith("text/html") || pathname.startsWith("/console/theme/")) {
+      reply.header("cache-control", "no-store");
+    }
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
+    reply.header("content-length", asset.body.length);
+    if (asset.variesByEncoding) {
+      reply.header("vary", "Accept-Encoding");
+    }
+    if (asset.contentEncoding !== undefined) {
+      reply.header("content-encoding", asset.contentEncoding);
+    }
     reply.status(asset.statusCode).send(request.method === "HEAD" ? undefined : asset.body);
   }
 
@@ -4164,7 +4225,7 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         event: "device_authorization.start_failed",
         requestId: request.id,
         route: request.routeOptions.url ?? "unmatched",
-        host: "auth.openai.com",
+        boundary: "credential_refresh",
         reason: error.reason,
         failure: error.failure,
       });

@@ -1,11 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:https";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { ChatGPTClient } from "../../apps/controller/src/backends/chatgpt.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
@@ -19,8 +15,10 @@ import {
   ServiceAccountCredentialSecretExistsError,
   ServiceAccountDriverNotConfiguredError,
 } from "../../packages/occ/src/index.ts";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const administrator = "service-account-driver-administrator";
 const reader = "service-account-driver-reader";
@@ -579,35 +577,11 @@ test("the ChatGPT account name is cut by whole characters, never half of a surro
 });
 
 test("ChatGPT Backend releases rejected HTTPS responses for subsequent account calls", async (t) => {
-  assert.doesNotThrow(
-    () => execFileSync("openssl", ["version"], { stdio: "ignore" }),
-    "This native HTTPS regression requires openssl on PATH.",
-  );
-  const directory = await mkdtemp(join(tmpdir(), "chatgpt-backend-tls-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-days",
-      "1",
-      "-keyout",
-      join(directory, "key.pem"),
-      "-out",
-      join(directory, "cert.pem"),
-      "-subj",
-      "/CN=api.chatgpt.com",
-      "-addext",
-      "subjectAltName=DNS:api.chatgpt.com",
-    ],
-    { stdio: "ignore" },
-  );
-  const key = await readFile(join(directory, "key.pem"));
-  const cert = await readFile(join(directory, "cert.pem"));
+  const directory = await temporaryDirectory(t, "chatgpt-backend-tls-");
+  const { key, cert } = await selfSigned(directory, {
+    commonName: "api.chatgpt.com",
+    subjectAltName: "DNS:api.chatgpt.com",
+  });
   const workspaceId = backend.configuration.workspaceId;
   for (const fault of [
     { name: "HTTP 429", status: 429, reason: /failed with HTTP 429/ },
@@ -1019,6 +993,25 @@ test("a ChatGPT account create whose reply is lost deletes nothing it cannot pro
       }),
     );
   }
+});
+
+test("a ChatGPT credential revocation never sends a dot path segment", async () => {
+  // `.../credentials/..` would resolve to the account itself, so a revocation naming a dot
+  // segment (for example from an edited leftover Secret annotation) is refused before any
+  // request.
+  await withFakeChatGPT(async ({ client, server }) => {
+    server.accounts.set("acct-own", { name: "own", credentials: new Set(["cred-own"]) });
+    for (const credentialId of [".", ".."]) {
+      await assert.rejects(
+        client.deleteCredential({ accountId: "acct-own", credentialId }),
+        (error) =>
+          error instanceof DependencyUnavailableError &&
+          error.message === "The ChatGPT account identity is invalid.",
+      );
+    }
+    assert.deepEqual(server.requests, []);
+    assert.equal(server.accounts.has("acct-own"), true);
+  });
 });
 
 test("a ChatGPT account delete that applied but answered an error completes on retry", async () => {

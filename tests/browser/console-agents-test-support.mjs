@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
+
+/** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
 
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
@@ -16,6 +19,16 @@ export const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
+
+// Let the real operation finish, then change only the returned Agent ID. This tests a
+// plausible success that cannot settle the selected Agent's Stop or Delete request.
+export async function replyWithDifferentAgentId(route, agentId, expectedStatus) {
+  const response = await route.fetch();
+  assert.equal(response.status(), expectedStatus);
+  const { data, meta } = await response.json();
+  assert.equal(data.id, agentId);
+  await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
+}
 
 export async function openCreateSecretDialog(scope, label, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
@@ -84,8 +97,14 @@ export async function waitForCreateFormReads(page) {
 }
 
 export async function expectNativeAdminHidden(page) {
-  assert.equal(await page.getByRole("heading", { name: "Native admin UI" }).isVisible(), false);
-  assert.equal(await page.getByText("Open native admin UI", { exact: true }).isVisible(), false);
+  assert.equal(
+    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
+    false,
+  );
+  assert.equal(
+    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
+    false,
+  );
 }
 
 export function assertRevisionUrl(page, revisionId) {
@@ -117,6 +136,21 @@ export async function routeInstallationProvisioning(page, fixture, executionMode
       }),
     });
   });
+}
+
+// A Sandbox Driver that can provision dedicated OpenClaw. Without one, the Installation does not
+// report native worker support and the Console withholds Dedicated OpenClaw (finding 1608).
+export function nativeSandboxDriver(facets = ["networking", "filesystem", "process"]) {
+  return {
+    id: "console-native-sandbox",
+    capability: "sandbox",
+    implementation: "console-native",
+    facets,
+    async provisionHarness() {
+      assert.fail("provisioning admission must leave effects to the worker");
+    },
+    async cleanup() {},
+  };
 }
 
 export async function routeInstallationWithoutProvisioning(page, fixture, capabilities) {
@@ -165,9 +199,13 @@ export function configurationPatchRequests(requests, namespaceId, configurationI
   );
 }
 
+/** @param {import("playwright").Locator} locator */
 export async function optionValues(locator) {
-  return locator.evaluate((node) =>
-    Array.from(node.options).map((option) => ({ value: option.value, text: option.textContent })),
+  return locator.evaluate((element) =>
+    Array.from(/** @type {HTMLSelectElement} */ (element).options).map((option) => ({
+      value: option.value,
+      text: option.textContent,
+    })),
   );
 }
 
@@ -204,10 +242,15 @@ export const repositoryBackendFixture = Object.freeze({
   drivers: Object.freeze({ repo: "console-repository-driver" }),
 });
 
+/**
+ * @param {import("node:test").TestContext} t
+ * @param {(namespaceId: string) => readonly GitHubRepositoryRegistration[]} buildRepositories
+ * @param {{ reloadablePolicy?: boolean, controlSocket?: string }} [options]
+ */
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
-  { reloadablePolicy = false } = {},
+  { reloadablePolicy = false, controlSocket } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
@@ -216,7 +259,7 @@ export async function createRepositoryLaunchFixture(
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository launch", { ready: true });
-  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id));
+  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id), controlSocket);
   // Simulate replacing mounted policy between requests while keeping all projection and resolution
   // decisions in the actual GitHub Driver. This does not prove production configuration reload.
   const repoDriver = reloadablePolicy
@@ -237,14 +280,18 @@ export async function createRepositoryLaunchFixture(
   return {
     fixture,
     namespace,
+    /** @param {readonly GitHubRepositoryRegistration[]} repositories */
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
-      currentPolicy = repositoryPolicyDriver(repositories);
+      currentPolicy = repositoryPolicyDriver(repositories, controlSocket);
     },
   };
 }
 
-function repositoryPolicyDriver(repositories) {
+function repositoryPolicyDriver(
+  repositories,
+  controlSocket = "/unused/console/repository-control.sock",
+) {
   const backend = repositoryBackendFixture;
   const registry = validateGitHubRepositoryRegistry(
     {
@@ -258,12 +305,10 @@ function repositoryPolicyDriver(repositories) {
     },
     backend.id,
   );
-  return new GitHubRepoDriver(
+  return new GitHubRepositoryPolicy(
     {
       id: backend.id,
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/console/repository-control.sock",
-      }),
+      client: new UnixRepositoryCredentialControlClient({ controlSocket }),
       drivers: backend.drivers,
     },
     registry,
@@ -310,3 +355,55 @@ export function nativeAdminValues(marker, origin) {
     },
   };
 }
+
+// Without a caller-permission summary the console keeps controls enabled, so the API's own
+// denial is what the reader sees.
+export async function withholdPermissionSummary(page, fixture, namespaceId, agentId) {
+  await page.route(
+    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/permissions`,
+    async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
+          meta: { requestId: "req_test_permissions" },
+        }),
+      });
+    },
+  );
+}
+
+// Marks the rendered Agent page and records any loading state it shows again, so a test can
+// tell an in-place update from a page reload.
+export async function watchForReload(page) {
+  await page.evaluate(() => {
+    const doc = globalThis.document;
+    doc.querySelector(".agent-current-summary").dataset.saveMarker = "kept";
+    globalThis.reloadedText = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (/Loading (version details|configuration)/.test(node.textContent ?? "")) {
+            globalThis.reloadedText.push(node.textContent);
+          }
+        }
+      }
+    }).observe(doc.body, { childList: true, subtree: true });
+  });
+  return () =>
+    page.evaluate(() => ({
+      marker: globalThis.document.querySelector(".agent-current-summary")?.dataset.saveMarker,
+      reloadedText: globalThis.reloadedText,
+    }));
+}
+
+export const focusedText = (page) =>
+  page.evaluate(() => globalThis.document.activeElement?.textContent ?? null);
+
+// The saved status a focused control is described by, so a screen reader names it.
+export const focusedDescription = (page) =>
+  page.evaluate(() => {
+    const id = globalThis.document.activeElement?.getAttribute("aria-describedby");
+    return id ? globalThis.document.getElementById(id)?.textContent : null;
+  });

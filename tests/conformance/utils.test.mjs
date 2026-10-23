@@ -4,8 +4,11 @@ import {
   asRecord,
   cookieHeaderFromSetCookie,
   deepFreeze,
+  freezeSnapshot,
   hasControlCharacter,
   immutableCopy,
+  immutableSnapshot,
+  isImmutableSnapshot,
   isNonEmptyString,
   isPositiveSafeInteger,
   numericErrorStatus,
@@ -29,6 +32,35 @@ test("immutableCopy detaches and deeply freezes resource snapshots", () => {
   assert.equal(Object.isFrozen(snapshot.identity), true);
   assert.equal(Object.isFrozen(snapshot.roles), true);
   assert.equal(Object.isFrozen(original), false);
+});
+
+test("freezeSnapshot freezes a new value in place and records it like immutableSnapshot", () => {
+  const permissions = Object.freeze([Object.freeze({ action: "read", resourceKind: "agent" })]);
+  const state = { roles: [{ id: "role-a", permissions }], groups: [{ id: "group-a" }] };
+  const snapshot = freezeSnapshot(state);
+
+  // No copy: the snapshot is the value, and its already frozen parts stay shared.
+  assert.equal(snapshot, state);
+  assert.equal(snapshot.roles[0].permissions, permissions);
+  assert.equal(isImmutableSnapshot(snapshot), true);
+  for (const part of [
+    snapshot,
+    snapshot.roles,
+    snapshot.roles[0],
+    snapshot.roles[0].permissions[0],
+    snapshot.groups[0],
+  ]) {
+    assert.equal(Object.isFrozen(part), true);
+  }
+  assert.throws(() => {
+    state.groups[0].id = "group-b";
+  }, TypeError);
+
+  // immutableSnapshot copies first; a plain or merely frozen object is not a snapshot.
+  const copied = { roles: [] };
+  assert.notEqual(immutableSnapshot(copied), copied);
+  assert.equal(isImmutableSnapshot(copied), false);
+  assert.equal(isImmutableSnapshot(deepFreeze({ roles: [] })), false);
 });
 
 test("asRecord preserves object identity without accepting null, arrays, or primitives", () => {
@@ -80,6 +112,28 @@ test("numeric error status preserves SDK field precedence without interpreting s
   for (const value of [undefined, null, [], "503", { code: "403" }, { response: [] }]) {
     assert.equal(numericErrorStatus(value), undefined);
   }
+});
+
+test("numeric error status reads only HTTP statuses, not DOMException or gRPC codes", () => {
+  // A DOMException keeps its legacy code (TIMEOUT_ERR 23, ABORT_ERR 20) and a grpc-js error its
+  // status (PERMISSION_DENIED 7, UNAUTHENTICATED 16) in `code`. Read as HTTP statuses, they named
+  // "HTTP status 7" in Namespace failure reasons (finding 1390).
+  for (const value of [
+    new DOMException("timed out", "TimeoutError"),
+    new DOMException("aborted", "AbortError"),
+    Object.assign(new Error("7 PERMISSION_DENIED: workspace:create"), { code: 7 }),
+    Object.assign(new Error("16 UNAUTHENTICATED: bad token"), { code: 16 }),
+    { code: 0 },
+    { code: 99 },
+    { code: 600 },
+    { code: 403.5 },
+  ]) {
+    assert.equal(numericErrorStatus(value), undefined);
+  }
+  // A non-HTTP number in `code` does not hide a real status in a later field.
+  assert.equal(numericErrorStatus({ code: 14, statusCode: 503 }), 503);
+  assert.equal(numericErrorStatus({ code: 100 }), 100);
+  assert.equal(numericErrorStatus({ code: 599 }), 599);
 });
 
 test("Cookie headers retain name-value pairs and discard Set-Cookie attributes", () => {

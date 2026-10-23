@@ -1,18 +1,18 @@
 ---
 created: 2026-08-24
-updated: "2026-10-10 20:56"
-last_updated_session: "authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d"
+updated: "2026-10-15 18:55"
+last_updated_session: "authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6"
 ---
 
 # Bootstrap and human authentication flow
 
 ## Overview
 
-Fresh native-IAM bootstrap creates human and service administrators, binds both
-to one shared Role, and commits them with the Installation. It writes
-the initial service key, and in production a generated human password, to
+Native-IAM bootstrap creates human and service administrators with one Role
+and commits them with the Installation. It writes
+the initial service key and a generated production human password to
 protected storage; development uses its configured password. Human sign-in
-then reaches exact IAM authorization. The
+reaches exact IAM authorization. The
 [service API key flow](service-api-keys.md) covers key verification, rotation, and revocation.
 
 ## Entry Points
@@ -131,52 +131,45 @@ non-secret IDs. Lost output is never regenerated;
 the caller-owned pool, full schema, construction failures, and adapter settings.
 
 `apps/controller/src/auth/index.ts:createControllerAuth` configures Better Auth
-email/password authentication, protected session cookies, and durable PostgreSQL
-storage. Sign-in returns `{ authenticated: true }`; the session token stays
-in its HttpOnly cookie and is omitted from session-inspection responses.
-`safeSessionResponse` projects `sessionKey`, an HMAC of the session record ID
-under the auth secret (`apps/controller/src/auth/session-binding.ts`), alongside
-public user identity; a changed key makes the
-[Console](platform-console.md#2-resolve-the-session-before-private-reads) clear
+password authentication, protected cookies, and PostgreSQL storage. Sign-in returns
+`{ authenticated: true }`; the token stays in its HttpOnly cookie.
+`safeSessionResponse` returns public identity and `sessionKey`, an auth-secret HMAC
+of the session ID (`apps/controller/src/auth/session-binding.ts`). A changed key makes
+the [Console](platform-console.md#2-resolve-the-session-before-private-reads) clear
 retained views and drafts. Sign-out revokes the session.
-In both profiles
 `auth/admission.ts:passwordFailureAdmission` counts failures; fast success clears
 the selected identity, not the address. `onLimited` reports
 `authentication.sign-in-limited` once per lane/window. `auth/known-device.ts`
-checks the email-bound MAC before controller-bounded password-state reads
-(see [known devices](../reference/authentication.md#known-devices)).
-Verified bindings select the device lane; completed reads rejecting bindings use
-the shared lane. Failed or refused reads keep signed keys as extra email/address
-constraints, never exemptions or renewed allowances. Password-only admission captures
+checks the email-bound MAC before password-state reads with rate and concurrency limits (see
+[known devices](../reference/authentication.md#known-devices)). Verified bindings
+select the device lane; rejected bindings use the shared lane. Failed or refused
+reads retain signed keys as email/address constraints, never exemptions. Password-only admission captures
 issuance state before credentials, preserving reset-race invalidation; success
 may reissue it. In the password-only profile with PostgreSQL State,
-`passwordSignInAudit` attempts `authentication.login`. A failed success audit
-returns `503` without a cookie after the controller attempts session deletion. A failed denial audit (`DenialAuditUnavailable`) counts as a
-credential failure against tracked entries. With an external provider,
-`/oce/password` marks it `PASSWORD_DENIAL_AUDIT_UNAVAILABLE`, and the controller
-applies the same accounting. The
+`passwordSignInAudit` attempts `authentication.login`. A failed success audit returns `503` without a cookie after attempted session
+deletion. A failed denial audit (`DenialAuditUnavailable`) counts as a credential
+failure. With an external provider, `/oce/password` marks it
+`PASSWORD_DENIAL_AUDIT_UNAVAILABLE` for the same accounting. The
 [session lifecycle](../reference/authentication.md#session-lifecycle) owns audit
 fields, status codes, and unconfirmed outcomes. Better Auth logs only errors, so
 a wrong password writes no unstructured console warning.
 
-`requireSessionKey` applies the optional `x-occ-session-key` header after the
-cookie session resolves, in `ControllerAdmissionVerifier.verify` (protected API
-and native admin proxy), `session`, `resolveSession`, and `signOut`. An absent
-header changes nothing; a malformed, duplicated, or foreign key returns `401`
-and makes sign-out revoke or clear nothing, so the header narrows but never selects a
-session. The native admin proxy strips the header upstream.
+`requireSessionKey` checks optional `x-occ-session-key` after cookie resolution in
+`ControllerAdmissionVerifier.verify`, `session`, `resolveSession`, and `signOut`.
+An absent header changes nothing; a malformed, duplicated, or foreign key returns
+`401` without revoking or clearing the session. The header narrows but never selects
+a session; the native admin proxy strips it upstream.
 
 When GitHub is configured, `apps/controller/src/auth/github.ts:createHumanLogin`
-wraps the Better Auth adapter and provides curated password, GitHub, and logout
-endpoints. `packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication`
-owns persisted account/method checks and the original State transaction.
-Password verification captures the credential and account version before the
-session transaction rechecks them. Both methods pass a controller-private proof
-to the same guarded session creation path; the session and required audit commit
-before Better Auth releases its cookie. Session reads check the current account,
-method, version, and Principal, with an eight-hour absolute lifetime and no refresh.
-HTTPS uses a `__Host-` session cookie, which sibling hosts cannot plant; session
-readers and logout reject duplicate active-session cookies.
+provides password, GitHub, and logout endpoints through a guarded Better Auth adapter.
+`packages/occ/src/state/human-authentication.ts:PostgresHumanAuthentication` owns
+account and method checks and the State transaction. Password verification captures
+credential and account versions for the session transaction to recheck. Both methods
+pass a private proof to guarded session creation; session and audit commit before
+Better Auth releases the cookie. Session reads check the current account, method,
+version, and Principal; sessions expire after eight hours without refresh. HTTPS uses
+a `__Host-` cookie that sibling hosts cannot plant; session reads and logout reject
+duplicate active-session cookies.
 
 For GitHub, the Console reads `GET /api/auth/providers` and sends a same-origin
 `POST /api/auth/providers/github/start`. The server stores a five-minute attempt with state and browser
@@ -187,7 +180,8 @@ attempt does not exchange a code.
 `apps/controller/src/auth/github.ts:exchangeGithubSubject` exchanges the code
 with the GitHub App client ID and secret, uses the user access token only for
 `/user`, and returns the numeric subject, which selects an exact existing
-enrollment; email, login name, and tokens never become identity or policy. The
+enrollment. A valid provider-returned login accompanies the subject into the audit;
+it never selects an account or grants authority. Email and tokens are discarded. The
 [GitHub reference](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 owns OAuth scopes, token disposal, App private-key custody, and fixed
 redirects.
@@ -202,6 +196,9 @@ clear the receipt; return the session key without issuing or extending sessions.
 it. A malformed, unbound, replayed, or expired callback is refused by
 `refuseUnmatched`, which writes no audit event and increments
 [`occ_sign_in_unmatched_callbacks_total`](../reference/metrics.md#application-families).
+The callback audit records the HMAC-derived attempt ID. A verified
+GitHub profile also adds its subject and valid login to refusal or successful session
+audits; provider failures before profile verification have no identity.
 Denials after `consumeAttempt` matches are audited as
 [`PROVIDER_UNAVAILABLE`](../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts),
 `EXTERNAL_IDENTITY_REJECTED` or `ACCOUNT_DISABLED`; with GitHub's
@@ -215,9 +212,9 @@ State dependency failure or uncertain session completion is not a denial. Neithe
 Google (and generic OIDC) reuses `apps/controller/src/auth/github.ts:externalProviderEndpoints` for
 start, callback, and result, with provider instance `google:<sha256(client ID)>`.
 Authorization adds scope `openid email` and an auth-secret HMAC of attempt state
-as nonce, without extra storage.
+as nonce, without storage.
 `apps/controller/src/auth/google.ts:exchangeGoogleSubject` exchanges the code, fetches
-Google's signing keys through the same bounded transport, verifies the RS256 ID token's
+Google's signing keys with the shared HTTP deadline and byte limit, verifies the RS256 ID token's
 signature, issuer, audience, expiry, and nonce (plus `hd` and `email_verified` when
 allowed domains are set), and returns only `sub`. Tokens and email are discarded.
 
@@ -226,16 +223,15 @@ IPv4-mapped addresses before prefix validation, refusing entries covering every
 IPv4 or IPv6 address. `resolveClientAddress` uses dotted IPv4 for mapped peers and
 header hops.
 
-Password sign-in detects unstorable email before known-device verification, so
-invalid input cannot trigger account State reads. It rejects inside controller
-admission, preserving budget accounting. Password-only uses `passwordSignInAudit`;
+Password sign-in rejects unstorable email inside controller admission before
+known-device verification or account State reads, preserving budget accounting. Password-only uses `passwordSignInAudit`;
 guarded and recovery-only use `github.ts:recordPasswordDenial`, the same owner as
 credential refusals. Both return `400 INVALID_REQUEST` after the denial audit;
 a failed audit is a counted `503`. An exhausted shared lane rejects the invalid
 email without a reserved-account lookup. Password text is not checked.
-Valid email still enters controller admission before `/oce/password`, with the
-recovery email reserved like an administrator's. GitHub, Google and OIDC share bounded
-process-local start, callback and result admission (`keyedAdmission`), keyed on
+Valid email enters controller admission before `/oce/password`, with the
+recovery email reserved like an administrator's. GitHub, Google and OIDC share process-local rate and concurrency limits
+for start, callback and result admission (`keyedAdmission`), keyed on
 client addresses behind trusted proxies and browser cookies otherwise. Provider
 HTTP shares a deadline and response-byte cap; State bounds pending attempts and expired cleanup.
 State persists attempt and session deadlines; cookie Max-Age subtracts monotonic
@@ -352,6 +348,8 @@ Account creation issues no session and infers no grants.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 18:55: Record verified GitHub identity and correlate matched sign-in attempts in audit. (authoring-run/b841a0a4-490b-486f-ab3c-2074d75f0ee6 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
 - 2026-10-10 20:56: Reject unstorable email before State reads while preserving denial audits and admission. (authoring-run/6a102658-a68a-460f-bb67-be99a2490d8d - f6526eed518b689cc99e70f2c8ad349c500e936d)
 

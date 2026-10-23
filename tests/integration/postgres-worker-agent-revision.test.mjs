@@ -1,12 +1,16 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
+import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import test, { after } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
-import { OpenShellAdmissionLimitError } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import {
+  GrpcOpenShellGatewayClient,
+  OpenShellAdmissionLimitError,
+} from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import {
@@ -15,7 +19,9 @@ import {
   CredentialSourceRevisionError,
   ComputePreparationFailedError,
   DependencyUnavailableError,
+  KubernetesSecretWriteForbiddenError,
   PostgresMetricsSnapshot,
+  SandboxGatewayUnavailableError,
   SandboxRevisionUnsupportedError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
@@ -61,308 +67,253 @@ function codexPluginRevisionState(pluginId) {
   };
 }
 
-revisionTest(
+test(
   "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
-  async (fixture, context) => {
+  // First in its file, so it also absorbs the file's cold start (finding 1171):
+  // about 12.5 s typically, 31.7 s once on a slow runner.
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // An interrupted worker retains its lease. Keep its expiry inside the observation window.
+    const fixture = await setup(context, { leaseDurationMs: 5_000 });
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
     ]);
-    const clock = createControlledClock();
-    const startedWall = clock.wallNow();
-    const credentials = await startRegistryCredentialServiceFixture(context, {
-      namespaceId: fixture.namespace.id,
-      autoOpen: false,
-      // Worker admission IDs use real wall time. Preserve that progress while
-      // allowing this fixture's provider-retirement expiry to advance explicitly.
-      clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
-      gateway: { listen: "127.0.0.1:0" },
-    });
-    const driver = new GitHubRepoDriver(
-      {
+    const resources = createResourceScope();
+    const credentialResources = createResourceScope();
+    let receiptServer;
+    let releaseLostResponse;
+    resources.after(() => receiptServer?.close());
+    resources.after(() => credentialResources.close());
+    resources.after(() => fixture.stop());
+    try {
+      const clock = createControlledClock();
+      const startedWall = clock.wallNow();
+      const credentials = await startRegistryCredentialServiceFixture(credentialResources, {
+        namespaceId: fixture.namespace.id,
+        autoOpen: false,
+        // Worker admission IDs use real wall time. Preserve that progress while
+        // allowing this fixture's provider-retirement expiry to advance explicitly.
+        clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
+        gateway: { listen: "127.0.0.1:0" },
+      });
+      const repositoryBackend = {
         id: credentials.backendId,
         client: new UnixRepositoryCredentialControlClient({
           controlSocket: credentials.config.gateway.controlSocket,
         }),
         drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
-    // The real resolver admits selection fields and returns the richer frozen
-    // binding. Worker revalidation must project that snapshot back to selections;
-    // the strict registry parser rejects backendId/grant as caller input.
-    const resolution = driver.resolve({
-      namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
-    });
-    // Bound admissions require the worker-owned receipt transport and its real
-    // PostgreSQL state; without it the broker correctly refuses the session.
-    const { startRepositoryReceiptServer } =
-      await import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts");
-    const receiptServer = await startRepositoryReceiptServer({
-      state: fixture.state,
-      controlSocket: credentials.config.gateway.controlSocket,
-      driverId: driver.id,
-      implementation: driver.implementation,
-      backendId: credentials.backendId,
-    });
-    context.after(() => receiptServer.close());
-    const { owner, candidate } = await fixture.admitInitialRevision("repository-concrete-driver", {
-      revision: {
-        repositoryCredentials: {
-          driver: { id: driver.id, implementation: driver.implementation },
-          deadlineWallMs: Date.now() + 120_000,
-          bindings: resolution.bindings,
-        },
-      },
-    });
-    const open = driver.open.bind(driver);
-    const close = driver.close.bind(driver);
-    let lostSessionId;
-    const closures = [];
-    // Lose only the first response. The real service owns CLOSED -> DISPOSED,
-    // and the real worker must wait before delivering replacement material.
-    driver.open = async (input, signal) => {
-      const result = await open(input, signal);
-      if (lostSessionId === undefined && result.kind === "created") {
-        lostSessionId = result.session.sessionId;
-        throw new Error("repository admission response lost after creation");
-      }
-      return result;
-    };
-    driver.close = async (sessionId, signal) => {
-      const status = await close(sessionId, signal);
-      closures.push(status?.state);
-      return status;
-    };
-    const material = [];
-    const events = [];
-    const retired = [];
-    await fixture.start(
-      {
-        ...fixture.compute,
-        validateRepositoryCredentials(harness, sandboxDriverId) {
-          assert.equal(harness.mode, "embedded");
-          assert.equal(sandboxDriverId, undefined);
-        },
-        async prepareRevision(revision, deploymentContext) {
-          material.push(...deploymentContext.repositoryCredentials);
-          return fixture.compute.prepareRevision(revision, deploymentContext);
-        },
-        async retireRevision(revision) {
-          retired.push(revision.id);
-          return fixture.compute.retireRevision(revision);
-        },
-      },
-      {
-        emit: (event) => events.push(event),
-        pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
-      },
-    );
-    const terminal = await waitFor(
-      "the concrete repository revision's terminal result",
-      async () => {
-        const result = await fixture.observerPool.query(
-          "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [candidate.idempotencyKey],
-        );
-        return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
-          ? result.rows[0]
-          : undefined;
-      },
-    );
-    assert.equal(
-      terminal.state,
-      "succeeded",
-      JSON.stringify(events.filter(({ workId }) => workId === candidate.idempotencyKey)),
-    );
-    assert.ok(terminal.attempt_count >= 2);
-    assert.equal(material.length, 1);
-    assert.equal(material[0].kind, "new");
-    assert.equal(material[0].repositoryRef, "repo-a");
-    assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
-    assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
-    const status = await driver.status(material[0].sessionId, new AbortController().signal);
-    assert.equal(status.state, "OPEN");
-    assert.deepEqual(status.binding, resolution.bindings[0].grant);
-    const attempts = await repositoryAttempts(fixture, candidate);
-    assert.equal(attempts.length, 2);
-    assert.equal(attempts.find(({ sessionId }) => sessionId === lostSessionId).phase, "disposed");
-    assert.ok(closures.includes("CLOSED"));
-    const attempt = attempts.find(({ phase }) => phase === "open");
-    assert.equal(attempt.phase, "open");
-    assert.equal(attempt.sessionId, status.sessionId);
-    const stop = await fixture.requestStop(owner);
-    await fixture.work(stop, "succeeded");
-    // Both the lost admission and the delivered session must settle even when
-    // their cleanup requests share one durable work item.
-    await waitFor("both concrete repository sessions to settle", async () => {
-      const settled = await repositoryAttempts(fixture, candidate);
-      return settled.length === 2 && settled.every(({ phase }) => phase === "disposed")
-        ? true
-        : undefined;
-    });
-    await waitFor("the concrete session's cleanup work to complete", async () => {
-      const cleanup = await fixture.observerPool.query(
-        `SELECT state FROM occ.controller_work
-         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
-        [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
-      );
-      return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
-    });
-    await fixture.requestDeletion(owner);
-    await waitFor("disposed repository evidence to outlive its Agent", async () =>
-      (await fixture.currentAgent(owner)) === undefined ? true : undefined,
-    );
-    const retained = await fixture.state.read((view) =>
-      view.repositorySessions.findAttempt(attempt.admissionId),
-    );
-    assert.equal(retained.phase, "disposed");
-    assert.equal(retained.liveRevisionId, null);
-    assert.equal(retained.revisionId, candidate.id);
-    assert.equal(retained.agentId, owner.id);
-    assert.deepEqual(retained.cleanupContext, {
-      driver: candidate.repositoryCredentials.driver,
-      binding: resolution.bindings[0],
-    });
-
-    // A provider retirement response can be lost after the remote effect. Only
-    // the service's eventual DISPOSED observation settles retained cleanup.
-    const { owner: pendingOwner, candidate: pendingRevision } = await fixture.admitInitialRevision(
-      "repository-pending-deletion",
-      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
-    );
-    await fixture.work(pendingRevision, "succeeded");
-    const pendingMaterial = material.at(-1);
-    const responseStatus = await new Promise((resolve, reject) => {
-      const outgoing = httpsRequest(
+      };
+      const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+        publicCa: credentials.tls.ca,
+      });
+      const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+        sessionDurationSeconds: 60,
+      });
+      // The real resolver admits selection fields and returns the richer frozen
+      // binding. Worker revalidation must project that snapshot back to selections;
+      // the strict registry parser rejects backendId/grant as caller input.
+      const resolution = driver.resolve({
+        namespaceId: fixture.namespace.id,
+        bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
+      });
+      // Bound admissions require the worker-owned receipt transport and its real
+      // PostgreSQL state; without it the broker correctly refuses the session.
+      const { startRepositoryReceiptServer } =
+        await import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts");
+      receiptServer = await startRepositoryReceiptServer({
+        state: fixture.state,
+        controlSocket: credentials.config.gateway.controlSocket,
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId: credentials.backendId,
+      });
+      const { owner, candidate } = await fixture.admitInitialRevision(
+        "repository-concrete-driver",
         {
-          hostname: "127.0.0.1",
-          port: credentials.listeners.address.port,
-          path: "/fixture/repository.git/info/refs?service=git-upload-pack",
-          method: "GET",
-          ca: credentials.tls.ca,
-          agent: false,
-          headers: {
-            host: "credentials.example.test",
-            authorization: `Basic ${Buffer.from(`gateway-session:${pendingMaterial.files.bearer}`).toString("base64")}`,
+          revision: {
+            repositoryCredentials: {
+              driver: { id: driver.id, implementation: driver.implementation },
+              deadlineWallMs: Date.now() + 120_000,
+              bindings: resolution.bindings,
+            },
           },
         },
-        (incoming) => {
-          incoming.resume();
-          incoming.once("end", () => resolve(incoming.statusCode));
-          incoming.once("error", reject);
-        },
       );
-      outgoing.once("error", reject);
-      outgoing.end();
-    });
-    assert.equal(responseStatus, 200);
-    const provider = credentials.repositories[0].github;
-    assert.equal(provider.issuesOfTokens.length, 1);
-    provider.disconnectAfterMutation("DELETE", "/installation/token");
-    await fixture.requestDeletion(pendingOwner);
-    await waitFor(
-      "Agent deletion to complete while repository cleanup remains pending",
-      async () =>
-        retired.includes(pendingRevision.id) &&
-        (await fixture.currentAgent(pendingOwner)) === undefined
-          ? true
-          : undefined,
-    );
-    await waitFor("independent cleanup to close the deleted Agent's broker session", async () => {
-      const status = await driver.status(pendingMaterial.sessionId, new AbortController().signal);
-      return status?.state === "CLOSED" ? true : undefined;
-    });
-    const [pendingAttempt] = await repositoryAttempts(fixture, pendingRevision);
-    assert.equal(pendingAttempt.phase, "closing");
-    assert.equal(pendingAttempt.liveRevisionId, null);
-    // Unsettled provider authority must retain durable cleanup without using
-    // the foreground readiness cadence and repeatedly occupying the worker.
-    const deferredCleanup = await waitFor("pending cleanup to release its claim", async () => {
-      const result = await fixture.observerPool.query(
-        `SELECT idempotency_key, state, claim_token, lease_expires_at,
-           EXTRACT(EPOCH FROM (available_at - updated_at)) * 1000 AS delay_ms
-         FROM occ.controller_work WHERE idempotency_key LIKE $1 AND state = 'queued'`,
-        [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
-      );
-      return events.some(
-        (event) =>
-          event.workId === result.rows[0]?.idempotency_key &&
-          event.code === "REPOSITORY_CLEANUP_PENDING",
-      )
-        ? result.rows[0]
-        : undefined;
-    });
-    assert.ok(Number(deferredCleanup.delay_ms) >= driver.maintenanceIntervalMs - 1_000);
-    assert.equal(deferredCleanup.claim_token, null);
-    assert.equal(deferredCleanup.lease_expires_at, null);
-    const { candidate: nextRevision } = await fixture.admitInitialRevision(
-      "repository-cleanup-neighbor",
-      { revision: { repositoryCredentials: candidate.repositoryCredentials } },
-    );
-    await fixture.work(nextRevision, "succeeded");
-    const scheduled = await fixture.observerPool.query(
-      "SELECT state, available_at > clock_timestamp() AS deferred FROM occ.controller_work WHERE idempotency_key = $1",
-      [deferredCleanup.idempotency_key],
-    );
-    assert.deepEqual(scheduled.rows, [{ state: "queued", deferred: true }]);
-    assert.equal(
-      (
-        await fixture.state.read((view) =>
-          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
-        )
-      ).phase,
-      "closing",
-    );
-    assert.equal(
-      (
-        await fixture.observerPool.query(
-          "SELECT count(*)::integer AS count FROM occ.controller_work WHERE idempotency_key LIKE $1",
-          [`agent_revision:${pendingRevision.id}:repository_cleanup:%`],
-        )
-      ).rows[0].count,
-      1,
-    );
-    await clock.advance(3_600_001);
-    // Advance this exact retry after provider expiry instead of waiting for
-    // the real 30-second interval. The worker still claims and settles it.
-    await fixture.observerPool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1 AND state = 'queued'",
-      [deferredCleanup.idempotency_key],
-    );
-    const settled = await waitFor(
-      "settled provider cleanup to dispose retained evidence",
-      async () => {
-        const attempt = await fixture.state.read((view) =>
-          view.repositorySessions.findAttempt(pendingAttempt.admissionId),
+      const open = sender.open.bind(sender);
+      const opens = [];
+      const successorChecks = [];
+      let lost;
+      const lostResponse = new Promise((resolve) => {
+        releaseLostResponse = resolve;
+      });
+      // Hold the first response until this worker stops. Its successor must recover
+      // the original admission and settle it before opening another session.
+      sender.open = async (input, signal) => {
+        opens.push({ admissionId: input.admissionId, recoverOnly: input.recoverOnly === true });
+        if (lost && input.recoverOnly !== true) {
+          const original = await fixture.state.read(async (view) => ({
+            attempt: await view.repositorySessions.findAttempt(lost.admissionId),
+            receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
+          }));
+          successorChecks.push({
+            admissionId: input.admissionId,
+            originalPhase: original.attempt?.phase,
+            originalReceiptState: original.receipt?.state,
+            originalReceiptSessionId: original.receipt?.sessionId,
+            originalReceiptGeneration: original.receipt?.generation,
+          });
+        }
+        const result = await open(input, signal);
+        if (!lost && result.kind === "created") {
+          lost = { admissionId: input.admissionId, sessionId: result.session.sessionId };
+          await lostResponse;
+          throw new Error("repository admission response lost after creation");
+        }
+        return result;
+      };
+      const material = [];
+      const events = [];
+      const startWorker = () =>
+        fixture.start(
+          {
+            ...fixture.compute,
+            validateRepositoryCredentials(harness, sandboxDriverId) {
+              assert.equal(harness.mode, "embedded");
+              assert.equal(sandboxDriverId, undefined);
+            },
+            async prepareRevision(revision, deploymentContext) {
+              material.push(...deploymentContext.repositoryCredentials);
+              return fixture.compute.prepareRevision(revision, deploymentContext);
+            },
+          },
+          {
+            emit: (event) => events.push(event),
+            transformDrivers: (drivers) => ({
+              ...drivers,
+              repositoryPolicy: driver,
+              nativeRepositorySender: sender,
+            }),
+          },
         );
-        return attempt?.phase === "disposed" ? attempt : undefined;
-      },
-    );
-    assert.equal(settled.phase, "disposed");
-    assert.equal(settled.liveRevisionId, null);
-    assert.equal(settled.deadlineWallMs, pendingAttempt.deadlineWallMs);
-    assert.deepEqual(settled.cleanupContext, pendingAttempt.cleanupContext);
-    assert.equal(provider.issuesOfTokens.length, 1, "deletion must never mint a replacement token");
-    assert.equal(
-      provider.trace.filter(
-        ({ method, target }) => method === "DELETE" && target === "/installation/token",
-      ).length,
-      1,
-      "uncertain provider retirement must not be replayed",
-    );
+      await startWorker();
+      await waitFor("the first concrete session to open", async () => lost);
+      const stopping = fixture.stop();
+      releaseLostResponse();
+      await stopping;
+      assert.equal(material.length, 0);
+      const first = await fixture.state.read(async (view) => ({
+        attempt: await view.repositorySessions.findAttempt(lost.admissionId),
+        receipt: await view.repositorySessions.findBrokerReceipt(lost.admissionId),
+      }));
+      assert.equal(first.attempt?.phase, "opening");
+      assert.equal(first.receipt?.state, "active");
+      assert.equal(first.receipt?.sessionId, lost.sessionId);
+      const claim = await fixture.observerPool.query(
+        "SELECT state, lease_expires_at > clock_timestamp() AS lease_live FROM occ.controller_work WHERE idempotency_key = $1",
+        [candidate.idempotencyKey],
+      );
+      assert.deepEqual(claim.rows, [{ state: "claimed", lease_live: true }]);
+      await startWorker();
+      const terminal = await waitFor(
+        "the concrete repository revision's terminal result",
+        async () => {
+          const result = await fixture.observerPool.query(
+            "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+            [candidate.idempotencyKey],
+          );
+          return ["succeeded", "failed_permanent"].includes(result.rows[0]?.state)
+            ? result.rows[0]
+            : undefined;
+        },
+        15_000,
+      );
+      assert.equal(
+        terminal.state,
+        "succeeded",
+        JSON.stringify(events.filter(({ workId }) => workId === candidate.idempotencyKey)),
+      );
+      assert.ok(terminal.attempt_count >= 2);
+      assert.equal(material.length, 1);
+      assert.equal(material[0].kind, "new");
+      assert.equal(material[0].repositoryRef, "repo-a");
+      assert.equal(JSON.parse(material[0].files["client.json"]).sessionId, material[0].sessionId);
+      assert.equal(material[0].files["ca.pem"], credentials.tls.ca.toString("utf8"));
+      const status = await sender.status(material[0].sessionId, new AbortController().signal);
+      assert.equal(status.state, "OPEN");
+      assert.deepEqual(status.binding, resolution.bindings[0].grant);
+      const attempts = await repositoryAttempts(fixture, candidate);
+      assert.equal(attempts.length, 2);
+      const original = attempts.find(({ admissionId }) => admissionId === lost.admissionId);
+      assert.equal(original?.sessionId, lost.sessionId);
+      assert.equal(original?.phase, "disposed");
+      assert.equal(
+        opens.filter(
+          ({ admissionId, recoverOnly }) => admissionId === lost.admissionId && !recoverOnly,
+        ).length,
+        1,
+      );
+      assert.ok(
+        opens.some(
+          ({ admissionId, recoverOnly }) => admissionId === lost.admissionId && recoverOnly,
+        ),
+      );
+      assert.notEqual(material[0].sessionId, lost.sessionId);
+      const attempt = attempts.find(({ phase }) => phase === "open");
+      assert.equal(attempt.phase, "open");
+      assert.equal(attempt.sessionId, status.sessionId);
+      assert.deepEqual(successorChecks, [
+        {
+          admissionId: attempt.admissionId,
+          originalPhase: "disposed",
+          originalReceiptState: "disposed",
+          originalReceiptSessionId: lost.sessionId,
+          originalReceiptGeneration: first.receipt.generation,
+        },
+      ]);
+      const stop = await fixture.requestStop(owner);
+      await fixture.work(stop, "succeeded");
+      // Both the lost admission and the delivered session must settle even when
+      // their cleanup requests share one durable work item.
+      await waitFor("both concrete repository sessions to settle", async () => {
+        const settled = await repositoryAttempts(fixture, candidate);
+        return settled.length === 2 && settled.every(({ phase }) => phase === "disposed")
+          ? true
+          : undefined;
+      });
+      await waitFor("the concrete session's cleanup work to complete", async () => {
+        const cleanup = await fixture.observerPool.query(
+          `SELECT state FROM occ.controller_work
+         WHERE revision_id = $1 AND idempotency_key LIKE $2`,
+          [candidate.id, `agent_revision:${candidate.id}:repository_cleanup:%`],
+        );
+        return cleanup.rowCount === 1 && cleanup.rows[0].state === "succeeded" ? true : undefined;
+      });
+      await fixture.requestDeletion(owner);
+      await waitFor("disposed repository evidence to outlive its Agent", async () =>
+        (await fixture.currentAgent(owner)) === undefined ? true : undefined,
+      );
+      const retained = await fixture.state.read((view) =>
+        view.repositorySessions.findAttempt(attempt.admissionId),
+      );
+      assert.equal(retained.phase, "disposed");
+      assert.equal(retained.liveRevisionId, null);
+      assert.equal(retained.revisionId, candidate.id);
+      assert.equal(retained.agentId, owner.id);
+      assert.deepEqual(retained.cleanupContext, {
+        driver: candidate.repositoryCredentials.driver,
+        binding: resolution.bindings[0],
+      });
+    } finally {
+      releaseLostResponse?.();
+      await resources.close();
+    }
   },
-  // First in its file, so it also absorbs the file's cold start (finding 1171):
-  // about 12.5 s typically, 31.7 s once on a slow runner.
-  { timeout: 60_000 },
 );
 
 revisionTest(
@@ -582,6 +533,7 @@ revisionTest(
           revision: 1,
           backendId: null,
           configuration: {},
+          executionAdmission: first.executionAdmission,
           servicePrincipalId: malformedAdmission.servicePrincipalId,
           createdAt: new Date().toISOString(),
         }),
@@ -606,6 +558,7 @@ revisionTest(
             configuration_id: malformedAdmission.configurationId,
             configuration_kind: "agent",
             configuration_generation: 1,
+            execution_admission: first.executionAdmission,
             harness: { id: "incomplete" },
           }),
         ],
@@ -1311,13 +1264,22 @@ revisionTest(
   async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
+    const overQuota = await fixture.agent("pending-pod-quota");
+    const setupRetrying = await fixture.agent("pending-workspace-setup");
+    const imagePull = await fixture.agent("pending-image-pull");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
+    const overQuotaRevision = await fixture.revision(overQuota, 1);
+    const setupRetryingRevision = await fixture.revision(setupRetrying, 1);
+    const imagePullRevision = await fixture.revision(imagePull, 1);
     // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
     // and still inside the 900-second deadline.
     const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
+      [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
+      [setupRetryingRevision.id, "WORKSPACE_SETUP_RETRYING"],
+      [imagePullRevision.id, "WORKLOAD_IMAGE_PULL_FAILED"],
     ]);
     const delays = new Map([
       [unscheduledRevision.idempotencyKey, []],
@@ -1370,6 +1332,24 @@ revisionTest(
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
     });
+    // Finding 1617: a full Namespace Pod quota is named, without its numbers.
+    assert.deepEqual(await progress(overQuota, overQuotaRevision), {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    });
+    // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
+    assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
+      code: "WORKSPACE_SETUP_RETRYING",
+      message:
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+    });
+    // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
+    assert.deepEqual(await progress(imagePull, imagePullRevision), {
+      code: "REVISION_IMAGE_PULL_FAILED",
+      message:
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+    });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
       await waitFor(`a recheck of ${revision.id}`, async () => recorded.length > 0 || undefined);
@@ -1382,6 +1362,205 @@ revisionTest(
     // one stuck Agent cannot take most of the serial worker (D223).
     const old = await firstDelay(unpairedRevision);
     assert.ok(old > 4_500 && old <= 5_000, `an old deployment rechecks in 5 s (${old} ms)`);
+  },
+);
+
+test(
+  "the revision worker logs closed diagnostics from genuine OpenShell gRPC failures",
+  requiresPostgres,
+  async (context) => {
+    const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+    const grpc = require("@grpc/grpc-js");
+    const loader = require("@grpc/proto-loader");
+    const proto = await loader.load(
+      new URL("../fixtures/openshell-v0.1.5-wire.proto", import.meta.url).pathname,
+      { keepCase: true, enums: String },
+    );
+    const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+    const secret = `synthetic-reflected-${randomUUID()}`;
+    const cases = [
+      { prefix: "policy contains unsafe content: ", category: "POLICY_SAFETY" },
+      { prefix: "policy middleware validation failed: ", category: "POLICY_MIDDLEWARE_VALIDATION" },
+      { prefix: "unrecognized supplier validation: ", category: "UNKNOWN" },
+      // Similar or embedded strings must not claim a supplier validation stage.
+      { prefix: "reflected policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: " policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: "Policy contains unsafe content: ", category: "UNKNOWN" },
+      { prefix: "policy contains unsafe content:", category: "UNKNOWN" },
+      {
+        prefix: "policy contains unsafe content: ",
+        status: grpc.status.INTERNAL,
+        category: "UNKNOWN",
+      },
+      { prefix: "policy contains unsafe content: ", method: "Health", category: "UNKNOWN" },
+    ].map((scenario, index) => ({
+      name: `diagnostic-${index}`,
+      method: "CreateSandbox",
+      status: grpc.status.INVALID_ARGUMENT,
+      ...scenario,
+    }));
+    const calls = [];
+    const reflected = [];
+    const server = new grpc.Server();
+    let client;
+    let fixture;
+    context.after(async () => {
+      try {
+        await fixture?.stop();
+      } finally {
+        client?.close();
+        server.forceShutdown();
+      }
+    });
+    server.addService(OpenShell.service, {
+      CreateSandbox(call, callback) {
+        const scenario = cases.find(({ name }) => name === call.request.name);
+        calls.push(scenario.name);
+        reflected.push(call.request.annotations["fixture-reflection"]);
+        // Reflect request material over the real wire. The production client, worker and
+        // logger must discard it, even though it has no recognizable credential shape.
+        callback({
+          code: scenario.status,
+          details: scenario.prefix + call.request.annotations["fixture-reflection"],
+        });
+      },
+      Health(_call, callback) {
+        const scenario = cases.find(({ method }) => method === "Health");
+        calls.push(scenario.name);
+        callback({ code: scenario.status, details: scenario.prefix + secret });
+      },
+    });
+    const port = await new Promise((resolve, reject) =>
+      server.bindAsync("127.0.0.1:0", grpc.ServerCredentials.createInsecure(), (error, value) =>
+        error ? reject(error) : resolve(value),
+      ),
+    );
+    client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+    fixture = await setup(context, { maxAttempts: 1 });
+    const admitted = new Map();
+    for (const scenario of cases) {
+      const { owner, candidate } = await fixture.admitInitialRevision(scenario.name);
+      admitted.set(candidate.id, { ...scenario, owner, candidate });
+    }
+    const events = [];
+    const lines = [];
+    const requestFailures = [];
+    const emit = createWorkerLogEmitter(
+      createOccLogger({
+        component: "occ-worker",
+        level: "debug",
+        destination: {
+          write(chunk) {
+            lines.push(
+              ...String(chunk)
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => JSON.parse(line)),
+            );
+            return true;
+          },
+        },
+      }),
+    );
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision) {
+          const scenario = admitted.get(revision.id);
+          if (scenario !== undefined) {
+            // The fixture Compute boundary uses the real client; no error or worker method
+            // is patched. PostgreSQL dispatch, retry accounting and log emission are real.
+            const signal = currentComputeAbortSignal();
+            assert.ok(signal, "the worker must own the Compute cancellation signal");
+            try {
+              if (scenario.method === "Health") {
+                await client.health(signal);
+              } else {
+                await client.createSandbox(
+                  {
+                    name: scenario.name,
+                    workspace: "diagnostic-workspace",
+                    requestId: revision.id.slice("rev_".length),
+                    labels: {},
+                    annotations: { "fixture-reflection": secret },
+                    spec: { template: { image: "fixture.invalid/diagnostic:never-started" } },
+                    serviceExposures: [],
+                  },
+                  signal,
+                );
+              }
+            } catch (error) {
+              requestFailures.push(error);
+              throw error;
+            }
+          }
+          return fixture.compute.prepareRevision(revision);
+        },
+      },
+      {
+        emit(event) {
+          events.push(event);
+          emit(event);
+        },
+      },
+    );
+    for (const { owner, candidate, method, status, category } of admitted.values()) {
+      await fixture.work(candidate, "failed_permanent");
+      await completion(
+        events,
+        "the gRPC failure's completion",
+        (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+      );
+      const [line] = lines.filter(
+        (entry) => entry.event === "worker.completed" && entry.revisionId === candidate.id,
+      );
+      assert.ok(line);
+      assert.deepEqual(
+        {
+          method: line.method,
+          grpcStatus: line.grpcStatus,
+          validationCategory: line.validationCategory,
+        },
+        { method, grpcStatus: status, validationCategory: category },
+      );
+      // A one-attempt fixture becomes terminal by exhaustion; the classification itself
+      // still asks the queue to retry and never makes all INVALID_ARGUMENT errors permanent.
+      assert.equal(line.outcome, "retry");
+      assert.equal(line.code, "DEPENDENCY_UNAVAILABLE");
+      assert.equal(line.cause, "DependencyUnavailableError");
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "failed");
+    }
+    await fixture.stop();
+    assert.deepEqual(calls.sort(), cases.map(({ name }) => name).sort());
+    assert.deepEqual(
+      reflected,
+      cases.filter(({ method }) => method === "CreateSandbox").map(() => secret),
+    );
+    // HTTP dependency logging also emits this message: sanitizing only worker fields
+    // would still expose reflected values there.
+    assert.deepEqual(
+      requestFailures.map(({ message }) => message).sort(),
+      cases
+        .map(({ method, status }) => `OpenShell ${method} failed with gRPC status ${status}.`)
+        .sort(),
+    );
+    for (const output of [JSON.stringify(events), JSON.stringify(lines)]) {
+      assert.equal(output.includes(secret), false);
+      for (const { prefix } of cases) {
+        assert.equal(output.includes(prefix), false);
+      }
+      for (const field of [
+        "details",
+        "request",
+        "spec",
+        "annotations",
+        "stack",
+        "requestDiagnostic",
+      ]) {
+        assert.equal(output.includes(`"${field}":`), false);
+      }
+    }
   },
 );
 
@@ -1444,6 +1623,7 @@ test(
       computeDriverId: fixture.compute.id,
       code: "KUBERNETES_API_REJECTED",
       step: "gateway_deployment",
+      candidatePreparationReached: true,
       errorClass: "KubernetesApiError",
       message: "The Kubernetes API rejected revision preparation.",
       status: 422,
@@ -1678,12 +1858,29 @@ revisionTest(
       [candidate.id],
     );
     assert.deepEqual(evidence.rows, [{ reason: "CONVERGENCE_DEADLINE_EXCEEDED" }]);
+    // The Compute observation carried a check and code outside the runtime's vocabulary. They
+    // are recorded as UNRECOGNIZED, so neither the stored work nor its status carries them
+    // (finding 1660).
+    const recordedRuntimeFailure = {
+      ...runtimeFailure,
+      check: "UNRECOGNIZED",
+      code: "UNRECOGNIZED",
+    };
+    const recorded = await fixture.observerPool.query(
+      "SELECT result_data FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(recorded.rows[0].result_data, {
+      timeoutMs: 1,
+      runtimeFailure: recordedRuntimeFailure,
+    });
     const status = await fixture.deploymentStatus(owner, candidate);
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
-      message: "Deployment convergence deadline exceeded.",
-      data: { timeoutMs: 1, runtimeFailure },
+      message:
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
+      data: { timeoutMs: 1, runtimeFailure: recordedRuntimeFailure },
     });
     assert.deepEqual(status.warnings, []);
     // A runtime that failed by itself stays for diagnosis: nothing retires it.
@@ -1729,7 +1926,8 @@ revisionTest(
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
-      message: "Deployment convergence deadline exceeded.",
+      message:
+        "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
       data: { timeoutMs: 1 },
     });
     assert.notEqual(status.cleanup, null);
@@ -1889,9 +2087,16 @@ revisionTest(
     // readiness evidence decides: a bootstrap last seen running is retired with the failure
     // (finding 1165), a deployment that got past it keeps its runtime for diagnosis, and a
     // revision published since (only its activation fails) is never retired.
-    const running = await fixture.admitInitialRevision("expired-bootstrap-outage");
-    const progressed = await fixture.admitInitialRevision("expired-runtime-outage");
-    const published = await fixture.admitInitialRevision("expired-activation-outage");
+    // The scripted passes must all run before the deadline, so it is real time from admission
+    // (finding 1171). Each work is admitted 20 s old by the database clock, which the worker judges
+    // the deadline by: 10 s of real time leaves a stalled runner room for those few passes (they
+    // take about 1 s), and the outage then fills the rest without waiting out all 30 s.
+    const timeoutMs = 30_000;
+    const remainingMs = 10_000;
+    const aged = { revision: { workAge: `${(timeoutMs - remainingMs) / 1000} seconds` } };
+    const running = await fixture.admitInitialRevision("expired-bootstrap-outage", aged);
+    const progressed = await fixture.admitInitialRevision("expired-runtime-outage", aged);
+    const published = await fixture.admitInitialRevision("expired-activation-outage", aged);
     // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
     // except that the published revision's later passes are ready and its activation fails.
     const script = new Map([
@@ -1908,9 +2113,6 @@ revisionTest(
         "unavailable",
         "The Kubernetes API answered HTTP 503.",
       );
-    // The scripted passes must all run before the deadline, so it is real time from admission.
-    // 30 s leaves a stalled runner room for them; the outage then fills the rest (finding 1171).
-    const timeoutMs = 30_000;
     await fixture.start(
       {
         ...fixture.compute,
@@ -1957,7 +2159,7 @@ revisionTest(
       ).rows;
 
     for (const { candidate } of [running, progressed, published]) {
-      await fixture.work(candidate, "failed_permanent", timeoutMs + 60_000);
+      await fixture.work(candidate, "failed_permanent", remainingMs + 15_000);
       // The pass that ended it ran at the deadline, by the database clock, not before it.
       const { rows } = await fixture.observerPool.query(
         `SELECT EXTRACT(EPOCH FROM completed_at - created_at) * 1000 AS age_ms
@@ -2029,7 +2231,8 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_AUTHENTICATION_FAILED",
-        message: "Deployment runtime credentials were rejected.",
+        message:
+          "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
       },
     },
   },
@@ -2048,7 +2251,29 @@ for (const scenario of [
       activeRevisionId: null,
       error: {
         code: "RUNTIME_CPU_STARVED",
-        message: "Deployment runtime did not get enough CPU to start.",
+        message:
+          "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+      },
+    },
+  },
+  {
+    // Finding 1677: the kubelet restarts the init container, but a refusal repeats.
+    name: "a refused workspace setup fails deployment before the convergence deadline",
+    label: "refused-workspace-setup",
+    pendingPasses: 1,
+    runtimeFailure: {
+      component: "agent",
+      check: "workspace-setup",
+      checkedAt: "2026-10-17T08:00:00.000Z",
+      code: "WORKSPACE_SETUP_REFUSED",
+    },
+    expected: {
+      preparations: 2,
+      activeRevisionId: null,
+      error: {
+        code: "WORKSPACE_SETUP_REFUSED",
+        message:
+          "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
       },
     },
   },
@@ -2089,6 +2314,16 @@ revisionTest(
       component: "agent",
       cause: { kind: "WRAPPER_ERROR" },
     };
+    // Only failed model probes retain evidence in both persisted and public errors.
+    const expectedProbeFailure = (runtimeFailure) => ({
+      resultData: { runtimeFailure },
+      error: {
+        code: "RUNTIME_MODEL_PROBE_FAILED",
+        message:
+          "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+        data: { runtimeFailure },
+      },
+    });
     const cases = [
       {
         label: "held-runtime-0",
@@ -2101,34 +2336,20 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_MODEL_PROBE_TIMEOUT",
-            message: "Deployment runtime startup model check timed out.",
+            message:
+              "The startup model check did not get a reply from the model provider in time. With OpenClaw this includes a provider the runtime cannot reach (refused connection or unknown host). Check that the runtime can reach the provider (network egress, proxy, or a custom baseUrl in the Configuration) and that the provider is responding, then deploy a new version.",
           },
         },
       },
       {
         label: "held-runtime-1",
         runtimeFailure: probeStatusFailure,
-        // Only failed model probes retain their classified runtime evidence.
-        expected: {
-          resultData: { runtimeFailure: probeStatusFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message: "Deployment runtime startup model check failed.",
-            data: { runtimeFailure: probeStatusFailure },
-          },
-        },
+        expected: expectedProbeFailure(probeStatusFailure),
       },
       {
         label: "held-runtime-2",
         runtimeFailure: wrapperFailure,
-        expected: {
-          resultData: { runtimeFailure: wrapperFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message: "Deployment runtime startup model check failed.",
-            data: { runtimeFailure: wrapperFailure },
-          },
-        },
+        expected: expectedProbeFailure(wrapperFailure),
       },
       {
         label: "held-runtime-3",
@@ -2141,7 +2362,8 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_LOGIN_FAILED",
-            message: "Deployment runtime could not sign in to the model provider.",
+            message:
+              "Deployment runtime could not sign in to the model provider. Check the Agent's model credential (for an OAuth login, sign in again) and that the runtime can reach the provider, then deploy a new version.",
           },
         },
       },
@@ -2156,7 +2378,8 @@ revisionTest(
         expected: {
           error: {
             code: "RUNTIME_STARTUP_FAILED",
-            message: "Deployment runtime failed a startup check.",
+            message:
+              "Deployment runtime failed a startup check. Check this version's logs for the failed check and correct its cause, then deploy a new version.",
           },
         },
       },
@@ -2277,7 +2500,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.3-pre.2 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell v0.1.5 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {
@@ -2288,6 +2511,66 @@ revisionTest(
       },
     });
     assert.equal(preparations, 1);
+  },
+);
+
+revisionTest(
+  "a Kubernetes 403 on a private Secret write fails deployment on the first attempt",
+  async (fixture) => {
+    // Finding 1770 (D503): an RBAC grant, admission policy or quota that refuses the write
+    // refuses every retry too, so the deployment fails at once with a status that names the
+    // refusal and the grant to check, instead of five DEPENDENCY_UNAVAILABLE retries and
+    // "Deployment reconciliation failed.". The Driver keeps only the HTTP status and Status
+    // reason as the cause (tests/conformance/kubernetes-compute.test.mjs pins that shape), and
+    // the worker log keeps both. A 429, 5xx or timeout stays a TransientDependencyError, which
+    // waits for the convergence deadline (the KUBERNETES_API_UNAVAILABLE case below).
+    const admitted = await fixture.admitInitialRevision("private-secret-write-forbidden");
+    const events = [];
+    let preparations = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision() {
+          preparations += 1;
+          const refused = new KubernetesSecretWriteForbiddenError();
+          refused.cause = Object.assign(
+            new Error("The Kubernetes API answered HTTP 403 (Forbidden)."),
+            { code: 403, reason: "Forbidden" },
+          );
+          throw refused;
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    await assertFailedDeployment(fixture, admitted, {
+      error: {
+        code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+        message:
+          "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+      },
+    });
+    assert.equal(preparations, 1);
+    const completed = events.filter(
+      (event) => event.event === "worker.completed" && event.revisionId === admitted.candidate.id,
+    );
+    assert.deepEqual(
+      completed.map(({ outcome, code, cause, status, reason }) => ({
+        outcome,
+        code,
+        cause,
+        status,
+        reason,
+      })),
+      [
+        {
+          outcome: "permanent",
+          code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+          cause: "KubernetesSecretWriteForbiddenError",
+          status: 403,
+          reason: "Forbidden",
+        },
+      ],
+    );
   },
 );
 
@@ -2405,6 +2688,92 @@ revisionTest(
         dependency: "agent_gateway",
         cause: "unavailable",
       })),
+    );
+  },
+);
+
+revisionTest(
+  "a Sandbox gateway outage longer than the attempt budget waits, then the deployment activates",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("sandbox-gateway-outage");
+    const events = [];
+    // Finding 2040 (D28, finding 1658): while the OpenShell gateway is scaled down or restarting,
+    // every request of the pass answers gRPC UNAVAILABLE, which the gateway client raises as a
+    // SandboxGatewayUnavailableError. The outage holds until the test has seen more passes than
+    // the attempt budget (5), whatever their backoff, and only then does the gateway come back.
+    let held = true;
+    let passes = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision(revision, revisionContext) {
+          if (held) {
+            passes += 1;
+            throw new SandboxGatewayUnavailableError(
+              "OpenShell CreateSandbox failed with gRPC status 14.",
+            );
+          }
+          return fixture.compute.prepareRevision(revision, revisionContext);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+
+    const waited = await waitFor(
+      "more passes against the stopped gateway than the attempt budget",
+      async () => {
+        const work = await fixture.observerPool.query(
+          "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+          [candidate.idempotencyKey],
+        );
+        assert.notEqual(work.rows[0]?.state, "failed_permanent", "the outage spent the budget");
+        return passes > 7 && work.rows[0]?.state === "queued" ? work.rows[0] : undefined;
+      },
+      30_000,
+    );
+    assert.equal(waited.attempt_count, 0);
+    // A pass's live lease reads as `running`; read the status between passes.
+    const during = await waitFor("the deployment status between outage passes", async () => {
+      const status = await fixture.deploymentStatus(owner, candidate);
+      return status.status === "queued" ? status : undefined;
+    });
+    held = false;
+    assert.deepEqual(
+      {
+        code: during.progress?.lastAttempt?.code,
+        message: during.progress?.lastAttempt?.message,
+      },
+      {
+        code: "SANDBOX_GATEWAY_UNAVAILABLE",
+        message:
+          "The Sandbox gateway did not answer the controller yet. The controller will retry until the deployment deadline.",
+      },
+    );
+
+    const succeeded = await fixture.work(candidate, "succeeded", 30_000);
+    assert.equal(succeeded.attempt_count, 1);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+    const outagePasses = events.filter(
+      (event) =>
+        event.event === "worker.completed" &&
+        event.revisionId === candidate.id &&
+        event.outcome !== "success",
+    );
+    assert.ok(outagePasses.length > 7, `saw ${outagePasses.length} outage passes`);
+    assert.deepEqual(
+      new Set(
+        outagePasses.map(({ outcome, code, dependency, cause }) =>
+          JSON.stringify({ outcome, code, dependency, cause }),
+        ),
+      ),
+      new Set([
+        JSON.stringify({
+          outcome: "pending",
+          code: "SANDBOX_GATEWAY_UNAVAILABLE",
+          dependency: "sandbox_gateway",
+          cause: "unavailable",
+        }),
+      ]),
     );
   },
 );
@@ -2692,79 +3061,166 @@ revisionTest(
 // D381 follow-up: a dedicated Gateway that refuses its own in-Pod CLI as unauthorized
 // can never apply its workspace node for this revision, so activation must fail the
 // deployment with a named code instead of staying pending until the convergence
-// deadline. Both activation paths are covered: the pass that publishes the active
+// deadline. Finding 2265: so must a private Secret write (the workspace setup Secret that
+// activation delivers) that Kubernetes refuses with 403, as it does during preparation
+// (finding 1770). Both activation paths are covered: the pass that publishes the active
 // pointer, and a later pass that finds the pointer already published.
-for (const pendingPasses of [0, 1]) {
+for (const refusal of [
+  {
+    label: "the Gateway refuses as unauthorized",
+    slug: "gateway-unauthorized",
+    failure: () =>
+      new ActivationFailedError(
+        "AGENT_GATEWAY_UNAUTHORIZED",
+        "The exact AgentRevision gateway refused its own CLI as unauthorized.",
+      ),
+    error: {
+      code: "AGENT_GATEWAY_UNAUTHORIZED",
+      message:
+        "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
+    },
+    cause: "ActivationFailedError",
+  },
+  {
+    label: "whose private Secret write Kubernetes refuses with 403",
+    slug: "activation-secret-forbidden",
+    failure: () =>
+      Object.assign(new KubernetesSecretWriteForbiddenError(), {
+        cause: Object.assign(new Error("The Kubernetes API answered HTTP 403 (Forbidden)."), {
+          code: 403,
+          reason: "Forbidden",
+        }),
+      }),
+    error: {
+      code: "KUBERNETES_SECRET_WRITE_FORBIDDEN",
+      message:
+        "Kubernetes refused access to a Secret this version needs (HTTP 403 Forbidden), so the controller did not retry. Ask a platform operator to check that the worker's tenant RoleBindings grant get, create and update on secrets in the Agent's Kubernetes namespaces (with an execution cluster, also the control cluster's Gateway namespace), and that no admission policy or ResourceQuota refuses Secrets there, then deploy again.",
+    },
+    cause: "KubernetesSecretWriteForbiddenError",
+  },
+]) {
+  for (const pendingPasses of [0, 1]) {
+    revisionTest(
+      `an activation ${refusal.label} fails deployment at once (after ${pendingPasses} pending passes)`,
+      async (fixture) => {
+        const { owner, candidate } = await fixture.admitInitialRevision(
+          `${refusal.slug}-${pendingPasses}`,
+        );
+        const events = [];
+        let activations = 0;
+        const stopped = [];
+
+        await fixture.start(
+          {
+            ...fixture.compute,
+            // Exclusive Compute stops a refused candidate, but never the published revision.
+            requiresStoppedPredecessors: () => true,
+            async stopRevision(revision) {
+              stopped.push(revision.id);
+              return fixture.compute.stopRevision(revision);
+            },
+            async activateRevision() {
+              activations += 1;
+              if (activations <= pendingPasses) {
+                throw new ActivationPendingError(
+                  "WORKSPACE_NODE_BINDING_PENDING",
+                  "The exact AgentRevision gateway has not applied its workspace node.",
+                );
+              }
+              throw refusal.failure();
+            },
+          },
+          { emit: (event) => events.push(event) },
+        );
+
+        await assertFailedDeployment(
+          fixture,
+          { owner, candidate },
+          { error: refusal.error },
+          30_000,
+        );
+        // No retry after the refusal: the first refused pass ends the deployment.
+        assert.equal(activations, pendingPasses + 1);
+        assert.deepEqual(stopped, [], "the published revision keeps its workload");
+        await completion(
+          events,
+          "the refused activation's terminal completion",
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === candidate.id &&
+            event.outcome === "permanent",
+        );
+        const last = events
+          .filter(
+            (event) => event.event === "worker.completed" && event.revisionId === candidate.id,
+          )
+          .at(-1);
+        assert.deepEqual(
+          { outcome: last?.outcome, code: last?.code, cause: last?.cause },
+          { outcome: "permanent", code: refusal.error.code, cause: refusal.cause },
+        );
+      },
+    );
+  }
+}
+
+// Finding 2265: a maintenance pass of a running revision is no deployment anyone waits on. A
+// 403 on a private Secret write there, in preparation or activation, fails only that bounded
+// pass, as an outage does, and keeps the maintenance chain, so the Agent keeps its runtime and
+// recovers by itself once an operator fixes the grant instead of needing a new deployment.
+for (const [step, label] of [
+  ["prepareRevision", "preparation"],
+  ["activateRevision", "activation"],
+]) {
   revisionTest(
-    `an activation the Gateway refuses as unauthorized fails deployment at once (after ${pendingPasses} pending passes)`,
+    `a Kubernetes 403 on a private Secret write during maintenance ${label} keeps the maintenance chain`,
     async (fixture) => {
       const { owner, candidate } = await fixture.admitInitialRevision(
-        `gateway-unauthorized-${pendingPasses}`,
+        `maintenance-secret-forbidden-${label}`,
       );
       const events = [];
-      let activations = 0;
-      const stopped = [];
-
+      let refuse = false;
       await fixture.start(
         {
           ...fixture.compute,
-          // Exclusive Compute stops a refused candidate, but never the published revision.
-          requiresStoppedPredecessors: () => true,
-          async stopRevision(revision) {
-            stopped.push(revision.id);
-            return fixture.compute.stopRevision(revision);
-          },
-          async activateRevision() {
-            activations += 1;
-            if (activations <= pendingPasses) {
-              throw new ActivationPendingError(
-                "WORKSPACE_NODE_BINDING_PENDING",
-                "The exact AgentRevision gateway has not applied its workspace node.",
-              );
+          maintenanceIntervalMs: 200,
+          async [step](...args) {
+            if (refuse) {
+              throw new KubernetesSecretWriteForbiddenError();
             }
-            throw new ActivationFailedError(
-              "AGENT_GATEWAY_UNAUTHORIZED",
-              "The exact AgentRevision gateway refused its own CLI as unauthorized.",
-            );
+            // The fixture's Compute has no activation step of its own.
+            return fixture.compute[step]?.(...args);
           },
         },
         { emit: (event) => events.push(event) },
       );
-
-      await assertFailedDeployment(
-        fixture,
-        { owner, candidate },
-        {
-          error: {
-            code: "AGENT_GATEWAY_UNAUTHORIZED",
-            message:
-              "The Agent Gateway refused its own CLI as unauthorized. Check that the Agent's Configuration sets gateway.auth.password to OPENCLAW_GATEWAY_PASSWORD (Enable gateway password access), then deploy again.",
-          },
-        },
-        30_000,
-      );
-      // No retry after the refusal: the first refused pass ends the deployment.
-      assert.equal(activations, pendingPasses + 1);
-      assert.deepEqual(stopped, [], "the published revision keeps its workload");
-      await completion(
+      await fixture.work(candidate, "succeeded");
+      refuse = true;
+      const maintenance = `agent_revision:${candidate.id}:maintenance:`;
+      const refused = await completion(
         events,
-        "the refused activation's terminal completion",
+        "a maintenance pass refused with 403",
         (event) =>
           event.event === "worker.completed" &&
-          event.revisionId === candidate.id &&
-          event.outcome === "permanent",
+          event.workId?.startsWith(maintenance) &&
+          event.cause === "KubernetesSecretWriteForbiddenError",
       );
-      const last = events
-        .filter((event) => event.event === "worker.completed" && event.revisionId === candidate.id)
-        .at(-1);
       assert.deepEqual(
-        { outcome: last?.outcome, code: last?.code, cause: last?.cause },
-        {
-          outcome: "permanent",
-          code: "AGENT_GATEWAY_UNAUTHORIZED",
-          cause: "ActivationFailedError",
-        },
+        { outcome: refused.outcome, code: refused.code },
+        { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" },
       );
+      refuse = false;
+      await completion(
+        events,
+        "a later maintenance pass to succeed",
+        (event, index) =>
+          index > events.indexOf(refused) &&
+          event.event === "worker.completed" &&
+          event.workId?.startsWith(maintenance) &&
+          event.outcome === "success",
+      );
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, candidate.id);
+      assert.equal((await fixture.deploymentStatus(owner, candidate)).status, "succeeded");
     },
   );
 }
@@ -2796,6 +3252,14 @@ for (const { label, failure, code, message } of [
     code: "SANDBOX_ADMISSION_LIMIT_REACHED",
     message:
       "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.",
+  },
+  {
+    // Finding 2040: a gateway that never comes back is bounded by the deadline too.
+    label: "Sandbox gateway",
+    failure: () =>
+      new SandboxGatewayUnavailableError("OpenShell CreateSandbox failed with gRPC status 14."),
+    code: "SANDBOX_GATEWAY_UNAVAILABLE",
+    message: "The Sandbox gateway still did not answer the controller at the deployment deadline.",
   },
 ]) {
   test(

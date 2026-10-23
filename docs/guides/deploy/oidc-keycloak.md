@@ -19,11 +19,10 @@ and, if applicable, [reverse proxy guidance](https://www.keycloak.org/server/rev
 The CI and Local Setup fixture uses `start-dev` and a development file database;
 it is not a production deployment.
 
-The proposed OCE compatibility policy is Keycloak 26.x, pending team acceptance. The real-provider CI fixture
-currently pins **26.7.5** by digest in
-[`image.json`](../../../tests/fixtures/keycloak/image.json); the pin is the version
-exercised by that fixture, not qualification of every 26.x deployment. Other major
-versions are not verified. Qualify your actual production configuration before use.
+The real-provider CI fixture pins Keycloak **26.7.5** by digest in
+[`image.json`](../../../tests/fixtures/keycloak/image.json). That is the only version
+CI exercises; other versions, including other 26.x releases, are not verified.
+Qualify your actual production configuration before use.
 
 Prepare the [guarded OIDC profile](oidc-sign-in.md#requirements): one serving
 controller, PostgreSQL State, native IAM, one canonical HTTPS Console origin, and
@@ -96,7 +95,7 @@ The checked-in realm and its fixed identities are **disposable CI/local fixtures
 Do not import the fixture realm as a production provisioning shortcut: its test
 users and placeholder credentials are not production identities or secrets. For
 the test-only import and generated credentials, see the
-[Keycloak OIDC lane](../../testing/keycloak.md).
+[Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests).
 
 ## Configure and enable OCE
 
@@ -176,7 +175,7 @@ test-only CI runs it when its test changes.
 The lane checks discovery and the signing key, attached sign-in with both client
 authentication methods, signing-key rotation, refusal of an unattached user, and
 local sign-out and user disablement behavior. See the
-[Keycloak OIDC lane](../../testing/keycloak.md#verified-flows) for each test and
+[Keycloak OIDC lane](../../testing/kubernetes.md#verified-keycloak-flows) for each test and
 its evidence. Keycloak behind a TLS proxy, Keycloak in the same cluster as the API,
 other major versions, and a production `start` deployment with a persistent external
 database are not qualified by this fixture. Operator browser and recovery checks
@@ -186,4 +185,4 @@ remain necessary for the actual deployment.
 
 - [Enable OIDC sign-in](oidc-sign-in.md)
 - [External sign-in reference](../../reference/authentication/external-sign-in.md)
-- [Keycloak OIDC lane](../../testing/keycloak.md)
+- [Keycloak OIDC lane](../../testing/kubernetes.md#keycloak-oidc-tests)

@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type {
@@ -31,6 +32,7 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
@@ -76,7 +78,7 @@ interface DockerContainerInspect {
   };
 }
 
-interface DockerNetworkInspect {
+interface DockerLabeledResourceInspect {
   readonly Labels?: Readonly<Record<string, string>>;
 }
 
@@ -430,6 +432,15 @@ export class DockerComputeDriver implements ComputeDriver {
   private lifecycleStarted = false;
   private podmanApi = false;
 
+  /**
+   * Every topology runs one gateway container per Agent, so a candidate replaces the active
+   * revision's gateway. Exclusive replacement makes the worker stop predecessors first and stop
+   * a refused candidate, instead of leaving it serving under the predecessor (finding 1800).
+   */
+  requiresStoppedPredecessors(): boolean {
+    return true;
+  }
+
   constructor(options: DockerComputeDriverOptions) {
     required(options.images.gateway, "Docker gateway image");
     required(options.images.agent, "Docker Codex Agent image");
@@ -543,10 +554,17 @@ export class DockerComputeDriver implements ComputeDriver {
     );
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     if (revision.harnessAuth !== undefined) {
       this.validateHarnessAuth();
     }
@@ -640,28 +658,14 @@ export class DockerComputeDriver implements ComputeDriver {
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
       return { ...result, ready: gateway.ready };
     } catch (error) {
-      const failures = [error];
-      for (const name of [gatewayCreated, agentCreated]) {
-        if (name === undefined) {
-          continue;
-        }
-        try {
-          await this.removeContainer(name);
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (launchPrepared) {
-        try {
-          await this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true });
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Docker workload preparation and cleanup failed.");
-      }
-      throw error;
+      throw await failureAfterCleanup(error, "Docker workload preparation and cleanup failed.", [
+        ...[gatewayCreated, agentCreated]
+          .filter((name): name is string => name !== undefined)
+          .map((name) => () => this.removeContainer(name)),
+        ...(launchPrepared
+          ? [() => this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true })]
+          : []),
+      ]);
     }
   }
 
@@ -802,9 +806,7 @@ export class DockerComputeDriver implements ComputeDriver {
     const ownership = this.gatewayOwnership(revision);
     const mounts = this.workspaceMounts(ownership);
     for (const mount of new Map(mounts.map((mount) => [mount.Source, mount])).values()) {
-      let volume = await this.inspect<{ Labels?: Readonly<Record<string, string>> }>(
-        `/volumes/${encodeURIComponent(mount.Source)}`,
-      );
+      let volume = await this.volume(mount.Source);
       if (volume === undefined) {
         if (setup.completed) {
           throw new ConfigurationFailure("Initialized workspace storage is missing.");
@@ -942,19 +944,9 @@ ${WORKSPACE_SETUP_RUNTIME}`,
         continue;
       }
       // Reinspect immediately before deletion rather than trusting the list response.
-      let current: { Labels?: Readonly<Record<string, string>> };
-      try {
-        current = (await this.request(
-          "GET",
-          `/volumes/${encodeURIComponent(volume.Name)}`,
-          undefined,
-          [200],
-        )) as typeof current;
-      } catch (error) {
-        if (statusCode(error) === 404) {
-          continue;
-        }
-        throw error;
+      const current = await this.volume(volume.Name);
+      if (current === undefined) {
+        continue;
       }
       this.verifyOwnership(current.Labels, ownership, `volume ${volume.Name}`);
       if (current.Labels?.[ROLE_LABEL] !== "workspace") {
@@ -1336,8 +1328,8 @@ ${WORKSPACE_SETUP_RUNTIME}`,
     await this.request("GET", `/images/${encodeURIComponent(ref)}/json`, undefined, [200]);
   }
 
-  private async network(name: string): Promise<DockerNetworkInspect | undefined> {
-    return this.inspect<DockerNetworkInspect>(`/networks/${encodeURIComponent(name)}`);
+  private async network(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/networks/${encodeURIComponent(name)}`);
   }
 
   private async removeNetwork(name: string): Promise<void> {
@@ -1346,6 +1338,10 @@ ${WORKSPACE_SETUP_RUNTIME}`,
 
   private async container(name: string): Promise<DockerContainerInspect | undefined> {
     return this.inspect<DockerContainerInspect>(`/containers/${encodeURIComponent(name)}/json`);
+  }
+
+  private async volume(name: string): Promise<DockerLabeledResourceInspect | undefined> {
+    return this.inspect<DockerLabeledResourceInspect>(`/volumes/${encodeURIComponent(name)}`);
   }
 
   private async inspect<T>(path: string): Promise<T | undefined> {

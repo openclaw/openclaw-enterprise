@@ -433,7 +433,7 @@ func developmentKeycloakTLSMirror(source []byte) (map[string]any, []byte, error)
 
 func developmentKeycloakRedirectURI(cluster string, browserPort int) string {
 	console, _, _ := developmentBrowserHosts(cluster)
-	return fmt.Sprintf("https://%s:%d/api/auth/providers/oidc/callback", console, browserPort)
+	return developmentBrowserOrigin(console, browserPort) + "/api/auth/providers/oidc/callback"
 }
 
 // installDevelopmentKeycloak runs after the chart, whose routing CA Issuer
@@ -793,7 +793,7 @@ func (r *runner) signInDevelopmentKeycloak(ctx context.Context, state *developme
 		return err
 	}
 	consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
-	origin := fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)
+	origin := developmentBrowserOrigin(consoleHost, state.BrowserPort)
 	address := fmt.Sprintf("127.0.0.1:%d", state.BrowserPort)
 
 	// The password-only first pass: read the administrator's user ID.
@@ -829,7 +829,7 @@ func (r *runner) signInDevelopmentKeycloak(ctx context.Context, state *developme
 		return err
 	}
 	fmt.Fprintln(r.opts.Out, "Enabling Keycloak sign-in (second Helm pass)...")
-	if err := r.helmUpgrade(ctx, state, valuesPath, timeout); err != nil {
+	if err := r.helmUpgrade(ctx, state, valuesPath, timeout, "--install"); err != nil {
 		return err
 	}
 
@@ -863,8 +863,13 @@ type developmentConsole struct {
 // only ca. It needs no name resolution, so *.localhost names work everywhere.
 func newDevelopmentConsole(origin, address string, ca []byte) (*developmentConsole, error) {
 	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Scheme != "https" || parsed.Port() == "" {
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
 		return nil, fmt.Errorf("invalid Console origin %q", origin)
+	}
+	// A canonical origin omits the default port; the transport dials host:443.
+	expected := parsed.Host
+	if parsed.Port() == "" {
+		expected = net.JoinHostPort(parsed.Hostname(), "443")
 	}
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(ca) {
@@ -878,7 +883,7 @@ func newDevelopmentConsole(origin, address string, ca []byte) (*developmentConso
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: parsed.Hostname(), MinVersion: tls.VersionTLS12},
 		DialContext: func(ctx context.Context, network, target string) (net.Conn, error) {
-			if target != parsed.Host {
+			if target != expected {
 				return nil, fmt.Errorf("unexpected Console address %s", target)
 			}
 			return dialer.DialContext(ctx, network, address)
@@ -997,7 +1002,7 @@ func (c *developmentConsole) attachOIDC(ctx context.Context, userID, subject str
 // the two CAs a browser must trust and the host name it must resolve.
 func developmentKeycloakInstructions(state *developmentState) string {
 	consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
-	return fmt.Sprintf(`Keycloak sign-in: open https://%s:%d/console/ and choose Continue with %s.
+	return fmt.Sprintf(`Keycloak sign-in: open %s/console/ and choose Continue with %s.
   Keycloak user: %s
   Keycloak password file: %s
   Trust in the browser: %s (Console) and %s (Keycloak)
@@ -1005,7 +1010,7 @@ func developmentKeycloakInstructions(state *developmentState) string {
   Keycloak issuer: %s
   Keycloak administrator password file: %s
   Password sign-in is for the recovery account (the administrator) only.
-`, consoleHost, state.BrowserPort, developmentKeycloakSignInName, developmentKeycloakSignInUser,
+`, developmentBrowserOrigin(consoleHost, state.BrowserPort), developmentKeycloakSignInName, developmentKeycloakSignInUser,
 		filepath.Join(state.directory, "keycloak-alice-password"),
 		filepath.Join(state.directory, "browser-ca.crt"), filepath.Join(state.directory, "gateway-ca.crt"),
 		developmentKeycloakHost(state.Cluster), developmentKeycloakIssuer(state.Cluster),

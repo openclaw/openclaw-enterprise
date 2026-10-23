@@ -1,3 +1,4 @@
+import type { InstalledDriver } from "./installed-driver.ts";
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import type {
@@ -87,6 +88,11 @@ function validateBackendDefinition(value: unknown, index: number): BackendDefini
   const drivers = asRecord(candidate.drivers);
   if (drivers === undefined) {
     throw new ScopeViolationError(path(id, "drivers") + " must be one object.");
+  }
+  if (Object.hasOwn(drivers, "conduit")) {
+    throw new ScopeViolationError(
+      path(id, "drivers.conduit") + " is retired; use drivers.credential_proxy instead.",
+    );
   }
   if (candidate.type === "openshell") {
     return validateOpenShellBackend(id, configuration, drivers);
@@ -236,6 +242,7 @@ function validateOpenShellBackend(
     "requestTimeoutMs",
     "rootCertificatePath",
     "insecureTransport",
+    "operatorTls",
   ];
   for (const key of Object.keys(configuration)) {
     if (!allowed.includes(key)) {
@@ -313,10 +320,23 @@ function validateOpenShellBackend(
       isAbsolute(authRecord.path)
     ) {
       auth = { mode: "bearerTokenFile", path: authRecord.path };
+    } else if (
+      authRecord.mode === "mtls" &&
+      Object.keys(authRecord).length === 3 &&
+      isNonEmptyString(authRecord.certificatePath) &&
+      isAbsolute(authRecord.certificatePath) &&
+      isNonEmptyString(authRecord.privateKeyPath) &&
+      isAbsolute(authRecord.privateKeyPath)
+    ) {
+      auth = {
+        mode: "mtls",
+        certificatePath: authRecord.certificatePath,
+        privateKeyPath: authRecord.privateKeyPath,
+      };
     } else {
       throw new ScopeViolationError(
         path(id, "configuration.auth") +
-          " must be unauthenticated or bearerTokenFile with an absolute path.",
+          " must be unauthenticated, bearerTokenFile with an absolute path, or mtls with absolute certificatePath and privateKeyPath.",
       );
     }
   }
@@ -331,12 +351,41 @@ function validateOpenShellBackend(
   const tls =
     endpoint === undefined
       ? (scheme ?? (rootCertificatePath === undefined ? "http" : "https")) === "https"
-      : (endpoint as string).startsWith("https://");
-  const protectedTransport = tls && auth?.mode === "bearerTokenFile";
+      : /^https:\/\//i.test(endpoint as string);
+  let operatorTls: OpenShellBackendDefinition["configuration"]["operatorTls"];
+  if (configuration.operatorTls !== undefined) {
+    const record = asRecord(configuration.operatorTls);
+    if (
+      record === undefined ||
+      Object.keys(record).length !== 2 ||
+      !isNonEmptyString(record.certificatePath) ||
+      !isAbsolute(record.certificatePath) ||
+      !isNonEmptyString(record.privateKeyPath) ||
+      !isAbsolute(record.privateKeyPath)
+    ) {
+      throw new ScopeViolationError(
+        path(id, "configuration.operatorTls") +
+          " requires absolute certificatePath and privateKeyPath file paths.",
+      );
+    }
+    if (!tls) {
+      throw new ScopeViolationError(
+        path(id, "configuration.operatorTls") + " requires a direct HTTPS gateway endpoint.",
+      );
+    }
+    operatorTls = {
+      certificatePath: record.certificatePath,
+      privateKeyPath: record.privateKeyPath,
+    };
+  }
+  if (auth?.mode === "mtls" && !tls) {
+    throw new ScopeViolationError(path(id, "configuration.auth") + " mtls requires HTTPS.");
+  }
+  const protectedTransport = tls && (auth?.mode === "bearerTokenFile" || auth?.mode === "mtls");
   if (!protectedTransport && insecureTransport === undefined) {
     throw new ScopeViolationError(
       path(id, "configuration") +
-        " requires TLS with bearerTokenFile authentication, or insecureTransport: network-policy.",
+        " requires TLS with bearerTokenFile or mtls authentication, or insecureTransport: network-policy.",
     );
   }
   if (protectedTransport && insecureTransport !== undefined) {
@@ -345,7 +394,12 @@ function validateOpenShellBackend(
     );
   }
   for (const key of Object.keys(drivers)) {
-    if (key !== "sandbox" && key !== "credential_gateway" && key !== "credential_refresh") {
+    if (
+      key !== "sandbox" &&
+      key !== "credential_gateway" &&
+      key !== "credential_refresh" &&
+      key !== "credential_proxy"
+    ) {
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
@@ -366,6 +420,7 @@ function validateOpenShellBackend(
       ...(serviceName === undefined ? {} : { serviceName: serviceName as string }),
       ...(port === undefined ? {} : { port: port as number }),
       ...(auth === undefined ? {} : { auth }),
+      ...(operatorTls === undefined ? {} : { operatorTls }),
       ...(requestTimeoutMs === undefined ? {} : { requestTimeoutMs: requestTimeoutMs as number }),
       ...(rootCertificatePath === undefined
         ? {}
@@ -375,6 +430,9 @@ function validateOpenShellBackend(
     drivers: {
       sandbox: drivers.sandbox,
       credential_gateway: drivers.credential_gateway,
+      ...(drivers.credential_proxy === undefined
+        ? {}
+        : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
       ...(drivers.credential_refresh === undefined
         ? {}
         : { credential_refresh: drivers.credential_refresh as string }),
@@ -395,6 +453,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
     ...(backend.drivers.credential_refresh === undefined
       ? []
       : [`credential_refresh:${backend.drivers.credential_refresh}`]),
+    ...(backend.drivers.credential_proxy === undefined
+      ? []
+      : [`credential_proxy:${backend.drivers.credential_proxy}`]),
   ];
 }
 
@@ -452,6 +513,7 @@ export function assertConfiguredBackend(
 export function validateSelectedBackendDrivers(
   backends: readonly BackendDefinition[],
   selected: Readonly<Partial<Record<DriverCapability, Driver>>>,
+  proxyOwner?: InstalledDriver,
 ): void {
   const requires = (capability: DriverCapability, id: string, label: string): void => {
     const driver = selected[capability];
@@ -478,6 +540,13 @@ export function validateSelectedBackendDrivers(
           "Credential Refresh Driver",
         );
       }
+      if (backend.drivers.credential_proxy !== undefined) {
+        requires("credential_proxy", backend.drivers.credential_proxy, "Credential Proxy Driver");
+      } else if (selected.credential_proxy !== undefined) {
+        throw new DriverSelectionError(
+          "The selected Credential Proxy Driver must belong to the Sandbox's Backend.",
+        );
+      }
     }
   }
   // Refresh state lives with the gateway's source record, so the two roles share one Backend.
@@ -490,6 +559,17 @@ export function validateSelectedBackendDrivers(
   ) {
     throw new DriverSelectionError(
       "The selected Credential Refresh Driver must belong to the Credential Gateway's Backend.",
+    );
+  }
+  const proxy = selected.credential_proxy;
+  if (
+    proxy !== undefined &&
+    (!proxyOwner ||
+      proxyOwner.require("credential_proxy") !== proxy ||
+      proxyOwner.require("sandbox") !== selected.sandbox)
+  ) {
+    throw new DriverSelectionError(
+      "The selected Credential Proxy Driver and Sandbox must come from the same registered Driver.",
     );
   }
   const gateway = selected.credential_gateway;

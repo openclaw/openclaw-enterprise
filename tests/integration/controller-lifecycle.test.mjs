@@ -10,12 +10,12 @@ import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DedicatedOpenClawSandboxError,
   DependencyUnavailableError,
   DriverSelectionError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
   NamespaceNotReadyError,
-  NativeWorkerSupportError,
   OpenClawController,
   ScopeViolationError,
 } from "../../packages/occ/src/index.ts";
@@ -342,7 +342,7 @@ test("the controller selects explicitly registered Sandbox Drivers with closed f
       DriverSelectionError,
     );
   }
-  for (const hook of ["ensureNamespace", "provisionHarness", "cleanup"]) {
+  for (const hook of ["validateWorkspaceSetup", "ensureNamespace", "provisionHarness", "cleanup"]) {
     assert.throws(
       () =>
         controller.registerDriver({
@@ -945,6 +945,33 @@ test("Agent configuration references stay mutable while deployment admits deeply
   });
 });
 
+function codexSandboxConfiguration() {
+  return {
+    agents: {
+      defaults: {
+        model: "codex/gpt-5.6-sol",
+        models: { "codex/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
+      },
+    },
+  };
+}
+
+async function createDedicatedAgentForSandboxAdmission(controller, namespaceName, name, values) {
+  const { id: namespaceId } = await controller.createNamespace("principal-admin", {
+    name: namespaceName,
+  });
+  await controller.handleNamespaceLifecycle("principal-admin", namespaceId, "ready");
+  const configuration = await createConfiguration(controller, namespaceId, values);
+  const agent = await controller.createAgent("principal-admin", {
+    namespaceId,
+    name,
+    configurationId: configuration.id,
+    executionMode: "dedicated",
+  });
+  await bindHarnessAuth(controller, agent);
+  return { namespaceId, agentId: agent.id };
+}
+
 test("Sandbox admission applies provider-owned Agent configuration before freezing its revision", async () => {
   const { controller } = createController();
   const sandbox = createSandboxDriver({
@@ -966,17 +993,8 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
 
-  const namespace = await controller.createNamespace("principal-admin", {
-    name: "OpenShell sandbox namespace",
-  });
-  await controller.handleNamespaceLifecycle("principal-admin", namespace.id, "ready");
   const values = {
-    agents: {
-      defaults: {
-        model: "codex/gpt-5.6-sol",
-        models: { "codex/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
-      },
-    },
+    ...codexSandboxConfiguration(),
     plugins: {
       entries: {
         codex: {
@@ -990,18 +1008,16 @@ test("Sandbox admission applies provider-owned Agent configuration before freezi
       },
     },
   };
-  const configuration = await createConfiguration(controller, namespace.id, values);
-  const agent = await controller.createAgent("principal-admin", {
-    namespaceId: namespace.id,
-    name: "Dedicated OpenShell agent",
-    configurationId: configuration.id,
-    executionMode: "dedicated",
-  });
+  const target = await createDedicatedAgentForSandboxAdmission(
+    controller,
+    "OpenShell sandbox namespace",
+    "Dedicated OpenShell agent",
+    values,
+  );
 
-  await bindHarnessAuth(controller, agent);
   const revision = await controller.deployAgent(
     "principal-admin",
-    { namespaceId: namespace.id, agentId: agent.id },
+    target,
     resolveApprovedDevelopmentHarness,
   );
 
@@ -1025,35 +1041,24 @@ test("Sandbox Drivers without an Agent configuration hook preserve the admitted 
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
 
-  const namespace = await controller.createNamespace("principal-admin", {
-    name: "Sandbox without configuration overrides",
-  });
-  await controller.handleNamespaceLifecycle("principal-admin", namespace.id, "ready");
   const values = {
-    agents: {
-      defaults: {
-        model: "codex/gpt-5.6-sol",
-        models: { "codex/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
-      },
-    },
+    ...codexSandboxConfiguration(),
     plugins: {
       entries: {
         codex: { enabled: true, config: { appServer: { sandbox: "read-only" } } },
       },
     },
   };
-  const configuration = await createConfiguration(controller, namespace.id, values);
-  const agent = await controller.createAgent("principal-admin", {
-    namespaceId: namespace.id,
-    name: "Unmodified dedicated Agent",
-    configurationId: configuration.id,
-    executionMode: "dedicated",
-  });
+  const target = await createDedicatedAgentForSandboxAdmission(
+    controller,
+    "Sandbox without configuration overrides",
+    "Unmodified dedicated Agent",
+    values,
+  );
 
-  await bindHarnessAuth(controller, agent);
   const revision = await controller.deployAgent(
     "principal-admin",
-    { namespaceId: namespace.id, agentId: agent.id },
+    target,
     resolveApprovedDevelopmentHarness,
   );
 
@@ -1072,31 +1077,21 @@ test("Sandbox admission rejects malformed provider configuration before creating
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
 
-  const namespace = await controller.createNamespace("principal-admin", {
-    name: "Malformed Sandbox configuration",
-  });
-  await controller.handleNamespaceLifecycle("principal-admin", namespace.id, "ready");
-  const configuration = await createConfiguration(controller, namespace.id, {
-    agents: { defaults: { model: "codex/gpt-5.6-sol" } },
-  });
-  const agent = await controller.createAgent("principal-admin", {
-    namespaceId: namespace.id,
-    name: "Rejected dedicated Agent",
-    configurationId: configuration.id,
-    executionMode: "dedicated",
-  });
-  await bindHarnessAuth(controller, agent);
+  const target = await createDedicatedAgentForSandboxAdmission(
+    controller,
+    "Malformed Sandbox configuration",
+    "Rejected dedicated Agent",
+    codexSandboxConfiguration(),
+  );
 
   await assert.rejects(
-    controller.deployAgent(
-      "principal-admin",
-      { namespaceId: namespace.id, agentId: agent.id },
-      resolveApprovedDevelopmentHarness,
-    ),
-    ScopeViolationError,
+    controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
+    { name: "ScopeViolationError", message: "Configuration values must be a JSON object." },
   );
   assert.deepEqual(
-    await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
+    await controller.transact((state) =>
+      state.revisions.listRevisions(target.namespaceId, target.agentId),
+    ),
     [],
   );
 });
@@ -1107,83 +1102,62 @@ for (const facets of [["networking"], ["filesystem"], ["process"], ["networking"
     const sandbox = createSandboxDriver({ facets });
     controller.registerDriver(sandbox);
     controller.selectDriver("sandbox", sandbox.id);
-    const namespace = await controller.createNamespace("principal-admin", {
-      name: `Sandbox facets ${facets.join(", ")}`,
-    });
-    await controller.handleNamespaceLifecycle("principal-admin", namespace.id, "ready");
-    const configuration = await createConfiguration(controller, namespace.id, {
-      agents: {
-        defaults: {
-          model: "codex/gpt-5.6-sol",
-          models: { "codex/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
-        },
-      },
-    });
-    const agent = await controller.createAgent("principal-admin", {
-      namespaceId: namespace.id,
-      name: "Dedicated Agent with optional containment facets",
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-    });
+    const target = await createDedicatedAgentForSandboxAdmission(
+      controller,
+      `Sandbox facets ${facets.join(", ")}`,
+      "Dedicated Agent with optional containment facets",
+      codexSandboxConfiguration(),
+    );
 
     // A provider's declared subset is sufficient to admit and persist a revision.
-    await bindHarnessAuth(controller, agent);
     const revision = await controller.deployAgent(
       "principal-admin",
-      { namespaceId: namespace.id, agentId: agent.id },
+      target,
       resolveApprovedDevelopmentHarness,
     );
     assert.equal(revision.sandboxDriverId, sandbox.id);
     assert.deepEqual(
-      await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
+      await controller.transact((state) =>
+        state.revisions.listRevisions(target.namespaceId, target.agentId),
+      ),
       [revision],
     );
   });
 }
 
-test("dedicated native OpenClaw requires native worker support and a full-facet provisioning Sandbox", async () => {
-  for (const [name, sandbox, nativeWorkerSupport, refusal] of [
-    ["pinned runtime", createSandboxDriver(), undefined, NativeWorkerSupportError],
-    ["missing", undefined, "custom-image", DependencyUnavailableError],
+test("dedicated native OpenClaw with the pinned runtime requires a full-facet provisioning Sandbox", async () => {
+  for (const [name, sandbox, refusal] of [
+    ["complete", createSandboxDriver(), undefined],
+    ["missing", undefined, DedicatedOpenClawSandboxError],
     [
       "partial",
       createSandboxDriver({ facets: ["networking", "filesystem"] }),
-      "custom-image",
-      DependencyUnavailableError,
+      DedicatedOpenClawSandboxError,
     ],
-    ["complete", createSandboxDriver(), "custom-image", undefined],
   ]) {
-    const { controller } = createController(
-      undefined,
-      nativeWorkerSupport === undefined ? {} : { nativeWorkerSupport },
-    );
+    const { controller } = createController();
     if (sandbox !== undefined) {
       controller.registerDriver(sandbox);
       controller.selectDriver("sandbox", sandbox.id);
     }
-    const namespace = await controller.createNamespace("principal-admin", {
-      name: `Native sandbox ${name}`,
-    });
-    await controller.handleNamespaceLifecycle("principal-admin", namespace.id, "ready");
-    const configuration = await createConfiguration(controller, namespace.id, {
+    const values = {
       agents: {
         defaults: {
           model: "openai/gpt-5",
           models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
         },
       },
-    });
-    const agent = await controller.createAgent("principal-admin", {
-      namespaceId: namespace.id,
-      name: `Dedicated native ${name}`,
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-    });
-    await bindHarnessAuth(controller, agent);
+    };
+    const target = await createDedicatedAgentForSandboxAdmission(
+      controller,
+      `Native sandbox ${name}`,
+      `Dedicated native ${name}`,
+      values,
+    );
 
     const deployment = controller.deployAgent(
       "principal-admin",
-      { namespaceId: namespace.id, agentId: agent.id },
+      target,
       resolveApprovedDevelopmentHarness,
     );
     if (refusal === undefined) {
@@ -1193,7 +1167,9 @@ test("dedicated native OpenClaw requires native worker support and a full-facet 
     } else {
       await assert.rejects(deployment, refusal, name);
       assert.deepEqual(
-        await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
+        await controller.transact((state) =>
+          state.revisions.listRevisions(target.namespaceId, target.agentId),
+        ),
         [],
       );
     }
@@ -1232,33 +1208,8 @@ async function createDedicatedNativeAgentWithUngrantedSecret(controller, name) {
   return { namespace, agent, secret };
 }
 
-test("dedicated native OpenClaw reports missing native worker support before Agent principal grants", async () => {
-  const { controller } = createController();
-  const sandbox = createSandboxDriver();
-  controller.registerDriver(sandbox);
-  controller.selectDriver("sandbox", sandbox.id);
-  const { namespace, agent } = await createDedicatedNativeAgentWithUngrantedSecret(
-    controller,
-    "Unsupported native before grants",
-  );
-
-  // Granting the Agent principal would not make this deployable, so the capability refusal wins.
-  await assert.rejects(
-    controller.deployAgent(
-      "principal-admin",
-      { namespaceId: namespace.id, agentId: agent.id },
-      resolveApprovedDevelopmentHarness,
-    ),
-    NativeWorkerSupportError,
-  );
-  assert.deepEqual(
-    await controller.transact((state) => state.revisions.listRevisions(namespace.id, agent.id)),
-    [],
-  );
-});
-
 test("deploy names the Agent service principal and the permission it lacks", async () => {
-  const { controller } = createController(undefined, { nativeWorkerSupport: "custom-image" });
+  const { controller } = createController();
   const sandbox = createSandboxDriver();
   controller.registerDriver(sandbox);
   controller.selectDriver("sandbox", sandbox.id);
@@ -1706,7 +1657,11 @@ test("IAM decision reasons must be strings before returning Installation data", 
   for (const reason of ["Allowed by the selected IAM Driver.", ""]) {
     await t.test(reason === "" ? "empty string remains valid" : "valid string", async () => {
       transform = (decision) => ({ ...decision, reason });
-      assert.deepEqual(await controller.getInstallation("principal-admin"), installation);
+      // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+      assert.deepEqual(await controller.getInstallation("principal-admin"), {
+        ...installation,
+        capabilities: { openclaw: { executionModes: ["embedded"] } },
+      });
     });
   }
   await t.test("wrong Driver remains unavailable", async () => {

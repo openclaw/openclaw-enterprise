@@ -60,9 +60,6 @@ type runtimeLogRecord struct {
 }
 
 func (app *application) printRuntimeLogPage(page *occclient.RuntimeLogPage, notices io.Writer) error {
-	if string(page.Stream) == "null" || len(page.Stream) == 0 {
-		noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
-	}
 	for _, raw := range page.Records {
 		var record runtimeLogRecord
 		if err := json.Unmarshal(raw, &record); err != nil {
@@ -126,8 +123,9 @@ func runtimeLogLineText(at string, record runtimeLogRecord) string {
 var harnessCode = regexp.MustCompile(`^[A-Z][A-Z_]{0,63}$`)
 
 // runtimeHarnessLine summarizes the provider-owned Harness Sandbox, or returns "" when
-// the description has none. Only OCC's fixed states and codes are printed.
-func runtimeHarnessLine(resource map[string]any) string {
+// the description has none. Only OCC's fixed states and codes are printed, plus
+// sandboxLogs, the command that reads this revision's Sandbox logs.
+func runtimeHarnessLine(resource map[string]any, sandboxLogs string) string {
 	harness, ok := resource["harness"].(map[string]any)
 	if !ok {
 		return ""
@@ -148,7 +146,7 @@ func runtimeHarnessLine(resource map[string]any) string {
 			line += ", restart " + strconv.FormatInt(restarts, 10)
 		}
 		return line + "). The Harness process exited and OpenShell is restarting it; " +
-			"if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox)."
+			"if this persists, read its Sandbox logs (" + sandboxLogs + ")."
 	}
 	if harnessCode.MatchString(code) {
 		line += " (" + code + ")"
@@ -159,6 +157,40 @@ func runtimeHarnessLine(resource map[string]any) string {
 	return line
 }
 
+// printAgentHarness follows the table of one Agent with its Harness Sandbox line when OCC
+// observed one. OCC does not restart a lost Sandbox, so the Agent's lifecycle alone still
+// reads active while nothing serves it. Only a running Agent with an active revision can
+// have one, so no other Agent is read. A status that cannot be read prints unknown, never lost.
+func (app *application) printAgentHarness(client *occclient.Client, namespace, agentID string, agent any) error {
+	resource, _ := agent.(map[string]any)
+	active, _ := resource["activeRevisionId"].(string)
+	if resource["status"] != "active" || resource["desiredRuntimeState"] != "running" || active == "" {
+		return nil
+	}
+	status, err := client.GetAgentHarnessStatus(namespace, agentID)
+	observed, ok := status.(map[string]any)
+	line := "Harness Sandbox: unknown (the status could not be read)."
+	if err == nil && ok {
+		if observed["status"] != "observed" {
+			return nil
+		}
+		// The logs command names the observed revision, so a later deployment cannot redirect it.
+		sandboxLogs := fmt.Sprintf("occ --namespace %s agent logs %s --source sandbox", namespace, agentID)
+		if revisionID, _ := observed["revisionId"].(string); observedRevisionID.MatchString(revisionID) {
+			sandboxLogs += " --revision " + revisionID
+		}
+		line = runtimeHarnessLine(observed, sandboxLogs)
+		if line == "" {
+			return nil
+		}
+	}
+	_, err = fmt.Fprintf(app.out, "\n%s\n", line)
+	return err
+}
+
+// observedRevisionID matches the revision IDs OCC issues; anything else is not echoed.
+var observedRevisionID = regexp.MustCompile(`^rev_[0-9a-f-]{1,64}$`)
+
 // harnessInteger reads a JSON number that is a whole value within [minimum, maximum].
 func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
 	number, ok := value.(float64)
@@ -168,12 +200,16 @@ func harnessInteger(value any, minimum, maximum float64) (int64, bool) {
 	return int64(number), true
 }
 
-func (app *application) printRuntime(description any) error {
+// printRuntime prints the runtime description of one Agent revision. The
+// Namespace, Agent and revision name the exact Sandbox logs command, so a stale
+// OCC_NAMESPACE or a moved default revision cannot redirect it.
+func (app *application) printRuntime(description any, namespace, agentID, revisionID string) error {
 	resource, ok := description.(map[string]any)
 	if !ok {
 		return fmt.Errorf("OCC returned an invalid runtime description")
 	}
-	if line := runtimeHarnessLine(resource); line != "" {
+	sandboxLogs := fmt.Sprintf("occ --namespace %s agent logs %s --source sandbox --revision %s", namespace, agentID, revisionID)
+	if line := runtimeHarnessLine(resource, sandboxLogs); line != "" {
 		if _, err := fmt.Fprintf(app.out, "%s\n\n", line); err != nil {
 			return err
 		}
@@ -217,6 +253,9 @@ func (app *application) printRuntime(description any) error {
 			}
 			row["restarts"] = container["restartCount"]
 			row["state"] = container["state"]
+			if reason, ok := container["reason"].(string); ok && reason != "" {
+				row["state"] = displayValue(container["state"]) + " (" + reason + ")"
+			}
 			if termination, ok := container["lastTermination"].(map[string]any); ok {
 				parts := []string{}
 				if reason, ok := termination["reason"].(string); ok {

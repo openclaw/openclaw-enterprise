@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { resolveApprovedProductionHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import {
+  installationDriverConfigurations,
+  loadInstallationConfiguration,
+} from "../../apps/controller/src/composition/installation-config.ts";
 import { withComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -16,9 +18,10 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { InMemoryPlatformState, OpenClawController } from "../../packages/occ/src/index.ts";
 import { cookieHeaderFromSetCookie, createTestAuthPrincipal } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
+import { injectJson } from "../helpers/inject-json.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/driver-packages");
-const provisionPath = "/tmp/local-test";
 const computePackage = "@fixture/test-compute-driver";
 const configurationPackage = "@fixture/test-configuration-driver";
 const iamPackage = "@fixture/test-iam-driver";
@@ -38,7 +41,10 @@ function selectedIAM() {
   };
 }
 
-function selectedCompute() {
+// Each run provisions into its own temporary directory: a fixed path collides across
+// concurrent runs, even from different checkouts.
+async function selectedCompute(t) {
+  const provisionPath = join(await temporaryDirectory(t, "occ-installed-compute-"), "provisioned");
   return {
     id: "compute-installed-fixture",
     package: computePackage,
@@ -47,8 +53,7 @@ function selectedCompute() {
 }
 
 async function installedPackages(t) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-installed-drivers-"));
-  t.after(async () => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-installed-drivers-");
 
   const owner = join(directory, "owner");
   await writeFile(join(directory, "empty.npmrc"), "", "utf8");
@@ -197,6 +202,7 @@ async function authenticatedApplication(t, drivers) {
     createController(value) {
       controller = new OpenClawController(value, {
         state: new InMemoryPlatformState({ auditSink }),
+        driverConfigurations: installationDriverConfigurations(drivers.installation),
         recordOperations: false,
       });
       return controller;
@@ -244,16 +250,11 @@ async function authenticatedApplication(t, drivers) {
   };
 }
 
-async function request(fixture, method, url, payload) {
-  const response = await fixture.app.inject({
-    method,
-    url,
-    headers: {
-      cookie: fixture.config.cookie,
-      origin: fixture.config.authOrigin,
-      host: "127.0.0.1",
-    },
-    ...(payload === undefined ? {} : { payload }),
+async function request(fixture, method, url, body) {
+  const { cookie, authOrigin } = fixture.config;
+  const response = await injectJson(fixture.app, method, url, {
+    session: { cookie, origin: authOrigin },
+    body,
   });
   return { status: response.statusCode, ...response.json() };
 }
@@ -264,24 +265,10 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
   await t.test(
     "installed Compute, Configuration, and IAM Drivers operate through production admission",
     async (scenario) => {
-      let ownedArtifact = false;
-      try {
-        await stat(provisionPath);
-        assert.fail(`Refusing to overwrite existing ${provisionPath}.`);
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          throw error;
-        }
-      }
-      scenario.after(async () => {
-        if (ownedArtifact) {
-          await rm(provisionPath, { force: true });
-        }
-      });
-
       const configuration = installation();
       configuration.drivers.configuration = selectedConfiguration();
-      configuration.drivers.compute = selectedCompute();
+      configuration.drivers.compute = await selectedCompute(scenario);
+      const { provisionPath } = configuration.drivers.compute.configuration;
       configuration.drivers.iam = selectedIAM();
       const drivers = await load(owner, configuration, "production");
       const cancellation = new AbortController();
@@ -331,7 +318,6 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
         namespace.data.id,
         "ready",
       );
-      ownedArtifact = true;
       assert.equal(ready.status, "ready");
       const evidence = JSON.parse(await readFile(provisionPath, "utf8"));
       assert.deepEqual(evidence, {
@@ -390,9 +376,9 @@ test("reviewed scoped Driver packages install, activate, and fail closed", async
 
   await t.test(
     "production rejects an installed Compute package missing revision stages",
-    async () => {
+    async (scenario) => {
       const configuration = installation();
-      configuration.drivers.compute = selectedCompute();
+      configuration.drivers.compute = await selectedCompute(scenario);
       configuration.drivers.compute.configuration.revisionStages = false;
 
       await assert.rejects(load(owner, configuration, "production"), /activat|stage/i);
@@ -609,7 +595,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
   // `exports` is undefined in ESM, so Node can load this file only as CommonJS.
   const commonJSDriver = [
     'exports.configurationSchema = { type: "object" };',
-    "exports.validateConfiguration = () => {};",
+    "exports.validateConfiguration = () => [];",
     'exports.createDriver = () => { throw new Error("The CommonJS Driver must never be created."); };',
     "",
   ].join("\n");
@@ -717,8 +703,7 @@ function escapeRegExp(text) {
 }
 
 async function onDiskConfigurationPackage(t, exports) {
-  const owner = await mkdtemp(join(tmpdir(), "occ-driver-export-array-"));
-  t.after(() => rm(owner, { recursive: true, force: true }));
+  const owner = await temporaryDirectory(t, "occ-driver-export-array-");
   const installed = join(owner, "node_modules", configurationPackage);
   await mkdir(dirname(installed), { recursive: true });
   await cp(join(fixtures, "test-configuration-driver"), installed, { recursive: true });
@@ -737,6 +722,64 @@ async function onDiskConfigurationPackage(t, exports) {
   );
   return owner;
 }
+
+test("Driver export URLs retain the selected query and fragment during construction", async (t) => {
+  for (const suffix of ["?profile=selected", "#configuration", "?profile=selected#configuration"]) {
+    await t.test(suffix, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, `./compiled/index.js${suffix}`);
+      const compiled = join(owner, "node_modules", configurationPackage, "compiled");
+      await cp(join(compiled, "index.js"), join(compiled, "base.js"));
+      // This compiled package selects its accepted endpoint from its exported module URL.
+      // Native import and the Installation loader must supply the same selected profile.
+      await writeFile(
+        join(compiled, "index.js"),
+        [
+          'import { createDriver as createBaseDriver, validateConfiguration as validateBase } from "./base.js";',
+          'export { configurationSchema } from "./base.js";',
+          "const selected = new URL(import.meta.url);",
+          "export function validateConfiguration(configuration) {",
+          "  validateBase(configuration);",
+          '  if (configuration.endpoint !== "memory:" + selected.search + selected.hash) {',
+          '    throw new Error("The selected Driver export URL profile was lost.");',
+          "  }",
+          "  return [];",
+          "}",
+          "export function createDriver(options) {",
+          "  validateConfiguration(options.configuration);",
+          "  return createBaseDriver(options);",
+          "}",
+        ].join("\n"),
+      );
+      const endpoint = `memory:${suffix}`;
+      const native = spawnSync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          `const driver = await import(${JSON.stringify(configurationPackage)}); driver.validateConfiguration({ endpoint: ${JSON.stringify(endpoint)} });`,
+        ],
+        { cwd: owner, encoding: "utf8" },
+      );
+      assert.equal(native.status, 0, native.stderr);
+      const configuration = installation();
+      configuration.drivers.configuration = {
+        ...selectedConfiguration(),
+        configuration: { endpoint },
+      };
+      const drivers = await load(owner, configuration);
+      const value = {
+        id: `cfg_${randomUUID()}`,
+        namespaceId: `ns_${randomUUID()}`,
+        kind: "agent",
+        generation: 1,
+        createdAt: new Date().toISOString(),
+        values: { agents: { defaults: { workspace: "/tmp/profile" } } },
+      };
+      assert.deepEqual(await drivers.configurationDriver.create(value), value);
+      assert.deepEqual(await drivers.configurationDriver.read(value), value);
+    });
+  }
+});
 
 function importConfigurationPackage(owner) {
   return spawnSync(
@@ -853,4 +896,246 @@ test("Driver export resolution accepts an in-root entry whose name starts with t
     `${configurationPackage}@1.0.0`,
   );
   assert.equal(drivers.configurationDriver.implementation, `${configurationPackage}@1.0.0`);
+});
+
+test("startup definitions collect safe structural errors and reject invalid validator results before construction", async (t) => {
+  const schema = {
+    type: "object",
+    additionalProperties: false,
+    required: ["endpoint"],
+    properties: {
+      endpoint: {
+        type: "object",
+        additionalProperties: false,
+        required: ["a/b~c", "ports"],
+        properties: {
+          "a/b~c": { type: "string", minLength: 2 },
+          ports: { type: "array", items: { type: "integer", minimum: 1, maximum: 65535 } },
+        },
+      },
+    },
+  };
+  for (const [name, submitted, validator, check] of [
+    [
+      "nested structural errors",
+      { endpoint: { "a/b~c": 3, ports: [0, "wrong"] } },
+      "throw new Error('validator must not run')",
+      (error) => {
+        assert.deepEqual(
+          error.error.details.map(({ path }) => path),
+          ["/endpoint/a~1b~0c", "/endpoint/ports/0", "/endpoint/ports/1"],
+        );
+      },
+    ],
+    [
+      "sensitive dynamic keys",
+      { endpoint: { "a/b~c": "ok", ports: [443], "private-input": 1 } },
+      "throw new Error('validator must not run')",
+      (error) => {
+        assert.equal(JSON.stringify(error.error).includes("private-input"), false);
+        assert.equal(error.error.details[0].path, "/endpoint");
+      },
+    ],
+    [
+      "malformed result",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return undefined",
+      (error) => assert.match(error.message, /validator failed/),
+    ],
+    [
+      "replacement data envelope",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return { success: true, data: input }",
+      (error) => assert.match(error.message, /validator failed/),
+    ],
+    [
+      "input mutation",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "input.endpoint.ports[0] = 80; return []",
+      (error) => assert.match(error.message, /validator failed/),
+    ],
+    [
+      "malformed field errors",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return [{ path: '/endpoint', code: 'INVALID_VALUE', message: 'Refused.', value: 'private-input' }]",
+      (error) => {
+        assert.match(error.message, /validator failed/);
+        assert.equal(error.message.includes("private-input"), false);
+      },
+    ],
+    [
+      "thrown secret",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "throw new Error('private-input')",
+      (error) => {
+        assert.equal(error.message.includes("private-input"), false);
+        assert.match(error.message, /validator failed/);
+      },
+    ],
+    [
+      "semantic refusal",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return [{ path: '/endpoint/ports/0', code: 'INVALID_VALUE', message: 'This port is not supported.' }]",
+      (error) => {
+        assert.equal(error.error.details[0].message, "This port is not supported.");
+      },
+    ],
+  ]) {
+    await t.test(name, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const marker = join(owner, "constructed");
+      await writeFile(
+        join(owner, "node_modules", configurationPackage, "compiled/index.js"),
+        `
+        import { writeFileSync } from 'node:fs';
+        export const configurationSchema = ${JSON.stringify(schema)};
+        export function validateConfiguration(input) { ${validator}; }
+        export function createDriver() { writeFileSync(${JSON.stringify(marker)}, 'constructed'); throw new Error('construction reached'); }
+      `,
+      );
+      const configured = installation();
+      configured.drivers.configuration = { ...selectedConfiguration(), configuration: submitted };
+      await assert.rejects(load(owner, configured), (error) => {
+        check(error);
+        return true;
+      });
+      await assert.rejects(stat(marker), { code: "ENOENT" });
+      if (name === "input mutation") {
+        assert.deepEqual(
+          submitted.endpoint.ports,
+          [443],
+          "The caller's submitted configuration stays unchanged.",
+        );
+      }
+    });
+  }
+});
+
+test("startup rejects unbound contributions, reserved keys, unknown scopes, and unsupported schemas", async (t) => {
+  for (const [label, contribution] of [
+    ["unbound owner", { scope: "agent", key: "unowned", configurationSchema: { type: "object" } }],
+    [
+      "reserved key",
+      { scope: "installation", key: "startup", configurationSchema: { type: "object" } },
+    ],
+    [
+      "unknown scope",
+      { scope: "namespace", key: "settings", configurationSchema: { type: "object" } },
+    ],
+  ]) {
+    await t.test(label, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const entry = join(owner, "node_modules", configurationPackage, "compiled/index.js");
+      await writeFile(
+        entry,
+        (await readFile(entry, "utf8")) +
+          `\nexport const configurationContributions = [{ ...${JSON.stringify(contribution)}, validateConfiguration() { return []; } }];`,
+      );
+      const configured = installation();
+      configured.drivers.configuration = selectedConfiguration();
+      await assert.rejects(load(owner, configured), /contribution/);
+    });
+  }
+});
+
+test("Sandbox contribution registration rejects duplicates and invalid schemas before its factory", async (t) => {
+  for (const [name, contributions] of [
+    [
+      "duplicate",
+      [
+        { scope: "agent", key: "sandbox-network-policy" },
+        { scope: "agent", key: "sandbox-network-policy" },
+      ],
+    ],
+    [
+      "invalid schema",
+      [
+        {
+          scope: "agent",
+          key: "sandbox-network-policy",
+          configurationSchema: { type: "not-a-schema-type" },
+        },
+      ],
+    ],
+  ]) {
+    await t.test(name, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const entry = join(owner, "node_modules", configurationPackage, "compiled/index.js");
+      await writeFile(
+        entry,
+        (await readFile(entry, "utf8")) +
+          `
+        export const configurationContributions = ${JSON.stringify(contributions)}.map(value => ({
+          configurationSchema: { type: 'object', additionalProperties: false, properties: {} },
+          validateConfiguration() { return []; }, ...value
+        }));
+      `,
+      );
+      const configured = installation();
+      configured.drivers.sandbox = { ...selectedConfiguration(), id: "sandbox-package" };
+      await assert.rejects(
+        load(owner, configured),
+        /Duplicate Driver configuration contribution|Unsupported Driver configuration schema/,
+      );
+    });
+  }
+});
+
+test("registered schemas preserve tuple/reference pointers and reject ignored formats or missing references", async (t) => {
+  const tuples = {
+    type: "object",
+    additionalProperties: false,
+    required: ["endpoint"],
+    properties: {
+      endpoint: { type: "array", prefixItems: [{ $ref: "#/$defs/item" }], items: false },
+    },
+    $defs: {
+      item: {
+        type: "object",
+        additionalProperties: false,
+        properties: { "a/~": { type: "string" } },
+      },
+    },
+  };
+  for (const [name, schema, check] of [
+    [
+      "tuple and reference",
+      tuples,
+      (error) => assert.equal(error.error.details[0].path, "/endpoint/0/a~1~0"),
+    ],
+    [
+      "unknown format",
+      { ...tuples, properties: { endpoint: { type: "string", format: "not-installed" } } },
+      (error) => assert.match(error.message, /Unsupported Driver configuration schema/),
+    ],
+    [
+      "unresolved reference",
+      { ...tuples, properties: { endpoint: { $ref: "#/$defs/missing" } } },
+      (error) => assert.match(error.message, /Unsupported Driver configuration schema/),
+    ],
+  ]) {
+    await t.test(name, async (scenario) => {
+      const owner = await onDiskConfigurationPackage(scenario, "./compiled/index.js");
+      const marker = join(owner, "constructed");
+      await writeFile(
+        join(owner, "node_modules", configurationPackage, "compiled/index.js"),
+        `
+        import { writeFileSync } from 'node:fs';
+        export const configurationSchema = ${JSON.stringify(schema)};
+        export function validateConfiguration(input) { throw new Error('validation must fail earlier'); }
+        export function createDriver() { writeFileSync(${JSON.stringify(marker)}, 'constructed'); throw new Error('construction reached'); }
+      `,
+      );
+      const configured = installation();
+      configured.drivers.configuration = {
+        ...selectedConfiguration(),
+        configuration: { endpoint: [{ "a/~": 1 }] },
+      };
+      await assert.rejects(load(owner, configured), (error) => {
+        check(error);
+        return true;
+      });
+      await assert.rejects(stat(marker), { code: "ENOENT" });
+    });
+  }
 });

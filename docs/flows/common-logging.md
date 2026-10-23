@@ -1,7 +1,7 @@
 ---
 created: 2026-09-02
-updated: 2026-10-10
-last_updated_session: authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f
+updated: 2026-10-23
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # Common Operational Logging Flow
@@ -9,7 +9,7 @@ last_updated_session: authoring-run/93444a45-23c4-4b1c-9d53-391d9014d93f
 ## Overview
 
 Trusted startup configuration selects the OCC logging level. Authorized Agent
-deployment freezes runtime logging in an immutable AgentRevision. Optional
+deployment freezes runtime logging in an immutable Agent revision. Optional
 Collectors export reviewed operational records; PostgreSQL audit remains separate
 durable evidence.
 
@@ -35,7 +35,7 @@ graph TD
     B --> E["Authorized Agent deployment starts"]
     E --> F["Sandbox may transform a Configuration copy"]
     F --> G["Admission stamps platform-owned native logging fields"]
-    G --> H["Persist immutable AgentRevision"]
+    G --> H["Persist immutable Agent revision"]
   end
 
   subgraph Runtime["Managed runtime"]
@@ -49,7 +49,7 @@ graph TD
     J --> K
     K -->|"yes"| M["Collector reads container output and protected metadata"]
     M --> N["Classify records and strip unapproved content"]
-    N --> O["Bounded queue and OTLP HTTP exporter"]
+    N --> O["Queue with a size limit and OTLP HTTP exporter"]
   end
   O --> P["Optional demo Loki stores event body and structured metadata"]
   P --> Q["Grafana filters and formats retained metadata"]
@@ -71,7 +71,7 @@ See the [settings reference](../reference/settings.md) for YAML shape and values
 
 ### 2. Processes log fixed sanitized events
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 Worker (`apps/controller/src/worker.mjs`), bootstrap
 (`scripts/bootstrap-installation.mjs`), and migration (`scripts/migrate-production.mjs`)
@@ -81,14 +81,25 @@ failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOcc
 keeps reviewed scalar fields and drops unapproved fields, credentials, provider
 payloads, request/reply objects, and unsafe strings. This source boundary precedes
 the separate Collector filter in step 7. For worker records, the Collector retains
-allowlisted `work.operation` values and bounded `work.id` shapes. Agent stop keys
-and credential withdrawal keys include the operation UUID; deletion keys have no
-operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
-lowercase hexadecimal characters, matching the work ID the API and worker share.
+allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
+include the operation UUID. Credential withdrawal keys end in the operation UUID or
+`activation` (the attempt a candidate's activation queues), optionally followed by
+`:recovery:<n>` for a later attempt series. Deletion keys have no operation suffix.
+Provisioning keys use `agent-provisioning:` and exactly 32 lowercase hexadecimal
+characters, matching the work ID the API and worker share.
 Unsupported values and key shapes are excluded.
+The local worker emitter also retains `stopYields` from throttled drain-yield and
+completion records as a nonnegative safe integer; the Collector does not export this count.
+For any process, the sanitizer keeps `check`, `failure`, `reasonCode` and `harnessState`
+only as short identifier codes, never free text, and `fence` only as a nonnegative safe
+integer. The worker and the OpenShell Git runtime use them for expiry steps, failure
+classes, the reason code an Agent is shown, Harness state and route generations.
+`hintCode` (named refusal guidance) is a code too, and so is `command` on
+`auth:maintain` events. `installationId` and `orphanedConfigurationId` are kept only as
+OCC-assigned `ins_` and `cfg_` UUIDs.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
-status, and bounded message. The worker never serializes the raw exception, and
+status, and a message of at most 256 characters. The worker never serializes the raw exception, and
 the sanitizer drops secret-shaped messages before local output.
 
 ### 3. Admission freezes runtime logging
@@ -105,9 +116,11 @@ Configuration. Deployment stamps native fields before validation: matching
 `logging.level` and `logging.consoleLevel`, JSON console style, and
 `diagnostics.otel.logs=false`. It drops the retired `logging.redactSensitive` key.
 Runtime code owns console and tool redaction. The source Configuration is unchanged;
-the immutable AgentRevision retains the admitted policy across restarts and later edits.
+the immutable Agent revision retains the admitted policy across restarts and later edits.
 
-### 4. Compute renders settings from the revision
+<a id="4-compute-renders-settings-from-the-revision" class="anchor-alias"></a>
+
+### 4. Compute renders settings from the version
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -184,7 +197,7 @@ Codex turn and tool-call bodies are fixed text, and a `codex.operational` body
 keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 `codex_core::responses_retry` retry messages; a Codex warning without such a
 message is dropped (as are span lifecycle records).
-OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
+OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
 the local diagnostic message is excluded from remote export.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
@@ -193,17 +206,29 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
 `membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
-`worker.repository-cleanup-warning` keeps `occ.code` and its bounded cause as
+`worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
-`worker.compute-prepare-failed` (a Compute Driver could not prepare a revision) is
-ERROR and keeps `occ.code` plus the Namespace, Agent and revision IDs and work identity
+Every exported OCC event keeps the sanitizer's codes under the same checks (a
+letter, then at most 63 letters, digits, `_` or `-`, and no key or token shape):
+`check`, `failure`, `harnessState`, `hintCode` and `reasonCode` as `occ.check`,
+`occ.failure` (a device login keeps its own, below), `occ.harness_state`,
+`occ.hint_code` and `occ.reason_code`, and `fence`, a nonnegative safe integer, as
+`occ.fence`. So `worker.openshell-git-expiry` names the OpenShell Git expiry step
+and why it is pending, with `work.outcome` `pending`, `withdrawn` or
+`retire-runtime`, and `worker.repository-delivery-pending` shows that protected Git
+delivery is retrying. The reconcile retries every second, but that line is written when
+delivery starts failing (the first failed pass after the worker starts or after a completed
+pass), then at most once a minute. Its Sandbox Driver ID stays local, as do Installation and
+Configuration IDs.
+`worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
+ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
 API lifecycle and dependency warnings are exported too. `shutdown.started`,
 `shutdown.completed` and `shutdown.failed` (ERROR, `occ.code`) carry the drain's
 `duration_ms` once it ends; the signal stays local. `database.idle-client-error`
 keeps its SQLSTATE or transport code as `occ.code`. `device_authorization.start_failed`
 keeps `request.id`, `occ.device_authorization.reason` (`unreachable` or `unavailable`)
-and its bounded failure (such as `TimeoutError`) as `occ.device_authorization.failure`.
+and its failure class of at most 64 allowed characters (such as `TimeoutError`) as `occ.device_authorization.failure`.
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
@@ -211,9 +236,8 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `native_admin.compute_owner_mismatch` (native admin refused because the active
-revision belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
+carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
 implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
@@ -247,6 +271,8 @@ then appends the original release hash. Ending with the hash separates these
 names from unchanged component-suffixed Service names. `templates/deployments.yaml` creates those Services;
 `templates/grafana.yaml` uses the same names in both datasource URLs.
 Deployment names, Pod selectors and discovery identity keep the full release.
+Before rendering, `demo.validate` refuses an uppercase image repository path
+that kubelet cannot pull. Registry hosts and tags may retain uppercase spelling.
 The separately configured Collector endpoint remains in its exporter Secret.
 If an upgrade renames Loki, the operator updates that endpoint and refreshes
 the Collector Pods before new records can reach Loki; the
@@ -262,10 +288,10 @@ for panels, correlation, and authorization limits.
 ## Debugging and Verification
 
 - For unexpected process levels, check the startup snapshot; for runtime levels,
-  compare the admitted AgentRevision with rendered container settings.
+  compare the saved version with rendered container settings.
 - Use the [observability guide](../guides/observability.md#tests) for delivery,
   Collector metrics, and deployment troubleshooting.
-- Packaging and Collector tests prove configuration, filtering, bounded queues,
+- Packaging and Collector tests prove configuration, filtering, queue size limits,
   and startup boundaries. Select real runtime suites separately for gateway,
   Codex, model-turn, or OpenShell deployment proof.
 - If a runtime Pod enters `CrashLoopBackOff` before a model turn with a config
@@ -285,6 +311,24 @@ for panels, correlation, and authorization limits.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 21:00: Log `worker.repository-delivery-pending` when delivery starts failing, then at most once a minute, not on every one-second retry. (fix-2251)
+
+- 2026-10-23 20:00: Preserve current logging documentation and both histories while retaining demo repository-casing validation. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - e1788c775)
+
+- 2026-10-23 13:00: Export `worker.openshell-git-expiry` and `worker.repository-delivery-pending`, and keep the sanitizer's codes and route fence, so the bundled Collector shows why Git expiry or delivery is stuck. (collector-export-1023 - #3305)
+
+- 2026-10-23 12:30: Keep `work.id` for credential withdrawal keys that end in `activation` or `:recovery:<n>`; the Collector dropped them. (fix-2249 - #3302)
+
+- 2026-10-23 10:45: Keep the auth:maintain command, refusal guidance codes, OCC-assigned Installation and orphaned Configuration IDs, and the delivery-pending Sandbox Driver ID through the local logging sanitizer. (fix-2245)
+
+- 2026-10-23 09:45: Keep the OpenShell Git expiry check, failure, reason code and route fence, and the worker's Harness state, through the local logging sanitizer. (fix-2244 - #3289)
+
+- 2026-10-20 02:25: Refuse uppercase demo image repository paths before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - d331d24fd)
+
+- 2026-10-16 00:17: Reject negative and nonnumeric stop-yield counts at the local logging boundary. (authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2 - f916021bf235e9f8e91630484948eb6fc88ccfa7)
+
+- 2026-10-15 23:23: Preserve worker stop-yield counts through the local logging sanitizer. (authoring-run/74e7fe0c-15bc-4a73-ba8a-9ec426a17d06 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-14 01:40: Export `native_admin.compute_owner_mismatch` with the Agent's IDs; the Compute Driver names stay local. (fix-1287)
 
@@ -306,19 +350,4 @@ for panels, correlation, and authorization limits.
 - 2026-10-05 02:30: Export `presets.default-create-skipped` as WARN with only the Namespace ID.
 - 2026-10-04 23:10: Export `presets.default-refresh-skipped` as WARN with only the Namespace and Preset IDs. (bh13-fu2-collector - e54a08048)
 
-- 2026-10-01 16:37: Added the sanitized Compute preparation diagnostic boundary. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
-
-- 2026-10-01 14:45: Export sign-in provider outage warnings with bounded provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
-
-- 2026-09-25 11:31: Documented query-time operational summaries and filtering in the accompanying demo dashboard change. (redacted - 1a458b227585c572ec0ac70fd10efc3834165075)
-
-- 2026-09-25 09:56: Documented worker teardown correlation with the accompanying Collector allowlist repair. (redacted - 939ae63ac2be06d424cdbd5c626cfa675561d127)
-
-- 2026-09-25 09:53: Documented preflight warning export and message exclusion with the accompanying Collector allowlist repair. (redacted - 939ae63ac2be06d424cdbd5c626cfa675561d127)
-
-- 2026-09-23 17:40: Documented private Collector scraping and selected in-cluster export in the accompanying observability change. (redacted - faf0b0ae467a3bebfd5b5ed0a92f259248e5da74)
-
-- 2026-09-04 21:04: Documented that native logging admission drops the retired redaction key while preserving JSON levels, disabled OTLP logs, runtime redaction ownership and read-only Kubernetes config mounting. (redacted - 87234e1766e5802b45424523246a52a4b2d45590)
-
-- 2026-09-02 10:42: Added the source-backed common logging flow for startup policy, revision admission, runtime rendering, and Collector export. (redacted - 1242406b6863c8953abe4827c601c2173129ee50)
-- 2026-09-03 17:56: Simplified repeated settings and guide detail while preserving the logging lifecycle, admission, Collector filtering, and audit boundaries. (redacted - 61ef68bc61129c90130bb65b0fc48373f0c70866)
+[Common logging documentation history](common-logging/history.md) preserves the earlier dated entries.

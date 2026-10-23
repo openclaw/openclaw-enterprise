@@ -1836,7 +1836,9 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     (error) =>
       error instanceof ResourceConflictError &&
       error.name === "ResourceStateConflictError" &&
-      error.message.startsWith("An Agent, active revision, or pending deployment"),
+      error.message.startsWith(
+        "An Agent, active revision, pending deployment, or provisioning request",
+      ),
   );
 
   // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts
@@ -2247,6 +2249,7 @@ test("binding without a Credential Gateway is a 409 after operate, whether or no
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3310,6 +3313,7 @@ test("after a Credential Gateway change, every path refuses an old source with o
       type: "registry",
       config: { host: "registry-stuck.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: gateway.id,
       state: "deleting",
       createdAt: "2026-09-27T12:00:00.000Z",
@@ -3417,6 +3421,7 @@ test("update and delete without a Credential Gateway are a 409 after the grant, 
       type: "registry",
       config: { host: "registry.example.com" },
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway-test",
       state: "ready",
       createdAt: "2026-09-27T12:00:00.000Z",

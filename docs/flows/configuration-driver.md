@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-13
-last_updated_session: fix-1276-1278
+updated: 2026-10-23
+last_updated_session: fix-1828
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -19,9 +19,9 @@ Each Configuration requires immutable `kind: "agent"` and a server-managed
 generation; documents preserve unresolved inline SecretRefs without interpreting
 them. Agent deployment authorizes the separate Secret bindings, applies any
 selected Sandbox Driver transformation, and freezes the admitted values into an
-immutable AgentRevision. Configuration identity, kind, generation, and Secret
+immutable Agent revision. Configuration identity, kind, generation, and Secret
 references are recorded separately. This flow stops when OCC persists that
-revision and hands off workload reconciliation; the selected Compute Driver
+version and hands off workload reconciliation; the selected Compute Driver
 then owns the Agent gateway, while worker execution and secret resolution remain
 outside this flow's scope.
 
@@ -62,7 +62,7 @@ graph TD
   M --> P["Authorize Secret bindings and verify backend references"]
   P --> Q["Apply optional Sandbox transform; validate configuration and Harness"]
   Q --> N["Freeze admitted values, Configuration metadata, and Secret references"]
-  N --> O["Hand off admitted revision to reconciliation"]
+  N --> O["Hand off saved version to reconciliation"]
 ```
 
 ## Execution Trace
@@ -132,15 +132,15 @@ detail, before parsing, schema validation, the NUL/surrogate check or
 Every JSON route shares this parser and limit. Creation requires `kind: "agent"` and a native
 root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
-document and accept optional `secretBindings`; `kind`,
-`generation`, and ownership are server-owned and cannot be supplied or changed.
-OCC preserves nested values and SecretRefs unchanged. Malformed,
+document and accept optional `secretBindings` and `expectedGeneration`, refusing
+a stale one under the row lock with an `/expectedGeneration` `409` detail.
+`kind`, `generation`, and ownership are server-owned. OCC preserves nested values
+and SecretRefs unchanged. Malformed,
 generation-mismatched, or ownership-invalid persisted ConfigMaps fail with
 `503`.
 Authorization denial fails with `403`, a missing exact resource with `404`, an
 Agent dependency conflict with `409`, and unavailable IAM or storage with
-`503`. OpenClaw resolves inline SecretRefs at runtime; Configuration CRUD
-preserves them in `values`. OCC separately authorizes `operate` on each Secret
+`503`. OCC separately authorizes `operate` on each Secret
 selected by `secretBindings`, including retained bindings when PATCH omits the
 field. Omission preserves bindings; `{}` clears them. A submitted binding with a
 reserved or invalid destination, or a Secret reference to another Namespace, fails
@@ -151,7 +151,9 @@ echoed. A Secret the Namespace does not hold stays `404`. The
 the binding contract, and the [Secret flow](secret-storage-and-delivery.md)
 traces storage and delivery. Secret Broker substitution remains unimplemented.
 
-### 4–5. Persist Configuration and freeze its revision
+<a id="45-persist-configuration-and-freeze-its-revision" class="anchor-alias"></a>
+
+### 4–5. Persist Configuration and freeze its version
 
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver.write`
 
@@ -164,7 +166,7 @@ intact until rename succeeds, and other writers' temporary files remain untouche
 and cleanup failures propagate to the caller; this does not add automatic retries
 or alter OCC's metadata transaction and compensation boundary.
 
-[Configuration persistence and revision snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
+[Configuration persistence and version snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
 
 ## Debugging and Verification
 
@@ -187,10 +189,10 @@ kind change, requests preserve the exact native document and inline references,
 and ConfigMaps store exactly one `openclaw.json` entry. Verify denials against
 exact Namespace and Configuration identity. Prove snapshot safety by changing
 a nested Configuration value after deployment and confirming the prior
-AgentRevision's native document, Configuration identity, kind, and generation
+Agent revision's native document, Configuration identity, kind, and generation
 remain unchanged while a later deployment observes the new generation. Verify
 same-Namespace Agents receive separate gateways only when an eligible
-development worker prepares their revisions. Kubernetes conformance verifies
+development worker prepares their versions. Kubernetes conformance verifies
 immutable Agent-owned configuration projection without a live cluster;
 dedicated-cluster coverage of the changed projection remains unverified when
 its optional integration is skipped.
@@ -213,6 +215,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-23 13:40: Writes and Preset saves refuse an `agents` model without its provider, with deployment's text. (fix-1828, finding 1828)
 - 2026-10-14 10:30: Writes refuse literals in the other slots OpenClaw marks sensitive ([rules](configuration-driver/persistence-and-revisions.md)). (fix-1309, finding 1309)
 - 2026-10-14 09:30: Writes and deployment require references in the other key and header slots the Gateway sends ([list](../reference/configuration/secrets.md#secret-boundaries)); those header slots and MCP headers refuse invalid header names. Stored documents still read. (fix-1307, finding 1307)
 - 2026-10-14 09:00: The Kubernetes model provider rule also checks `agents.*.modelPolicy.allow` entries, which the Dedicated Codex projection qualifies like `models` keys; Dedicated Codex refuses `mediaModels.*` and `voiceModel`. Preset saves run the `agents` shape and roster rules Configuration save runs, checking a templated Agent ID or ownership as far as its written text goes. (fix-1306-1308, findings 1306, 1308)
@@ -228,9 +231,9 @@ its optional integration is skipped.
 - 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
 - 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 x (1 MiB + 32 KiB) body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
 
-- 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before revision creation. (fix-996-999, findings 996-998)
+- 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before version creation. (fix-996-999, findings 996-998)
 
-- 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before revision creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
+- 2026-10-10 11:29: Refuse Kubernetes native listeners that pass local readiness but cannot serve Pod-IP routes before version creation. (authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc - f8a837e33b5c03bc0c92065e979485ee06960150)
 
 - 2026-10-09 19:00: Configuration create and update refuse an `agents` roster every deployment refuses, with deployment's text, through the shared `requireDeployableRoster`; an existing row still reads and deploys as before. (q35-roster-save, finding 874)
 - 2026-10-09 15:00: A failed Configuration delete or update compensates only while the metadata row is unchanged, so a delete or update another request committed after the lock was released is never undone and leaves no orphan ConfigMap. (fix-944-945)
@@ -243,7 +246,7 @@ its optional integration is skipped.
 
 - 2026-09-23 13:13: Align provisioning Configuration creation and recovery with canonical CP storage. (codex/01a0cf72-6985-7712-ba92-d8cc32470f24 - df4ca4474d90de2d4ab0dd6f6d03a64ebb92526a)
 
-- 2026-09-01 19:09: Trace Secret-binding admission and optional Sandbox transformation before immutable revision creation; remove the obsolete TODO link. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
+- 2026-09-01 19:09: Trace Secret-binding admission and optional Sandbox transformation before immutable version creation; remove the obsolete TODO link. (01a05f95-dd80-7011-990f-d1c46b5bb3cc - aa366c49c44834d59f74994c5fd37fb8096f169f)
 - 2026-08-28 17:58: Updated moved feature-reference links for the documentation organization. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)
 - 2026-08-27 00:05: Removed stale contract-suite commands and kept production-behavior conformance and integration verification. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - ab560806dbd945436835ab092ebd10bf3e50d942)
 - 2026-08-25 08:46: Clarified API-level Configuration validation and development filesystem Driver persistence boundaries. (01a03630-cd9f-7352-9e64-1d30de98c7dd - 949e57ba008486c7ad60978df79dc53cce31bee9)
@@ -253,9 +256,9 @@ its optional integration is skipped.
 - 2026-08-21 17:28: Updated Configuration Driver initialization to the single asynchronous Installation-and-Drivers startup path. (01a0269c-0551-7f01-9dfc-ffb2a0896c94 - d17a87541cbebc8e333bd00bd90c42e734d91a80)
 - 2026-08-21 16:24: Clarified that production configuration reconciliation supports both embedded OpenClaw and dedicated Codex. (01a0259c-c825-71c3-8092-eb2afb161355 - 1379b0f500317e7f32559c711e31378eb22a8072)
 - 2026-08-20 22:43: Documented immutable Agent-owned Kubernetes configuration mounts and deferred snapshot cleanup; clarified that Secret Broker credential resolution and current-head live-cluster proof are unavailable. (01a02141-dc9e-7242-8a4f-0c74e14eebd5 - fb2be5b5b514f29669bd62aaac70d7c835de68d0)
-- 2026-08-20 22:26: Documented immutable Agent Configuration kind, monotonic generations, separate immutable revision metadata, exact-resource authorization, and Compute-owned per-Agent gateway handoff. (01a02141-dc9e-7242-8a4f-0c74e14eebd5 - fb2be5b5b514f29669bd62aaac70d7c835de68d0)
+- 2026-08-20 22:26: Documented immutable Agent Configuration kind, monotonic generations, separate immutable version metadata, exact-resource authorization, and Compute-owned per-Agent gateway handoff. (01a02141-dc9e-7242-8a4f-0c74e14eebd5 - fb2be5b5b514f29669bd62aaac70d7c835de68d0)
 - 2026-08-20 19:03: Removed duplicate OpenClaw credential validation; OCC preserves native JSON while OpenClaw and SecretBroker own configuration and secret semantics. (01a01add-3345-76a2-8bf2-221bf4075636 - ba62d21b422da3175ce0035162b05c19323c95e1)
-- 2026-08-20 18:37: Documented native OpenClaw configuration documents, inline unresolved SecretRefs, centralized credential validation, single-entry ConfigMaps, and deeply immutable revision snapshots. (01a01add-3345-76a2-8bf2-221bf4075636 - 2a82234a9214da410e75f94c07cd29aa165a6fa1)
-- 2026-08-19 15:12: Documented singleton startup configuration, Driver schemas, exact Namespace ConfigMap CRUD, and immutable AgentRevision admission. (01a01b65-5e90-78f0-b899-ce53454884c6 - 1e048452d44be143677c4a2b83c959979126846c)
+- 2026-08-20 18:37: Documented native OpenClaw configuration documents, inline unresolved SecretRefs, centralized credential validation, single-entry ConfigMaps, and deeply immutable version snapshots. (01a01add-3345-76a2-8bf2-221bf4075636 - 2a82234a9214da410e75f94c07cd29aa165a6fa1)
+- 2026-08-19 15:12: Documented singleton startup configuration, Driver schemas, exact Namespace ConfigMap CRUD, and immutable Agent revision admission. (01a01b65-5e90-78f0-b899-ce53454884c6 - 1e048452d44be143677c4a2b83c959979126846c)
 - 2026-08-19 15:24: Clarified lazy ConfigMap authorization and unavailable live-cluster proof. (01a01b65-5e90-78f0-b899-ce53454884c6 - 1e048452d44be143677c4a2b83c959979126846c)
-- 2026-08-19 16:19: Simplified runtime Driver selection and tracked revision stability across Compute configuration changes as future work. (01a01b65-5e90-78f0-b899-ce53454884c6 - 0e8413ee880a21a2db9b83cbf952f6d565378d67)
+- 2026-08-19 16:19: Simplified runtime Driver selection and tracked version stability across Compute configuration changes as future work. (01a01b65-5e90-78f0-b899-ce53454884c6 - 0e8413ee880a21a2db9b83cbf952f6d565378d67)

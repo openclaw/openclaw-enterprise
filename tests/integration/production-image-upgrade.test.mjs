@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { immutableImageAccepted, imageReferenceCases } from "../fixtures/image-reference-cases.mjs";
+import { writeCommand } from "../helpers/fake-commands.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { rangeWideningLocale } from "../helpers/utf8-locale.mjs";
 
 const execute = promisify(execFile);
@@ -17,8 +18,7 @@ const upgradeScript = fileURLToPath(
 );
 
 test("production image upgrades preserve controller/runtime ownership and wait for ready Pods", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-");
   const baselineControllerImage = `registry.example.invalid/controller@sha256:${"f".repeat(64)}`;
   const controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`;
   const runtimeImage = `registry.example.invalid/runtime@sha256:${"b".repeat(64)}`;
@@ -27,40 +27,35 @@ test("production image upgrades preserve controller/runtime ownership and wait f
   await mkdir(bin);
   // The fixture commands below answer at once, and the readiness polls end on their
   // counters, not on time, so the helper's 2 s poll interval only adds wall time.
-  const sleep = join(bin, "sleep");
-  await writeFile(sleep, "#!/usr/bin/env bash\nexit 0\n");
-  await chmod(sleep, 0o755);
-  const stat = join(bin, "stat");
-  await writeFile(
-    stat,
-    `#!/usr/bin/env bash
-if [[ "$1" == "-f" ]]; then
+  await writeCommand(bin, "sleep", "exit 0\n", { interpreter: "bash" });
+  await writeCommand(
+    bin,
+    "stat",
+    `if [[ "$1" == "-f" ]]; then
   printf 'GNU filesystem report\\n'
   exit 1
 fi
 printf '600\\n'
 `,
+    { interpreter: "bash" },
   );
-  await chmod(stat, 0o755);
 
-  const helm = join(bin, "helm");
-  await writeFile(
-    helm,
-    `#!/usr/bin/env bash
-if [[ "$*" == *'get values'* ]]; then
+  await writeCommand(
+    bin,
+    "helm",
+    `if [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == "template" ]]; then
   exit 47
 fi
 `,
+    { interpreter: "bash" },
   );
-  await chmod(helm, 0o755);
 
-  const jq = join(bin, "jq");
-  await writeFile(
-    jq,
-    `#!/usr/bin/env bash
-case "$*" in
+  await writeCommand(
+    bin,
+    "jq",
+    `case "$*" in
   *'.info.status'*) printf 'deployed\\n' ;;
   *'.data['*) printf 'cHJvdGVjdGVkCg==\\n' ;;
   *'openclaw.dev/installation-id'*) printf '%s\\n' "$CLUSTER_INSTALLATION_ID" ;;
@@ -72,14 +67,13 @@ case "$*" in
   *'.id'*) printf 'ins_upgrade_test\\n' ;;
 esac
 `,
+    { interpreter: "bash" },
   );
-  await chmod(jq, 0o755);
 
-  const yq = join(bin, "yq");
-  await writeFile(
-    yq,
-    `#!/usr/bin/env bash
-case "$*" in
+  await writeCommand(
+    bin,
+    "yq",
+    `case "$*" in
   *'-o=json '*)
     for path in "$@"; do :; done
     cat "$path"
@@ -91,38 +85,34 @@ case "$*" in
   *'.images.agent'*) printf '%s\\n' 'registry.example.invalid/runtime@sha256:${"d".repeat(64)}' ;;
 esac
 `,
+    { interpreter: "bash" },
   );
-  await chmod(yq, 0o755);
 
-  const python = join(bin, "python3");
-  await writeFile(
-    python,
-    `#!/usr/bin/env bash
-if (($# == 3)); then
+  await writeCommand(
+    bin,
+    "python3",
+    `if (($# == 3)); then
   printf '%s\\n' '${"e".repeat(64)}'
 else
   cat >/dev/null
   cat "$LIVE_INSTALLATION_FILE"
 fi
 `,
+    { interpreter: "bash" },
   );
-  await chmod(python, 0o755);
-  const kubectl = join(bin, "kubectl");
-  await writeFile(kubectl, "#!/usr/bin/env bash\nexit 0\n");
-  await chmod(kubectl, 0o755);
+  await writeCommand(bin, "kubectl", "exit 0\n", { interpreter: "bash" });
 
-  const occ = join(bin, "occ");
-  await writeFile(
-    occ,
-    `#!/usr/bin/env bash
-if [[ "$*" == *'deployment-inventory'* ]]; then
+  const occ = await writeCommand(
+    bin,
+    "occ",
+    `if [[ "$*" == *'deployment-inventory'* ]]; then
   printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[]}]}'
 else
   printf '%s\\n' '{"id":"ins_upgrade_test"}'
 fi
 `,
+    { interpreter: "bash" },
   );
-  await chmod(occ, 0o755);
 
   const protectedFiles = {};
   for (const name of ["kubeconfig", "service-key"]) {
@@ -242,20 +232,21 @@ fi
   const commandLog = join(directory, "commands.log");
   // The startup preflight reads each controller container's image and Installation
   // mount from the rendered chart; this stand-in renders only those fields.
-  await writeFile(
-    helm,
-    `#!/usr/bin/env bash
-if [[ "$*" == *'get values'* ]]; then
+  await writeCommand(
+    bin,
+    "helm",
+    `if [[ "$*" == *'get values'* ]]; then
   cat "$LIVE_VALUES_FILE"
 elif [[ "$1" == template ]]; then
   printf -- '---\\n%s\\n' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-api"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"api","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}' '{"kind":"Deployment","metadata":{"name":"openclaw-enterprise-worker"},"spec":{"template":{"spec":{"volumes":[{"name":"installation-startup","secret":{"secretName":"occ-installation-startup","items":[{"key":"installation.yaml","path":"installation.yaml"}]}}],"containers":[{"name":"worker","image":"'"$OBSERVED_CONTROLLER_IMAGE"'","volumeMounts":[{"name":"installation-startup","mountPath":"/etc/openclaw/installation"}]}]}}}}'
 fi
 `,
+    { interpreter: "bash" },
   );
-  await writeFile(
-    jq,
-    `#!/usr/bin/env bash
-if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
+  await writeCommand(
+    bin,
+    "jq",
+    `if [[ "$*" == '-S '* || "$*" == '-eS '* ]]; then
   cat
   exit 0
 fi
@@ -299,11 +290,12 @@ case "$*" in
   *'.id'*) printf 'rev_candidate\\n' ;;
 esac
 `,
+    { interpreter: "bash" },
   );
-  await writeFile(
-    kubectl,
-    `#!/usr/bin/env bash
-printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
+  await writeCommand(
+    bin,
+    "kubectl",
+    `printf 'kubectl %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
   *'exec gateway-test --container gateway -- node /app/openclaw.mjs doctor --lint --json --severity-min error'*)
     if [[ "$DOCTOR_FAILURE" == "1" ]]; then
@@ -320,11 +312,12 @@ case "$*" in
   *' logs pod/'*) printf 'installation-startup-ready\\n' ;;
 esac
 `,
+    { interpreter: "bash" },
   );
-  await writeFile(
-    occ,
-    `#!/usr/bin/env bash
-printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
+  await writeCommand(
+    bin,
+    "occ",
+    `printf 'occ %s\\n' "$*" >>"$COMMAND_LOG"
 case "$*" in
   *'deployment-inventory'*) printf '%s\\n' '{"installationId":"ins_upgrade_test","namespaces":[{"id":"ns_test","status":"ready","agents":[{"id":"agt_test","status":"active","desiredRuntimeState":"running","executionMode":"dedicated","activeRevisionId":"rev_test","deploymentInProgress":false}]}]}' ;;
   *'agent deploy'*) printf '%s\\n' '{"id":"rev_candidate"}' ;;
@@ -333,6 +326,7 @@ case "$*" in
   *) printf '%s\\n' '{"id":"ins_upgrade_test","name":"Production"}' ;;
 esac
 `,
+    { interpreter: "bash" },
   );
 
   // A controller release changes only the Helm-owned image. It must not replace
@@ -409,12 +403,10 @@ esac
   );
 });
 
-test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-digest-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  // Image references are checked during argument validation, before any file,
-  // tool, or cluster access, so placeholder paths are enough here.
-  const required = [
+// Argument validation precedes file and cluster access. Keep the kubeconfig
+// absent so an accepted argument reaches a distinct, observable refusal.
+function validationArguments(directory, revision = "d".repeat(40)) {
+  return [
     "--kubeconfig",
     join(directory, "kubeconfig"),
     "--context",
@@ -428,10 +420,15 @@ test("production image upgrades refuse uppercase repository paths and bad digest
     "--installation",
     join(directory, "installation"),
     "--source-revision",
-    "d".repeat(40),
+    revision,
     "--evidence-dir",
     join(directory, "evidence"),
   ];
+}
+
+test("production image upgrades refuse uppercase repository paths and bad digests before touching the cluster", async (t) => {
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-digest-");
+  const required = validationArguments(directory);
   // Kubernetes rejects uppercase digest hex as InvalidImageName, so each image
   // flag must refuse it instead of failing later in a rollout. A digest is
   // exactly 64 hex characters.
@@ -484,27 +481,9 @@ test("production image upgrades refuse uppercase repository paths and bad digest
 // digest, as profile preflight, the chart and Compute do. Image flags are checked before any
 // file access, so an accepted reference gets as far as the missing kubeconfig.
 test("production image upgrades give image references Kubernetes' verdict", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-references-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-references-");
   const kubeconfig = join(directory, "kubeconfig");
-  const required = [
-    "--kubeconfig",
-    kubeconfig,
-    "--context",
-    "fixture",
-    "--namespace",
-    "openclaw-system",
-    "--release",
-    "oce",
-    "--values",
-    join(directory, "values"),
-    "--installation",
-    join(directory, "installation"),
-    "--source-revision",
-    "d".repeat(40),
-    "--evidence-dir",
-    join(directory, "evidence"),
-  ];
+  const required = validationArguments(directory);
   const flags = ["--controller-image", "--broker-image", "--runtime-image"];
   for (const [index, [label, reference, problem]] of imageReferenceCases.entries()) {
     // Rotate the flag so every flag sees every kind of reference across the table.
@@ -534,8 +513,7 @@ test("production image upgrades give image references Kubernetes' verdict", asyn
 });
 
 test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-upgrade-locale-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-upgrade-locale-");
   const locale = await rangeWideningLocale();
   if (!locale) {
     t.skip("en_US.UTF-8 is not installed; other locales do not widen bash ranges");
@@ -543,26 +521,11 @@ test("production image upgrades refuse non-ASCII inputs under a UTF-8 locale", a
   }
   const options = { cwd: repository, env: { ...process.env, LANG: locale, LC_ALL: locale } };
   const argumentsFor = ({
-    revision = "d".repeat(40),
+    revision,
     timeout = "60",
     controllerImage = `registry.example.invalid/controller@sha256:${"a".repeat(64)}`,
   }) => [
-    "--kubeconfig",
-    join(directory, "kubeconfig"),
-    "--context",
-    "fixture",
-    "--namespace",
-    "openclaw-system",
-    "--release",
-    "oce",
-    "--values",
-    join(directory, "values"),
-    "--installation",
-    join(directory, "installation"),
-    "--source-revision",
-    revision,
-    "--evidence-dir",
-    join(directory, "evidence"),
+    ...validationArguments(directory, revision),
     "--timeout-seconds",
     timeout,
     "--controller-image",

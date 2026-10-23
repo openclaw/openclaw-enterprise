@@ -1,7 +1,7 @@
 # Compute admission checks
 
 A [ComputeDriver](compute.md) can implement side-effect-free checks that let OCC
-refuse a request before it stores a Configuration or Agent, admits a revision,
+refuse a request before it stores a Configuration or Agent, creates an Agent revision,
 or stops a running one. The checks read only their arguments and the Driver's
 trusted Installation settings, never the backend.
 
@@ -93,9 +93,10 @@ and refuses a `request.proxy.url` or model `baseUrl` with a user name or
 password.
 On Kubernetes a reference does not admit a credential header or a non-default
 `request.auth`: model credentials come only from the Agent's Harness
-authentication binding. Deployment runs `validateConfiguration` on the stored
-values before the Configuration Driver validates them, so a stored
-Configuration that predates a rule gets its save message.
+authentication binding. Deployment runs OCC's model provider settings rules
+(`baseUrl`, `api`, the `models` list, header names), then `validateConfiguration`,
+on the stored values before the Configuration Driver validates them, so a stored Configuration that predates a
+rule gets its save message.
 A credential under a header name the rule does not match, in
 `localService.env`, or as a literal in another `env` name that a reference
 reads, still passes: the binding cannot see what a name means.
@@ -119,9 +120,12 @@ through the same
 `validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone, in
 any letter case (or none), and the managed workspace path (or
 `/home/node/workspace` on a dedicated Harness); preparation also needs runtime
-storage, an Installation setting. Kubernetes Compute first refuses any Harness
-in a Sandbox, with a `409` naming the Sandbox: its Sandbox carries no workspace
-initializer, and OpenShell moves the OpenClaw workspace to its mount.
+storage, an Installation setting. For a provisioning Sandbox, Compute approves only the managed workspace path
+returned by its selected `configureAgent` transform. It initializes the approved
+Harness PVC in a restricted private bootstrap Deployment, verifies completion,
+and removes all writer Pods before Sandbox handoff. The Harness checks the
+completion marker at its effective path, including OpenShell relocation. Other
+workspace paths fail; Sandbox repository bindings remain unsupported.
 [Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
 applies the same
 [shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),

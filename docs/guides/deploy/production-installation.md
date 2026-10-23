@@ -10,7 +10,7 @@ Keep private routing enabled. Start with the password profile and
 Configure with an [installation profile](#recommended-generate-profile-configuration)
 or [manual YAML](#advanced-copy-manual-yaml-examples).
 
-Use a clean checkout matching the image revision. Follow
+Use a clean checkout matching the image source commit. Follow
 [private-registry delivery](private-registry-images.md) for provenance, ECR copies,
 and chart selection. Retain this shell and protected files for
 [Agent deployment](production-agents.md).
@@ -19,7 +19,7 @@ and chart selection. Retain this shell and protected files for
 
 Use `ghcr.io/openclaw/openclaw-enterprise-controller:latest` and
 `ghcr.io/openclaw/openclaw-enterprise-runtime:latest` through the
-[published-image procedure](published-images.md), which sets revision-checked
+[published-image procedure](published-images.md), which checks the image source commits and sets
 `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` and selects the matching checkout and
 chart. Complete it before generating configuration; then skip the build section.
 
@@ -30,7 +30,7 @@ Workstation `docker login` does not authenticate cluster nodes.
 
 ## Build and publish production images
 
-Use the separately approved [publication workflow](../../../.github/containers.md)
+Use the separately approved [publication workflow](../../release/containers.md)
 or build these images for your registry:
 
 | Image      | Source                                                                                                         | Used by                                     |
@@ -83,7 +83,7 @@ else
 fi
 ```
 
-Before installation, [check each digest](../../testing/images.md#check-published-images)
+Before installation, [check each digest](../../testing/docker.md#check-published-images)
 on native hosts for every target architecture, without skips. Configure pull credentials only when the selected registry requires
 them.
 
@@ -178,7 +178,7 @@ the startup Secret alone grants none.
 
 For registry-backed installs, compare selected images with the checked digests:
 check the profile input JSON before rendering, or the edited manual YAML with
-[Verify installation image selections](../../testing/images.md#verify-installation-image-selections).
+[Verify installation image selections](../../testing/docker.md#verify-installation-image-selections).
 
 ### Shared bootstrap PVC and configuration checks
 
@@ -411,7 +411,7 @@ helm upgrade --install oce deploy/helm/openclaw-enterprise \
   --wait --timeout 5m
 ```
 
-For an explicitly [published chart release](../../../.github/chart-publication.md#pull-and-install)
+For an explicitly [published chart release](../../release/chart-publication.md#pull-and-install)
 (created with `publish_chart: true`),
 verify its receipt, then use `oci://ghcr.io/openclaw/charts/openclaw-enterprise`
 with `--version "$OCE_VERSION"`.
@@ -473,7 +473,7 @@ including its [model-response check](production-agents.md#verify-production-work
 ## Enable GitHub browser sign-in
 
 Use a controller image that includes GitHub sign-in: a [published image](#use-published-images)
-from a revision that has it, or [your own build](#build-and-publish-production-images).
+from a commit that includes it, or [your own build](#build-and-publish-production-images).
 Follow the [single-controller profile](../../reference/authentication/external-sign-in.md#github-sign-in-for-existing-accounts)
 during stopped maintenance, after first installing without GitHub as above.
 

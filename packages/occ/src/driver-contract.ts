@@ -5,6 +5,7 @@ import type {
   SandboxFacet,
 } from "@openclaw-enterprise/contracts";
 import { DRIVER_CAPABILITIES, SANDBOX_FACETS } from "@openclaw-enterprise/contracts";
+import { asRecord } from "@openclaw-enterprise/utils";
 
 const COMPUTE_LIFECYCLE_PHASES = [
   "afterNamespacePrepared",
@@ -48,7 +49,44 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       ["create", "update", "delete", "resolve"].every(
         (operation) => typeof candidate[operation] === "function",
       ) &&
-      (candidate.withValue === undefined || typeof candidate.withValue === "function")
+      (candidate.withValue === undefined || typeof candidate.withValue === "function") &&
+      (candidate.readCredentialInput === undefined ||
+        typeof candidate.readCredentialInput === "function")
+    );
+  }
+  if (driver.capability === "credential_proxy") {
+    const control = asRecord(candidate.sourceControl);
+    const reduction = asRecord(candidate.policyReduction);
+    return (
+      (candidate.bindExchange === undefined || typeof candidate.bindExchange === "function") &&
+      (candidate.bindRepositoryGit === undefined ||
+        typeof candidate.bindRepositoryGit === "function") &&
+      (candidate.policyReduction === undefined ||
+        ((reduction?.version === 1 ||
+          (reduction?.version === 2 && typeof reduction.assertAvailable === "function")) &&
+          typeof reduction.apply === "function" &&
+          typeof reduction.observe === "function")) &&
+      control !== undefined &&
+      typeof control.assertAvailable === "function" &&
+      Array.isArray(control.providers) &&
+      (control.providers.length > 0 || typeof candidate.bindRepositoryGit === "function") &&
+      control.providers.every((value) => {
+        const provider = asRecord(value);
+        return (
+          provider !== undefined &&
+          [
+            "normalizeConfig",
+            "normalizeGrant",
+            "routes",
+            "classify",
+            "inject",
+            "protectResponse",
+          ].every((operation) => typeof provider[operation] === "function")
+        );
+      }) &&
+      ["configureRevision", "wiringStatus", "verifyInstallation", "removeRevision"].every(
+        (operation) => typeof candidate[operation] === "function",
+      )
     );
   }
   if (driver.capability === "credential_gateway") {
@@ -77,7 +115,18 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "sandbox") {
     return (
       sandboxFacets(candidate.facets) &&
+      sandboxPolicyContract(candidate) &&
+      (candidate.repositoryAccess === undefined ||
+        [
+          "verifyExecution",
+          "retireExpired",
+          "routeReadiness",
+          "materialSettledAt",
+          "isRouteBlockedError",
+        ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      (candidate.validateWorkspaceSetup === undefined ||
+        typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&
@@ -100,14 +149,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "repo") {
-    return (
-      ["listOptions", "resolve", "open", "status", "close"].every(
-        (operation) => typeof candidate[operation] === "function",
-      ) &&
-      typeof candidate.maintenanceIntervalMs === "number" &&
-      Number.isFinite(candidate.maintenanceIntervalMs) &&
-      candidate.maintenanceIntervalMs > 0
-    );
+    return ["listOptions", "resolve"].every((method) => typeof candidate[method] === "function");
   }
   return (
     typeof candidate.ensureNamespace === "function" &&
@@ -130,6 +172,39 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       typeof candidate.readAgentRuntimeLogs === "function") &&
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
+  );
+}
+
+function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
+  const policy = candidate.networkPolicy;
+  const methods = [
+    "admitNetworkPolicy",
+    "observeNetworkPolicy",
+    "applyNetworkPolicy",
+    "readPolicyRecommendations",
+  ];
+  if (
+    !methods.every((key) => candidate[key] === undefined || typeof candidate[key] === "function")
+  ) {
+    return false;
+  }
+  if (policy === undefined) {
+    return (
+      candidate.admitNetworkPolicy === undefined &&
+      candidate.observeNetworkPolicy === undefined &&
+      candidate.applyNetworkPolicy === undefined
+    );
+  }
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) {
+    return false;
+  }
+  const support = policy as Record<string, unknown>;
+  return (
+    ["wildcards", "portRanges", "live"].every((key) => typeof support[key] === "boolean") &&
+    typeof candidate.admitNetworkPolicy === "function" &&
+    (support.live !== true ||
+      (typeof candidate.observeNetworkPolicy === "function" &&
+        typeof candidate.applyNetworkPolicy === "function"))
   );
 }
 

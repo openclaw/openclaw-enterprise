@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
 import { renderMatrixMarkdown } from "../../scripts/generate-compute-matrix.mjs";
@@ -13,6 +12,7 @@ import {
   writeComputeMatrixReadme,
   writeDocsConfig,
 } from "../helpers/docs-site.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 async function markdownFiles(directory) {
   const result = [];
@@ -148,6 +148,51 @@ test("docs validation rejects broken links, anchors and navigation through the C
     assert.notEqual(result.status, 0, `Build accepted ${target}`);
     assert.match(result.stderr + result.stdout, /missing/);
   }
+  // GitHub renders HTML examples as escaped code and omits comments, so none
+  // creates a fragment target in the linked repository source document.
+  await writeFile(
+    join(fixture, "CONTRIBUTING.md"),
+    [
+      "# Contributing",
+      '<a id="real-id"></a> and <a name="real-name"></a>',
+      '<div id="real-div-id">An explicit ID works on a non-anchor element.</div>',
+      '<A NAME="real-upper-name"></A>',
+      '<div name="div-name">A name on a div is not a fragment target.</div>',
+      '<span name="span-name">A name on a span is not a fragment target.</span>',
+      '<p name="p-name">A name on a paragraph is not a fragment target.</p>',
+      '```html\n<a id="fenced-example"></a>\n```',
+      '    <a id="indented-example"></a>',
+      '`<a id="inline-example"></a>`',
+      '<!-- <a id="comment-example"></a> -->',
+      'Before <!-- <a id="inline-comment-example"></a> --> after',
+    ].join("\n\n"),
+  );
+  for (const fragment of ["real-id", "real-name", "real-div-id", "real-upper-name"]) {
+    await writeFile(
+      join(fixture, "docs/README.md"),
+      `# Home\n\n[Valid](../CONTRIBUTING.md#${fragment})\n`,
+    );
+    result = validate();
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  }
+  for (const fragment of [
+    "div-name",
+    "span-name",
+    "p-name",
+    "fenced-example",
+    "indented-example",
+    "inline-example",
+    "comment-example",
+    "inline-comment-example",
+  ]) {
+    await writeFile(
+      join(fixture, "docs/README.md"),
+      `# Home\n\n[Broken](../CONTRIBUTING.md#${fragment})\n`,
+    );
+    result = validate();
+    assert.notEqual(result.status, 0, `Build accepted ${fragment}`);
+    assert.match(result.stderr + result.stdout, /missing heading/);
+  }
   await writeFile(join(fixture, "docs/README.md"), "# Home\n");
   const pages = config.navigation.languages[0].tabs[0].groups[0].pages;
   pages.push("absent");
@@ -203,8 +248,7 @@ test("docs validation checks Markdown links in deploy example YAML comments", as
 });
 
 test("spec validation rejects links to missing headings", async (t) => {
-  const fixture = await mkdtemp(join(tmpdir(), "enterprise-specs-check-"));
-  t.after(() => rm(fixture, { recursive: true, force: true }));
+  const fixture = await temporaryDirectory(t, "enterprise-specs-check-");
   await mkdir(join(fixture, "specs/rfcs"), { recursive: true });
   await mkdir(join(fixture, "docs"), { recursive: true });
   await writeFile(join(fixture, "docs/guide.md"), "# Guide\n\n## Setup\n\n## Setup\n");
@@ -319,8 +363,7 @@ for (const [kind, label] of [
   ["plugin", "Plugin"],
 ]) {
   test(`${label} matrix generator updates only its block and checks without writing`, async (t) => {
-    const fixture = await mkdtemp(join(tmpdir(), "enterprise-matrix-generator-"));
-    t.after(() => rm(fixture, { recursive: true, force: true }));
+    const fixture = await temporaryDirectory(t, "enterprise-matrix-generator-");
     await mkdir(join(fixture, "docs/assets"), { recursive: true });
     await mkdir(join(fixture, "docs/reference/drivers"), { recursive: true });
     await writeFile(

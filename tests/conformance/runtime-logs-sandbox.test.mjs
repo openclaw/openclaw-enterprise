@@ -1,3 +1,4 @@
+import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
@@ -151,6 +152,18 @@ function openShellSandboxDriver(gatewayClient) {
   );
 }
 
+// Match production composition: policy-capable Drivers require their configuration definition.
+function driverConfigurations(driver) {
+  return [
+    {
+      capability: "sandbox",
+      driverId: driver.id,
+      implementation: driver.implementation,
+      definition: OpenShellSandboxDriver,
+    },
+  ];
+}
+
 /** The shared app's cursor key; tests that forge earlier cursor formats sign with it. */
 const CURSOR_SECRET = "disposable-runtime-log-cursor-secret-32";
 /** The running test's gateway client and Driver identity override. */
@@ -177,6 +190,7 @@ function sandboxApp() {
     return createRuntimeLogFixture({
       computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
       sandboxDriver,
+      driverConfigurations: driverConfigurations(sandboxDriver),
       agentRuntimeLogs: { enabled: true, cursorSecret: CURSOR_SECRET },
     });
   })();
@@ -643,7 +657,11 @@ async function harnessFixture(label, checks) {
     checks,
   });
   const sandboxDriver = openShellSandboxDriver(gateway.client);
-  const fixture = await createRuntimeLogFixture({ computeDriver, sandboxDriver });
+  const fixture = await createRuntimeLogFixture({
+    computeDriver,
+    sandboxDriver,
+    driverConfigurations: driverConfigurations(sandboxDriver),
+  });
   const target = await fixture.deployAgent(label);
   const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
   return { gateway, sandboxDriver, fixture, target, diagnosticsPath };
@@ -775,6 +793,70 @@ test("a lost OpenShell Harness Sandbox is reported by the runtime description an
   );
 
   // Observation reads only; nothing else in OpenShell was touched.
+  assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
+});
+
+// Nothing restarts a lost Sandbox (finding 2152): after a node restart OpenShell can leave the
+// active revision's Sandbox stopped while the Agent's lifecycle still reads active. The
+// harness-status read shows that state to anyone who can read the Agent, under the same
+// authorization as any Agent read, and never reports a Sandbox it could not read as lost.
+test("an Agent reader sees a stopped OpenShell Sandbox; an unreadable record is unknown", async () => {
+  const { gateway, fixture, target } = await harnessFixture("harness-status", []);
+  const statusPath = `/namespaces/${target.namespace.id}/agents/${target.agent.id}/harness-status`;
+  const observed = (harness) => ({ status: "observed", revisionId: target.revisionId, harness });
+  const record = (phase) => sandboxRecord(target.revisionId, { phase });
+  const read = async (session) => {
+    const response = await fixture.request("GET", statusPath, { session });
+    assert.equal(response.status, 200, response.text);
+    return response;
+  };
+  // A deployment that is not active yet has no Sandbox the Agent relies on.
+  gateway.state.sandbox = record("SANDBOX_PHASE_STOPPED");
+  assert.deepEqual((await read()).data, { status: "unobserved" });
+  assert.equal(gateway.requests.length, 0);
+  await fixture.activate(target);
+
+  // A reader holds `read` on the Agent only: no operate, so no runtime description.
+  const reader = await fixture.createPrincipal("harness-reader", target, [
+    { action: "read", resourceKind: "agent" },
+  ]);
+  for (const [sandbox, harness] of [
+    // The node-restart case: OpenShell keeps the Sandbox record, stopped.
+    [record("SANDBOX_PHASE_STOPPED"), { state: "lost", code: "SANDBOX_STOPPED" }],
+    [undefined, { state: "lost", code: "SANDBOX_MISSING" }],
+    // A healthy Sandbox carries no lost code.
+    [record("SANDBOX_PHASE_READY"), { state: "running" }],
+  ]) {
+    gateway.state.sandbox = sandbox;
+    assert.deepEqual((await read(reader.session)).data, observed(harness), JSON.stringify(sandbox));
+  }
+  const runtime = await fixture.request("GET", target.runtimePath, { session: reader.session });
+  assert.equal(runtime.status, 403, runtime.text);
+
+  // An unreadable record is unknown, and the gateway's error text never reaches the caller.
+  gateway.state.sandboxError = Object.assign(new Error("permission denied: sandbox:read secret"), {
+    code: 7,
+  });
+  const failed = await read(reader.session);
+  assert.deepEqual(failed.data, observed({ state: "unknown", code: "UNAVAILABLE" }));
+  assert.equal(failed.text.includes("sandbox:read"), false);
+  gateway.state.sandboxError = undefined;
+
+  // Without Agent read the request is denied before any Sandbox read.
+  const outsider = await fixture.createPrincipal("harness-outsider", target, []);
+  const reads = gateway.requests.length;
+  const denied = await fixture.request("GET", statusPath, { session: outsider.session });
+  assert.equal(denied.status, 403, denied.text);
+  assert.equal(gateway.requests.length, reads);
+
+  // A stopped Agent's Sandbox is removed by design, so it is not read or reported.
+  const stop = await fixture.request(
+    "POST",
+    `/namespaces/${target.namespace.id}/agents/${target.agent.id}/stop`,
+  );
+  assert.equal(stop.status, 202, stop.text);
+  assert.deepEqual((await read(reader.session)).data, { status: "unobserved" });
+  assert.equal(gateway.requests.length, reads);
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
 
@@ -1094,11 +1176,14 @@ test("sandbox sanitization masks credentials passed as command-line arguments", 
   ];
   for (const [command, expected] of cases) {
     // Extracted `[cmd:` field, and the fallback where the command stays in the message.
-    const { records } = sanitizeSandboxLogLines({ source: "sandbox", sandbox: "sb-1" }, [
-      sandboxLine(1, `PROC:LAUNCH [INFO] x(1) [cmd:${command}]`),
-      sandboxLine(2, `PROC:LAUNCH [INFO] x(1) ${command}`),
-      sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
-    ]);
+    const { records } = sanitizeSandboxLogLines(
+      { source: "sandbox", sandbox: "sb-1" },
+      [
+        sandboxLine(1, `PROC:LAUNCH [INFO] x(1) [cmd:${command}]`),
+        sandboxLine(2, `PROC:LAUNCH [INFO] x(1) ${command}`),
+        sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
+      ].map(openShellLogDecision),
+    );
     assert.equal(records[0].fields.cmd_line, expected, command);
     assert.equal(records[1].message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
     assert.equal(records[2].fields.cmd_line, expected, command);
@@ -1149,8 +1234,10 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
       `HTTP:GET [INFO] ALLOWED curl(42) -> GET https://api.example.com/items/${index}?page=${"x".repeat(900)} [policy:web engine:opa]`,
     ),
   );
+  // The Driver decorates before the provider-neutral OCC page budget is measured.
+  const decorated = lines.map(openShellLogDecision);
   const stream = { source: "sandbox", sandbox: "sb-0123" };
-  const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, lines));
+  const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, decorated));
   const binding = {
     principalId: "synthetic-person",
     agentId: "agent-test",
@@ -1170,15 +1257,18 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
       binding,
       now: () => Date.parse("2026-09-30T12:10:00Z"),
       admitView: async () => {},
-      readLogs: async () => ({ sandbox: "sb-0123", lines, bufferTotal: 1000 }),
+      readLogs: async () => ({ sandbox: "sb-0123", lines: decorated, bufferTotal: 1000 }),
     });
   });
   const delivered = page.records.filter(({ type }) => type === "line").length;
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // Policy decisions sanitize cheaply, so the cut's fixed per-line work (validation,
+  // line hashes, serialization) is about one more sanitization: a cut costs 2-3x one.
+  // Sanitizing again for each binary-search candidate costs about 9x.
   assert.ok(
-    cut < 2.5 * once,
+    cut < 4 * once,
     `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
   );
 });

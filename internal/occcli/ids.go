@@ -1,6 +1,7 @@
 package occcli
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -34,16 +35,23 @@ func optionalID(arg idArg) idArg {
 	return arg
 }
 
-func (arg idArg) check(value string) error {
+// check accepts a value with the ID prefix. The refusal names the lookup command;
+// for a Namespace-scoped resource it carries the selected Namespace when that is
+// a Namespace ID, so a stale OCC_NAMESPACE cannot redirect the lookup.
+func (arg idArg) check(value, namespace string) error {
 	if strings.HasPrefix(value, arg.prefix) {
 		return nil
+	}
+	lookup := arg.lookup
+	if arg.prefix != namespaceIDArg.prefix && strings.HasPrefix(namespace, namespaceIDArg.prefix) {
+		lookup = "occ --namespace " + namespace + strings.TrimPrefix(lookup, "occ")
 	}
 	return fmt.Errorf(
 		"%q is not a valid %s ID: OCC accepts IDs that start with %q, not names; run %q to find the ID",
 		value,
 		arg.kind,
 		arg.prefix,
-		arg.lookup,
+		lookup,
 	)
 }
 
@@ -59,8 +67,13 @@ func idArgs(args ...idArg) cobra.PositionalArgs {
 		if err := cobra.RangeArgs(required, len(args))(command, values); err != nil {
 			return err
 		}
+		// Flags are parsed before positional arguments are checked.
+		namespace := ""
+		if flag := command.Flag("namespace"); flag != nil {
+			namespace = flag.Value.String()
+		}
 		for index, value := range values {
-			if err := args[index].check(value); err != nil {
+			if err := args[index].check(value, namespace); err != nil {
 				return err
 			}
 		}
@@ -70,20 +83,53 @@ func idArgs(args ...idArg) cobra.PositionalArgs {
 
 // latestRevisionID returns the ID of the newest revision the caller can read.
 func latestRevisionID(client *occclient.Client, namespace, agentID string) (string, error) {
+	id, _, err := latestReadableRevision(client, namespace, agentID)
+	return id, err
+}
+
+// errNoReadableRevisions reports an empty revision list. OCC filters the list
+// by revision read, so the Agent has no revisions or the caller may read none.
+var errNoReadableRevisions = errors.New("no readable revisions")
+
+// latestReadableRevision retains the summary number for ordering diagnostics.
+// It returns errNoReadableRevisions when the list is empty.
+func latestReadableRevision(client *occclient.Client, namespace, agentID string) (string, float64, error) {
 	latest, err := client.LatestAgentRevision(namespace, agentID)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if latest == nil {
-		return "", fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
+		return "", 0, errNoReadableRevisions
 	}
 	revision, ok := latest.(map[string]any)
 	if !ok {
-		return "", fmt.Errorf("OCC returned an invalid resource")
+		return "", 0, fmt.Errorf("OCC returned an invalid resource")
 	}
 	id, idOK := revision["id"].(string)
-	if _, numberOK := revision["revision"].(float64); !idOK || !numberOK {
-		return "", fmt.Errorf("OCC returned an invalid revision")
+	number, numberOK := revision["revision"].(float64)
+	if !idOK || !numberOK {
+		return "", 0, fmt.Errorf("OCC returned an invalid revision")
 	}
-	return id, nil
+	return id, number, nil
+}
+
+// noReadableRevisionsError explains an empty revision list. The list cannot
+// tell an Agent that was never deployed from one whose revisions the caller may
+// not read, so deploy advice goes only to a caller whose permission answer
+// allows Agent deploy, and everyone else learns which grant lists revisions
+// (finding 522). alternative names another way in, such as passing an ID.
+func noReadableRevisionsError(client *occclient.Client, namespace, agentID, subject, alternative string) error {
+	grant := "listing revisions needs revision read (ask an administrator to grant it)"
+	if alternative != "" {
+		grant += ", or " + alternative
+	}
+	permissions, err := client.GetAgentCallerPermissions(namespace, agentID)
+	resource, _ := permissions.(map[string]any)
+	if deploy, _ := resource["deploy"].(bool); err == nil && deploy {
+		return fmt.Errorf(
+			"%s; if it was never deployed, run \"occ --namespace %s agent deploy %s\" first; otherwise %s",
+			subject, namespace, agentID, grant,
+		)
+	}
+	return fmt.Errorf("%s; %s", subject, grant)
 }

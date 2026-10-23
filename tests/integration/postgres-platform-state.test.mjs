@@ -127,6 +127,7 @@ test(
         id: "compute-local-development",
         implementation: "deterministic-local-development",
       },
+      executionAdmission: { version: 2, mode: "unprotected" },
       servicePrincipalId: agent.servicePrincipalId,
       createdAt,
     };
@@ -579,6 +580,7 @@ test(
         configuration: { agents: { defaults: { model: "test/model" } } },
         harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
         compute: { id: "compute-provisioning-success", implementation: "deterministic-test" },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: `service-agent-${agentId}`,
         createdAt,
@@ -784,6 +786,26 @@ test(
       import("../../packages/iam/src/index.ts"),
     ]);
     const pool = new Pool({ connectionString: databaseUrl });
+    // The database is authoritative for admitted credential-source login modes. PAT
+    // revisions must persist; unknown modes and secret bytes must still fail validation.
+    const sourceSnapshot = {
+      method: "credential_source",
+      sourceId: `cs_${randomUUID()}`,
+      credentialGatewayId: "credential-gateway",
+      sourceType: "codex-pat",
+      loginMode: "codex_pat",
+    };
+    for (const [snapshot, expected] of [
+      [sourceSnapshot, true],
+      [{ ...sourceSnapshot, loginMode: "unsupported" }, false],
+      [{ ...sourceSnapshot, accessToken: "synthetic-forbidden-value" }, false],
+    ]) {
+      const result = await pool.query(
+        "SELECT occ.harness_auth_is_valid($1::jsonb, $2, true) AS valid",
+        [JSON.stringify(snapshot), `ns_${randomUUID()}`],
+      );
+      assert.equal(result.rows[0].valid, expected);
+    }
     context.after(() => pool.end());
     const state = new PostgresPlatformState(pool);
     const installation = await state.loadInstallation();
@@ -896,6 +918,9 @@ test(
     );
     for (const [offset, invalid] of [
       null,
+      "api_key",
+      false,
+      2,
       {},
       { ...fixture.revision.harnessAuth, secretDriverId: "" },
       { ...fixture.revision.harnessAuth, secretValue: "sentinel-not-a-reference" },
@@ -1879,6 +1904,7 @@ test(
           id: "compute-local-development",
           implementation: "deterministic-local-development",
         },
+        executionAdmission: { version: 2, mode: "unprotected" },
         harnessAuth: { method: "runtime" },
         servicePrincipalId: agent.servicePrincipalId,
         plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },
@@ -2176,6 +2202,7 @@ test(
             id: "compute-local-development",
             implementation: "deterministic-local-development",
           },
+          executionAdmission: { version: 2, mode: "unprotected" },
           harnessAuth: { method: "runtime" },
           servicePrincipalId: agent.servicePrincipalId,
           plugins: { driver: { id: "occ-plugin", implementation: "occ/openclaw-plugin" }, plugins },

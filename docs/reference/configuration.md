@@ -28,6 +28,10 @@ is refused before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
+Console presentation uses a separate API-only [theme bundle](console/theming.md),
+selected with `OCC_CONSOLE_THEME_DIR`. It does not change persisted Installation
+or Agent configuration.
+
 ## Installation startup configuration
 
 Set `OCC_CONFIG_PATH` to the absolute path of a trusted YAML file. Production
@@ -56,6 +60,12 @@ Each selected Driver validates its own closed configuration schema; unknown
 fields fail startup. OCC routes authorization through the selected IAM Driver,
 whose reviewed implementation is trusted to enforce its policy.
 
+The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
+network additions. It grants no default access; an absent or empty array delegates
+none. API and worker must use the same trusted value. See
+[Sandbox policies](sandbox-policies.md#authority-and-admission) for
+its grant schema and authorization boundaries.
+
 The optional `observability` block sets one external console destination:
 
 ```yaml
@@ -78,20 +88,20 @@ not select an OpenTelemetry exporter or embed a dashboard. Compose development
 can use this block alone with its default Drivers; mount the same file into API
 and worker containers.
 
-The optional `runtime` block declares a runtime image built with native worker
-support, which dedicated native OpenClaw requires:
+The optional `runtime` block declares a custom runtime image with dedicated
+native OpenClaw support:
 
 ```yaml
 runtime:
   nativeWorkerSupport: custom-image
 ```
 
-`custom-image` is the only value. It is off by default, and no API or Agent
-Configuration field can set it. When set, the Installation API reports
-`capabilities.nativeWorkers` and admission accepts dedicated native OpenClaw.
-Declare it only for a runtime image built from an OpenClaw source with required
-worker placement and native worker inference. It is unsupported with the pinned
-runtime image, whose Gateways and Harnesses refuse to start. See
+`custom-image` is the only declaration value; no API or Agent Configuration
+field can set it. The pinned runtime already supplies native-worker support,
+so its Dedicated OpenClaw flow needs no declaration. Use this optional block
+only for a separately selected custom image with automatic required worker
+placement and node-local inference. It does not add runtime features or waive
+the required provisioning SandboxDriver and its containment facets. See
 [Native worker support](harness-execution.md#native-worker-support).
 
 ## Create, read, update, and delete
@@ -117,22 +127,33 @@ after the referenced Namespace-owned Secrets exist.
 OCC generates the `cfg_` identifier and derives ownership from the exact route
 Namespace; callers cannot select either field. GET, PATCH, and DELETE operate
 on `/namespaces/:namespaceId/configurations/:configurationId`. A PATCH body
-requires the replacement `values` and may also set `secretBindings`, for example:
+requires the replacement `values` and may also set `secretBindings` and
+`expectedGeneration`. For a Configuration last read at generation `1`, send:
 
 ```json
 {
   "values": {
     "agents": { "defaults": { "sandbox": { "mode": "all" } } }
-  }
+  },
+  "expectedGeneration": 1
 }
 ```
 
-GET and PATCH return HTTP `200`; PATCH always includes a replacement `values`
-document and increments its server-managed `generation` exactly once, so
-omitted `models` and `secrets` sections disappear. Omitting `secretBindings` on
-PATCH preserves the existing bindings; send `{}` to clear them. PATCH cannot
-change or accept `kind`, `generation`, or ownership fields. Successful DELETE
-returns HTTP `204` with no body.
+GET and PATCH return HTTP `200`. PATCH replaces the whole `values` document, so
+omitted `models` and `secrets` sections disappear. Omitting `secretBindings`
+preserves the existing bindings; send `{}` to clear them. Use the `generation` OCC
+returns: it normally advances by one, but recovery from an interrupted write can
+skip a number. Do not send `kind`, `generation`, or ownership fields in a PATCH.
+Successful DELETE returns HTTP `204` with no body.
+
+`expectedGeneration` is an optional positive safe integer from the caller's last
+GET. OCC compares it with the current generation while holding the Configuration
+lock. A mismatch returns `409 RESOURCE_CONFLICT` without replacing values or
+Secret bindings or incrementing the generation. Read the Configuration again,
+merge the intended edits with its current values, and submit that generation;
+do not retry the stale body with a newer number. Omitting `expectedGeneration`
+replaces whichever generation is current, without this freshness check. The
+console's Configuration and channel saves include it.
 
 Creation requires `kind: "agent"`; missing or unsupported kinds are rejected.
 Additional consumer kinds are reserved for future approved resources and are
@@ -168,7 +189,14 @@ far as its written text goes, and in full once filled. A Configuration saved bef
 this check still reads, and Kubernetes deployment still refuses it; only a write
 that keeps the roster is refused. SSH Compute deployment does not check rosters.
 Rules that depend on the topology stay at deployment, because a Configuration
-does not fix one: dedicated execution's `main` Agent rules, for example. Agent
+does not fix one: dedicated execution's `main` Agent rules, for example.
+Every write and Preset save also refuses, with the `400` every deployment gives,
+an `agents.defaults.model` or `agents.entries.<id>.model` primary or fallback
+that is not `<provider>/<model>` (OpenClaw's `openrouter:auto` included), and
+fallbacks that are not a list, naming the setting. A Preset model that waits on
+a variable is checked as far as its written text goes, and in full once filled.
+A Configuration saved before this check still reads; deployment refuses it, and
+only a write that keeps the model is refused. Agent
 deployment separately validates supported
 runtime selection, topology, and Secret binding ownership before admission.
 Creation requires `create` permission for Configurations in the
@@ -181,7 +209,9 @@ dependency conflicts `409`, and unavailable authorization or storage `503`.
 
 Never put plaintext credentials in Configuration values. Use unresolved native SecretRefs and authorized same-Namespace Secret bindings for gateway credentials; select model credentials through Agent `harnessAuth`. See [Configuration secrets and channels](configuration/secrets.md) for binding permissions, complete examples, runtime delivery, and supported Slack/Teams settings.
 
-## Agent references and immutable revisions
+<a id="agent-references-and-immutable-revisions" class="anchor-alias"></a>
+
+## Agent references and immutable versions
 
 An Agent references one Configuration in its own Namespace:
 
@@ -199,12 +229,12 @@ permission for the exact referenced Configuration. Deployment deeply
 snapshots its admitted native document, including unresolved inline SecretRefs,
 into the immutable `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
-separate revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
+separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot contains that
 effective document, and its metadata identifies the source generation.
 Subsequent Configuration updates do not change a
-running gateway or existing revision; only a later explicit deployment observes
+running gateway or existing version; only a later explicit deployment observes
 the next generation. Deleting a Configuration still referenced by an Agent
 returns `409`.
 
@@ -212,7 +242,7 @@ Native OpenClaw provider settings in `values.channels` follow the same
 Configuration ownership and immutable Agent deployment lifecycle.
 
 Database constraints require the supported Configuration kind, a positive
-generation, matching Agent ownership, and a valid immutable admitted revision
+generation, matching Agent ownership, and a valid immutable saved version
 snapshot. The native configuration document keeps its existing root-object
 shape without a wrapper, reserved persistence key, or reconstruction from
 environment-variable names. `secretBindings` remain separate from `values` so
@@ -222,12 +252,12 @@ the native OpenClaw document.
 AgentRevisions retain their selected Compute Driver identity and immutable
 Configuration snapshot. Compute runtime settings are loaded from Installation
 startup YAML and are not copied into that snapshot. See the
-[Agent revision contract](agents/deployment.md#revisions-and-deployment) for the fields
+[Agent revision contract](agents/deployment.md#versions-and-deployment) for the fields
 admission freezes; immutable Configuration does not freeze all Driver settings.
 
 ## Kubernetes storage
 
-The Kubernetes Configuration Driver stores live native documents in tenant ConfigMaps. Compute creates separate immutable revision snapshots. See [Kubernetes Configuration storage](configuration/kubernetes.md) for placement, readiness, ownership, and exact RBAC requirements.
+The Kubernetes Configuration Driver stores live native documents in tenant ConfigMaps. Compute creates separate immutable version snapshots. See [Kubernetes Configuration storage](configuration/kubernetes.md) for placement, readiness, ownership, and exact RBAC requirements.
 
 ## Failure semantics and limitations
 
@@ -244,6 +274,12 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
   selected Kubernetes identity's namespaced ConfigMap Role separately.
 - **Configuration operation returns `404`:** Confirm the Configuration ID
   belongs to the Namespace in the request path.
+- **Configuration update returns `409 RESOURCE_CONFLICT`:** A detail at
+  `/expectedGeneration` means your copy is stale. Read the Configuration again,
+  merge your changes, and send the generation you just read. In the console,
+  choose **Reload draft**, review the result, and save only the changes you still
+  intend. Rereading does not clear a provisioning reservation, which also returns
+  `409` but has no `/expectedGeneration` detail.
 - **Configuration deletion returns `409`:** An Agent still references that
   Configuration. Reassign every referencing Agent, or
   [delete the Agents](agents.md#deletion) and wait for teardown before retrying.
@@ -261,7 +297,7 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 - [Controller and PostgreSQL configuration](settings.md)
 - [Controller worker lifecycle](controller.md)
 - [Update and deploy Agent revisions](../guides/topics/agent-revisions.md)
-- [Agent Configuration, revisions, and deployment](agents.md)
+- [Agent Configuration, versions, and deployment](agents.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
 - [Configuration lifecycle implementation](../../packages/occ/src/index.ts)

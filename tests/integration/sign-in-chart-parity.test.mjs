@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
+import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
 import {
   refuseRewrittenIpv4Host,
   refuseWrittenUserinfo,
@@ -15,6 +16,12 @@ import {
   humanLoginConfiguration,
   resolveClientAddress,
 } from "../../apps/controller/src/auth/index.ts";
+import {
+  bootstrapConfiguration,
+  bootstrapFailureCode,
+} from "../../scripts/lib/bootstrap-configuration.mjs";
+import { settled as settle } from "../helpers/child-processes.mjs";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import {
   chartRefusal,
@@ -23,7 +30,7 @@ import {
   renderChart,
   repository,
   signInSettings,
-  trustedProxyNotice,
+  trustedProxyNoticeRenderer,
 } from "../helpers/sign-in-chart.mjs";
 import {
   defaultInstallSettings,
@@ -104,19 +111,8 @@ function resolveSecrets(settings) {
   );
 }
 
-// Waits for every promise, then throws the first failure, so no child outlives its test.
-async function settle(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
-}
-
 // At most one child process per CPU (and at least two) across the whole file; a render holds
-// one slot for helm and then yq. Each API start has a 20 s deadline, and starting them all at
-// once on a small runner pushes the last ones past it.
+// one slot for helm and then yq, and an entrypoint start holds one until it exits.
 const slots = Math.max(2, availableParallelism());
 const waiting = [];
 let running = 0;
@@ -139,57 +135,28 @@ async function limited(task) {
 }
 const render = (values) => limited(() => renderChart(values));
 const refusal = (values) => limited(() => chartRefusal(values));
-const notice = (values) => limited(() => trustedProxyNotice(values));
 
 // One workspace for every API start: the Installation file, the gateway key the chart mounts,
-// and a Node compile cache so each child process skips recompiling the controller's modules.
+// and the chart copy that renders the install notes.
 const directory = await mkdtemp(join(tmpdir(), "occ-sign-in-chart-parity-"));
 await writeFile(
   join(directory, "installation.yaml"),
   JSON.stringify(createInstallationDriverConfiguration()),
 );
 await writeFile(join(directory, "gateway-key"), "occ_chart_parity_gateway_key", { mode: 0o600 });
+const noticeRenderer = trustedProxyNoticeRenderer(directory);
+const notice = (values) => limited(() => noticeRenderer(values));
 
-// Runs a Node entrypoint as production with an unreachable database and returns the code of
-// its structured `event` line.
-async function eventCode(script, event, env) {
-  const { killed, output } = await limited(
-    () =>
-      new Promise((resolve) => {
-        execFile(
-          process.execPath,
-          [script],
-          {
-            cwd: repository,
-            env: {
-              PATH: process.env.PATH,
-              NODE_COMPILE_CACHE: join(directory, "compile-cache"),
-              NODE_ENV: "production",
-              OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-              ...env,
-            },
-            timeout: 20_000,
-          },
-          (error, _stdout, stderr) => resolve({ killed: error?.killed === true, output: stderr }),
-        );
-      }),
-  );
-  // execFile also kills on its output limit, far above what these entrypoints print.
-  assert.ok(!killed, `${script} timed out for OCC_AUTH_BASE_URL ${env.OCC_AUTH_BASE_URL}`);
-  const diagnostic = output
-    .split("\n")
-    .filter((line) => line.startsWith("{") && line.endsWith("}"))
-    .map((line) => JSON.parse(line))
-    .find((line) => line.event === event);
-  assert.ok(diagnostic, output);
-  return diagnostic.code;
-}
+const unreachableDatabase = "postgresql://127.0.0.1:1/occ";
+const definedOnly = (env) =>
+  Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined));
 
-// Runs the actual API entrypoint with the rendered settings. Its database is unreachable,
-// so accepted settings end at PERSISTENCE_UNAVAILABLE, after configuration parsing and
-// composition checks; refused settings end earlier with another startup code.
-function startupCode(settings) {
-  return eventCode("apps/controller/src/server.mjs", "startup-error", {
+// The API Pod's environment with the rendered settings, in production with an unreachable
+// database.
+function apiEnvironment(settings) {
+  return definedOnly({
+    NODE_ENV: "production",
+    OCC_DATABASE_URL: unreachableDatabase,
     OCC_CONFIG_PATH: join(directory, "installation.yaml"),
     OCC_HOST: "192.0.2.10",
     OCC_PORT: "8080",
@@ -201,14 +168,72 @@ function startupCode(settings) {
   });
 }
 
-// The bootstrap Job's own check, run as the chart's Job runs it (NODE_ENV=production). Its
-// database is unreachable, so an accepted base URL ends at PERSISTENCE_UNAVAILABLE.
-function jobCode(baseUrl) {
-  return eventCode("scripts/bootstrap-installation.mjs", "installation.bootstrap-failed", {
+// The bootstrap Job's environment, as the chart's Job runs it (NODE_ENV=production).
+function jobEnvironment(baseUrl) {
+  return {
+    NODE_ENV: "production",
+    OCC_DATABASE_URL: unreachableDatabase,
     OCC_AUTH_SECRET: secrets["occ-auth/secret"],
     OCC_AUTH_BASE_URL: baseUrl,
     OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@oce.example.internal",
-  });
+  };
+}
+
+// Runs the API's startup in process: startApi, which server.mjs runs with process.env. Its
+// database is unreachable, so accepted settings end at PERSISTENCE_UNAVAILABLE, after
+// configuration parsing, Driver loading and composition checks; refused settings end earlier
+// with another startup code.
+async function startupCode(settings) {
+  try {
+    await startApi(apiEnvironment(settings));
+  } catch (error) {
+    return startupFailureFields(error).code;
+  }
+  assert.fail("the API started without a database");
+}
+
+// The bootstrap Job's own check of its settings, in process: bootstrapConfiguration, which the
+// Job runs before it opens the database. Undefined when the Job accepts `baseUrl`, else the
+// code it fails with.
+function jobRefusal(baseUrl) {
+  try {
+    bootstrapConfiguration("production", jobEnvironment(baseUrl));
+  } catch (error) {
+    return bootstrapFailureCode(error);
+  }
+  return undefined;
+}
+
+// Runs a Node entrypoint with exactly `env`, requires it to exit with status 1, and returns the
+// code of its structured `event` line. The deadline only stops a hung start: these few starts
+// share the file's CPUs with its renders.
+async function entrypointCode(script, event, env) {
+  const { killed, status, output } = await limited(
+    () =>
+      new Promise((resolve) => {
+        execFile(
+          process.execPath,
+          [script],
+          {
+            cwd: repository,
+            env: { PATH: process.env.PATH, ...compileCacheEnvironment, ...env },
+            timeout: 60_000,
+          },
+          (error, _stdout, stderr) =>
+            resolve({ killed: error?.killed === true, status: error?.code ?? 0, output: stderr }),
+        );
+      }),
+  );
+  // execFile also kills on its output limit, far above what these entrypoints print.
+  assert.ok(!killed, `${script} timed out for OCC_AUTH_BASE_URL ${env.OCC_AUTH_BASE_URL}`);
+  assert.equal(status, 1, output);
+  const diagnostic = output
+    .split("\n")
+    .filter((line) => line.startsWith("{") && line.endsWith("}"))
+    .map((line) => JSON.parse(line))
+    .find((line) => line.event === event);
+  assert.ok(diagnostic, output);
+  return diagnostic.code;
 }
 
 async function startsUp(environment, label) {
@@ -989,6 +1014,57 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     );
   });
 
+  // The checks above run the API's and the bootstrap Job's startup in process. These start the
+  // real entrypoints, as the API Pod and the Job run them, with settings each accepts and
+  // refuses, and require the codes those in-process checks report for the same settings.
+  test("the API and bootstrap entrypoints exit with the codes their in-process startup reports", async () => {
+    const everyProvider = resolveSecrets({
+      ...githubUpgradeSettings(recoveryUserId),
+      ...googleUpgradeSettings(recoveryUserId),
+      ...oidcUpgradeSettings(recoveryUserId),
+      OCC_AUTH_PASSWORD_SIGN_IN: "recovery-only",
+    });
+    const nativeAdmin = withNativeAdmin("GitHub", githubOn);
+    const api = [
+      // Past configuration, Driver loading and composition, to the database.
+      [everyProvider, "PERSISTENCE_UNAVAILABLE"],
+      // Refused by configuration, and by composition before any database work.
+      [{ ...everyProvider, OCC_AUTH_BASE_URL: "https://192.168.010.001" }, "AUTH_BASE_URL_INVALID"],
+      [
+        { ...resolveSecrets(baseSettings[nativeAdmin.base]), ...nativeAdmin.env },
+        "EXTERNAL_SIGN_IN_NATIVE_ADMIN_UNSUPPORTED",
+      ],
+    ].map(async ([settings, code]) => {
+      const label = `API ${code}`;
+      assert.equal(await startupCode(settings), code, label);
+      assert.equal(
+        await entrypointCode(
+          "apps/controller/src/server.mjs",
+          "startup-error",
+          apiEnvironment(settings),
+        ),
+        code,
+        label,
+      );
+    });
+    const job = [
+      ["https://console.oce.example.internal", undefined, "PERSISTENCE_UNAVAILABLE"],
+      ["http://console.oce.example.internal", "AUTH_BASE_URL_INVALID", "AUTH_BASE_URL_INVALID"],
+    ].map(async ([baseUrl, refused, code]) => {
+      assert.equal(jobRefusal(baseUrl), refused, baseUrl);
+      assert.equal(
+        await entrypointCode(
+          "scripts/bootstrap-installation.mjs",
+          "installation.bootstrap-failed",
+          jobEnvironment(baseUrl),
+        ),
+        code,
+        baseUrl,
+      );
+    });
+    await settle([...api, ...job]);
+  });
+
   // The chart is stricter than the API for one input: the API documents ingress-nginx as the
   // default preset when only CIDRs are set, while the chart requires an explicit preset.
   test(
@@ -1223,7 +1299,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
     await settle([...refused, ...accepted]);
   });
 
-  // The API refuses an auth base URL that is not an absolute HTTP(S) origin: server.mjs parses
+  // The API refuses an auth base URL that is not an absolute HTTP(S) origin: startApi parses
   // OCC_AUTH_BASE_URL, and createControllerAuth (validHttpBaseURL, which the bootstrap Job also
   // runs before it) refuses the rest, both as AUTH_BASE_URL_INVALID. The bootstrap Job also
   // refuses plain HTTP unless the host is 127.0.0.1 or localhost. The chart refuses the same
@@ -1237,7 +1313,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       const environment = resolveSecrets(
         signInSettings(deploymentEnv(await render(values), "api")),
       );
-      // server.mjs's normalization, then createControllerAuth. Without an Installation, accepted
+      // startApi's normalization, then createControllerAuth. Without an Installation, accepted
       // settings stop right after its base URL checks.
       const apiAccepts = (baseUrl) => {
         let parsed;
@@ -1492,25 +1568,16 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           { api: false },
         ),
       ];
-      // The bootstrap Job, then the chart; a rendered value also starts the real entrypoint.
+      // The bootstrap Job, then the chart; a rendered value also starts the API.
       const checks = cases.map(async ({ baseUrl, chart, api, job }) => {
         const label = JSON.stringify(baseUrl);
         assert.equal(apiAccepts(baseUrl), api, label);
-        const jobCheck = jobCode(baseUrl).then((code) =>
-          assert.equal(code, job ? "PERSISTENCE_UNAVAILABLE" : "AUTH_BASE_URL_INVALID", label),
-        );
+        assert.equal(jobRefusal(baseUrl), job ? undefined : "AUTH_BASE_URL_INVALID", label);
         if (chart !== undefined) {
-          const [, refused] = await settle([
-            jobCheck,
-            refusal({ ...values, "auth.baseUrl": baseUrl }),
-          ]);
-          assert.match(refused, chart, label);
+          assert.match(await refusal({ ...values, "auth.baseUrl": baseUrl }), chart, label);
           return;
         }
-        const [, objects] = await settle([
-          jobCheck,
-          render({ ...values, "auth.baseUrl": baseUrl }),
-        ]);
+        const objects = await render({ ...values, "auth.baseUrl": baseUrl });
         const bootstrap = objects
           .filter(({ kind }) => kind === "Job")
           .flatMap(({ spec }) => spec.template.spec.containers)
@@ -1524,13 +1591,13 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             `${label} ${workload}`,
           );
         }
-        // The real entrypoint gets past configuration with the rendered value.
+        // The API's startup gets past configuration with the rendered value.
         await startsUp({ ...environment, OCC_AUTH_BASE_URL: baseUrl }, label);
       });
-      // The entrypoint's own code for a value it cannot parse, and its own refusals of a
+      // The API startup's own code for a value it cannot parse, and its own refusals of a
       // rewritten IPv4 host and an empty user info: apiAccepts copies refuseRewrittenIpv4Host
-      // and refuseWrittenUserinfo, and the cases above start the entrypoint only for values the
-      // chart renders, so deleting a call in server.mjs leaves the rest of this test green.
+      // and refuseWrittenUserinfo, and the cases above start the API only for values the chart
+      // renders, so deleting a call in api-startup.mjs leaves the rest of this test green.
       const ownRefusals = [
         "console.oce.example.internal",
         "https://192.168.010.001",
@@ -1648,13 +1715,10 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       ["HTTPS://Console.OCE.example.internal", " https://console.oce.example.internal "].map(
         async (baseUrl) => {
           const label = `${provider} ${JSON.stringify(baseUrl)}`;
-          const [objects, job] = await settle([
-            render({ ...values, "auth.baseUrl": baseUrl }),
-            jobCode(baseUrl),
-          ]);
+          assert.equal(jobRefusal(baseUrl), undefined, label);
+          const objects = await render({ ...values, "auth.baseUrl": baseUrl });
           const rendered = signInSettings(deploymentEnv(objects, "api"));
           assert.deepEqual(rendered, { ...settings, OCC_AUTH_BASE_URL: baseUrl }, label);
-          assert.equal(job, "PERSISTENCE_UNAVAILABLE", label);
           await startsUp(resolveSecrets(rendered), label);
         },
       ),

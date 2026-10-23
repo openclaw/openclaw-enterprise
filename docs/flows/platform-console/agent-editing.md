@@ -1,22 +1,22 @@
 ---
 created: 2026-09-09
-updated: 2026-10-10
-last_updated_session: public-pr/2000
+updated: 2026-10-22
+last_updated_session: 01a162e5-4303-7a21-81d4-bb51cec37c66
 ---
 
 # Console Agent editing and runtime requests
 
 ## Overview
 
-Trace authorized Agent detail edits, credentials, workspace, stopping, and deletion
-from exact Agent selection through API response or confirmed deletion. See the
-[parent flow](../platform-console.md).
+Trace Agent edits, credentials, and workspace files. See the
+[parent flow](../platform-console.md); [stop and deletion](agent-stop-and-deletion.md)
+have their own trace.
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
 - `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
-- `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a revision after first-deployment credential setup.
+- `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
 - A signed-in caller must hold each action's permission on the exact resource.
 
 ## Flow
@@ -24,121 +24,141 @@ from exact Agent selection through API response or confirmed deletion. See the
 ```mermaid
 graph TD
   subgraph Browser["Browser"]
-    A["Read Agent or revision"] -->|readable settings| B["Open detail action"]
+    A["Read Agent or version"] -->|readable settings| B["Open detail action"]
     A -->|unreadable settings| AE["Show metadata and warning"]
     AE -->|refresh or browse versions| A
     B --> C["Edit draft or save credential bindings"]
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
     B --> D["Read or write workspace files"]
-    B --> E["Confirm Agent deletion"]
-    B --> S["Confirm Agent stop"]
+    B --> E["Confirm Agent deletion (stop and deletion trace)"]
+    B --> S["Confirm Agent stop (stop and deletion trace)"]
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]
     P --> PA["PATCH exact Agent plugin map"]
     PA --> F
     Q --> Y["Authorize and check deployment"]
-    Y -->|missing, no earlier revision| Z["Compute creates Agent-owned credentials"]
-    Y -->|stored or not required| R["Admit immutable revision"]
+    Y -->|missing, no earlier version| Z["Compute creates Agent-owned credentials"]
+    Y -->|stored or not required| R["Admit immutable version"]
     Z -->|stored| R
-    Z -->|failed or uncertain| N["Show recovery; create no revision"]
-    Y -->|missing after earlier revision| N
-    F -->|authentication saved| V["Confirm exact Agent Secret grant"]
+    Z -->|failed or uncertain| N["Show recovery; create no version"]
+    Y -->|missing after earlier version| N
+    F -->|authentication saved| V["Confirm exact credential grant"]
     V -->|confirmed| W["Reload saved draft"]
     V -->|denied or interrupted| X["Show partial save and grant-only retry"]
     X -->|binding unchanged| V
     D --> F
-    E --> G["DELETE exact Agent"]
-    S --> T["POST exact Agent stop"]
-    T -->|accepted or uncertain| U["Refresh desired state and selected revision"]
-    T -->|denied| I
-    G -->|accepted or uncertain| H["Refresh exact Agent"]
-    G -->|denied| I["Show access denied"]
-    H -->|exists| J["Show current Agent state"]
-    J -->|known deleting and manual request| E
-    H -->|not found| K["Return to Agents list"]
   end
 ```
 
 ## Execution Trace
 
-### 4. Render draft, revision, or channels
+<a id="4-render-draft-revision-or-channels" class="anchor-alias"></a>
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+### 4. Render draft, version, or channels
 
-The page reads Agent, readable revisions, and current Configuration
-(`revision=draft`) or immutable AgentRevision (`revision=<id>`).
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
+
+The page reads Agent, readable versions, and current Configuration
+(`revision=draft`) or immutable Agent revision (`revision=<id>`).
 `packages/occ/src/index.ts` uses `listAgents`, `listRevisions`,
 `getAgentForBrowsing`, and `getRevisionForBrowsing` for browsing.
 `packages/occ/src/state/postgres-state.ts:browseSavedConfiguration` turns
 payload-decode failures into metadata plus `configurationReadError`; queries
-and operational reads remain strict. Drafts and revisions decode independently.
-The UI retains navigation, blocks editing/deployment of unreadable drafts, and
-never substitutes defaults. Exact-resource permissions still apply.
-**Current version** uses `activeRevisionId`; **View version vN** opens read-only
-details without activating it. **Deployment activity** shows the newest readable
-version's persisted `queued`, `running`, `succeeded`, or `failed` status, not live
-health. Viewed versions show their own results. Pending activity is reread every
-`DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
-result or read error; a new result also rereads selection. **Refresh deployment** rereads
-activity and selection. **Current observations** requests timestamped
+and operational reads remain strict. Drafts and versions decode independently.
+The UI preserves navigation and exact-resource permissions, refusing unreadable-draft
+editing/deployment without defaults.
+**Selected version** uses `activeRevisionId`; **View version vN** opens read-only
+details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
+shows the newest readable version's recorded status. It does not measure live health.
+Routine completion folds. Pending work, read errors, warnings, and cleanup stay visible.
+If the first read finishes after the `FIRST_ACTIVITY_WAIT_MS` reveal, the summary shows its
+outcome and the details stay folded so the version tabs do not move. Cleanup, warnings, or an
+overview error still open the details. If an overview refresh cannot identify this Agent,
+the page keeps the recorded deployment outcome and says the overview could not be refreshed.
+
+On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
+Logs if the message gives no next step. It hides the Logs link if the caller was denied the
+log text or version during this sign-in. **Open Configuration** needs Agent `update` and no
+known Configuration read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
+message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
+version**. Credentials recovery needs `update`. Hidden or unlisted
+current versions suppress recovery; viewed versions show results. Activity polls every
+`DEPLOYMENT_POLL_MS`, through transient read errors, until a result, denial, or missing record; a new result also rereads selection. **Refresh deployment** rereads
+activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
+an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
+the details keep their tallest height until Refresh after it settles.
+**Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
-Its bodyless POST requires Agent `read`/`operate` and exact AgentRevision `read`.
+Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
 **Create new version** opens the saved draft; **Deploy new version** admits its
-Configuration and Agent plugin selections. **Edit current Configuration** does
-not copy historical values. Stop and deletion target the Agent.
+Configuration/plugins. **Edit current Configuration** never copies historical
+values. Stop/deletion target the Agent.
 
-In the draft, **Edit Configuration** PATCHes only `{ values }` from a JSON
-object to the exact Namespace Configuration, preserving `secretBindings`.
-It rereads Agent and Configuration, rejecting changed ID or generation.
-Writes can race after these reads; the API owns authorization and generation.
+**Edit Configuration** rereads the Agent and Configuration, then PATCHes only
+`{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
+generation (including a `409` from a racing save) requires **Reload draft**.
+The response must identify the same Configuration and Namespace, a newer generation, and
+the values and bindings sent as JSON. If it does not, the page reports an unknown outcome
+and requires a reload before another save.
+When a focused **Save Configuration** becomes disabled, focus moves to **Checking Configuration…**.
+Success focuses **Edit Configuration**, unless the reader moved focus elsewhere during the save.
 
-**Enable gateway password access** stages `gateway.auth.password` referencing
-`OPENCLAW_GATEWAY_PASSWORD` through this editor. Other settings, Secret bindings, and
-admitted versions remain unchanged; Cancel discards the edit. On deployment, Kubernetes `gatewayConfiguration` detects the reference;
-`deployment` delivers the generated password environment variable.
+**Enable gateway password access** sets `gateway.auth.password` to reference
+`OPENCLAW_GATEWAY_PASSWORD`, changing nothing else; **Cancel** discards it. Kubernetes
+`gatewayConfiguration` recognizes the reference; `deployment` supplies the password.
 
-Saving reloads the draft without changing admitted snapshots. Invalid input,
-denial, and stale drafts retain editor text. Uncertain saves require readback.
-Unsaved edits block deployment; pending saves block tab and version changes.
+Saves preserve scroll, focus and admitted snapshots. Rejected edits stay in the editor;
+an uncertain save requires readback. Unsaved edits block deployment; pending saves block tab and version changes.
+A refused write lists required grants without guessing which; a refused preflight read names read
+access, a Workspace file save Agent `operate`. Lacking Agent `update` disables plugin, repository
+and authentication editors; Configuration saves get no such hint.
 
-`agents/plugin-fields.mjs:createPluginFields` renders **Plugins**.
-**Save plugin selections** PATCHes the Agent map, preserving Configuration and
-admitted revisions. Driver validation precedes deployment's immutable snapshot. See the
-[plugin deployment flow](../agent-plugins.md).
+`agents/plugin-fields.mts:createPluginFields` renders **Plugins**.
+`agents/plugins.mts:savePlugins` rereads the Agent before PATCH. If the Agent,
+Namespace, Configuration, selections, or approvers differ from the editor's
+baseline, it sends no write. This read does not lock the Agent. The editor clears
+the draft only when the response confirms that identity and the submitted settings.
+The page then rebuilds from that response, which also carries a Stop or
+deployment made since the page loaded.
+**Reload plugin selections** discards the local draft and reads the Agent without
+repeating the PATCH. A successful read rebuilds the editor from saved settings.
+If the read fails, the Console opens the draft page again. The Plugin Driver
+validates the selections before deployment [snapshots the saved settings](../agent-plugins.md).
 
 **Repositories** uses `createRepositoryFields` with exact-Agent discovery and
-PATCHes `repositoryAccess`. Dirty, pending, or uncertain saves block tabs and
-deployment; failed discovery leaves access unverified.
+PATCHes `repositoryAccess`. Unsaved edits also block tabs; failed discovery leaves
+access unverified.
 
-Deployment rereads Agent and Configuration, requires harness authentication and
+Deployment rereads Agent and Configuration, requires authentication and
 Slack bindings, and blocks Teams. Changed association, generation, authentication,
 plugins, execution mode, Backend, or repository access require reload; controls
-stay locked while the request is pending. Snapshot views deploy current settings. Failed reads
-send no bodyless deploy POST; success opens the revision. Uncertain POSTs require
+stay locked while pending. Snapshot views deploy current settings. Failed reads
+send no bodyless deploy POST; success opens the version. Uncertain POSTs require
 history readback before retry; browser reads are not atomic with admission.
 
-`apps/controller/src/console/drafts.mjs:createDraftStore` holds document-local drafts.
+`apps/controller/src/console/drafts.mts:createDraftStore` holds document-local drafts.
 `console.mjs:resetReads` and `detail.mjs:renderTab` capture fields before teardown,
 excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage
 or URLs. Configuration, authentication, and channel baselines prevent stale saves;
-channel snapshots include controls and staged Secret metadata. Save and Cancel
+channel snapshots include controls and staged Secret metadata. Reload draft reapplies
+only the reader's edits, naming overlaps and skipped choices. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
-`dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
+`dom.mts:dismissOnBackdrop` requires press and click outside the topmost editor.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
 only **Create new version** permits editing. The
-[console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+[console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
-`agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
+`agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
-revision. `agents/secret-picker.mjs:renderSecretReference` checks the source
+version. `agents/secret-picker.mjs:renderSecretReference` checks the source
 Namespace and reads exact Secret metadata. Successful reads link names and IDs;
 absent, loading, and unavailable states remain distinct. Failures retain IDs;
 stale responses are ignored and current 401s expire the session. Summaries need
@@ -158,7 +178,7 @@ and native `dm.enabled` remain unchanged. Configuration save persists the
 selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` supplies Namespace,
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
 bindings, and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
 `packages/occ/src/index.ts:listSecrets` filters records by exact Secret read
@@ -177,66 +197,70 @@ uncertain outcomes block retries until refresh. The
 recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
-Saving channels rereads Agent and Configuration and checks their association and
-generation. The PATCH sends `{ values: updatedValues }`, adding `secretBindings`
-only for changed selections and preserving others. A rejected PATCH writes no
-new Secret grant.
+Channel saves reread the Agent and Configuration. A changed Configuration, service principal,
+or generation requires **Reload draft** before a write or Secret grant. A provisioning
+reservation explains the refusal. PATCH sends
+`{ values, expectedGeneration }` and changed `secretBindings`. Rejection grants no Secret access.
 
-After PATCH, `apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
+After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
 grants the Agent service principal access to selected Secrets through Namespace
-IAM. A failed grant leaves Configuration saved. The detail view rereads bindings
-and asks a Namespace administrator to grant access without repeating the
-channel save. New Secrets remain Namespace-owned after cancellation or failure.
-Preflight reads cannot prevent a later race. An uncertain PATCH blocks another
+IAM. A failed grant leaves Configuration saved; a 403 is a known refusal that names the
+Installation administrator, who selects **Retry Secret access**; a timeout or 5xx stays unknown. A member's
+session sends no grant and says access was not verified until **Reload draft**. An administrator's console
+also reads Namespace IAM to mark a bound Slack Secret without an Agent grant.
+An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
-[console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+[console reference](../../reference/console/versions-and-channel-drafts.md)
 describes the supported edits and their deployment boundaries.
 
 <span id="5-provision-initial-runtime-credentials"></span>
 
-### 5. Save authentication and deploy the first revision
+<a id="5-save-authentication-and-deploy-the-first-revision" class="anchor-alias"></a>
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
-Agent before saving authentication and rejects changed bindings. After PATCH,
-`apps/controller/src/console/agents/secret-access.mjs:ensureSecretOperateBinding`
-grants the Agent service principal exact Secret `operate` for a direct source
-(`api_key` or `codex_pat`). It reuses or creates a role and binding through the
-signed-in actor's IAM authority. Issued accounts and runtime authentication
-skip this grant.
+### 5. Save authentication and deploy the first version
 
-A failed grant leaves authentication saved and freezes its controls.
-**Retry credential access** rereads the Agent, rejects changed bindings, and
-rechecks only the grant; reading bindings recovers a lost grant response. An
-unknown PATCH outcome requires **Reload authentication source** before another
-save or grant. Saved bindings and unresolved access survive navigation;
-deployment stays blocked until confirmation or explicit reload. Server admission
-remains authoritative. The deployment handler preserves preflight and
-authorization errors separately from credential metadata. Confirmed access
-does not establish provider readiness.
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` rereads the
+Agent and rejects changed bindings before saving authentication. PATCH replaces
+the prior Harness `credentialSources` entry, preserving unrelated entries without
+deleting the old source or revoking grants. After PATCH,
+`apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
+grants the Agent service principal exact Secret (`api_key` or imported `codex_pat`)
+or CredentialSource `operate` through the actor's IAM authority. Managed
+ServiceAccount PATs and runtime authentication skip this grant.
+
+Grant failure preserves saved authentication and freezes controls.
+`apps/controller/src/console/agents/credentials.mjs:grantWarning` words it as the
+Slack Secret path does. A session known not to administer the Installation sends
+no grant: the warning says access was not verified, names the Installation
+administrator, and offers no retry. A refused or unconfirmed grant request offers
+**Retry credential access**, which checks that the Agent still has the same service principal and
+authentication binding as the saved response, then retries only the grant;
+rereading bindings recovers lost responses. An uncertain PATCH requires
+**Reload authentication source** before saving or granting. Pending access
+survives navigation and blocks deployment until confirmed or reloaded. An administrator's
+Credentials tab blocks deployment once Namespace IAM shows no grant. Admission
+remains authoritative; preflight/authorization errors stay separate from credential
+metadata. Confirmed access does not prove provider readiness.
 
 `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel`
 
-**Operator-managed credentials** saves `{ "method": "runtime" }` without a
-source. It requires readable revision history and an unchanged draft;
-API authorization and Driver compatibility checks remain authoritative.
+**Operator-managed credentials** saves `{ "method": "runtime" }` without a source,
+requiring readable version history and an unchanged draft. API authorization and
+Driver compatibility remain authoritative.
 
-With Slack enabled, **Create new version** shows bound channel Secrets; they do
-not prove live health.
+**Create new version** shows bound Slack Secrets without proving live health.
 
-When Compute needs generated credentials, `OpenClawController.deployAgent`
-checks transport status before admission. If missing and no revision exists, it
-requires Agent `read` and `operate` alongside `deploy`, then calls Compute. The
-Driver derives Secret names, checks ownership and workloads, creates only
-missing whole Secrets, and preserves matching groups on retry. Credential bytes
-enter neither Configuration nor audit. Failure creates no revision; retry checks
-status again. Missing
-credentials after a historical revision require operator investigation. Model
-and channel Secrets remain separate.
+`OpenClawController.deployAgent` checks transport credentials before admission.
+Before the first version, Agent `read`/`operate` plus `deploy` authorize Compute
+to check ownership/workloads and create missing whole Secrets, preserving matching
+groups. Bytes enter neither Configuration nor audit.
+Failure admits no version; retry rechecks status. Missing credentials after an
+earlier version require operator investigation. Model/channel Secrets stay separate.
 
 On explicit submission, the browser rereads Agent and Configuration; a changed
-ID or generation requires reload. It then PATCHes selected Secret references while
-preserving other bindings, then calls `ensureSecretOperateBinding` for changed
+ID or generation requires reload. It then PATCHes selected Secret references with
+`expectedGeneration`, preserving other bindings, then calls `ensureCredentialOperateBinding` for changed
 and pending Secrets. A post-PATCH grant failure leaves bindings saved and blocks
 deployment in the current view. Subsequent saves retry still-referenced pending
 grants. Picker edits and rejected PATCHes preserve that warning; only a confirmed
@@ -246,26 +270,33 @@ Pickers switch references; rotating shared Secret values is separate.
 
 ### 6. Read and replace live workspace files
 
-`apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. It skips Configuration and revision history. Contents belong to the live Agent.
-With no active revision, files stay unavailable and no file request is sent.
+`apps/controller/src/console/agents/workspace.mts:renderWorkspaceFiles` opens from
+`tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or version history.
+With no selected version, files stay unavailable and no file request is sent. Another current version
+keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
 
-The editor GETs each supported filename and normalizes textareas to LF. An
-untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
-The response reauthorizes access before restoring retained text, including empty
-edits. Drafts keep their baseline; Reload replaces them. A 404 without an unknown
-write permits an explicit create, including an empty file; other failures disable
-Save. Save PUTs `{ content }` on the exact-Agent route. It neither patches
-Configuration nor admits a revision. The [workspace flow](../workspace-files.md)
-owns authorization and native transport. Results are per file. An unknown write
-waits for explicit Reload. Current contents, or the formal missing-file 404,
-settle it and open an empty editor for a deliberate create. Another 404, a
-denial, or an unavailable read stays guarded. The editor never retries or creates
-a file.
+The editor reads each supported file by name. A successful response must name
+that file and include its contents. For an existing file, **Save** becomes available
+when the text differs from that baseline. The comparison uses LF line endings, so
+it does not rewrite an untouched CRLF file. A fresh read checks access before
+restoring a draft, including an empty edit. **Reload** replaces those edits.
+
+On the first read or an explicit **Reload**, only a `404` with code `NOT_FOUND`
+and message `The requested workspace file was not found.` confirms the file is
+missing. The operator can then choose **Save** to create it, even as an empty file.
+A generic resource `404`, a denial, or an unavailable read keeps the editor and
+**Save** disabled. **Reload** checks again without writing.
+
+**Save** sends `PUT` with `{ content }` for that file and checks the returned filename.
+The result applies to that file. Saving neither patches Configuration nor admits
+a version. If the outcome is unknown, **Save** stays disabled until the operator chooses
+**Reload** and the controller returns the file contents or that same missing-file
+response. The editor never repeats the write automatically. See the
+[workspace flow](../workspace-files.md) for authorization and native transport.
 
 The [creation trace](../platform-console.md#3-authorize-the-selected-page-resource)
 covers initial channel settings and Secret bindings.
-`apps/controller/src/console/agents/create.mjs` submits `initialWorkspaceFiles`
+`apps/controller/src/console/agents/create.mts` submits `initialWorkspaceFiles`
 and `workspaceDefaultsId`. OCC stages these privately for Compute's initialization
 before execution; no gateway is needed. The [workspace setup flow](../workspace-files.md)
 owns initialization, retries, and cleanup. Live editing requires deployment.
@@ -274,53 +305,14 @@ owns initialization, retries, and cleanup. Live editing requires deployment.
 
 ### 7. Request a stop and read back the Agent
 
-`apps/controller/src/console/agents/stop.mjs:createAgentStop` renders the control
-composed by `apps/controller/src/console/agents/detail.mjs:renderAgentDetail`. Confirmation sends a
-bodyless `POST` to the exact Agent's `/stop` route. OCC's
-`packages/occ/src/index.ts:stopAgent` checks exact-Agent `operate`, persists the
-requested stopped state, and queues reconciliation. The response proves
-admission, not completed Compute shutdown. When stopped,
-**Request Stop again** confirms a new stop intent through the same authorized route.
-It remains available without a selected revision because history/candidate cleanup
-is not exposed, and an uncertain write blocks it until readback succeeds.
-Cancelling confirmation restores its invoking button; submitted requests focus status refresh.
-
-**Refresh stop status** reads the exact Agent again. It displays desired runtime
-state and selected revision without inferring live health or completion from a
-missing revision. Permission denial stays inline; state changes reload the
-detail view. An uncertain write blocks another stop until a successful read. Deployment remains the resume operation,
-admitting a new revision. The [stop lifecycle](../../reference/agents/deployment.md#stop-and-resume) owns
-worker shutdown and preservation of revisions, credentials, and state.
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-and-read-back-the-agent).
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
 <span id="7.-confirm-deletion-and-read-back-the-agent"></span>
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
-
-**Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
-exact Agent URL. The controller requires Agent `delete`; a `403` stays visible on
-the detail page. An accepted request starts asynchronous cleanup and leaves the
-detail page in a deleting state. The page rereads the exact Agent every few
-seconds until it is gone; **Refresh deletion status** reads it on demand, and
-a read error stops the polling. Only a not-found read after
-an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An already deleting Agent
-keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
-and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
-work stays unchanged; terminal work can restart under the controller's existing
-current-permission and retry-ownership checks. The view does not infer a worker
-outcome from the Agent's deleting state or add a separate status contract.
-
-An uncertain initial or repeated deletion blocks writes until a successful exact
-Agent read. A deleting read clears that guard even when the view was already deleting;
-a failed read does not. Cancel returns focus to the repeat-request button, and
-successful writes retain status refresh. The browser never retries DELETE automatically.
-
-`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
-[Agent deletion reference](../../reference/agents.md#deletion) covers
-worker cleanup and the Namespace-owned resources it preserves.
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
 
@@ -330,14 +322,9 @@ worker cleanup and the Namespace-owned resources it preserves.
 - After a partial save, inspect Configuration, Secret metadata, and Agent IAM
   bindings before retrying. Storage and binding do not prove runtime delivery;
   deploy and verify the consuming Agent.
-- Compare saved `Agent.plugins` with the viewed revision's plugin snapshot after
+- Compare saved `Agent.plugins` with the viewed version's plugin snapshot after
   a plugin edit. A successful Agent update does not install or activate plugins;
   deploy and inspect startup status separately.
-- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
-  denials, check `delete` on the exact Agent; Agent `read` and
-  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
-- An accepted deletion remains in progress until the exact Agent read reports
-  not found. A failed refresh does not establish whether cleanup finished.
 - See [console failures](../../reference/console.md#failures-and-logout) for
   session, permission, and network recovery.
 
@@ -348,6 +335,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 - [Agent lifecycle reference](../../reference/agents.md#deletion)
 - [Agent plugin flow](../agent-plugins.md)
 - [Agent sharing flow](agent-sharing.md)
+- [Agent stop and deletion flow](agent-stop-and-deletion.md)
 
 ## Manual Notes
 
@@ -355,15 +343,10 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
-- 2026-10-10 20:00: Keep untouched CRLF workspace files clean; only an edit enables Save. (public-pr/2000 - a3ca862c37d05ba850d3c9595e5668917d7f480d)
-- 2026-10-10 08:46: Trace keyboard focus after Stop confirmation cancellation. (authoring-run/9c1f0e85-9f16-436e-900f-b3d0e6e8cdd9 - b8783d7942e875c6eb751222329c63fac5c028a1)
-- 2026-10-10 02:44: Trace explicit missing-file readback after an uncertain workspace create in the accompanying change. (authoring-run/16c725e2-438f-46bf-a31c-305458ac49d8 - 5bf37b274fcdfefb49dfa99984a15d99b757dc8e)
-- 2026-10-10 01:41: Trace confirmed manual deletion recovery and uncertain repeat readback in the accompanying change. (authoring-run/da61175b-df1b-4e96-b202-94e9e82538f9 - 243b38ba6d951240065e5061e1e4abccdb44410c)
-- 2026-10-10 00:08: Trace explicit repeated Stop recovery in the accompanying change. (authoring-run/52a975bb-0283-40ba-9126-2c2f6eb8992c - 21f34928437fb7d6f4391ba4af5d3e15bf9ce480)
-
-- 2026-09-29 20:00: Trace draft repository editing and save guards. (public-pr/374)
-
-- 2026-09-29 02:55: Trace Gateway password access staging through the existing Configuration editor and save path. (01a0eb0e-dbc1-78d1-91b0-ea91ee87c00f - fdccee5cab532bc7ef2085c5ec6f8f922663f5ce)
-- 2026-09-28 21:31: Trace metadata-preserving browsing and unreadable saved settings in the accompanying change. (01a0e9c2-e0cd-7ed2-a1b9-a70247c43db2 - 176a52892f72aefc45505f89ae6d33e7526fe4da)
+- 2026-10-22 13:00: Rebuild after a plugin save from the save response, so a Stop requested on the page stays shown. (bughunt-1022b)
+- 2026-10-22 10:28: Distinguish a missing workspace file from an unavailable Agent, on first read and after an uncertain save. (01a162e5-4303-7a21-81d4-bb51cec37c66 - 596fdb088)
+- 2026-10-22 10:14: Trace plugin save confirmation and recovery when the response is incomplete or identifies different settings. (01a162ec-b748-7c42-9034-1f0a92b05703 - 345d9f63d)
+- 2026-10-20 05:00: Move steps 7 and 8 (stop, deletion) to [their own trace](agent-stop-and-deletion.md). (docs-split-1020)
+- 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
