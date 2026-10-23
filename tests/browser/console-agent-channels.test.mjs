@@ -682,6 +682,10 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
     await page.getByRole("button", { name: "Save configuration", exact: true }).click();
     assert.equal((await saved).status(), 200);
+    // The PATCH answer reaches the test before the page has closed the drawer and rebuilt the
+    // tab. A click begun then can pass Playwright's enabled check on the old card's Edit Slack
+    // under the open drawer and land after the save disabled it: no drawer opens (finding 2282).
+    await page.getByRole("status").filter({ hasText: "Channels saved." }).waitFor();
 
     const configuration = await fixture.request(
       "GET",
