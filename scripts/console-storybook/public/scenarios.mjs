@@ -7218,6 +7218,20 @@ export const scenarios = {
     description:
       "A manual repeated deletion requires confirmation. Queued or running cleanup remains unchanged.",
   },
+  deletionRetryAccessEnded: {
+    group: "Components/Deletion",
+    name: "Status access ends during repeat confirmation",
+    path: draft,
+    deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 403 }],
+    actions: [click("Request deletion again")],
+    description:
+      "The Agent was already marked for deletion. The next status check is refused while the repeat confirmation is open.",
+    steps: [
+      "Leave the confirmation open. It closes when the status check returns, without sending another deletion request.",
+      "Focus returns to Delete Agent. The notice says you can no longer check whether cleanup finished.",
+    ],
+  },
   deletionRetryUnknown: {
     group: "Components/Deletion",
     name: "Repeat cleanup outcome unknown",

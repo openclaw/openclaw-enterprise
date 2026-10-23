@@ -85,7 +85,9 @@ the detail page. Acceptance starts asynchronous cleanup and marks the Agent dele
 rereads the exact Agent every few seconds; **Refresh deletion status** reads it
 on demand. A read error stops polling. Only a not-found read after
 an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An already deleting Agent
+returns to the Agents list in the selected Namespace. A `403` after the Agent was marked
+deleting means the caller can no longer follow cleanup. The Console stops polling, closes any
+repeat confirmation without sending it, and does not claim deletion finished. An already deleting Agent
 keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
 and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
 work stays unchanged; terminal work can restart under the controller's existing

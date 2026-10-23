@@ -189,7 +189,7 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
     .waitFor();
 });
 
-test("Agent deletion says access ended when the deleter can no longer read the Agent", (t) =>
+test("A deletion status denial closes an open repeat confirmation without sending it", (t) =>
   checkScopedDeletionEnd(t, { moveFocusDuringPoll: false }));
 
 test("A deletion status poll that ends scoped access respects focus moved during the read", (t) =>
@@ -263,14 +263,22 @@ async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   });
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
 
-  // Finishing the deletion removes the bindings that target the Agent, so the next read is a
-  // real 403 for this member (an administrator would get 404 and return to the list).
+  // An administrator removes the member’s grant while cleanup is still pending. In the dialog
+  // case the member has opened the repeat confirmation, but has not confirmed a second request.
+  const repeatDialog = page.getByRole("dialog", {
+    name: "Request deletion again for Scoped Candidate?",
+  });
+  if (moveFocusDuringPoll) {
+    await page.getByRole("button", { name: "Refresh deletion status" }).focus();
+  } else {
+    await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
+    await repeatDialog.getByRole("button", { name: "Cancel", exact: true }).waitFor();
+  }
   const removed = await fixture.request(
     "DELETE",
     `${policyPath}/access-bindings/${agentBinding.id}`,
   );
   assert.ok([200, 204].includes(removed.status), `binding removal answered ${removed.status}`);
-  await page.getByRole("button", { name: "Refresh deletion status" }).focus();
   const denied = await holdNextStatusResponse(page, `${fixture.origin}${agentPath}`);
   await page.clock.runFor(DELETION_POLL_MS);
   const status = await denied.status;
@@ -282,12 +290,19 @@ async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
   }
   denied.release();
   assert.equal(status, 403);
+  // Wait for the page to handle the denial, even if a stale modal still makes the page inert.
   await page
-    .getByRole("status")
     .getByText(
-      "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup.",
+      "You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
+      { exact: false },
     )
-    .waitFor();
+    .waitFor({ state: "attached" });
+  assert.equal(await repeatDialog.isVisible(), false, "the stale deletion confirmation must close");
+  assert.equal(
+    agentDeleteRequests(requests, namespace.id, agent.id).length,
+    1,
+    "only the original deletion was requested",
+  );
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.equal(await page.getByRole("button", { name: "Refresh deletion status" }).count(), 0);
   assert.equal(await expectedFocus.evaluate((node) => node.matches(":focus")), true);
@@ -638,7 +653,7 @@ async function checkRepeatDuringRead(t, { endsAccess, readFails = false }) {
     await page
       .getByRole("status")
       .getByText(
-        "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup.",
+        "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished.",
       )
       .waitFor();
     assert.equal(

@@ -96,7 +96,7 @@ export function createAgentDeletion(
     // the status (finding 1409).
     const checking = state.pending && !state.polling;
     const status = state.accessEnded
-      ? "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup."
+      ? "Deletion was accepted. You can no longer read this Agent’s status, so this page cannot tell whether cleanup has finished."
       : state.deleting
         ? "Deletion was requested. The Agent cannot be edited or deployed. If cleanup has stopped after a failure, fix the cause and request deletion again."
         : state.notice;
@@ -224,9 +224,8 @@ export function createAgentDeletion(
       } else if (error.status === 404) {
         context.navigate("agents");
       } else if (error.status === 403 && state.deleting) {
-        // Most likely the finished deletion removed the bindings that target this Agent, so a
-        // reader with only those grants can no longer follow it. Stop polling instead of
-        // showing a denial.
+        // Cleanup can remove this reader’s grants; access can also end before cleanup finishes.
+        // Stop following the deletion without treating this denial as a not-found response.
         state.accessEnded = true;
         clearTimeout(pollTimer);
       } else {
@@ -245,12 +244,11 @@ export function createAgentDeletion(
         state.pending = false;
         state.polling = false;
         render();
-        // A read that ended access drops a waiting repeat with its dialog, before focus moves:
-        // the heading cannot take focus while the modal is open. Forbidden and needs-refresh
-        // states cannot arise while one waits; they are checked defensively.
+        // The reader may still be deciding in the repeat dialog, or may have confirmed a repeat
+        // we have not sent. Close either before returning focus; the modal makes the page inert.
         const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
-        if (queued && dropQueued) {
-          queued.dialog.close();
+        if (state.accessEnded || (queued && dropQueued)) {
+          section.querySelector<HTMLDialogElement>("dialog[open]")?.close();
         }
         if (state.accessEnded) {
           // Refresh is gone, so keep focus in this section on its heading.
@@ -282,7 +280,7 @@ export function createAgentDeletion(
     cancel: HTMLButtonElement,
     confirm: HTMLButtonElement,
   ) {
-    if (state.forbidden || state.needsRefresh || !context.isCurrent()) {
+    if (state.accessEnded || state.forbidden || state.needsRefresh || !context.isCurrent()) {
       return;
     }
     if (state.pending) {
@@ -363,7 +361,12 @@ export function createAgentDeletion(
   }
 
   function openConfirmation() {
-    if (state.forbidden || (state.pending && !state.polling) || state.needsRefresh) {
+    if (
+      state.accessEnded ||
+      state.forbidden ||
+      (state.pending && !state.polling) ||
+      state.needsRefresh
+    ) {
       return;
     }
     const retry = state.deleting;
