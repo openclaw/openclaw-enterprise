@@ -1314,13 +1314,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     // (finding 1809).
     const name = `Long Slack Agent ${"n".repeat(183)}`;
     assert.equal(Array.from(name).length, 200);
-    // The fixture's default "Auth <Agent name>" Secret would not fit either.
-    const auth = await fixture.createSecret(namespace.id, "Long Slack Agent auth", "test-api-key");
-    const { agent } = await createSlackAgent(fixture, namespace, {
-      name,
-      slug: "long-slack",
-      harnessAuth: { method: "api_key", source: auth.ref },
-    });
+    const { agent } = await createSlackAgent(fixture, namespace, { name, slug: "long-slack" });
     const { page } = await newPage(t, fixture, { browser });
 
     await openDraft(page, fixture, agent, name);
