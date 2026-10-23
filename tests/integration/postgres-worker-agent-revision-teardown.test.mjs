@@ -481,7 +481,8 @@ for (const { name, crashes, finish } of [
 // Finding 1743: a deployment that published the active pointer and then exhausts its retries keeps
 // the runtime it activated (above), and its log line says why its last pass failed. Whether it
 // should also start the maintenance chain its activation would have is finding 1743's open design
-// question: today it queues no maintenance, declared or not, and these cases pin that.
+// question: today it queues no maintenance, declared or not. The declared case pins that; the
+// undeclared one is its control (no interval, so no chain whatever the answer).
 for (const maintained of [true, false]) {
   test(
     `an exhausted deployment of the published active revision logs its failure${maintained ? " (maintenance declared)" : ""}`,
