@@ -1396,6 +1396,7 @@ async function loadPage({
     }
   }
   try {
+    // A pinned key alone covers a provider exchange that confirmed a session now missing.
     const hadSession = session !== null || pinnedSessionKey !== null || recalledSignedIn();
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
@@ -2535,7 +2536,7 @@ function showAdmissionUnavailable(sessionChecked, status) {
     return;
   }
   publicPanel(
-    "Namespace access unavailable",
+    status === 403 ? "No access" : "Namespace access unavailable",
     status === 403
       ? "Your account has no access to this Installation. Try again or sign out."
       : "Could not check Namespace access. Try again.",

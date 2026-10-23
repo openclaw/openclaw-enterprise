@@ -1207,33 +1207,41 @@ for (const gate of ["/api/auth/session", "/namespaces"]) {
 }
 
 // An account can stay signed in after its IAM identity is removed, so /namespaces refuses it on
-// every load. Both checks that read it, a page load and a refocus, must offer a way out (finding
-// 1894); signing out then leaves a tab whose next deep link is a first visit (finding 1893).
-for (const check of ["page load", "refocus"]) {
-  test(`an account refused Namespace access can sign out after a ${check}`, async (t) => {
+// every load. Both checks that read it must offer a way out (finding 1894): a page load, and the
+// in-place recheck an open Agent page runs on refocus. Signing out then leaves a tab whose next
+// deep link is a first visit (finding 1893).
+for (const check of ["a page load", "an Agent page refocus"]) {
+  test(`an account refused Namespace access can sign out after ${check}`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    await fixture.createNamespace("Removed identity", { ready: true });
+    const namespace = await fixture.createNamespace("Removed identity", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Removed identity Agent");
     const { page } = await newPage(t, fixture);
-    await login(page, fixture, "/console/namespaces");
-    await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    await trackSettledFetches(page);
+    if (check === "a page load") {
+      await login(page, fixture, "/console/namespaces");
+      await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+    } else {
+      await login(page, fixture, `/console/agents/${agent.id}?namespace=${namespace.id}`);
+      await page.getByRole("heading", { name: "Removed identity Agent", exact: true }).waitFor();
+      await waitForSettledView(page);
+    }
 
     fixture.policy.identities.length = 0;
     const refused = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/namespaces",
     );
-    if (check === "page load") {
+    if (check === "a page load") {
       await page.reload();
     } else {
       await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
     }
     assert.equal((await refused).status(), 403);
-    await page
-      .getByRole("heading", { name: "Namespace access unavailable", exact: true })
-      .waitFor();
+    await page.getByRole("heading", { name: "No access", exact: true }).waitFor();
     await page
       .getByText("Your account has no access to this Installation. Try again or sign out.")
       .waitFor();
+    await expectNoText(page, /Removed identity/);
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
     await page.getByRole("button", { name: "Sign out", exact: true }).click();
     await page.waitForURL(/\/console\/login$/);

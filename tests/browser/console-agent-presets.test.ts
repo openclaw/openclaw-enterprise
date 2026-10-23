@@ -37,9 +37,9 @@ import {
   backendFixtures,
 } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
+import { consoleStorage } from "../helpers/console-storage.mjs";
 import {
   apiRequests,
-  consoleStorage,
   detailUrl,
   login,
   nativeValues,

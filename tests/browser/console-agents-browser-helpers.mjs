@@ -263,18 +263,6 @@ export async function loginThroughForm(
   await page.waitForURL(signedInPath);
 }
 
-// Browser storage the console wrote, except the tab-scoped Installation-access probe answer
-// (session owner key, admin flag and observability URL) and the tab's signed-in mark, which
-// never hold drafts or credentials.
-export async function consoleStorage(page) {
-  return page.evaluate(() => {
-    const session = { ...sessionStorage };
-    delete session["occ.console.installationAccess"];
-    delete session["occ.console.signedIn"];
-    return { local: { ...localStorage }, session };
-  });
-}
-
 /** @param {ReturnType<typeof apiRequests>} requests */
 export function nonAuthWriteRequests(requests) {
   return requests.filter(
