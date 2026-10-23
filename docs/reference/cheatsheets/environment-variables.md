@@ -147,6 +147,10 @@ for supported engines, images, and security restrictions.
 - `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART` — Optional absolute OpenShell Gateway chart directory or archive; set it together with the workspace chart override.
 - `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART` — Optional absolute OpenShell workspace chart directory or archive; set it together with the Gateway chart override.
 - `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` — Optional absolute Agent Sandbox manifest; otherwise the helper downloads its checksum-verified pinned manifest.
+- `OCC_DEVELOPMENT_OPENSHELL_GATEWAY_ENDPOINT` — External OpenShell gateway `http`/`https` origin replacing the profile's in-cluster gateway; requires the three OIDC variables below and skips the gateway install.
+- `OCC_DEVELOPMENT_OPENSHELL_OIDC_TOKEN_URL` — OIDC token endpoint for the client-credentials grant against the external gateway.
+- `OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_ID` — OIDC client ID for the external gateway.
+- `OCC_DEVELOPMENT_OPENSHELL_OIDC_CLIENT_SECRET_FILE` — Absolute path to a nonempty file with the OIDC client secret; copied into the private state directory.
 - `OCC_CONTAINER_ENGINE_SOCKET` — Podman API socket; the development helper supplies it automatically.
 - `DOCKER_HOST`, `DOCKER_CONTEXT` — Docker endpoint or named context; an explicit context takes precedence. The Kubernetes profile requires a local `unix:///` socket and records the selected endpoint.
 - `CONTAINER_CONNECTION`, `CONTAINER_HOST` — Podman's connection selection; preserved during Docker-profile cleanup when Podman is the engine.
