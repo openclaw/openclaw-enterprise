@@ -58,3 +58,5 @@ such as a refused save or a search with no matches. Use the
 [Console browser tests](../../tests/browser/) to load the page through the controller.
 Check that new assets load and the interaction works with the actual API. Follow the
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
+Record the interaction with [pr-walkthrough](../../.agents/skills/pr-walkthrough/SKILL.md)
+so reviewers can read the starting state, follow the action, and see the result.

@@ -13,6 +13,7 @@
   "include": [
     "**/*.test.ts",
     "../scripts/console-storybook/*.stories.ts",
+    "../scripts/console/record-walkthrough.ts",
     "helpers/credential-source-owner-upgrade.ts"
   ],
   "references": [

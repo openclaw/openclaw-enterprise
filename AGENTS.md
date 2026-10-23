@@ -459,7 +459,9 @@ controls:
 - Capture screenshots of the new or changed UI states and a short video of the
   feature in use. Show the relevant user actions and visible result, not only a
   static screen or terminal output. Keep the walkthrough within the requested
-  behavior; do not invent additional acceptance criteria.
+  behavior; do not invent additional acceptance criteria. Use
+  [pr-walkthrough](.agents/skills/pr-walkthrough/SKILL.md) to record the interaction
+  at a pace reviewers can follow.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
   Upload screenshots and a short video to GitHub, as native attachments or as
