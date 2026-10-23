@@ -1,11 +1,11 @@
 // The embedded Gateway restarted after an unclean stop, split from
-// runtime-image-startup-termination.test.mjs so CI runs its wait for OpenClaw's
-// heartbeat staleness beside the other Image Runtime Startup 2 files. It starts
-// the wrapper through the same scenario helper as the startup probe files.
+// runtime-image-startup-termination.test.mjs. It starts the wrapper through the
+// same scenario helper as the startup probe files.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import {
+  image,
   imageTestOptions,
   runDocker,
   gatewayStateVolume,
@@ -80,6 +80,69 @@ async function sendFirstTurn(containerName) {
   return JSON.parse(stdout);
 }
 
+// OpenClaw's GATEWAY_OWNER_HEARTBEAT_STALE_MS: a Gateway in another PID
+// namespace, as a restarted container is, cannot verify that the killed owner
+// is gone and refuses the shared state until the owner's heartbeat is 90 s old.
+const ownerHeartbeatStaleMs = 90_000;
+
+// Runs in a one-shot container on the stopped Gateway's state: moves every
+// owner heartbeat back by `ageMs`, leaving the volume as it is that long after
+// the kill. The heartbeats are the mtimes of the lock files and the
+// heartbeat_at of the state database's leases (expires_at moves with it). The
+// agent database is not opened. The process then kills itself, so SQLite does
+// not checkpoint on close and the state database keeps its write-ahead log,
+// as the killed Gateway left it. Prints what it aged as JSON.
+async function ageOwnerHeartbeats({ stateDir, ageMs }) {
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { DatabaseSync } = await import("node:sqlite");
+  const locks = [];
+  const walk = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(file);
+      } else if (entry.isFile() && entry.name.endsWith(".lock")) {
+        const { atime, mtimeMs } = fs.statSync(file);
+        fs.utimesSync(file, atime, new Date(mtimeMs - ageMs));
+        locks.push(path.relative(stateDir, file));
+      }
+    }
+  };
+  walk(stateDir);
+  const database = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"));
+  const aged = database
+    .prepare(
+      "UPDATE state_leases SET heartbeat_at = heartbeat_at - ?, expires_at = expires_at - ? WHERE heartbeat_at IS NOT NULL RETURNING scope",
+    )
+    .all(ageMs, ageMs);
+  process.stdout.write(JSON.stringify({ locks, leases: aged.map(({ scope }) => scope) }), () =>
+    process.kill(process.pid, "SIGKILL"),
+  );
+}
+
+async function ageStoppedGatewayHeartbeats(homeVolume, ageMs) {
+  const program = `await (${ageOwnerHeartbeats.toString()})(${JSON.stringify({ stateDir: "/home/node/.openclaw", ageMs })});`;
+  const { stdout } = await runDocker([
+    "run",
+    "--rm",
+    "--user",
+    "1000:1000",
+    "--network",
+    "none",
+    "--volume",
+    `${homeVolume}:/home/node`,
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    // The program's SIGKILL is expected; its output says what it aged.
+    'node --no-warnings --input-type=module -e "$0"; true',
+    program,
+  ]);
+  return JSON.parse(stdout);
+}
+
 // Finding 2185: a Gateway Pod went Ready while OpenClaw was still inspecting
 // the agent database its previous process left without a release, and the
 // first chat turn after Start got HTTP 500. A Gateway killed without its
@@ -93,7 +156,6 @@ test(
     // The first Gateway answers a turn, so its agent database holds a lease,
     // and is then killed with no chance to release it.
     let firstTurn;
-    let killedAt;
     const first = await runStartupProbeScenario(t, {
       kind: "gateway",
       mode: "answer",
@@ -102,17 +164,22 @@ test(
       act: async ({ containerName }) => {
         firstTurn = await sendFirstTurn(containerName);
         await runDocker(["kill", "--signal", "KILL", containerName]);
-        killedAt = Date.now();
       },
     });
     await withStartupProbeEvidence(first, async () => {
       assert.equal(firstTurn.status, 200, `first Gateway turn: ${JSON.stringify(firstTurn)}`);
     });
-    // A Gateway in another PID namespace cannot verify that the killed owner
-    // is gone until its heartbeat is 90 s old (OpenClaw's
-    // GATEWAY_OWNER_HEARTBEAT_STALE_MS): an earlier start refuses the shared
-    // state and exits. Start once the restart can take over.
-    await new Promise((resolve) => setTimeout(resolve, killedAt + 92_000 - Date.now()));
+    // The restart takes over only once the killed owner's heartbeat is stale;
+    // an earlier start refuses the shared state and exits. Age the heartbeats
+    // instead of waiting 92 s in real time. The restart still runs in its own
+    // PID namespace, as a restarted Pod container does, so it reaches the same
+    // stale agent database lease as after a real wait.
+    const aged = await ageStoppedGatewayHeartbeats(homeVolume, ownerHeartbeatStaleMs + 2_000);
+    assert.ok(aged.locks.length > 0, `no Gateway lock file to age: ${JSON.stringify(aged)}`);
+    assert.ok(
+      aged.leases.includes("gateway-owner"),
+      `no owner lease to age: ${JSON.stringify(aged)}`,
+    );
     // The restart's first turn goes out as soon as the runtime reports ready.
     let turn;
     const restarted = await runStartupProbeScenario(t, {
@@ -132,6 +199,10 @@ test(
       // The restart did inspect the unreleased database in the background
       // after its listener bound: the window this readiness must cover.
       assert.match(restarted.snapshot.output, /previous release not observed/);
+      // The full integrity gate, which runs when the restart cannot prove from
+      // its own PID namespace that the killed owner is dead, not the deferred
+      // check OpenClaw gives a dead owner in the same namespace.
+      assert.match(restarted.snapshot.output, /integrityGateReason=stale-lease-full/);
       assert.match(restarted.snapshot.output, /recovered after background inspection/);
     });
   },
