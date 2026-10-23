@@ -280,14 +280,7 @@ function timestamp(row: PostgresRow, key: string): string {
 }
 
 function jsonObject(value: unknown): Record<string, unknown> {
-  let parsed: unknown = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value) as unknown;
-    } catch {
-      throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
-    }
-  }
+  const parsed = typeof value === "string" ? (JSON.parse(value) as unknown) : value;
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new PersistedStateInvalidError("Persisted platform state contains invalid JSON.");
   }
