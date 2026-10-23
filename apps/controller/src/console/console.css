@@ -2966,6 +2966,15 @@ select:not([multiple])[size="1"] {
 .workspace-files .configuration-editor {
   min-height: 200px;
 }
+/* Save stays focusable when the caller lacks Agent operate (aria-disabled, not disabled), so it
+   takes the disabled look here and no accent hover. */
+.workspace-files button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.workspace-files button.button--primary[aria-disabled="true"]:hover {
+  background: var(--color-accent);
+}
 
 .channel-secrets {
   max-width: 960px;

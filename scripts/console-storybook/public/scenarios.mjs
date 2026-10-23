@@ -6967,6 +6967,17 @@ export const scenarios = {
     description:
       "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
   },
+  workspaceOperateDenied: {
+    group: "Components/Workspace",
+    name: "Save needs Agent operate",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
+    steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
+    gap: "Simulated files and permission answer; the API still refuses the write.",
+  },
   workspaceMissing: {
     group: "Components/Workspace",
     name: "Missing file",

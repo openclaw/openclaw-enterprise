@@ -3135,7 +3135,12 @@ export async function renderAgentDetail(
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
-      const workspace = renderWorkspaceFiles(tabContext, currentAgent, path);
+      const workspace = renderWorkspaceFiles(
+        tabContext,
+        currentAgent,
+        path,
+        latestPermissionsRead.then((permissions) => permissions?.operate),
+      );
       state.refresh = workspace.refresh;
       content.append(workspace.section);
       state.loading = false;
