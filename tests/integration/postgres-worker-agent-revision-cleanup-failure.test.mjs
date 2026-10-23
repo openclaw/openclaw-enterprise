@@ -297,11 +297,21 @@ revisionTest(
       (event) =>
         event.event === "worker.completed" &&
         event.workId?.startsWith(maintenance) &&
-        event.cleanupCause !== undefined,
+        event.outcome !== "success",
     );
     assert.deepEqual(
-      { outcome: failed.outcome, code: failed.code, dependency: failed.dependency },
-      { outcome: "pending", code: "KUBERNETES_API_UNAVAILABLE", dependency: "kubernetes_api" },
+      {
+        outcome: failed.outcome,
+        code: failed.code,
+        dependency: failed.dependency,
+        cleanupCause: failed.cleanupCause,
+      },
+      {
+        outcome: "pending",
+        code: "KUBERNETES_API_UNAVAILABLE",
+        dependency: "kubernetes_api",
+        cleanupCause: "Error",
+      },
     );
     failing = false;
     await completion(
