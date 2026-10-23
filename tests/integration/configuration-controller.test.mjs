@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -25,6 +24,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { bindRole } from "../helpers/iam-grants.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 function createConfigurationBackend() {
   // This deliberately simple substrate exercises the real Fastify, IAM, OCC, and audit paths.
@@ -200,8 +200,7 @@ async function fixture({
 // A ready Namespace on the Filesystem Configuration Driver, for Configuration and Preset saves.
 // The default Compute, like Docker Compute, runs no Configuration rules of its own.
 async function saveFixture(t, computeDriver = createReadyComputeDriver("compute-save-rules")) {
-  const root = await mkdtemp(join(tmpdir(), "occ-save-rules-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-save-rules-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const context = await fixture({ configurationDriver, computeDriver });
   const { id } = context.namespace;
@@ -2248,8 +2247,7 @@ for (const [method, action] of [
 }
 
 test("Filesystem Configuration API rejects plaintext model writes without changing stored references", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "occ-model-configuration-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-model-configuration-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const { namespace, collection, ...context } = await fixture({ configurationDriver });
   const sentinel = `synthetic-configuration-credential-${randomUUID()}`;
@@ -3998,8 +3996,7 @@ test("A stored Configuration with request credentials an older release accepted 
   // transport settings. After the upgrade the bundled Driver must still read and replace that
   // document so its operator can remove them, while save and deployment refuse it with the
   // Kubernetes Compute rule's message, before any revision or runtime resource exists.
-  const root = await mkdtemp(join(tmpdir(), "occ-upgrade-configuration-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "occ-upgrade-configuration-");
   const configurationDriver = new FilesystemConfigurationDriver(root);
   const { namespace, ...context } = await fixture({
     configurationDriver,
@@ -4087,8 +4084,7 @@ test("A stored Configuration with a literal Gateway password an older release ac
     ],
     ["ready Compute", createReadyComputeDriver("compute-stored-gateway-password-ready")],
   ]) {
-    const root = await mkdtemp(join(tmpdir(), "occ-stored-gateway-password-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-stored-gateway-password-");
     const configurationDriver = new FilesystemConfigurationDriver(root);
     const { namespace, ...context } = await fixture({ configurationDriver, computeDriver });
     const { configurationId, item, agentPath } = await deployableAgent(context, namespace, {

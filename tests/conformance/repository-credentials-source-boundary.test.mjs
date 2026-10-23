@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { parsers } from "prettier/plugins/typescript";
 import { verifyRepositoryCredentialBoundary as verify } from "../../scripts/verify-repository-credentials-boundary.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const sourceRoot = fileURLToPath(new URL("../../apps/controller/src/", import.meta.url));
 const sharedFields = "composition/installation-fields.ts";
@@ -44,9 +44,8 @@ test("credential source boundary rejects new raw capabilities in the real source
     }
     return parsed.get(text);
   });
-  const temporary = await mkdtemp(join(tmpdir(), "repository-credentials-boundary-"));
+  const temporary = await temporaryDirectory(t, "repository-credentials-boundary-");
   const root = join(temporary, "src");
-  t.after(() => rm(temporary, { recursive: true, force: true }));
   await cp(sourceRoot, root, { recursive: true });
   assert.ok((await verify(root)) > 0);
 

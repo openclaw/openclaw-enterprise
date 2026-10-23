@@ -5,8 +5,7 @@ import {
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test, { mock } from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import {
@@ -22,6 +21,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { READ_RETRY_PAUSES_MS, withRetryTimers } from "../helpers/kubernetes-request-retry.mjs";
 import { writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const namespaceId = "ns_00000000-0000-4000-8000-000000000001";
 const configuration = {
@@ -621,8 +621,7 @@ test("Kubernetes Configuration rejects literal model credentials before writes a
 });
 
 test("Kubernetes Configuration cancels an in-flight request when its provisioning claim is lost", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-configuration-cancellation-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-configuration-cancellation-");
   const path = join(directory, "kubeconfig.json");
   await writeFile(
     path,

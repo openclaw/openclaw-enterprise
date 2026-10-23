@@ -45,7 +45,9 @@ from the same Driver registration. Use the
 [OpenShell Installation fragment](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
 Keep `repository.preparedGitHub`, `repository.openShell`, the session duration,
 and the GitHub Backend registry at `/etc/openclaw/repository-registry/registry.json`.
-Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`.
+Omit `controlSocket`, `publicCaPath`, and `repository.nativeSender`. Remove
+`network.repositoryCredentials` from the Compute configuration: startup refuses it
+without `repository.nativeSender`.
 
 Set Helm `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repositoryCredentials.enabled: false`, and

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
-import { spawnSync } from "node:child_process";
 import {
   chmod,
   cp,
@@ -35,6 +34,7 @@ import {
 import { readRuntimeRepositoryManifest } from "../../apps/controller/src/drivers/repo/github/credentials/client/manifest.ts";
 import { createNativeClientMaterial } from "../fixtures/repository-credentials/clients.mjs";
 import { startCredentialServiceFixture } from "../fixtures/repository-credentials/service.mjs";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   cleanEnvironment,
@@ -509,53 +509,21 @@ test(
   { timeout: 30000 },
   async (t) => {
     const parent = await temporaryDirectory(t);
-    const key = join(parent, "key.pem");
-    const cert = join(parent, "cert.pem");
-    const generated = spawnSync(
-      "openssl",
-      [
-        "req",
-        "-x509",
-        "-newkey",
-        "rsa:2048",
-        "-nodes",
-        "-keyout",
-        key,
-        "-out",
-        cert,
-        "-days",
-        "1",
-        "-subj",
-        "/CN=localhost",
-        "-addext",
-        "subjectAltName=IP:127.0.0.1",
-      ],
-      { encoding: "utf8", timeout: 10000 },
-    );
-    assert.equal(generated.status, 0, generated.stderr);
+    const { key, cert, certPath } = await selfSigned(parent, {
+      commonName: "localhost",
+      subjectAltName: "IP:127.0.0.1",
+    });
     const requests = [];
     let redirect = false;
-    const server = createServer(
-      { key: await readFile(key), cert: await readFile(cert) },
-      (request, response) => {
-        requests.push({ url: request.url, authorization: request.headers.authorization });
-        response.writeHead(
-          redirect ? 302 : request.headers.authorization ? 403 : 401,
-          redirect ? { location: "/redirected" } : { "www-authenticate": 'Basic realm="fixture"' },
-        );
-        response.end();
-      },
-    );
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(
-      () =>
-        new Promise((done) => {
-          server.closeAllConnections();
-          server.close(done);
-        }),
-    );
-    const origin = `https://127.0.0.1:${server.address().port}`;
+    const server = createServer({ key, cert }, (request, response) => {
+      requests.push({ url: request.url, authorization: request.headers.authorization });
+      response.writeHead(
+        redirect ? 302 : request.headers.authorization ? 403 : 401,
+        redirect ? { location: "/redirected" } : { "www-authenticate": 'Basic realm="fixture"' },
+      );
+      response.end();
+    });
+    const origin = await listen(t, server);
     const input = {
       ...opened,
       client: {
@@ -571,7 +539,7 @@ test(
     const trusted = await createNativeClientMaterial(
       t,
       [{ opened: input, repositoryRef: "project" }],
-      { ca: await readFile(cert) },
+      { ca: await readFile(certPath) },
     );
     const refused = await git(untrusted.root, ["ls-remote", "https://github.com/example/project"]);
     assert.notEqual(refused.code, 0);

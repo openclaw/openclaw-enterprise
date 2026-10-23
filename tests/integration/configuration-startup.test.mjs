@@ -983,6 +983,15 @@ test("repository startup rejects unmatched ownership, registry identity, duratio
       (value) => (value.drivers.compute.configuration.network.repositoryCredentials.port = 443),
       /repository service peer/,
     ],
+    // Without native delivery no repository material Secret exists and the chart grants no
+    // Secret list, so a peer left behind is refused rather than looping on 403 (finding 2212).
+    [
+      (value) => {
+        delete value.repository;
+        delete value.backend;
+      },
+      /drivers\.compute\.configuration\.network\.repositoryCredentials requires repository\.nativeSender/,
+    ],
     [
       (value) => (value.backend[0].drivers.repo = "ghp_notarealtoken123456"),
       /plaintext credential/,

@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import {
   cp,
   link,
-  mkdtemp,
   mkdir,
   readFile,
   readdir,
@@ -15,12 +14,12 @@ import {
   chmod,
   lstat,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import { reservePort, reservedPortArgs } from "../helpers/available-port.mjs";
 import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { waitUntil } from "../helpers/wait-for.mjs";
 
 const root = resolve(".");
 
@@ -28,8 +27,7 @@ test(
   "detached credential service and client run without workspace packages or node_modules",
   { timeout: 30000 },
   async (t) => {
-    const temporary = await mkdtemp(join(tmpdir(), "credential-package-"));
-    t.after(() => rm(temporary, { recursive: true, force: true }));
+    const temporary = await temporaryDirectory(t, "credential-package-");
     const sockets = await socketDirectory(t, "credential-package-", {
       longest: "prepared-git-use.sock",
     });
@@ -306,10 +304,11 @@ test(
       development.once("close", (code, signal) => resolve({ code, signal })),
     );
     try {
-      const deadline = Date.now() + 5000;
-      while (!developmentOutput.includes('"event":"started"') && Date.now() < deadline) {
-        await delay(10);
-      }
+      await waitUntil(
+        "the development service to report started",
+        () => developmentOutput.includes('"event":"started"'),
+        { timeoutMs: 5000, intervalMs: 10 },
+      );
       assert.ok(
         developmentOutput.includes(
           '{"event":"started","authority":"github-token-development","tokenClass":"oauth"}\n',
@@ -370,14 +369,12 @@ test(
     });
     try {
       const socket = join(sockets, "control.sock");
-      const deadline = Date.now() + 5000;
-      while (
-        !(await lstat(socket).catch(() => undefined)) &&
-        service.exitCode === null &&
-        Date.now() < deadline
-      ) {
-        await delay(10);
-      }
+      await waitUntil(
+        () =>
+          `the emitted process to bind its control socket or exit (exit code ${service.exitCode})`,
+        async () => (await lstat(socket).catch(() => undefined)) || service.exitCode !== null,
+        { timeoutMs: 5000, intervalMs: 10 },
+      );
       assert.ok(
         (await lstat(socket)).isSocket(),
         "emitted process did not bind its control socket",
@@ -545,8 +542,7 @@ test(
 );
 
 test("credential artifact builder rejects dependencies outside its emitted closure", async (t) => {
-  const temporary = await mkdtemp(join(tmpdir(), "credential-closure-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const temporary = await temporaryDirectory(t, "credential-closure-");
   await mkdir(join(temporary, "scripts"));
   const emitted = join(temporary, "apps/controller/dist");
   const entrypoint = join(emitted, "composition/repository-credentials/check-config.js");
@@ -701,8 +697,7 @@ async function snapshot(directory) {
 }
 
 test("runtime image client stage emits the full build's client from its own inputs", async (t) => {
-  const temporary = await mkdtemp(join(tmpdir(), "credential-client-stage-"));
-  t.after(() => rm(temporary, { recursive: true, force: true }));
+  const temporary = await temporaryDirectory(t, "credential-client-stage-");
   // Reference: the artifact builder on the current full controller output.
   const full = join(temporary, "full");
   await mkdir(join(full, "scripts"), { recursive: true });

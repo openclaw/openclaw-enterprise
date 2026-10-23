@@ -15,6 +15,23 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-23: a repository broker peer needs the native sender
+
+**What breaks.** Startup and the chart's upgrade check refuse an Installation
+that sets `drivers.compute.configuration.network.repositoryCredentials` without
+`repository.nativeSender`. Earlier builds accepted it. Then every stop, retire
+and delete of an Agent with repository bindings listed Secrets that the worker
+may not list, and retried the 403 without end.
+
+**Who is affected.** Installations that switched from the native repository
+broker to protected OpenShell Git or an installed sender, and kept the peer.
+
+**How to tell.** The upgrade check or startup fails with
+`drivers.compute.configuration.network.repositoryCredentials requires repository.nativeSender; ...`.
+
+**Steps.** Delete `network.repositoryCredentials` from the Compute
+configuration, keep its other `network` settings, and upgrade again.
+
 ## 2026-10-16: stored model provider settings are checked at deploy
 
 **What breaks.** On every Compute, deploying or redeploying an Agent runs the
@@ -270,58 +287,3 @@ the `openclaw-enterprise` chart requests a DNS SAN, not an IP SAN. For harness
 certificate. Use a DNS suffix such as
 `previews.example.test` for sandbox. Correct Helm/Installation values, then upgrade.
 _untested_ against a live Installation.
-
-## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
-
-**What breaks.** Profile preflight refuses an uppercase letter in the repository
-path of `controlPlane.controllerImage`, `runtime.image` or `repository.image`,
-which Kubernetes refused to pull; an uppercase registry host or tag still
-passes. The chart (`images.*`, `repositoryCredentials.image`,
-`logging.collector.image`),
-`prepare-bootstrap-volume`, `upgrade-production-images`, and API and worker
-startup for the Compute gateway and Agent images refuse it too, and any other
-reference Kubernetes cannot parse (`..` or an empty path component, a tag over
-128 characters, non-ASCII letters); all of them accept an IPv6 registry host
-(`[fd00::1]:5000/...`). Preflight, the chart, API
-startup and the bootstrap Job also refuse any `@` before the `auth.baseUrl`
-host (`https://@host`), which Node silently dropped; preflight refuses it in
-`controlPlane.observabilityUrl`, and API and worker startup in
-`observability.url`.
-
-**Who is affected.** Profiles, values, tool flags or Installation YAML that use
-those spellings.
-
-**How to tell.** Preflight, the chart and the tools report `... repository path
-must be lowercase`, the field's image reference message, or the URL field's
-absolute-URL message. API startup logs
-`AUTH_BASE_URL_INVALID` or `OBSERVABILITY_URL_INVALID`. Current API and worker
-startup report `DRIVER_CONFIGURATION_INVALID` with `/images/gateway` or
-`/images/agent` details for a refused runtime image; see the
-[production startup flow](../../flows/production-startup.md).
-
-**Steps.** Fix the image reference (lowercase its repository path, drop what
-Kubernetes cannot parse), or delete the `@`, then render or restart again.
-
-## 2026-10-13: channel proxy hosts must name one proxy address
-
-**What breaks.** Startup refuses a channel proxy IPv4 host that is not four
-decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
-integer, hex, and leading zeros used to allow egress to a different address.
-Startup also refuses an unspecified host (`0.0.0.0`, `[::]`), which names no
-destination, and an IPv4-mapped IPv6 host (`[::ffff:10.42.0.15]`), whose egress
-never reached the proxy. Profile preflight refuses `0.0.0.0` in
-`channels.runtimeProxyUrl`. Preflight, the chart and API startup also refuse it in the
-Slack directory proxy (`channels.directoryProxyUrl`, `api.channelDirectoryProxyUrl`) with
-`... must not use host 0.0.0.0, which names no proxy address`.
-
-**Who is affected.** Installations whose `channels.proxyUrl` uses one of those
-spellings. Canonical decimals, other IPv6 literals, and a managed Service proxy URL
-still start.
-
-**How to tell.** Startup fails with
-`Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
-or `Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.`
-
-**Steps.** Write the proxy's own address, an IPv4 host as four decimal octets
-(`127.0.0.1` for `0177.0.0.1`, `10.42.0.15` for `[::ffff:10.42.0.15]`), and
-restart.

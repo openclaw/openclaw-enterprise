@@ -206,82 +206,77 @@ function connectTlsClient(fixture) {
   return state;
 }
 
-const streamBytes = 64 * 1024 * 1024;
+// The producer has no fixed length: kernel socket buffers on two TCP hops can hold
+// tens of MiB (about 60 MiB on CI runners), so any fixed payload is a guess about the
+// host. It writes until the transport stops asking for more, and a cap far above any
+// socket buffering catches a transport that keeps reading while its consumer is paused.
+const producerCapBytes = 256 * 1024 * 1024;
 const streamChunk = Buffer.alloc(64 * 1024, 42);
-const producerPauseTimeoutMs = 1000;
-const producerStableMs = 200;
-// Hashed once up front, not inside two cases, to keep it off the shared event loop.
-const payloadDigest = (() => {
-  const hash = createHash("sha256");
-  for (let offset = 0; offset < streamBytes; offset += streamChunk.length) {
-    hash.update(streamChunk);
-  }
-  return hash.digest("hex");
-})();
+// Backpressure is the absence of "drain": the producer counts as stalled once a
+// refused write sees no drain for this long.
+const producerQuietMs = 200;
 
-function writePayload(outgoing) {
+// `consumerHolding` says whether the paused consumer already holds the exchange: a
+// quiet window before that proves nothing about the consumer, so it is not a stall.
+function writePayload(outgoing, consumerHolding = () => true) {
   let producedBytes = 0;
-  let observedBackpressure = false;
-  const { promise: blocked, resolve: resolveBlocked } = Promise.withResolvers();
-  const write = () => {
-    while (producedBytes < streamBytes) {
+  let refusals = 0;
+  let quiet;
+  let stopped = false;
+  const hash = createHash("sha256");
+  const { promise: stalled, resolve, reject } = Promise.withResolvers();
+  // Callers may await this only after other setup; keep an early failure attributable.
+  stalled.catch(() => {});
+  const stop = () => {
+    stopped = true;
+    clearTimeout(quiet);
+    outgoing.off("drain", write);
+  };
+  const settle = (refusal) => {
+    // Timers run before I/O callbacks: let a drain the socket already reported run first.
+    setImmediate(() => {
+      if (stopped || refusal !== refusals) {
+        return;
+      }
+      stop();
+      // Everything produced so far is queued; the consumer must still get all of it.
+      outgoing.end();
+      resolve(producedBytes);
+    });
+  };
+  // The quiet window starts only once the consumer is seen holding the exchange.
+  const awaitQuiet = (refusal) => {
+    quiet = consumerHolding()
+      ? setTimeout(() => settle(refusal), producerQuietMs)
+      : setTimeout(() => awaitQuiet(refusal), 10);
+  };
+  function write() {
+    clearTimeout(quiet);
+    while (producedBytes < producerCapBytes) {
       producedBytes += streamChunk.length;
+      hash.update(streamChunk);
       if (!outgoing.write(streamChunk)) {
-        if (!observedBackpressure) {
-          observedBackpressure = true;
-          resolveBlocked(producedBytes);
-        }
         outgoing.once("drain", write);
+        awaitQuiet(++refusals);
         return;
       }
     }
-    outgoing.end();
-    if (!observedBackpressure) {
-      resolveBlocked(producedBytes);
-    }
-  };
-  outgoing.once("close", () => outgoing.off("drain", write));
-  write();
-  return { blocked, producedBytes: () => producedBytes };
-}
-
-async function assertProducerBlocked(producer) {
-  await Promise.race([
-    producer.blocked,
-    delay(producerPauseTimeoutMs).then(() => {
-      assert.fail("producer did not observe backpressure while consumer was paused");
-    }),
-  ]);
-  const deadline = Date.now() + producerPauseTimeoutMs;
-  let observed = producer.producedBytes();
-  let lastProgressAt = Date.now();
-  assert.ok(observed > 0, "producer did not start while consumer was paused");
-  // Keep the consumer paused for the entire window: an early plateau can be
-  // followed by more socket-buffer progress without the consumer resuming.
-  while (Date.now() < deadline) {
-    await delay(50);
-    const current = producer.producedBytes();
-    assert.ok(
-      current < streamBytes,
-      `producer completed ${current} bytes while consumer was paused`,
-    );
-    if (current !== observed) {
-      observed = current;
-      lastProgressAt = Date.now();
-    }
+    stop();
+    reject(new Error(`producer wrote ${producedBytes} bytes while consumer was paused`));
   }
-  assert.ok(
-    Date.now() - lastProgressAt >= producerStableMs,
-    `producer kept advancing while consumer was paused; last observed ${observed} bytes`,
-  );
-  return observed;
+  outgoing.once("close", () => {
+    stop();
+    reject(new Error(`producer stream closed after ${producedBytes} bytes before it stalled`));
+  });
+  write();
+  return { stalled, producedBytes: () => producedBytes, digest: () => hash.digest("hex") };
 }
 
 // Every case owns its listeners, upstream and sessions, and most of each case is
 // spent waiting on a deliberate deadline, so two cases overlap their waits (the
 // upstream-timing case runs its three light subtests together). The cases share one
 // event loop: with three or more, CPU starvation (4 copies on one CPU) broke the
-// producer stability windows and the 150 ms header deadline.
+// producer quiet windows and the 150 ms header deadline.
 describe("repository credential transport bounds", { concurrency: 2 }, () => {
   const bounded = (name, fn, options) => test(name, { timeout: 15000, ...options }, fn);
 
@@ -872,21 +867,20 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
           });
           incoming.once("end", () => outgoing.writeHead(200, uploadReplyHeaders).end("0000"));
         },
-        { gitFetchInputBytes: streamBytes },
+        { gitFetchInputBytes: producerCapBytes },
       );
-      const client = startUpload(fixture, { "content-length": streamBytes });
-      const producer = writePayload(client.outgoing);
+      // Chunked framing lets the producer decide its length while it runs.
+      const client = startUpload(fixture, { "transfer-encoding": "chunked" });
+      const producer = writePayload(client.outgoing, () => upstreamRequest !== undefined);
       await eventually(() => upstreamRequest !== undefined);
-      const pausedBytes = await assertProducerBlocked(producer);
-      t.diagnostic(
-        `Upload producer stopped at ${pausedBytes} of ${streamBytes} bytes before upstream resumed.`,
-      );
+      const pausedBytes = await producer.stalled;
+      t.diagnostic(`Upload producer stalled at ${pausedBytes} bytes before upstream resumed.`);
       assert.equal(receivedBytes, 0);
       upstreamRequest.resume();
       assert.deepEqual(await client.result, completed());
-      assert.equal(producer.producedBytes(), streamBytes);
-      assert.equal(receivedBytes, streamBytes);
-      assert.equal(hash.digest("hex"), payloadDigest);
+      assert.equal(producer.producedBytes(), pausedBytes);
+      assert.equal(receivedBytes, pausedBytes);
+      assert.equal(hash.digest("hex"), producer.digest());
       assert.deepEqual(fixture.received, uploadOnly);
     },
   );
@@ -898,7 +892,7 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       const fixture = await startTransport(t, (incoming, outgoing) => {
         incoming.resume();
         outgoing.writeHead(200, replyHeaders);
-        producer = writePayload(outgoing);
+        producer = writePayload(outgoing, () => incomingResponse !== undefined);
       });
       let incomingResponse;
       const client = startRequest(fixture, {
@@ -909,14 +903,12 @@ describe("repository credential transport bounds", { concurrency: 2 }, () => {
       });
       client.outgoing.end();
       await eventually(() => incomingResponse !== undefined);
-      const pausedBytes = await assertProducerBlocked(producer);
-      t.diagnostic(
-        `Response producer stopped at ${pausedBytes} of ${streamBytes} bytes before client resumed.`,
-      );
+      const pausedBytes = await producer.stalled;
+      t.diagnostic(`Response producer stalled at ${pausedBytes} bytes before client resumed.`);
       incomingResponse.resume();
-      assert.deepEqual(await client.result, completed(streamBytes));
-      assert.equal(producer.producedBytes(), streamBytes);
-      assert.equal(client.digest(), payloadDigest);
+      assert.deepEqual(await client.result, completed(pausedBytes));
+      assert.equal(producer.producedBytes(), pausedBytes);
+      assert.equal(client.digest(), producer.digest());
       assert.deepEqual(fixture.received, discoveryOnly);
     },
   );
