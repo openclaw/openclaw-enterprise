@@ -325,7 +325,8 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
     await waitForIdleFetches(page);
-    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent.
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent. A read it
+    // started later would still count against the one read per page checked below.
     assert.deepEqual(harnessReads, []);
     // The Sandbox read lands after the page shows, as on a gateway that takes a moment: it is
     // held until the page shows Live serving's note waiting for it.

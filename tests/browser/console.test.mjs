@@ -2023,10 +2023,12 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
 
       // The URL can name the old Namespace. Neither surface may offer it while admission is pending.
       await admission.waitForRelease();
-      await page.getByText("Checking Namespace access.", { exact: true }).waitFor();
+      const pendingShell = page.getByText("Checking Namespace access.", { exact: true });
+      await pendingShell.waitFor();
       assert.equal(page.url(), fixture.origin + target);
-      // The pending shell is the held load's last render until admission answers.
-      await expectNoText(page, /Previously readable/, () => admission.waitForRelease());
+      // The pending shell is the held load's last render (its loading timer has fired) until
+      // admission answers, so the check after it is final.
+      await expectNoText(page, /Previously readable/, () => pendingShell.waitFor());
       if (placement === "inline" && back) {
         // Sign-in cleared the previous list. Inline recovery appears only once this read returns.
         assert.equal(await selector.count(), 0);
