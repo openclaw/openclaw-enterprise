@@ -10,6 +10,7 @@ import {
   countInvalidEvents,
   detailUrl,
   fileBrowser,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -612,6 +613,28 @@ for (const viewport of consoleViewports) {
       ],
       [429, "RATE_LIMITED", "Too many requests. Wait before trying again."],
     ] as const;
+    // While the request runs, every control that could change or reveal the value is disabled.
+    const pending = await holdRequests(t, page, `**/namespaces/${namespace.id}/secrets`, {
+      once: true,
+      method: "POST",
+      fulfill: {
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "NAMESPACE_NOT_READY", message: "refused" } }),
+      },
+    });
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await pending.requested;
+    for (const control of [
+      dialog.getByRole("button", { name: "Create Secret", exact: true }),
+      dialog.getByRole("button", { name: "Show value", exact: true }),
+      dialog.getByLabel("Name", { exact: true }),
+      dialog.getByLabel("Value", { exact: true }),
+    ]) {
+      assert.equal(await control.isDisabled(), true, "disabled while creating");
+    }
+    pending.release();
+    await dialog.getByRole("alert").filter({ hasText: cases[0][2] }).waitFor();
     for (const [status, code, text] of cases) {
       refusal.status = status;
       refusal.code = code;
@@ -646,10 +669,13 @@ for (const viewport of consoleViewports) {
     assert.equal(focused.inView, true, "503: in view");
     for (const control of [
       dialog.getByRole("button", { name: "Create Secret", exact: true }),
+      dialog.getByRole("button", { name: "Show value", exact: true }),
       dialog.getByLabel("Name", { exact: true }),
       dialog.getByLabel("Value", { exact: true }),
     ]) {
       assert.equal(await control.isDisabled(), true, "503: no other try until a refresh");
     }
+    // The value the outcome may have stored is not kept in the page.
+    assert.equal(await dialog.getByLabel("Value", { exact: true }).inputValue(), "");
   });
 }

@@ -61,7 +61,8 @@ export const SECRET_VALUE_MAX_BYTES = 65536;
 
 /**
  * Why the API would refuse `value` as a Secret value, or "" when it would accept it. An empty
- * value is the required check's to report. The console sends the value exactly as entered.
+ * value is the required check's to report. The console sends the value as the browser reports
+ * it: a textarea's line endings are normalized to LF.
  */
 export function secretValueProblem(value: string) {
   if (value.includes("\0") || /\p{Cs}/u.test(value)) {
@@ -76,7 +77,7 @@ export function secretValueProblem(value: string) {
 /**
  * A masked Secret value control and its Show value toggle, shared by the Secrets page and every
  * inline Create Secret dialog (finding 2339). Put `reveal` just before `value` in a
- * `.secret-value-field`. A textarea keeps multiline credential material exactly. Browsers
+ * `.secret-value-field`. A textarea keeps multiline credential material, with CRLF as LF. Browsers
  * without masking support get a native password field that refuses a line-break paste rather
  * than dropping its line breaks. Each edit checks the value against the API's rule.
  */
@@ -461,7 +462,7 @@ export function renderSecrets(
     const valueField = field({
       label: "Value",
       control: value,
-      help: multiline ? "Spaces and line breaks are preserved." : "Enter a single-line value.",
+      help: multiline ? "Spaces kept; line breaks saved as LF." : "Enter a single-line value.",
       className: "secret-value-field",
     });
     value.before(reveal);

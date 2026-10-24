@@ -19,6 +19,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: Preset saves check literal Agent launch fields
+
+**What breaks.** Preset create and update, and seeding a missing `presets.files`
+copy at startup, bootstrap or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
+`agent.backendId` or `agent.pluginApprovers` is written without a variable token
+and breaks the rule Agent create applies (for example `executionMode: turbo`,
+a Backend the Installation does not configure, or a non-Slack approver while a
+Plugin Driver is selected).
+Earlier builds saved it, and every Agent created from it was refused.
+
+**Who is affected.** Installations whose `presets.files` hold such a field, and
+API clients that save one. Existing copies and other stored Presets still read
+and render.
+
+**How to tell.** The write answers `400`, or startup or Namespace creation
+fails, with a message such as
+`Preset agent.executionMode: must be "embedded" or "dedicated".`
+
+**Steps.** Fix the named field, or replace it with a variable token; then
+restart the controller or repeat the write. _Untested_ on a real Installation.
+
 ## 2026-10-24: OpenShell refuses a quoted userNamespaces and endpoints without ports
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox Driver
@@ -126,6 +147,35 @@ ignored it), none of them could deploy an Agent.
 loader names the setting, for example `/policy/process/runAsUser`.
 
 **Steps.** Correct the named setting, then start the controller again.
+
+## 2026-10-24: OpenShell refuses unknown settings, invalid Agent resources and protocols
+
+**What breaks.** Controller startup refuses an OpenShell Sandbox Driver
+configuration with an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
+`kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
+`policy.process` or `gateway.readiness` (for example `policy.filesytem` or
+`kubernetes.userNamespace`), an `agentResources.requests` or `limits` value
+that is not a quoted, non-negative Kubernetes quantity or a request above its
+limit, or a `policy.networkPolicies[].endpoints[].protocol` that OpenShell
+refuses: a name other than `tcp`, `rest`, `websocket`, `graphql` or `sql`, an L7
+protocol without `access`, `access` or `enforcement` on `tcp`, or `enforcement:
+enforce` on `sql`. Earlier builds started: they ignored a misspelled key, so its
+default applied (OpenShell refused one under `agentResources` at Sandbox
+creation), and every Sandbox creation failed on the other values. OCE now sends
+protocol names lowercase.
+
+**Who is affected.** OpenShell Installations with such a setting. Endpoints
+with `json-rpc` or `mcp` never worked, because OpenShell needs rules this
+setting cannot express.
+
+**How to tell.** Startup fails with `UNKNOWN_FIELD` at the object that holds
+the key, `INVALID_VALUE` or `INVALID_RANGE` at
+`/kubernetes/agentResources/requests` (or `limits`), or `INVALID_VALUE` at the
+endpoint's `protocol`.
+
+**Steps.** Fix or remove the key, quote each quantity (`cpu: "500m"`) and keep
+requests within limits, give each L7 endpoint an `access` preset or remove its
+protocol, and use `enforcement: audit` for `sql`; then restart the controller.
 
 ## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
 

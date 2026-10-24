@@ -308,6 +308,21 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's repository bindings combine Installation-wide access with another binding.
+ * Raised only after the Repository Driver approved every requested binding, and the rule
+ * depends only on the request, so HTTP reports it as an invalid request instead of hiding
+ * it as a scope miss. Agent save and deploy admission share it (finding 2316).
+ */
+export class RepositoryBindingSelectionError extends ScopeViolationError {
+  constructor() {
+    super(
+      "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+    );
+    this.name = "RepositoryBindingSelectionError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
  * (including missing, runtime or credential-source Harness authentication in Agent
@@ -573,6 +588,41 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
   constructor() {
     super(RepositoryGitSenderUnqualifiedError.description);
     this.name = "RepositoryGitSenderUnqualifiedError";
+  }
+}
+
+/**
+ * Finding 2360: with repository.openShell, the bundled OpenShell Credential Proxy's only
+ * registration is the request-phase Git service, which never advertises the execution profile.
+ * It delivers repository Git, so a Proxy-owned credential source (static, prepared or
+ * credential-free metadata) or an Agent without a repository binding can never be admitted.
+ * Source creation answered a generic 503 for this permanent configuration and such a deploy a
+ * 503 or a bare 404; both now name the Installation settings.
+ */
+export class CredentialProxyRepositoryOnlyError extends ResourceStateConflictError {
+  static readonly description =
+    "With repository.openShell the Credential Proxy serves only repository Git, not a Proxy-owned credential source or an Agent without a repository binding. An admin can drop repository.openShell and drivers.credential_proxy, losing protected Git.";
+
+  constructor() {
+    super(CredentialProxyRepositoryOnlyError.description);
+    this.name = "CredentialProxyRepositoryOnlyError";
+  }
+}
+
+/**
+ * Finding 2360: a protected revision admits only credential sources the Proxy admitted
+ * (created or adopted while it is selected), and beside repository Git only the Agent's ready
+ * Gateway Harness source. Deploy refused any other
+ * binding, such as a Gateway source registered before the Proxy was selected, as a bare 404;
+ * the caller already holds deploy on the Agent, whose bindings it can read.
+ */
+export class CredentialSourceUnprotectedError extends ResourceStateConflictError {
+  static readonly description =
+    "With drivers.credential_proxy selected, a revision can use only credential sources created or adopted under the Proxy, and beside repository Git its ready Gateway Harness source. Replace the other bindings, then deploy again.";
+
+  constructor() {
+    super(CredentialSourceUnprotectedError.description);
+    this.name = "CredentialSourceUnprotectedError";
   }
 }
 

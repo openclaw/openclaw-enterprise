@@ -215,8 +215,8 @@ Delete; the server rechecks references on submission. Create and replacement
 wait for Namespace readiness. Each mutation uses the tracked request client and
 the existing Secret API; no browser code calls a Driver directly.
 
-`secrets.mjs:editValue` masks new input, preserves whitespace, and clears it after
-the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
+`secrets.mjs:editValue` masks new input, preserves whitespace (CRLF becomes LF),
+and clears it after the request or dismissal. `console.mjs:clearPasswordInputs` also clears marked
 Secret inputs before retaining a view. Pending requests block navigation and
 dismissal. A denied write disables submission; an unconfirmed write cannot be
 replayed from that dialog. `secrets.mjs:confirmDelete` offers an explicit exact
