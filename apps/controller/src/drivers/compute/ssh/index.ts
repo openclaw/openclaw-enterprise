@@ -88,6 +88,8 @@ const HELPER = readFileSync(new URL("./remote-helper.cjs", import.meta.url), "ut
 const OPERATION_TIMEOUT_MS = 180_000;
 // The helper enforces its own deadline below the transport timeout.
 const HELPER_DEADLINE_MS = OPERATION_TIMEOUT_MS - 10_000;
+/** OpenSSH refuses a longer `ConnectTimeout` ("invalid time value"), so every probe would fail. */
+const MAX_CONNECT_TIMEOUT_SECONDS = 2_147_483_647;
 // SSH joins remote argv through the login shell; systemd also expands specifiers.
 const PATH_PATTERN = "^/[A-Za-z0-9_./:@+-]*$";
 const PATH = new RegExp(PATH_PATTERN);
@@ -234,7 +236,11 @@ export class SshComputeDriver implements ComputeDriver {
         properties: {
           identityFile: PATH_SCHEMA,
           knownHostsFile: PATH_SCHEMA,
-          connectTimeoutSeconds: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+          connectTimeoutSeconds: {
+            type: "integer",
+            minimum: 1,
+            maximum: MAX_CONNECT_TIMEOUT_SECONDS,
+          },
         },
       },
       hosts: {
@@ -298,6 +304,11 @@ export class SshComputeDriver implements ComputeDriver {
       ) {
         throw new ConfigurationFailure(
           "ssh.connectTimeoutSeconds must be a positive safe integer.",
+        );
+      }
+      if ((ssh.connectTimeoutSeconds ?? 0) > MAX_CONNECT_TIMEOUT_SECONDS) {
+        throw new ConfigurationFailure(
+          `ssh.connectTimeoutSeconds must be at most ${MAX_CONNECT_TIMEOUT_SECONDS}, the longest OpenSSH accepts.`,
         );
       }
       const runtime = options.runtime;
