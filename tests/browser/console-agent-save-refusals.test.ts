@@ -449,8 +449,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
     member.credentials,
   );
-  const reason = OPERATE_REASON;
-  await page.getByText(reason, { exact: true }).waitFor();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
@@ -462,7 +461,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
       await save.evaluate(
         (node) => document.getElementById(node.getAttribute("aria-describedby") ?? "")?.textContent,
       ),
-      reason,
+      OPERATE_REASON,
     );
     // Save stays a keyboard stop. Even with a changed file (set by script, past readOnly),
     // activating it sends no write.
@@ -508,6 +507,7 @@ async function operateScenario(t: TestContext, name: string) {
   const member = await createReader(fixture, namespace);
   const { page } = await newPage(t, fixture, { browser });
   const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
   await page.route(
     `${fixture.origin}${agentPath}/deployments/${active.revision.id}/runtime`,
     (route) =>
@@ -545,18 +545,22 @@ async function operateScenario(t: TestContext, name: string) {
     namespace,
     agent,
     page,
-    permissionsUrl: `${fixture.origin}${agentPath}/permissions`,
+    permissionsUrl,
     editor: page.getByLabel("AGENTS.md", { exact: true }),
-    // Opens the Workspace tab, by default once every file has loaded.
-    open: async ({ files = true } = {}) => {
+    // Opens the Workspace tab. By default it waits, as a reader without operate, for the reason
+    // and then every file; `answered: false` is for a page whose permission read fails.
+    open: async ({ answered = true } = {}) => {
       await login(
         page,
         fixture,
         detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
         member.credentials,
       );
-      for (const file of files ? ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"] : []) {
-        await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+      if (answered) {
+        await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
+        for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+        }
       }
     },
     operate(allowed: boolean) {
@@ -577,7 +581,7 @@ async function operateScenario(t: TestContext, name: string) {
     async rereadThroughLogs() {
       const answered = page.waitForResponse(
         (response) =>
-          response.url() === `${fixture.origin}${agentPath}/permissions` &&
+          response.url() === permissionsUrl &&
           response.request().method() === "GET" &&
           response.status() === 200,
       );
@@ -595,7 +599,6 @@ test("restoring Workspace applies the operate answer the page already observed",
   const scenario = await operateScenario(t, "Workspace operate restore");
   const { page, editor } = scenario;
   await scenario.open();
-  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   assert.equal(await editor.isEditable(), false);
   await expectOperateControls(page, false);
 
@@ -625,7 +628,6 @@ test("an operate answer that arrives while Workspace is shown applies to it", as
   const scenario = await operateScenario(t, "Workspace operate shown");
   const { page, editor } = scenario;
   await scenario.open();
-  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   await scenario.rememberStatusDenial();
   scenario.operate(true);
   const reread = await holdRequests(t, page, scenario.permissionsUrl, {
@@ -635,6 +637,8 @@ test("an operate answer that arrives while Workspace is shown applies to it", as
   });
   await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await reread.requested;
+  // The restored Workspace is the retained one (every file loaded first): a rebuilt tab would
+  // take the held read itself and hide a regression in the mounted-tab apply.
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   reread.release();
@@ -649,7 +653,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   const scenario = await operateScenario(t, "Stop refusal grant");
   const { page } = scenario;
   await withholdPermissionSummary(page, scenario.fixture, scenario.namespace.id, scenario.agent.id);
-  await scenario.open({ files: false });
+  await scenario.open({ answered: false });
   const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
   await stopRow.getByRole("button", { name: "Stop Agent", exact: true }).click();
   await page
@@ -660,7 +664,7 @@ test("a Stop refusal clears once a later answer grants Agent operate", async (t)
   await refusal.waitFor();
   await page.unroute(scenario.permissionsUrl);
   await scenario.rememberStatusDenial();
-  // The row stays because this viewer used it; the denial replaces Stop with its notice.
+  // The row stays because this viewer used it; the denial disables Stop and adds its notice.
   const notice = stopRow.getByText("Your access does not include stopping this Agent.");
   await scenario.rereadThroughLogs();
   await notice.waitFor();
