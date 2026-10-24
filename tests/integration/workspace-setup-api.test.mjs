@@ -120,13 +120,15 @@ test("invalid workspace content and stale defaults reject the complete create wi
   for (const [index, files] of invalidFiles.entries()) {
     await assertRejectedCreate(`Invalid ${index}`, { initialWorkspaceFiles: files }, 400);
   }
-  for (const [defaultsId, status] of [
+  for (const [index, [defaultsId, status]] of [
     ["0".repeat(64), 409],
     ["A".repeat(64), 400],
+    ["0".repeat(63), 400],
+    ["0".repeat(65), 400],
     [null, 400],
-  ]) {
+  ].entries()) {
     await assertRejectedCreate(
-      "Wrong defaults",
+      `Wrong defaults ${index}`,
       { initialWorkspaceFiles: { "USER.md": privateContent }, workspaceDefaultsId: defaultsId },
       status,
     );

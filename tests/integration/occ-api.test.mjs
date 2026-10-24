@@ -3451,6 +3451,20 @@ test("Channel directory lookup checks the exact edit target and Secret before an
     "The request does not match the operation contract: body /ids has an unsupported value (expected no duplicate items).",
   );
   assert.deepEqual(repeatedIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
+  // At most 20 IDs are hydrated in one request.
+  const tooManyIds = await controller.request("POST", path, {
+    body: {
+      secretId: secret.data.id,
+      kind: "users",
+      ids: Array.from({ length: 21 }, (_, index) => `U${index}`),
+    },
+  });
+  assert.equal(tooManyIds.status, 400, JSON.stringify(tooManyIds.body));
+  assert.equal(
+    tooManyIds.body.error.message,
+    "The request does not match the operation contract: body /ids has an unsupported value (expected at most 20 items).",
+  );
+  assert.deepEqual(tooManyIds.body.error.details, [{ path: "/ids", code: "INVALID_VALUE" }]);
   // An unknown kind fits no shape, so every shape's problem stays, but the three hydration
   // shapes' identical missing /ids is listed once.
   const unknownKind = await controller.request("POST", path, {
@@ -3678,6 +3692,7 @@ test("Agent create and update replace policy-only plugin maps and revisions free
       "body /pluginApprovers has an unsupported value (expected at most 64 items)",
     ],
     [[{ ...approver, role: "admin" }], "body /pluginApprovers/0/role is not an accepted field"],
+    [[{ channel: "Slack", id: "user:1" }], "body /pluginApprovers/0/channel has an invalid format"],
     ["slack", "body /pluginApprovers has the wrong type (expected one of array, null)"],
   ]) {
     const rejected = await controller.request("PATCH", agentPath, {

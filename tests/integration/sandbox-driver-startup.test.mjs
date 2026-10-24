@@ -3368,7 +3368,9 @@ test("OpenShell gateway readiness checks once more at its deadline, not a poll i
   configuration.gateway.readiness = {
     serviceName: "openshell-gateway",
     podSelector: { "app.kubernetes.io/name": "openshell" },
-    timeoutMs: 50,
+    // The first check must finish before the deadline, or the wait throws after one check. With 50 ms
+    // a CPU-starved runner sometimes finished it too late; 1 s leaves room and stays inside the 10 s abort.
+    timeoutMs: 1_000,
     pollIntervalMs: 600_000,
   };
   const gatewayClient = workspaceGatewayClient();
@@ -3586,6 +3588,101 @@ test("startup rejects OpenShell network values outside the v0.1 protocol enums",
 test("startup refuses OpenShell filesystem modes that can weaken containment", async (t) => {
   for (const mode of ["best_effort", "hard-requirement"]) {
     await rejectsAtStartup(t, (c) => (sandboxOf(c).policy.landlockCompatibility = mode), LANDLOCK);
+  }
+});
+
+// The gateway refuses these in CreateSandbox, which runs only after a dedicated deploy has
+// stopped its predecessors, so startup applies the same rules (findings 2331-2333).
+const invalidValue = (path, message) => [{ path, code: "INVALID_VALUE", message }];
+const IDENTITY =
+  "Use sandbox or a numeric ID from 1 to 4294967294; OpenShell refuses other identities.";
+const FILESYSTEM_PATH =
+  "Use an absolute path that is not the filesystem root and has no .. segment.";
+
+test("startup refuses OpenShell process identities the gateway refuses", async (t) => {
+  for (const [field, value] of [
+    ["runAsUser", "root"],
+    ["runAsUser", "0"],
+    ["runAsGroup", "users"],
+    ["runAsGroup", "4294967295"],
+    ["runAsUser", "-1"],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).policy.process[field] = value),
+      invalidValue(`/policy/process/${field}`, IDENTITY),
+    );
+  }
+  const required = (path) => [
+    { path, code: "REQUIRED", message: "This configuration field is required." },
+  ];
+  await rejectsAtStartup(
+    t,
+    (c) => delete sandboxOf(c).policy.process.runAsGroup,
+    required("/policy/process/runAsGroup"),
+  );
+  await rejectsAtStartup(t, (c) => delete sandboxOf(c).policy.process, required("/policy/process"));
+  // Control: the gateway's own name, the top of its numeric range, and the spellings its
+  // u32 parser also accepts load.
+  for (const value of ["sandbox", "4294967294", "+5", "007"]) {
+    const configuration = sandboxInstallation();
+    sandboxOf(configuration).policy.process = { runAsUser: value, runAsGroup: value };
+    await loadInstallationFile(t, configuration);
+  }
+});
+
+test("startup refuses OpenShell filesystem paths before any Sandbox is created", async (t) => {
+  for (const [filesystem, field] of [
+    [{ readOnly: ["usr"] }, "readOnly/0"],
+    [{ readWrite: ["/tmp", "/"] }, "readWrite/1"],
+    [{ readWrite: ["//"] }, "readWrite/0"],
+    [{ readOnly: ["/usr/../etc"] }, "readOnly/0"],
+    [{ readOnly: ["/usr\0/etc"] }, "readOnly/0"],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).policy.filesystem = filesystem),
+      invalidValue(`/policy/filesystem/${field}`, FILESYSTEM_PATH),
+    );
+  }
+  // A read-only data mount cannot be granted read-write.
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.sandboxDataMount.readOnly = true;
+      sandboxOf(c).policy.filesystem = { readWrite: ["/sandbox/enterprise"] };
+    },
+    invalidValue(
+      "/policy/filesystem/readWrite/0",
+      "The Sandbox data mount is read-only; remove it from readWrite.",
+    ),
+  );
+  // Control: a writable data mount may be listed in readWrite.
+  const writable = sandboxInstallation();
+  sandboxOf(writable).policy.filesystem = { readWrite: ["/sandbox/enterprise"] };
+  await loadInstallationFile(t, writable);
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).policy.filesystem = { includeWorkdir: "no" }),
+    structuralRefusal("/policy/filesystem/includeWorkdir", "type", "INVALID_TYPE"),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).policy.filesystem = { readwrite: ["/data"] }),
+    structuralRefusal("/policy/filesystem", "additionalProperties", "UNKNOWN_FIELD"),
+  );
+});
+
+test("startup refuses OpenShell Agent resources that are not objects", async (t) => {
+  for (const [field, value] of [
+    ["requests", "1"],
+    ["limits", ["x"]],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).kubernetes.agentResources = { [field]: value }),
+      structuralRefusal(`/kubernetes/agentResources/${field}`, "type", "INVALID_TYPE"),
+    );
   }
 });
 
