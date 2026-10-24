@@ -1528,6 +1528,13 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
           },
         },
         {
+          name: "retains a terminal native first-Agent placement stage",
+          diagnostic: {
+            kind: "native-first-agent-proof",
+            failureStage: "required-placement-terminal-reclaimed",
+          },
+        },
+        {
           name: "rejects unknown native first-Agent proof stage",
           diagnostic: { kind: "native-first-agent-proof", failureStage: `${secret}-stage` },
         },
@@ -1765,6 +1772,13 @@ test("run redacts arbitrary stdout, stderr, assertion payloads, and stacks from 
   assert.deepEqual(nativeProof.error.diagnostic, {
     kind: "native-first-agent-proof",
     failureStage: "required-placement",
+  });
+  const terminalPlacement = summary.files[0].tests.find(
+    (entry) => entry.name === "retains a terminal native first-Agent placement stage",
+  );
+  assert.deepEqual(terminalPlacement.error.diagnostic, {
+    kind: "native-first-agent-proof",
+    failureStage: "required-placement-terminal-reclaimed",
   });
   const monitoringFailure = summary.files[0].tests.find(
     (entry) => entry.name === "retains safe monitoring readiness evidence",
