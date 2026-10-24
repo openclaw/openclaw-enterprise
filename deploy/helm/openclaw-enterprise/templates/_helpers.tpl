@@ -13,7 +13,14 @@
 {{- end -}}
 {{- if not (regexMatch (include "openclaw.ipv4Cidr" .) $cidr) -}}{{- fail (printf "%s requires explicit IPv4 CIDRs with prefixes 1 through 32" $label) -}}{{- end -}}
 {{- end -}}
+{{- /* YAML and --set read yes/no, on/off, true/false or a bare number as a boolean or number, which would otherwise render as the name "true" or "1". */ -}}
+{{- define "openclaw.requireString" -}}
+{{- if not (kindIs "string" .value) -}}
+{{- fail (printf "%s must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" .label) -}}
+{{- end -}}
+{{- end -}}
 {{- define "openclaw.validateSecretKey" -}}
+{{- include "openclaw.requireString" . -}}
 {{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
 {{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
 {{- end -}}
@@ -74,7 +81,8 @@
 {{- end -}}
 {{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
 {{- define "openclaw.validateResourceName" -}}
-{{- $value := toString .value -}}
+{{- include "openclaw.requireString" . -}}
+{{- $value := .value -}}
 {{- if or (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $value)) -}}
 {{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
 {{- end -}}
@@ -332,7 +340,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
 {{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
-{{- $claimName := toString .Values.bootstrap.password.claimName -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap.password.claimName" "value" .Values.bootstrap.password.claimName) -}}
+{{- $claimName := .Values.bootstrap.password.claimName -}}
 {{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
 {{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
 {{- end -}}
@@ -368,6 +377,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}
 {{- end -}}
 {{- /* NetworkPolicies select these peers by kubernetes.io/metadata.name, which holds a Namespace name: a DNS label of at most 63 characters. */ -}}
+{{- include "openclaw.requireString" (dict "label" (printf "api.clients[%d].namespace" $index) "value" $client.namespace) -}}
 {{- if or (gt (len (toString $client.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $client.namespace))) -}}
 {{- fail (printf "api.clients[%d].namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" $index) -}}
 {{- end -}}
@@ -375,6 +385,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not .Values.dns.namespace) (not .Values.dns.podLabels) -}}
 {{- fail "dns requires an exact namespace and nonempty Pod selector" -}}
 {{- end -}}
+{{- include "openclaw.requireString" (dict "label" "dns.namespace" "value" .Values.dns.namespace) -}}
 {{- if or (gt (len (toString .Values.dns.namespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString .Values.dns.namespace))) -}}
 {{- fail "dns.namespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
@@ -412,9 +423,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- range $label, $key := dict "database.appUrlKey" .Values.database.appUrlKey "database.migrationUrlKey" .Values.database.migrationUrlKey -}}
-{{- if or (eq (toString $key) ".") (hasPrefix ".." (toString $key)) (gt (len (toString $key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $key))) -}}
-{{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" $label) -}}
-{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
 {{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
@@ -512,6 +521,20 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- else -}}
 {{- fail "executionCluster.apiCidrs requires an explicit IPv4 or IPv6 CIDR with a nonzero prefix" -}}
 {{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* YAML and --set read yes/no, true/false, or a bare number as a boolean or number. An unquoted name would mount ConfigMap "true" or skip the theme. */ -}}
+{{- if kindIs "map" .Values.api.consoleTheme -}}
+{{- if hasKey .Values.api.consoleTheme "configMapName" -}}
+{{- $consoleThemeName := .Values.api.consoleTheme.configMapName -}}
+{{- if not (kindIs "string" $consoleThemeName) -}}
+{{- fail "api.consoleTheme.configMapName must be a string: quote a name YAML reads as a number or boolean, or pass it with --set-string" -}}
+{{- else if ne $consoleThemeName "" -}}
+{{- include "openclaw.validateResourceName" (dict "label" "api.consoleTheme.configMapName" "value" $consoleThemeName) -}}
+{{- end -}}
+{{- end -}}
+{{- if and (hasKey .Values.api.consoleTheme "checksum") (not (kindIs "string" .Values.api.consoleTheme.checksum)) -}}
+{{- fail "api.consoleTheme.checksum must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}
@@ -624,6 +647,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
+{{- /* The EnvoyProxy envoyService.type enum. The API server refuses any other value at apply, after the pre-install hooks have run. */ -}}
+{{- if not (has $routing.serviceType (list "ClusterIP" "LoadBalancer" "NodePort")) -}}{{- fail "gatewayRouting.serviceType must be ClusterIP, LoadBalancer or NodePort" -}}{{- end -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
@@ -631,6 +656,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $routing.envoyNamespace -}}{{- fail "gatewayRouting.envoyNamespace must identify the existing Envoy Gateway controller namespace" -}}{{- end -}}
 {{- /* The Compute driver (isKubernetesNamespaceName) refuses anything that is not a DNS label of at most 63 characters, as Kubernetes does for a Namespace name. */ -}}
+{{- include "openclaw.requireString" (dict "label" "gatewayRouting.envoyNamespace" "value" $routing.envoyNamespace) -}}
 {{- if or (gt (len (toString $routing.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $routing.envoyNamespace))) -}}
 {{- fail "gatewayRouting.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}
@@ -741,7 +767,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- $groups := dict -}}
 {{- range $role := $roles -}}
 {{- if index $role 1 -}}
-{{- $name := toString (index $role 1) -}}
+{{- $name := index $role 1 -}}
 {{- include "openclaw.validateResourceName" (dict "label" (index $role 0) "value" $name) -}}
 {{- $group := ternary (last $role) "" (eq (len $role) 3) -}}
 {{- if not (hasKey $holders $name) -}}

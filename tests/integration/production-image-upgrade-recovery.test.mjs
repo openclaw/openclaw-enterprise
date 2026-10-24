@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { once } from "node:events";
 import {
   appendFileSync,
   chmodSync,
@@ -21,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -748,10 +748,7 @@ async function kubernetesApi(t, directory, namespaces, denied, execution = null)
         reply(404, { kind: "Status", apiVersion: "v1", status: "Failure", code: 404 });
       }
     });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    t.after(() => new Promise((resolve) => server.close(resolve)));
-    return { port: server.address().port, reads, reviews };
+    return { port: await listen(t, server), reads, reviews };
   };
   const control = await serve({ namespaces, uid: "control-cluster", allows: () => false });
   const target =

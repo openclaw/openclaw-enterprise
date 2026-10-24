@@ -176,7 +176,8 @@ k3d, retrying only its known closed-stream race, three times at most. The launch
 resolves the imported digest from containerd, rejects missing or ambiguous
 results, and removes the archive. Tagged builds share this path.
 `internal/occdev/registry_k3d.go:pullDevelopmentImage` pulls digest-pinned
-`OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead.
+`OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER` images instead; `state.json` records
+the registry attachment for `occ dev down` to detach.
 
 ### 5. Prepare the optional OpenShell development profile
 

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,8 @@ type developmentImageRegistry struct {
 	// network is set from the attach attempt until the container is detached
 	// from the cluster network; address is the registry's IPv4 address there.
 	network, address string
+	// state records the attachment in state.json while network is set.
+	state *developmentState
 	// pending counts the selected images still to pull. The last pull
 	// detaches the registry, so it is reachable from the cluster only while
 	// images are pulled.
@@ -245,8 +248,8 @@ func (r *runner) developmentImagePlatform(ctx context.Context, image string) (st
 
 // registryNetworkAddress reports the registry container's address on a
 // network, or "" when it is not connected to it.
-func (r *runner) registryNetworkAddress(ctx context.Context, g *developmentImageRegistry, network string) (string, error) {
-	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, g.container)
+func (r *runner) registryNetworkAddress(ctx context.Context, container, network string) (string, error) {
+	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, container)
 	if err != nil {
 		return "", fmt.Errorf("read the development image registry address on %s: %w", network, err)
 	}
@@ -270,9 +273,14 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 	}
 	// Recorded before connecting: a connect cut short by cancellation may
 	// still have attached the container, and detach checks before it acts.
-	g.network = network
+	// state.json records it too, for occ dev down after a killed start.
+	g.network, g.state = network, state
+	state.ImageRegistryContainer, state.ImageRegistryNetwork = g.container, network
+	if err := rewriteState(state); err != nil {
+		return fmt.Errorf("record the development image registry attachment: %w", err)
+	}
 	fmt.Fprintf(r.opts.Out, "Attaching the loopback image registry %s to the cluster network...\n", g.container)
-	value, err := r.registryNetworkAddress(ctx, g, network)
+	value, err := r.registryNetworkAddress(ctx, g.container, network)
 	if err != nil {
 		return err
 	}
@@ -280,7 +288,7 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 		if err := r.run(ctx, r.engine, "network", "connect", network, g.container); err != nil {
 			return fmt.Errorf("attach the development image registry to %s: %w", network, err)
 		}
-		if value, err = r.registryNetworkAddress(ctx, g, network); err != nil {
+		if value, err = r.registryNetworkAddress(ctx, g.container, network); err != nil {
 			return err
 		}
 	}
@@ -311,16 +319,47 @@ func (r *runner) detachDevelopmentImageRegistryLocked(ctx context.Context, g *de
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), developmentImageRegistryDetachTimeout)
 	defer cancel()
-	value, err := r.registryNetworkAddress(ctx, g, g.network)
-	if err != nil {
-		return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
-	}
-	if value != "" {
-		if err := r.run(ctx, r.engine, "network", "disconnect", g.network, g.container); err != nil {
-			return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
-		}
+	if err := r.disconnectDevelopmentImageRegistry(ctx, g.container, g.network); err != nil {
+		return err
 	}
 	g.network, g.address = "", ""
+	if s := g.state; s != nil && s.ImageRegistryNetwork != "" {
+		s.ImageRegistryContainer, s.ImageRegistryNetwork = "", ""
+		// A stale record only makes occ dev down find nothing to detach.
+		if err := rewriteState(s); err != nil {
+			fmt.Fprintf(r.opts.Err, "warning: clear the development image registry attachment in state.json: %v\n", err)
+		}
+	}
+	return nil
+}
+
+// detachRecordedDevelopmentImageRegistry disconnects the registry attachment
+// state.json still records, which a start killed before its own detach leaves
+// behind: k3d cluster delete keeps a network another container still uses, and
+// the next start of the same cluster would reuse it.
+func (r *runner) detachRecordedDevelopmentImageRegistry(ctx context.Context, s *developmentState) error {
+	if s.ImageRegistryNetwork == "" {
+		return nil
+	}
+	return r.disconnectDevelopmentImageRegistry(ctx, s.ImageRegistryContainer, s.ImageRegistryNetwork)
+}
+
+// disconnectDevelopmentImageRegistry removes the registry container from a
+// network. A container already detached, or since removed, needs nothing.
+func (r *runner) disconnectDevelopmentImageRegistry(ctx context.Context, container, network string) error {
+	value, err := r.registryNetworkAddress(ctx, container, network)
+	if err != nil {
+		listed, listErr := r.output(ctx, r.engine, "container", "ls", "--all", "--no-trunc", "--format", "{{.ID}} {{.Names}}")
+		if listErr != nil || containerListed(string(listed), container) {
+			return fmt.Errorf("detach the development image registry from %s: %w", network, err)
+		}
+		value = ""
+	}
+	if value != "" {
+		if err := r.run(ctx, r.engine, "network", "disconnect", network, container); err != nil {
+			return fmt.Errorf("detach the development image registry from %s: %w", network, err)
+		}
+	}
 	return nil
 }
 
@@ -382,4 +421,20 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 		}
 	}
 	return image, nil
+}
+
+// containerListed reports whether a "<ID> <names>" container listing has a
+// container named container, or one whose ID starts with it (the setting
+// accepts an ID or a prefix of one). Names may be comma-separated.
+func containerListed(listing, container string) bool {
+	for _, line := range strings.Split(listing, "\n") {
+		fields := strings.FieldsFunc(line, func(c rune) bool { return c == ' ' || c == '\t' || c == ',' })
+		if len(fields) == 0 {
+			continue
+		}
+		if strings.HasPrefix(fields[0], container) || slices.Contains(fields[1:], container) {
+			return true
+		}
+	}
+	return false
 }

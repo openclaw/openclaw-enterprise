@@ -76,9 +76,11 @@ export function createSlackApproverField({
         ? select.value === "chosen"
           ? "Select people to replace the inherited approvers."
           : `${inheritedLabel}. No approver list is set at this level.`
-        : current.length === 0
-          ? "No Slack user can approve until people are selected."
-          : `${slack.length} Slack approver${slack.length === 1 ? "" : "s"} selected.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`;
+        : select.value === "none"
+          ? `No Slack user can approve.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`
+          : current.length === 0
+            ? "No Slack user can approve until people are selected."
+            : `${slack.length} Slack approver${slack.length === 1 ? "" : "s"} selected.${otherCount ? ` ${otherCount} other channel entries are preserved.` : ""}`;
     picker.hidden = select.value !== "chosen";
     if (directorySetup) {
       directorySetup.hidden = picker.hidden;

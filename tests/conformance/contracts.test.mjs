@@ -24,7 +24,10 @@ import {
   WORKSPACE_SETUP_FAILED,
 } from "../../packages/contracts/src/runtime-failure.mjs";
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
-import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
+import {
+  validateFailureData,
+  validateRuntimeFailureEvidence,
+} from "../../packages/occ/src/state/controller-work.ts";
 import {
   validateConfiguration,
   requireConfiguration,
@@ -698,6 +701,37 @@ test("a failed workspace setup keeps its check and code through record and read"
   });
   assert.deepEqual(stored, { timeoutMs: 900_000, runtimeFailure: evidence });
   assert.deepEqual(validateFailureData("CONVERGENCE_DEADLINE_EXCEEDED", stored), stored);
+});
+
+test("recorded failure data refuses a cause off the model probe's failure, a cause in deadline data, and another code as a held model-probe failure", () => {
+  const probe = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: runtimeCheckedAt,
+    code: "MODEL_PROBE_FAILED",
+  };
+  const cause = { kind: "PROBE_STATUS", detail: "turn-failed" };
+  assert.throws(() => validateRuntimeFailureEvidence({ ...probe, code: "STARTUP_FAILED", cause }), {
+    name: "ScopeViolationError",
+    message: "Runtime failure cause is invalid.",
+  });
+  // The deadline records its runtime failure without the cause, so a stored cause is refused.
+  assert.throws(
+    () =>
+      validateFailureData("CONVERGENCE_DEADLINE_EXCEEDED", {
+        timeoutMs: 1,
+        runtimeFailure: { ...probe, cause },
+      }),
+    { message: "Convergence deadline failure data cannot carry a cause." },
+  );
+  // A held model-probe failure must be the model probe's own failure, not another one.
+  assert.throws(
+    () =>
+      validateFailureData("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: { ...probe, code: "STARTUP_FAILED" },
+      }),
+    { message: "Model probe failure data requires its runtime failure." },
+  );
 });
 
 test("runtime failure evidence outside that vocabulary is recorded as UNRECOGNIZED", () => {

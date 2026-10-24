@@ -1433,7 +1433,7 @@ function validateRepositoryTopology(
   }
 }
 
-// Preparation of the first deployment applies the same rule; a Configuration setting keeps
+// Preparation of every deployment applies the same rule; a Configuration setting keeps
 // the Driver's message, which names it. With a Sandbox Driver selected every Agent runs in its
 // Sandbox, and a Compute Driver that cannot deliver the files there says so (finding 1144).
 function validateWorkspaceSetupTopology(
@@ -9434,9 +9434,11 @@ export class OpenClawController {
       }
       // Agent save checks pending initial workspace files against its Configuration; an Agent
       // stored before that check, or whose Configuration changed since, is refused here with the
-      // same message instead of failing in preparation.
-      const pendingSetup = await state.workspaceSetups.find(namespace.id, lockedAgent.id);
-      if (pendingSetup !== undefined && !pendingSetup.completed) {
+      // same message instead of failing in preparation. A completed setup is checked too: every
+      // deployment delivers it as the workspace's restart guard, and preparation applies the
+      // same rule, where a refusal was retried until the deployment failed (finding 2286).
+      const workspaceSetup = await state.workspaceSetups.find(namespace.id, lockedAgent.id);
+      if (workspaceSetup !== undefined) {
         validateWorkspaceSetupTopology(
           compute,
           revisionHarness,

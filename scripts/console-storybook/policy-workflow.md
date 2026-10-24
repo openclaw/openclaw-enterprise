@@ -27,6 +27,16 @@ Review its exact executable and endpoint, or select **Review suggestion**.
    action. Confirm the Console asks you to refresh, then shows which rules were
    saved. Live application requires a separate, explicit action.
 
+In **Unicode executable path remains complete**, copy the full path from the
+Installation delegation ceiling. Select **Review suggestion**, then paste that
+path into **Executable path**. Confirm it keeps the final `/tool`. The path has
+281 Unicode code points, 551 UTF-16 code units, and 1091 UTF-8 bytes: six directory
+components of 45 Deseret letters (`U+10400`) each, followed by `/tool`. Select
+**Review changes**, then **Save**. Confirm the complete path appears in review
+and saved policy v2, and the current revision stays unchanged. Reset to repeat.
+This scenario simulates the API; it does not verify an executable or policy
+application.
+
 Compare empty, disabled, unsupported, gap, missing-metadata, permission-denied,
 loading, unavailable-credential, and unconfirmed-application stories. Confirm
 manual editing remains available without logs or suggestions. The unsupported

@@ -177,6 +177,126 @@ try {
   };
 }
 
+test(
+  "console theme settings reject YAML booleans and invalid ConfigMap names",
+  tooling,
+  async (t) => {
+    const directory = await temporaryDirectory(t, "oce-console-theme-");
+    const writeValues = async (name, body) => {
+      const path = join(directory, name);
+      await writeFile(path, body);
+      return path;
+    };
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues(
+              "yes.yaml",
+              "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
+            ),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues("no.yaml", "api:\n  consoleTheme:\n    configMapName: no\n"),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues(
+              "checksum.yaml",
+              'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
+            ),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.checksum must be a string/,
+    );
+    const quoted = await writeValues(
+      "quoted.yaml",
+      'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
+    );
+    const objects = await resources((await render({}, { valuesFiles: [quoted] })).stdout);
+    const api = objects.find(
+      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+    );
+    assert.equal(
+      api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
+      "no",
+    );
+    assert.equal(
+      api.spec.template.metadata.annotations["openclaw.dev/console-theme-checksum"],
+      "rev",
+    );
+    await assert.rejects(
+      render({ "api.consoleTheme.configMapName": "false" }),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render({ "api.consoleTheme.configMapName": "Not_Valid" }),
+      /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
+    );
+    const named = await resources(
+      (
+        await render(
+          { "api.consoleTheme.checksum": "revision-two" },
+          { strings: { "api.consoleTheme.configMapName": "false" } },
+        )
+      ).stdout,
+    );
+    const deployment = named.find(
+      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+    );
+    assert.equal(
+      deployment.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap
+        .name,
+      "false",
+    );
+  },
+);
+
+test(
+  "operator-named Secrets, keys and namespaces reject YAML booleans and numbers",
+  tooling,
+  async () => {
+    // --set reads true or 1 as a boolean or number, as YAML does for yes/on/1. Rendered as "true"
+    // or "1", the name would pass the name pattern and the Pod would wait for a Secret, key or
+    // Namespace that does not exist.
+    for (const [field, value, enabled = {}] of [
+      ["installation.secretName", "true"],
+      ["installation.key", "true"],
+      ["database.secretName", "123"],
+      ["database.caSecretName", "true"],
+      ["auth.secretKey", "true"],
+      ["dns.namespace", "true"],
+      ["api.clients[0].namespace", "1"],
+      ["database.appUrlKey", "2"],
+      ["bootstrap.password.claimName", "true"],
+      ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
+    ]) {
+      await assert.rejects(
+        render({ ...enabled, [field]: value }),
+        (error) => error.message.includes(`${field} must be a string`),
+        field,
+      );
+    }
+  },
+);
+
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
     execute(
@@ -773,6 +893,41 @@ test(
         !item.spec.template.spec.containers[0].ports?.some(({ name }) => name === "metrics"),
       );
     }
+    // The broker shares the worker Pod; reserve its fixed listener only while both are enabled.
+    for (const [overrides, metricsPort, brokerEnabled] of [
+      [{ "metrics.port": "8443" }, "8443", false],
+      [
+        { ...repositoryCredentialValues, "metrics.enabled": "false", "metrics.port": "8443" },
+        undefined,
+        true,
+      ],
+      [repositoryCredentialValues, "9464", true],
+    ]) {
+      const accepted = await resources((await render(overrides)).stdout);
+      const pod = accepted.find(
+        (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-worker",
+      ).spec.template.spec;
+      const worker = [...(pod.initContainers ?? []), ...pod.containers].find(
+        ({ name }) => name === "worker",
+      );
+      assert.equal(worker.env.find(({ name }) => name === "OCC_METRICS_PORT")?.value, metricsPort);
+      assert.equal(
+        worker.ports?.find(({ name }) => name === "metrics")?.containerPort,
+        metricsPort === undefined ? undefined : Number(metricsPort),
+      );
+      const broker = pod.containers.find(({ name }) => name === "repository-credentials");
+      assert.equal(broker !== undefined, brokerEnabled);
+      if (brokerEnabled) {
+        assert.equal(
+          broker.ports.find(({ name }) => name === "repository-tls").containerPort,
+          8443,
+        );
+      }
+    }
+    await assert.rejects(
+      render({ ...repositoryCredentialValues, "metrics.port": "8443" }),
+      /metrics\.port.*repository/,
+    );
     for (const override of [
       { "metrics.scraperNamespaceLabels.team": "monitoring" },
       { "metrics.scraperPodLabels.app": "prometheus" },
@@ -6273,6 +6428,30 @@ test(
       ],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
+    }
+  },
+);
+
+test(
+  "gateway routing service type is limited to the EnvoyProxy service types",
+  tooling,
+  async () => {
+    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
+    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
+    for (const serviceType of ["clusterIP", "ExternalName"]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
+        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
+        serviceType,
+      );
+    }
+    for (const serviceType of ["LoadBalancer", "NodePort"]) {
+      const objects = await resources(
+        (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }))
+          .stdout,
+      );
+      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
+      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
     }
   },
 );

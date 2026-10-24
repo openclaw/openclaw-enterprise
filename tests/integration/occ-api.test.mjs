@@ -1853,6 +1853,48 @@ test("a state conflict names what blocks the request, after authorization only",
   }
 });
 
+// Create Agent's preflight (#2830) applies Configuration create's content rules and Agent
+// create's Namespace and plugin checks to an unsaved Configuration, so the console reports a
+// refusal before it saves the Secret or Configuration. It writes nothing.
+test("Create Agent's preflight refuses what Configuration and Agent create would, writing nothing", async () => {
+  const controller = await configuredController();
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "agent-preflight");
+  const validate = (values, extra = {}) =>
+    controller.request("POST", `/namespaces/${namespace.id}/agents/validate`, {
+      body: { configuration: { kind: "agent", values }, ...extra },
+    });
+
+  // Agent create accepts a Namespace that is still provisioning, and so does its preflight.
+  const accepted = await validate({});
+  assert.equal(accepted.status, 204, JSON.stringify(accepted.body));
+
+  // Configuration create's content rules, as the form's first save would answer.
+  const inline = await validate({ gateway: { auth: { password: "literal-password" } } });
+  assert.equal(inline.status, 400, JSON.stringify(inline.body));
+  assert.equal(
+    inline.body.error.message,
+    "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+  );
+
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  // Agent create's plugin policy check, before the Plugin Driver reads the Configuration.
+  const unknown = await validate({}, { plugins: { "occ-plugin:missing": pluginPolicy() } });
+  assert.equal(unknown.status, 400, JSON.stringify(unknown.body));
+  assert.equal(
+    unknown.body.error.message,
+    "A plugin selection names a plugin that the selected Plugin Driver (occ-plugin) does not offer: occ-plugin:missing. Check each plugin ID and its Driver prefix against that Driver's catalog; an Installation selects one Plugin Driver.",
+  );
+
+  // No route lists Configurations; the Agent and Secret collections stay empty.
+  for (const collection of ["agents", "secrets"]) {
+    const listed = await controller.request("GET", `/namespaces/${namespace.id}/${collection}`);
+    assert.deepEqual(listed.data, [], collection);
+  }
+});
+
 test("Namespace IAM reports invalid policy input as 400 with the field and refuses inert Permissions", async () => {
   const fixture = await createInjectedFixture();
   const member = await fixture.createAuthPrincipal("policy-validation-member");
@@ -2989,6 +3031,29 @@ test("Agent deployment status polls the admitted revision work with exact read a
     workspaceSetupDeployment.data.error?.data?.runtimeFailure,
     workspaceSetupFailure,
   );
+
+  // A deployment whose revision was already active completes like one that activated it; any
+  // other completion without activation ended the deployment without serving it.
+  for (const [reasonCode, expected, error] of [
+    ["REVISION_ACTIVATED", "succeeded", null],
+    ["REVISION_ALREADY_ACTIVE", "succeeded", null],
+    [
+      "REVISION_SUPERSEDED",
+      "failed",
+      { code: "REVISION_SUPERSEDED", message: "Deployment was superseded by a newer revision." },
+    ],
+  ]) {
+    deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+      ...deploymentWork,
+      state: "succeeded",
+      reasonCode,
+      resultData: undefined,
+    });
+    const completed = await controller.request("GET", path);
+    assert.equal(completed.status, 200, JSON.stringify(completed.body));
+    assert.equal(completed.data.status, expected, reasonCode);
+    assert.deepEqual(completed.data.error, error, reasonCode);
+  }
 
   fixture.state.roles.find(
     (role) => role.id === "role-deployment-status-reader",
@@ -7924,6 +7989,41 @@ test("SSH Compute refuses at Agent save and deploy a roster or workspace whose m
   assert.equal(redeployed.status, 400, JSON.stringify(redeployed.body));
   assert.equal(redeployed.body.error.message, workspace("agents.entries.Main.workspace"));
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
+
+  // Finding 2286: after the setup completed, every later deployment still delivers it, and the
+  // host refuses the same roster again at preparation, where the refusal was retried until the
+  // deployment failed. Deployment refuses it with the same message instead.
+  const restored = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: { Main: {} } }) } },
+  );
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  const first = await controller.request("POST", `${path}/deploy`);
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  // What the worker records when the first revision activates: the revision becomes active,
+  // then the setup completes.
+  const [revision] = (await controller.request("GET", `${path}/revisions`)).data;
+  await controller.fixture.platformState.transact(async (unit) => {
+    await unit.agents.compareAndSetActiveRevision(
+      namespace.id,
+      created.data.id,
+      undefined,
+      revision.id,
+    );
+    const setup = await unit.workspaceSetups.find(namespace.id, created.data.id);
+    await unit.workspaceSetups.complete(namespace.id, created.data.id, setup.id);
+  });
+  const emptied = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: {} }) } },
+  );
+  assert.equal(emptied.status, 200, JSON.stringify(emptied.body));
+  const completed = await controller.request("POST", `${path}/deploy`);
+  assert.equal(completed.status, 400, JSON.stringify(completed.body));
+  assert.equal(completed.body.error.message, roster);
+  assert.equal((await controller.request("GET", `${path}/revisions`)).data.length, 1);
 });
 
 test("Slack validation rejects swapped credentials and preserves authorization", async () => {

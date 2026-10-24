@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -28,7 +28,8 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
-import { prependPath, writeCommand } from "../helpers/fake-commands.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { commandPath, prependPath, writeCommand } from "../helpers/fake-commands.mjs";
 import {
   createOpenShellKubernetesFixture,
   failedRecoveryDiagnostic,
@@ -224,23 +225,19 @@ if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <=
     kubernetesContext: "fake",
     modelAtCapacityRetry: options,
   });
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
-  let outcome;
-  try {
-    outcome = {
-      turn: await fixture.requestCodexTurnFromGatewayPod({
+  const outcome = await withEnvironment({ PATH: commandPath(directory) }, () =>
+    fixture
+      .requestCodexTurnFromGatewayPod({
         namespace: "oce-gateway",
         gatewayPod: "gateway-0",
         providerModel: "gpt-test",
         prompt: "Reply with exactly OCC-TURN-OK.",
-      }),
-    };
-  } catch (error) {
-    outcome = { error };
-  } finally {
-    process.env.PATH = path;
-  }
+      })
+      .then(
+        (turn) => ({ turn }),
+        (error) => ({ error }),
+      ),
+  );
   const kubectlCalls = (await readFile(calls, "utf8"))
     .trim()
     .split("\n")

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import test from "node:test";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -21,11 +21,14 @@ import {
   publishPostgresImage,
   runtimeNodeBaseImage,
   smokeBakeDefinition,
+  smokeImageEnvironment,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { commandPath } from "../helpers/fake-commands.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -353,17 +356,14 @@ async function withRecordedK3d(operation) {
   await writeFile(join(directory, "k3d"), `#!/bin/sh\necho "$@" >> '${calls}'\nexit 1\n`, {
     mode: 0o755,
   });
-  const path = process.env.PATH;
-  process.env.PATH = `${directory}${delimiter}${path}`;
   try {
     const started = Date.now();
-    await operation();
+    await withEnvironment({ PATH: commandPath(directory) }, operation);
     return {
       seconds: (Date.now() - started) / 1000,
       calls: await readFile(calls, "utf8").catch(() => ""),
     };
   } finally {
-    process.env.PATH = path;
     await rm(directory, { recursive: true, force: true });
   }
 }
@@ -507,6 +507,36 @@ test("the prepared-Git bake still loads both images and builds no provider image
     pushOutput("runtime"),
   ]);
   assert.equal(target["smoke-provider"], undefined);
+});
+
+test("only the registry acceptance selects the loopback registry and the PostgreSQL copy", () => {
+  const images = {
+    registryContainer: "oce-first-agent-smoke-registry",
+    controller: `127.0.0.1:5000/oce-smoke/controller@sha256:${"1".repeat(64)}`,
+    runtime: `127.0.0.1:5000/oce-smoke/runtime@sha256:${"2".repeat(64)}`,
+    postgres: `127.0.0.1:5000/oce-smoke/postgres@sha256:${"3".repeat(64)}`,
+    modelDirectory: "/work/model",
+  };
+  const common = {
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: images.controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: images.runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: images.modelDirectory,
+  };
+  assert.deepEqual(smokeImageEnvironment({ ...images, preparedGit: false }), {
+    ...common,
+    OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: images.registryContainer,
+    OCC_DEVELOPMENT_POSTGRES_IMAGE: images.postgres,
+  });
+  // The prepared-Git acceptance imports every image from an archive: neither
+  // setting may reach Local Setup, even when a PostgreSQL copy exists.
+  const repository = {
+    OCC_DEVELOPMENT_REPOSITORY_IMAGE: `127.0.0.1:5000/oce-smoke/repository@sha256:${"4".repeat(64)}`,
+    OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER: images.registryContainer,
+  };
+  assert.deepEqual(smokeImageEnvironment({ ...images, preparedGit: true, repository }), {
+    ...repository,
+    ...common,
+  });
 });
 
 test("bake metadata selects both pushed images by registry digest", () => {

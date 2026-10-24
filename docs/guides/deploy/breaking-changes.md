@@ -17,6 +17,44 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: chart refuses unquoted numeric or boolean names
+
+**What breaks.** `helm install` and `helm upgrade` refuse a Secret,
+ConfigMap, Secret-key or PersistentVolumeClaim name, or a `dns.namespace`,
+`api.clients[].namespace` or `gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
+boolean. Earlier charts rendered `secretName: 2024` as `"2024"` and
+`secretName: yes` as `"true"`.
+
+**Who is affected.** Values files with an unquoted name that YAML reads as a
+number or boolean, for example `2024`, `1e3`, `yes`, `on` or `false`.
+
+**How to tell.** The render fails with `<field> must be a string: quote a value
+YAML reads as a number or boolean, or pass it with --set-string`.
+
+**Steps.** Quote the value in the values file, or pass it with
+`--set-string`, then run the upgrade again.
+
+## 2026-10-24: deployment checks a completed workspace setup
+
+**What breaks.** Deploying an Agent whose initial workspace setup already
+completed is refused when its Configuration breaks the workspace rule that
+Agent save applies to a pending setup, for example a roster that no longer
+holds only `main`. On SSH Compute this includes any `workspace` on
+`agents.defaults` or `main`, also a path under the Agent's own directory that
+the host accepted. Each deployment delivers the completed setup, and
+preparation refused it again; that failed after its retries with
+`DEPENDENCY_UNAVAILABLE`.
+
+**Who is affected.** Agents created with initial workspace files whose
+Configuration changed after the first deployment, on any Compute Driver.
+
+**How to tell.** The deploy request answers `400` with the Configuration
+setting's message, as Agent save does (or `409` when the selected Sandbox
+cannot receive the files), and no version is created.
+
+**Steps.** Restore the setting, or select a Configuration that meets the rule,
+then deploy again. _untested_
+
 ## 2026-10-24: SSH initial workspace files refuse an explicit workspace at save
 
 **What breaks.** On SSH Compute, Agent create and update refuse initial

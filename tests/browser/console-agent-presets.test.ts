@@ -294,6 +294,7 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
       await model.fill(id);
       await model.press("Tab");
       const selected: typeof values = JSON.parse(await editor.inputValue());
+      assert.equal(resolveConfiguredHarnessId(selected), "openclaw");
       assert.equal(selected.agents.defaults.model.primary, reference(id));
       assert.deepEqual(selected.agents.defaults.model.fallbacks, ids.slice(1).map(reference));
       assert.deepEqual(
@@ -333,6 +334,389 @@ test("Selecting an existing fallback keeps the referenced model catalog deployab
     await model.fill("");
     await model.press("Tab");
     await checkSelection("another-model", [...ids.slice(1), "another-model"]);
+    // An unrelated JSON edit during a temporary clear must not orphan the previous primary.
+    await model.fill("");
+    await model.press("Tab");
+    await openAdvancedSettings(page);
+    const pending: typeof values = JSON.parse(await editor.inputValue());
+    pending.models.providers.openai.baseUrl = "https://edited-models.example.test/v1";
+    await editor.fill(JSON.stringify(pending));
+    const edited = await checkSelection("json-replacement", [...ids.slice(1), "json-replacement"]);
+    assert.equal(edited.models.providers.openai.baseUrl, "https://edited-models.example.test/v1");
+  }
+});
+
+test("Changing a Preset model keeps explicit and inherited roster selections deployable", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Roster model selection");
+  const namespace = await fixture.createNamespace("Roster model choices", { ready: true });
+  const reference = (id: string) => `openai/${id}`;
+  const original = "primary-model";
+  const fallback = "fallback-model";
+  const replacement = "replacement-model";
+  const policy = (alias: string, temperature: number) => ({
+    agentRuntime: { id: "openclaw" },
+    alias,
+    params: { temperature },
+  });
+  const initialValues = {
+    agents: {
+      ownership: "explicit",
+      defaults: {
+        model: { primary: reference(original), fallbacks: [reference(fallback)] },
+        models: {
+          [reference(original)]: policy("Default primary", 0.2),
+          [reference(fallback)]: policy("Default fallback", 0.3),
+        },
+      },
+      entries: {
+        main: {
+          model: reference(original),
+          models: {
+            [reference(original)]: policy("Main primary", 0.4),
+            [reference(replacement)]: policy("Main replacement", 0.7),
+          },
+        },
+        assistant: {
+          model: { primary: reference(original), fallbacks: [reference(fallback)] },
+          models: {
+            [reference(original)]: policy("Assistant primary", 0.5),
+            [reference(fallback)]: policy("Assistant fallback", 0.6),
+            [reference(replacement)]: policy("Assistant replacement", 0.8),
+          },
+          workspace: "/workspace/synthetic-assistant",
+        },
+        inherited: {
+          models: {
+            [reference(original)]: policy("Inherited primary", 0.9),
+            [reference(fallback)]: policy("Inherited fallback", 1),
+          },
+        },
+      },
+    },
+    models: {
+      providers: {
+        openai: {
+          baseUrl: "https://models.example.test/v1",
+          api: "openai-responses",
+          models: [original, fallback].map((id) => ({
+            id,
+            name: id,
+            contextWindow: 128000,
+            maxTokens: 8192,
+            reasoning: true,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          })),
+        },
+      },
+    },
+  };
+  const { model: originalModel, ...defaultSettings } = initialValues.agents.defaults;
+  for (const shape of ["default-object", "default-string", "no-default"] as const) {
+    const values = {
+      ...initialValues,
+      agents: {
+        ...initialValues.agents,
+        defaults: {
+          ...defaultSettings,
+          ...(shape === "no-default"
+            ? {}
+            : { model: shape === "default-object" ? originalModel : reference(original) }),
+        },
+        entries: {
+          main: initialValues.agents.entries.main,
+          assistant: initialValues.agents.entries.assistant,
+          // Without a default model, every entry must explicitly select its primary.
+          ...(shape === "no-default"
+            ? {}
+            : {
+                inherited: initialValues.agents.entries.inherited,
+                inheritedEmpty: { models: {} },
+              }),
+        },
+      },
+    };
+    // All explicit entries share the primary; an entry without a model inherits it.
+    const baseline = await fixture.createConfiguration(namespace.id, values);
+    assert.equal(resolveConfiguredHarnessId(baseline.values), "openclaw");
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      {
+        body: {
+          name: `Roster models ${shape}`,
+          template: { configuration: { values }, agent: { executionMode: "embedded" } },
+        },
+      },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const model = page.getByLabel("Model ID", { exact: true });
+    const editor = page.locator("#configuration-json");
+    for (const id of [replacement, "another-model"]) {
+      t.diagnostic(`Selecting ${shape} roster primary ${id}`);
+      if (id !== replacement) {
+        // Clearing is a temporary edit: it must not discard explicit or inherited local policy.
+        await model.fill("");
+        await model.press("Tab");
+        const cleared: typeof values = JSON.parse(await editor.inputValue());
+        assert.equal(cleared.agents.entries.main.model, reference(replacement));
+        if (values.agents.entries.inherited) {
+          assert.deepEqual(cleared.agents.entries.inherited?.models, {
+            [reference(replacement)]: values.agents.entries.inherited.models[reference(original)],
+            [reference(fallback)]: values.agents.entries.inherited.models[reference(fallback)],
+          });
+        }
+      }
+      await model.fill(id);
+      await model.press("Tab");
+      const selected: typeof values = JSON.parse(await editor.inputValue());
+      const configuration = await fixture.createConfiguration(namespace.id, selected);
+      const reread: FixtureResponse<ConfigurationWire> = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.equal(reread.status, 200);
+      assert.deepEqual(reread.data.values, selected);
+      // Saving the form's output must retain the common primary required by deployment admission.
+      assert.equal(resolveConfiguredHarnessId(reread.data.values), "openclaw");
+      assert.deepEqual(
+        selected.agents.defaults.model,
+        shape === "default-object"
+          ? { primary: reference(id), fallbacks: [reference(fallback)] }
+          : reference(id),
+      );
+      assert.equal(selected.agents.entries.main.model, reference(id));
+      assert.deepEqual(selected.agents.entries.main.models, {
+        [reference(id)]: values.agents.entries.main.models[reference(replacement)],
+      });
+      assert.deepEqual(selected.agents.entries.assistant, {
+        ...values.agents.entries.assistant,
+        model: { primary: reference(id), fallbacks: [reference(fallback)] },
+        models: {
+          [reference(id)]: values.agents.entries.assistant.models[reference(replacement)],
+          [reference(fallback)]: values.agents.entries.assistant.models[reference(fallback)],
+        },
+      });
+      assert.deepEqual(
+        selected.agents.entries.inherited,
+        values.agents.entries.inherited
+          ? {
+              models: {
+                [reference(id)]: values.agents.entries.inherited.models[reference(original)],
+                [reference(fallback)]: values.agents.entries.inherited.models[reference(fallback)],
+              },
+            }
+          : undefined,
+      );
+      assert.deepEqual(
+        selected.agents.entries.inheritedEmpty,
+        shape === "no-default" ? undefined : { models: {} },
+      );
+      assert.deepEqual(selected.agents.defaults.models, {
+        [reference(id)]: values.agents.defaults.models[reference(original)],
+        [reference(fallback)]: values.agents.defaults.models[reference(fallback)],
+      });
+      const provider = selected.models.providers.openai;
+      assert.deepEqual(
+        provider.models.map((entry) => entry.id),
+        [id, fallback],
+      );
+      assert.deepEqual(provider.models[1], values.models.providers.openai.models[1]);
+      assert.equal(provider.baseUrl, values.models.providers.openai.baseUrl);
+      assert.equal(provider.api, values.models.providers.openai.api);
+    }
+  }
+});
+
+test("Main-only Preset models create drafts through the regular Agent APIs", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Main-only roster creation");
+  const namespace = await fixture.createNamespace("Main-only roster", { ready: true });
+  const original = "openai/primary-model";
+  const replacement = "openai/replacement-model";
+  const base = nativeValues("main-only-model", { providerModel: "primary-model" });
+  const localPolicy = {
+    agentRuntime: { id: "openclaw" },
+    alias: "Main model",
+    params: { temperature: 0.4 },
+  };
+  for (const scenario of ["edited-default", "unchanged-entry", "advanced-entry"] as const) {
+    const expected = scenario === "unchanged-entry" ? original : replacement;
+    t.diagnostic(`Creating ${scenario} main-only draft`);
+    const values = {
+      ...base,
+      agents: {
+        ...base.agents,
+        defaults:
+          scenario !== "edited-default"
+            ? { models: base.agents.defaults.models }
+            : base.agents.defaults,
+        entries: { main: { model: original, models: { [original]: localPolicy } } },
+      },
+    };
+    assert.equal(resolveConfiguredHarnessId(values), "openclaw");
+    const template = {
+      agent: { name: `Main-only ${scenario}`, executionMode: "embedded" },
+      configuration: { values },
+    };
+    const preset: FixtureResponse<Preset> = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/presets`,
+      { body: { name: `Main-only ${scenario}`, template } },
+    );
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByLabel("Preset template").selectOption(preset.data.id);
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    const model = page.getByLabel("Model ID", { exact: true });
+    assert.equal(await model.inputValue(), "primary-model");
+    if (scenario === "edited-default") {
+      await model.fill("replacement-model");
+      await model.press("Tab");
+    }
+    if (scenario === "advanced-entry") {
+      await openAdvancedSettings(page);
+      // This is a valid entry-only edit: change both the primary and its catalog references.
+      await page
+        .getByLabel("Configuration JSON", { exact: true })
+        .fill(JSON.stringify(values).replaceAll("primary-model", "replacement-model"));
+    }
+    await createModelCredentialSecret(page, "synthetic-main-only-model-key");
+    await waitForCreateFormReads(page);
+    const preflight = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+      { timeout: 15_000 },
+    );
+    const createdResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents`,
+      { timeout: 15_000 },
+    );
+    const outcomes = Promise.all([preflight, createdResponse]);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    const [validation, agentResponse] = await outcomes.catch(async (error) => {
+      t.diagnostic(
+        `${scenario} visible alerts: ${await page.getByRole("alert").allTextContents()}`,
+      );
+      t.diagnostic(
+        `${scenario} create requests: preflight=${pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length}, configuration=${configurationPostRequests(requests, namespace.id).length}, agent=${agentPostRequests(requests, namespace.id).length}`,
+      );
+      throw error;
+    });
+    assert.equal(validation.status(), 204);
+    const created = await createdAgent(Promise.resolve(agentResponse));
+    assert.equal(created.executionMode, "embedded");
+    assert.equal(created.activeRevisionId ?? null, null);
+    const saved: FixtureResponse<ConfigurationWire> = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${created.configurationId}`,
+    );
+    assert.equal(saved.status, 200);
+    const persisted = saved.data.values as typeof values;
+    assert.equal(
+      "model" in persisted.agents.defaults ? persisted.agents.defaults.model : undefined,
+      scenario === "edited-default" ? expected : undefined,
+    );
+    assert.equal(persisted.agents.entries.main.model, expected);
+    assert.deepEqual(persisted.agents.entries.main.models, { [expected]: localPolicy });
+    assert.equal(resolveConfiguredHarnessId(persisted), "openclaw");
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/validate`).length,
+      1,
+    );
+    assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
+    assert.equal(agentPostRequests(requests, namespace.id).length, 1);
+    // This workflow saves a draft; it does not dispatch a deployment or provisioning job.
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/provision`).length,
+      0,
+    );
+    assert.equal(
+      pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents/${created.id}/deploy`)
+        .length,
+      0,
+    );
+    const unchanged = await presetTemplate(fixture, namespace.id, preset.data.id);
+    assert.deepEqual(unchanged, template);
+  }
+});
+
+test("Model edits preserve refusals for divergent and unqualified Advanced JSON primaries", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap("Invalid roster editing");
+  const namespace = await fixture.createNamespace("Invalid roster drafts", { ready: true });
+  const original = "openai/primary-model";
+  const replacement = "openai/replacement-model";
+  const base = nativeValues("invalid-roster", { providerModel: "primary-model" });
+  const values = {
+    ...base,
+    agents: {
+      ...base.agents,
+      ownership: "explicit",
+      entries: { writer: { model: original }, editor: { model: original } },
+    },
+  };
+  assert.equal(resolveConfiguredHarnessId(values), "openclaw");
+  const preset: FixtureResponse<Preset> = await fixture.request(
+    "POST",
+    `/namespaces/${namespace.id}/presets`,
+    {
+      body: {
+        name: "Invalid roster editing control",
+        template: { agent: { executionMode: "embedded" }, configuration: { values } },
+      },
+    },
+  );
+  assert.equal(preset.status, 201);
+  for (const scenario of ["divergent", "unqualified"] as const) {
+    for (const clearFirst of [false, true]) {
+      await t.test(
+        `${scenario}: ${clearFirst ? "clear then select" : "direct select"}`,
+        async (subtest) => {
+          const { page } = await newPage(subtest, fixture);
+          await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+          await page.getByLabel("Preset template").selectOption(preset.data.id);
+          await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+          await openAdvancedSettings(page);
+          const invalid = structuredClone(values);
+          if (scenario === "divergent") {
+            invalid.agents.entries.editor.model = replacement;
+            const provider = invalid.models.providers.openai;
+            assert.ok(provider);
+            const first = provider.models[0];
+            assert.ok(first);
+            provider.models.push({ ...first, id: "replacement-model", name: "replacement-model" });
+          } else {
+            invalid.agents.defaults.model = "bare";
+            invalid.agents.entries.writer.model = "bare";
+            invalid.agents.entries.editor.model = "bare";
+          }
+          const refusal = /same primary model|must name each model as/;
+          assert.throws(() => resolveConfiguredHarnessId(invalid), refusal);
+          const editor = page.getByLabel("Configuration JSON", { exact: true });
+          await editor.fill(JSON.stringify(invalid));
+          const model = page.getByLabel("Model ID", { exact: true });
+          if (clearFirst) {
+            await model.fill("");
+            await model.press("Tab");
+          }
+          await model.fill("replacement-model");
+          await model.press("Tab");
+          // A convenience control must not silently repair an invalid roster's explicit selections.
+          const edited = JSON.parse(await editor.inputValue());
+          assert.throws(() => resolveConfiguredHarnessId(edited), refusal);
+        },
+      );
+    }
   }
 });
 
