@@ -638,6 +638,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
+{{- /* The EnvoyProxy envoyService.type enum. The API server refuses any other value at apply, after the pre-install hooks have run. */ -}}
+{{- if not (has $routing.serviceType (list "ClusterIP" "LoadBalancer" "NodePort")) -}}{{- fail "gatewayRouting.serviceType must be ClusterIP, LoadBalancer or NodePort" -}}{{- end -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
