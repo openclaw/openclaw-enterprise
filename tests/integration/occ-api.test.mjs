@@ -2990,6 +2990,29 @@ test("Agent deployment status polls the admitted revision work with exact read a
     workspaceSetupFailure,
   );
 
+  // A deployment whose revision was already active completes like one that activated it; any
+  // other completion without activation ended the deployment without serving it.
+  for (const [reasonCode, expected, error] of [
+    ["REVISION_ACTIVATED", "succeeded", null],
+    ["REVISION_ALREADY_ACTIVE", "succeeded", null],
+    [
+      "REVISION_SUPERSEDED",
+      "failed",
+      { code: "REVISION_SUPERSEDED", message: "Deployment was superseded by a newer revision." },
+    ],
+  ]) {
+    deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+      ...deploymentWork,
+      state: "succeeded",
+      reasonCode,
+      resultData: undefined,
+    });
+    const completed = await controller.request("GET", path);
+    assert.equal(completed.status, 200, JSON.stringify(completed.body));
+    assert.equal(completed.data.status, expected, reasonCode);
+    assert.deepEqual(completed.data.error, error, reasonCode);
+  }
+
   fixture.state.roles.find(
     (role) => role.id === "role-deployment-status-reader",
   ).permissions.length = 0;
