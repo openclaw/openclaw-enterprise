@@ -306,3 +306,8 @@ export const ExistingFallbackPrimary = {
   ...story("createModelFallbackSelection"),
   name: "Choose an existing fallback as primary",
 };
+
+export const RosterModelPrimary = {
+  ...story("createRosterModelSelection"),
+  name: "Change a roster's shared primary model",
+};

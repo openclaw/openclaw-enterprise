@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { runInNewContext } from "node:vm";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,10 +14,10 @@ import {
   validateFullIntegrationPreflight,
 } from "../../scripts/ci/full-integration-preflight.mjs";
 import { selectQaMatrix, validateQaInputs } from "../helpers/qa-selection.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test("full integration workflow carries QA and installation outcomes into selected aggregation", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "qa-aggregate-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-aggregate-");
   const workflow = await readFile(
     new URL("../../.github/workflows/full-integration.yml", import.meta.url),
     "utf8",
@@ -123,8 +122,7 @@ function qaRegistry(repositories) {
 }
 
 async function runQaCredentialMaterializer(t, overrides = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "qa-credentials-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "qa-credentials-");
   const githubEnv = join(directory, "github-env");
   const env = {
     RUNNER_TEMP: directory,

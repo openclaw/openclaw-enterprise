@@ -39,6 +39,7 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
@@ -72,16 +73,8 @@ function pluginAppServerToken(baseToken, revisionId, startupId) {
     .digest("hex");
 }
 
-async function waitForCondition(description, condition, timeoutMs = 1_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const result = await condition();
-    if (result !== undefined && result !== false) {
-      return result;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`Timed out waiting for ${description}.`);
+function waitForCondition(description, condition, timeoutMs = 1_000) {
+  return waitForResult(description, condition, { timeoutMs, intervalMs: 10 });
 }
 
 async function readStatusFromHandlerAsync(handler, path) {

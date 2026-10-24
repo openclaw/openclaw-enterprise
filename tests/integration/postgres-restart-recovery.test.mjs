@@ -3,6 +3,11 @@ import { createHash, randomUUID } from "node:crypto";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import {
+  deferWork,
+  expireWorkLease,
+  makeWorkDue,
+} from "../helpers/postgres-worker-revision-support.mjs";
 
 async function dependencies(context, options = {}) {
   const [{ Pool }, queueModule] = await Promise.all([
@@ -565,10 +570,7 @@ test(
       ),
     );
     assert.equal(await queue.claimableWorkWaiting(), false);
-    await pool.query(
-      `UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1`,
-      [`${prefix}:second`],
-    );
+    await makeWorkDue(pool, `${prefix}:second`);
     assert.equal(await queue.claimableWorkWaiting(), true);
     // A draining stop names the stops that yielded during their own drain (finding 1093): they
     // do not count, while any other claimable Work still does.
@@ -617,12 +619,7 @@ test(
       ),
     );
 
-    await pool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = ANY($1::text[])`,
-      [[staleRevisionKey, namespaceKey]],
-    );
+    await expireWorkLease(pool, [staleRevisionKey, namespaceKey]);
     await pool.query(
       `UPDATE occ.controller_work
        SET attempt_count = 2
@@ -725,12 +722,7 @@ for (const source of ["claimed", "queued"]) {
       // A crashed final attempt leaves an expired claim. Queued exhaustion can
       // also occur when a restarted worker lowers its configured attempt budget.
       if (source === "claimed") {
-        await pool.query(
-          `UPDATE occ.controller_work
-           SET lease_expires_at = clock_timestamp() - interval '1 second'
-           WHERE idempotency_key = $1`,
-          [idempotencyKey],
-        );
+        await expireWorkLease(pool, idempotencyKey);
       } else {
         const previousQueue = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
         await previousQueue.retry(claim, { code: "DEPENDENCY_UNAVAILABLE" });
@@ -835,11 +827,7 @@ for (const source of ["claimed", "queued"]) {
           );
         }
         if (source === "claimed") {
-          await pool.query(
-            `UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second'
-             WHERE idempotency_key = $1`,
-            [key],
-          );
+          await expireWorkLease(pool, key);
         } else {
           await new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 }).retry(claim, {
             code: "DEPENDENCY_UNAVAILABLE",
@@ -906,12 +894,7 @@ test(
     assert.deepEqual(persisted.rows[0], { state: "claimed", claim_token: claim.claimToken });
     assert.equal(audit.rowCount, 0);
 
-    await pool.query(
-      `UPDATE occ.controller_work
-       SET lease_expires_at = clock_timestamp() - interval '1 second'
-       WHERE idempotency_key = $1`,
-      [idempotencyKey],
-    );
+    await expireWorkLease(pool, idempotencyKey);
     let namespaceMutationReached = false;
     await assert.rejects(
       state.transactWithQueue(async (unit, transactionQueue) => {
@@ -1427,10 +1410,7 @@ for (const transition of ["fail", "retry", "expired claim", "exhausted queued"])
         } else {
           claim = await claimExpected(queue, sourceKey);
           if (transition === "expired claim") {
-            await pool.query(
-              "UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE idempotency_key = $1",
-              [sourceKey],
-            );
+            await expireWorkLease(pool, sourceKey);
             await queue.recoverStale();
           } else {
             await queue[transition](claim, { code: "REPOSITORY_TRANSITION_FAILED" });
@@ -1524,10 +1504,7 @@ test(
       undefined,
     );
     const next = await claimExpected(queue, sourceKey);
-    await pool.query(
-      "UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE idempotency_key = $1",
-      [sourceKey],
-    );
+    await expireWorkLease(pool, sourceKey);
     await assert.rejects(queue.fail(next, { code: "EXPIRED" }), WorkClaimLostError);
     await assert.rejects(queue.retry(next, { code: "EXPIRED" }), WorkClaimLostError);
     assert.deepEqual(await readRepositoryAttempts(pool, owner.revisionId), before);
@@ -1628,10 +1605,7 @@ for (const purpose of ["sessions", "terminal-runtime"]) {
         if (index % 2 === 0) {
           await queue.retry(claim, { code: "CLEANUP_UNAVAILABLE" });
         } else {
-          await pool.query(
-            "UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE idempotency_key = $1",
-            [cleanupKey],
-          );
+          await expireWorkLease(pool, cleanupKey);
           await queue.recoverStale();
         }
         const queued = await readQueueRow(pool, cleanupKey);
@@ -1828,10 +1802,7 @@ for (const transition of ["fail", "retry", "expired claim", "exhausted queued"])
         // Teardown fails before finalization; unresolved sessions no longer
         // prevent successful finalization from deleting this Agent.
         if (transition === "expired claim") {
-          await pool.query(
-            "UPDATE occ.controller_work SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE idempotency_key = $1",
-            [sourceKey],
-          );
+          await expireWorkLease(pool, sourceKey);
           await queue.recoverStale();
         } else {
           await queue[transition](claim, { code: "DELETE_FAILED" });
@@ -2635,22 +2606,17 @@ test(
     // A lower attempt limit after a restart leaves queued work at the limit.
     const { pool, queue, PostgresWorkQueue } = await dependencies(context, { maxAttempts: 3 });
     const { namespaceId, agents } = await createResources(pool, 2);
-    const park = (key) =>
-      pool.query(
-        `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour'
-         WHERE idempotency_key = $1`,
-        [key],
-      );
+    const defer = (key) => deferWork(pool, key);
     const yielded = await predecessorDeployment(pool, queue, namespaceId, agents[0], {
       yielded: true,
       failures: 2,
     });
-    await park(yielded);
+    await defer(yielded);
     const plain = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
       yielded: false,
       failures: 2,
     });
-    await park(plain);
+    await defer(plain);
     const restarted = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
     // Parked rows sort last in the sweep; the limit keeps other tests' leftovers from crowding
     // them out.

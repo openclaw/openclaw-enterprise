@@ -1,21 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import {
-  chmod,
-  mkdir,
-  mkdtemp,
-  readdir,
-  readFile,
-  realpath,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { describe } from "node:test";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
@@ -26,8 +18,7 @@ const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "ci-runner-");
   await mkdir(join(root, "scripts/ci"), { recursive: true });
   await mkdir(join(root, "tests/integration"), { recursive: true });
   await mkdir(join(root, "results"), { recursive: true });
@@ -484,11 +475,15 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     join(root, "tests/integration/skips.test.mjs"),
     [
       'import assert from "node:assert/strict";',
-      'import test from "node:test";',
+      'import test, { describe } from "node:test";',
       'test("ordinary pass", () => assert.equal(1, 1));',
       'test("expected but skipped", { skip: "not allowed for expected" }, () => {});',
       'test("unexpected skipped case", { skip: "missing prerequisite" }, () => {});',
       'test("todo case", { todo: "missing prerequisite" }, () => {});',
+      // A skipped suite reports no test event for the cases it never registered.
+      'describe("skipped suite", { skip: "missing prerequisite" }, () => {',
+      '  test("hidden case", () => assert.fail("must not run"));',
+      "});",
       "",
     ].join("\n"),
   );
@@ -552,12 +547,14 @@ test("run fails missing expected tests, skipped expected tests, skips, todos, an
     "unexpected-skip",
     "unexpected-skip",
     "unexpected-skip",
+    "unexpected-skip",
   ]);
   // Every issue is named in the job log, which keeps every attempt.
   for (const line of [
     "run-tests: issue missing-expected-test tests/integration/skips.test.mjs: expected test did not run: missing named case",
     "run-tests: issue expected-test-not-passed tests/integration/skips.test.mjs: expected test did not pass: expected but skipped",
     "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected test did not run to completion: todo case",
+    "run-tests: issue unexpected-skip tests/integration/skips.test.mjs: selected suite did not run its tests: skipped suite",
   ]) {
     assert.ok(selected.stderr.split("\n").includes(line), line);
   }

@@ -20,14 +20,16 @@ export function selectFirstAgentModel(configuredModel, existing) {
 
 /**
  * The saved record of a repeated first-agent run, checked against this run's selection.
- * Records from an older helper (before version 3, or version 3 saved before PAT support
- * added authMethod) are unsupported state: refuse them as such instead of claiming the
- * selection differs (finding 1756) or that a PAT needs OpenShell (finding 1798).
+ * A saved record this helper cannot read (not version 3, or version 3 without
+ * authMethod) is unsupported. Do not infer that it is older, and do not treat
+ * choosing a new Agent name as the way to recover the existing Agent. Still
+ * refuse it instead of claiming the selection differs (finding 1756) or that a
+ * PAT needs OpenShell (finding 1798).
  */
 export function reuseFirstAgentRecord(existing, selection) {
   if (existing.version !== 3 || existing.authMethod === undefined) {
     throw new Error(
-      "This Agent name has a record from an older first-agent helper, which this helper does not support. Choose a new Agent name; the recorded resources were not changed.",
+      "This Agent name has a saved record this helper does not recognize. The recorded resources were not changed. To keep using that Agent, recover the record with a helper that understands it. Choosing a new Agent name starts a different Agent.",
     );
   }
   if (

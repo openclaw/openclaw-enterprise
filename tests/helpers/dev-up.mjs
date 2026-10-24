@@ -18,6 +18,7 @@ import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
 import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -806,8 +807,7 @@ async function writeFakeCommand(fake, path, command) {
 }
 
 async function createFixture(t, options = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "openclaw-dev-up-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "openclaw-dev-up-");
 
   const fixtureRepository = join(directory, "repository");
   await mkdir(join(fixtureRepository, "scripts"), { recursive: true });

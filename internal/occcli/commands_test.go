@@ -1084,13 +1084,8 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 	if !strings.Contains(notices, "agent revisions "+testAgentID+" --limit 1 --cursor v1.2") {
 		t.Fatalf("expected a next-page hint that keeps --limit: %q", notices)
 	}
-	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
-	if !found {
-		t.Fatalf("missing next-page command: %q", notices)
-	}
-	continuation, _, _ = strings.Cut(continuation, `"`)
 	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision1ID + `","revision":1,"createdAt":"2026-09-30T00:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":null}}`
-	nextOut, nextRequested, err := runOCC(t, responses, strings.Fields(continuation)[1:]...)
+	nextOut, nextRequested, err := runOCC(t, responses, nextPageCommand(t, notices)...)
 	if err != nil {
 		t.Fatalf("advertised next-page command failed: %v", err)
 	}
@@ -1102,6 +1097,33 @@ func TestAgentRevisionsPagesWithCursor(t *testing.T) {
 			t.Fatalf("--limit %s must be refused locally", limit)
 		}
 	}
+}
+
+// Without --limit, the next-page hint must not add one: "--limit 0" is refused
+// locally, so the advertised command would fail.
+func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
+	responses := agentRevisionResponses()
+	agentPath := "/namespaces/" + testNamespaceID + "/agents/" + testAgentID
+	responses["GET "+agentPath+"/revisions"] = `raw:200 {"data":[{"id":"` + testRevision2ID + `","revision":2,"createdAt":"2026-09-30T01:00:00.000Z"}],"meta":{"requestId":"req_test","nextCursor":"v1.2"}}`
+	_, notices, _, err := runOCCWithNotices(t, responses, "--namespace", testNamespaceID, "agent", "revisions", testAgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
+		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)
+	}
+}
+
+// nextPageCommand returns the arguments of the "occ ..." command that an
+// agent revisions notice advertises for the next page, without "occ".
+func nextPageCommand(t *testing.T, notices string) []string {
+	t.Helper()
+	_, continuation, found := strings.Cut(notices, `older revisions may exist; run "`)
+	if !found {
+		t.Fatalf("missing next-page command: %q", notices)
+	}
+	continuation, _, _ = strings.Cut(continuation, `"`)
+	return strings.Fields(continuation)[1:]
 }
 
 // Subject IDs are opaque and can match across identities and groups. Tables

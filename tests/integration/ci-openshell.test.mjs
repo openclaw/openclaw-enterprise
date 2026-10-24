@@ -14,6 +14,8 @@ import {
   prepareOpenShellClusterBootstrap,
   selectKubectlAsset,
 } from "../../scripts/ci/openshell.mjs";
+import { withEnvironment } from "../helpers/environment.mjs";
+import { prependPath } from "../helpers/fake-commands.mjs";
 import { observeSandboxProbe } from "../helpers/k3d-failure-diagnostics.mjs";
 import {
   createOpenShellInstallationConfiguration,
@@ -407,11 +409,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
     ].join("\n"),
     { mode: 0o755 },
   );
-  const path = process.env.PATH;
-  process.env.PATH = directory + delimiter + path;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const threadId = "probe-thread";
   const turnId = "probe-turn";
   const nonce = "probe-command";
@@ -499,12 +497,14 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // client re-arms for the remainder. A one-shot timer would report an unknown outcome here.
   const probeWithEarlyWake = async (codexCommandGraceMs) => {
     await rm(earlyWakeMarker, { force: true });
-    process.env.EARLY_WAKE_GRACE_MS = String(codexCommandGraceMs);
-    const outcome = await probe(codexCommandGraceMs).then(
-      (result) => ({ result }),
-      (error) => ({ error }),
+    const outcome = await withEnvironment(
+      { EARLY_WAKE_GRACE_MS: String(codexCommandGraceMs) },
+      () =>
+        probe(codexCommandGraceMs).then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        ),
     );
-    delete process.env.EARLY_WAKE_GRACE_MS;
     // The deadline was armed for the grace less the moment since the turn ended.
     const woke = Number(await readFile(earlyWakeMarker, "utf8").catch(() => NaN));
     assert.ok(
@@ -578,11 +578,7 @@ test("a turn the model answered at capacity runs again only for its own final er
     ].join("\n"),
     { mode: 0o755 },
   );
-  const path = process.env.PATH;
-  process.env.PATH = directory + delimiter + path;
-  t.after(() => {
-    process.env.PATH = path;
-  });
+  prependPath(t, directory);
   const retryReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
   // The app server's final error for a turn names that turn (ErrorNotification: error,
   // threadId, turnId, willRetry).

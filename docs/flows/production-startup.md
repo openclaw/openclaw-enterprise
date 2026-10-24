@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-23"
-last_updated_session: "authoring-run/1b38bd1a-842f-42a8-8641-4858e5a2183a"
+updated: "2026-10-24"
+last_updated_session: "authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077"
 ---
 
 # Production Startup Flow
@@ -70,7 +70,7 @@ Migration, bootstrap, API and worker use
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
 Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
 idle client and logs only its error code to stderr as `database.idle-client-error`.
-The process continues; the next query opens a new connection.
+The next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
@@ -112,7 +112,7 @@ installs isolation before the Job; it and later policies grant configured
 DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-Server-connected first installs check the named Job; if present or unreadable,
+Server-connected first installs check the Job; if present or unreadable,
 stop; preserve it; reconcile. Offline `helm template` cannot check it.
 This is no lock or freshness proof for database, identity or storage; upgrades
 are unchanged.
@@ -120,6 +120,10 @@ are unchanged.
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
 Empty hosts retain Service DNS for listeners and Certificate SANs.
+
+`deploy/helm/openclaw-enterprise/templates/metrics.yaml` rejects `metrics.port=8443`
+when metrics and the repository service are enabled: both share the worker Pod.
+Use the default 9464.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
 refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence.
@@ -234,7 +238,7 @@ authenticated Namespace access. Below the supported 1.35 baseline, the API logs
 `compute.preflight-warning` with both versions and continues. An invalid version
 response, unreachable API, or failed Namespace access fails preflight.
 
-The worker independently validates production settings, opens the same
+The worker validates production settings, opens the same
 application-role database, loads selected Drivers, validates IAM, runs Compute
 preflight with the same advisory warning, emits `worker.started`, and polls
 durable Namespace/AgentRevision work. Readiness requires fresh queue-health
@@ -253,18 +257,16 @@ The worker owns session lifecycle; API readiness remains database-backed.
 
 `apps/controller/src/composition/repository-credentials/projected-inputs.ts:prepareProjectedInputs`
 
-The optional service runs beside the single worker. Its own process pins a
-projection generation, copies the known config/key/TLS/registry files into owned
-private regular files, validates the selected Backend and exact Service origin,
-then uses the protected loader and starts both listeners. App/TLS private
-material stays in that container. Only the worker receives an explicitly
-projected Kubernetes API token. The service's private health probe checks only
-the Unix listener. The service and worker share
-only the private control volume, and the Pod uses `Recreate` with a 75-second
-termination grace period. Both containers must pass readiness for the Pod to be
-ready; the worker keeps its queue-health probe and retries unavailable session
-operations through its ordinary Driver contract. Worker and service have no
-independent high availability. Repository runtime reconciliation continues in the
+Beside the single worker, the optional service pins a projection generation,
+copies config/key/TLS/registry inputs into owned private regular files, validates
+the selected Backend and exact Service origin, then starts both listeners through
+the protected loader. App/TLS private material stays in its container; only the
+worker receives a projected Kubernetes API token. They share only the private
+control volume. The Pod uses `Recreate` and a 75-second termination grace period.
+Readiness requires both the service's Unix-listener probe and the worker's
+queue-health probe. The worker retries unavailable session operations through
+its Driver contract. Neither component has independent high availability.
+Repository runtime reconciliation continues in the
 [Agent repository credential flow](agent-repository-credentials.md).
 
 ### 5. Retrieve the key and prove authenticated access
@@ -336,6 +338,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 17:23: Reject metrics and repository listeners sharing port 8443 before deployment. (authoring-run/21b9b442-e8b7-45d3-a482-742f1742b077 - fd5723d94aebbd96d93e85649eec908adbc6d58a)
 
 - 2026-10-23 11:15: Recognize the reviewed logical-restore catalog. (authoring-run/1b38bd1a-842f-42a8-8641-4858e5a2183a - a4146f54983537954246bc4df3a937293d92b220)
 

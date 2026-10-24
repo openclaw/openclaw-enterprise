@@ -83,6 +83,7 @@ import {
   supervisorPeerLabels,
 } from "../fixtures/kubernetes-provider-readiness.mjs";
 import { writeSafeKubeconfig, writeUnsafeKubeconfigs } from "../helpers/unsafe-kubeconfigs.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const { kubeconfigPath, context: contextName } = conformanceKubeconfig;
 const gatewayOutbound = {
@@ -6534,8 +6535,7 @@ test("Kubernetes renders an all-interfaces native listener when gateway.bind is 
 
 test("Kubernetes keeps a revision's gateway document rendered before the lan bind", async (t) => {
   // A two-cluster Installation's gateway document carries the execution cluster's CA beside it.
-  const directory = await mkdtemp(join(tmpdir(), "oce-execution-ca-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "oce-execution-ca-");
   const certificate = join(directory, "execution-ca.pem");
   const generated = spawnSync(
     "openssl",
@@ -12035,6 +12035,15 @@ test("model provider credential headers and request auth are refused on every pr
       error.message ===
         `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
   );
+  // A 40-character name, a credential by its -token suffix, is shown whole.
+  const fullName = `x-${"a".repeat(32)}-token`;
+  assert.throws(
+    () => driver.validateConfiguration(provider("p", { headers: { [fullName]: "${K}" } })),
+    {
+      name: "ConfigurationHarnessError",
+      message: `Configuration setting models.providers.p.headers ${credentialHeader(fullName)}.`,
+    },
+  );
   // Providers reached only through other selection keys are refused too.
   for (const agents of [
     { defaults: { model: "openai/gpt-5", imageModel: "anthropic/claude-x" } },
@@ -14677,8 +14686,7 @@ test("runtime node selector schedules gateways and their private-state initializ
 });
 
 test("Harness workspace preparation creates private directories and resumes an interrupted move", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "oce-harness-workspace-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "oce-harness-workspace-");
   const prepare = () => {
     const result = spawnSync(
       process.execPath,

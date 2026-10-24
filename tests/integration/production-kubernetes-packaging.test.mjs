@@ -15,6 +15,7 @@ import {
   createKubernetesComputeDriver,
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { MAX_TIMER_DELAY_MS } from "../../apps/controller/src/worker/timer-settings.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
@@ -25,6 +26,7 @@ import {
   productionCollectorValues,
   goToolEnvironment,
 } from "../helpers/production-chart.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 
@@ -176,6 +178,126 @@ try {
     skip: "Install Helm and yq, or set OCC_HELM_BIN, to verify the real rendered production chart.",
   };
 }
+
+test(
+  "console theme settings reject YAML booleans and invalid ConfigMap names",
+  tooling,
+  async (t) => {
+    const directory = await temporaryDirectory(t, "oce-console-theme-");
+    const writeValues = async (name, body) => {
+      const path = join(directory, name);
+      await writeFile(path, body);
+      return path;
+    };
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues(
+              "yes.yaml",
+              "api:\n  consoleTheme:\n    configMapName: yes\n    checksum: rev\n",
+            ),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues("no.yaml", "api:\n  consoleTheme:\n    configMapName: no\n"),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render(
+        {},
+        {
+          valuesFiles: [
+            await writeValues(
+              "checksum.yaml",
+              'api:\n  consoleTheme:\n    configMapName: "console-branding"\n    checksum: yes\n',
+            ),
+          ],
+        },
+      ),
+      /api\.consoleTheme\.checksum must be a string/,
+    );
+    const quoted = await writeValues(
+      "quoted.yaml",
+      'api:\n  consoleTheme:\n    configMapName: "no"\n    checksum: "rev"\n',
+    );
+    const objects = await resources((await render({}, { valuesFiles: [quoted] })).stdout);
+    const api = objects.find(
+      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+    );
+    assert.equal(
+      api.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap.name,
+      "no",
+    );
+    assert.equal(
+      api.spec.template.metadata.annotations["openclaw.dev/console-theme-checksum"],
+      "rev",
+    );
+    await assert.rejects(
+      render({ "api.consoleTheme.configMapName": "false" }),
+      /api\.consoleTheme\.configMapName must be a string/,
+    );
+    await assert.rejects(
+      render({ "api.consoleTheme.configMapName": "Not_Valid" }),
+      /api\.consoleTheme\.configMapName must be a Kubernetes resource name/,
+    );
+    const named = await resources(
+      (
+        await render(
+          { "api.consoleTheme.checksum": "revision-two" },
+          { strings: { "api.consoleTheme.configMapName": "false" } },
+        )
+      ).stdout,
+    );
+    const deployment = named.find(
+      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
+    );
+    assert.equal(
+      deployment.spec.template.spec.volumes.find((item) => item.name === "console-theme").configMap
+        .name,
+      "false",
+    );
+  },
+);
+
+test(
+  "operator-named Secrets, keys and namespaces reject YAML booleans and numbers",
+  tooling,
+  async () => {
+    // --set reads true or 1 as a boolean or number, as YAML does for yes/on/1. Rendered as "true"
+    // or "1", the name would pass the name pattern and the Pod would wait for a Secret, key or
+    // Namespace that does not exist.
+    for (const [field, value, enabled = {}] of [
+      ["installation.secretName", "true"],
+      ["installation.key", "true"],
+      ["database.secretName", "123"],
+      ["database.caSecretName", "true"],
+      ["auth.secretKey", "true"],
+      ["dns.namespace", "true"],
+      ["api.clients[0].namespace", "1"],
+      ["database.appUrlKey", "2"],
+      ["bootstrap.password.claimName", "true"],
+      ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
+    ]) {
+      await assert.rejects(
+        render({ ...enabled, [field]: value }),
+        (error) => error.message.includes(`${field} must be a string`),
+        field,
+      );
+    }
+  },
+);
 
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
@@ -454,8 +576,7 @@ test(
   "database routing refuses invalid ports before emitting NetworkPolicies",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "oce-database-port-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-database-port-");
     const valuesFile = join(directory, "ports.yaml");
     for (const port of [5342.5, 65536, 0, -1, "05342", "postgresql", "9223372036854775808"]) {
       await writeFile(valuesFile, `database:\n  port: ${JSON.stringify(port)}\n`);
@@ -484,8 +605,7 @@ test(
   "gateway routing refuses fractional YAML ports before emitting resources",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "oce-routing-ports-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-routing-ports-");
     const valuesFile = join(directory, "ports.yaml");
     const routingValues = {
       ...gatewayRoutingValues,
@@ -775,6 +895,41 @@ test(
         !item.spec.template.spec.containers[0].ports?.some(({ name }) => name === "metrics"),
       );
     }
+    // The broker shares the worker Pod; reserve its fixed listener only while both are enabled.
+    for (const [overrides, metricsPort, brokerEnabled] of [
+      [{ "metrics.port": "8443" }, "8443", false],
+      [
+        { ...repositoryCredentialValues, "metrics.enabled": "false", "metrics.port": "8443" },
+        undefined,
+        true,
+      ],
+      [repositoryCredentialValues, "9464", true],
+    ]) {
+      const accepted = await resources((await render(overrides)).stdout);
+      const pod = accepted.find(
+        (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-worker",
+      ).spec.template.spec;
+      const worker = [...(pod.initContainers ?? []), ...pod.containers].find(
+        ({ name }) => name === "worker",
+      );
+      assert.equal(worker.env.find(({ name }) => name === "OCC_METRICS_PORT")?.value, metricsPort);
+      assert.equal(
+        worker.ports?.find(({ name }) => name === "metrics")?.containerPort,
+        metricsPort === undefined ? undefined : Number(metricsPort),
+      );
+      const broker = pod.containers.find(({ name }) => name === "repository-credentials");
+      assert.equal(broker !== undefined, brokerEnabled);
+      if (brokerEnabled) {
+        assert.equal(
+          broker.ports.find(({ name }) => name === "repository-tls").containerPort,
+          8443,
+        );
+      }
+    }
+    await assert.rejects(
+      render({ ...repositoryCredentialValues, "metrics.port": "8443" }),
+      /metrics\.port.*repository/,
+    );
     for (const override of [
       { "metrics.scraperNamespaceLabels.team": "monitoring" },
       { "metrics.scraperPodLabels.app": "prometheus" },
@@ -969,8 +1124,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     await import("../../apps/controller/src/composition/installation-config.ts");
   // Operators must replace the trust placeholder with their observed proxy source.
   // A documentation-only address is never a runnable trust default.
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-example-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-example-");
   const example = await readFile(new URL("installation.yaml", productionExamples), "utf8");
   assert.match(example, /<actual-proxy-source-cidr>/);
   const installationPath = join(directory, "installation.yaml");
@@ -1068,8 +1222,7 @@ test(
   async (t) => {
     const { loadInstallationConfiguration } =
       await import("../../apps/controller/src/composition/installation-config.ts");
-    const directory = await mkdtemp(join(tmpdir(), "occ-control-hostname-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-control-hostname-");
     const example = loadYaml(
       (await readFile(new URL("installation.yaml", productionExamples), "utf8")).replace(
         "<actual-proxy-source-cidr>",
@@ -2117,8 +2270,7 @@ test(
   "repository credential origin helper reports the rendered broker endpoint",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "broker-origin-helper-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "broker-origin-helper-");
     const valuesFile = join(directory, "values.json");
     await writeFile(
       valuesFile,
@@ -2193,8 +2345,7 @@ test(
   "image upgrade helper preserves the live broker endpoint before rendering Helm",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "broker-upgrade-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "broker-upgrade-");
     const bin = join(directory, "bin");
     await mkdir(bin);
     const liveValues = join(directory, "live-values.yaml");
@@ -5292,9 +5443,40 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
   assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
 });
 
+test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async (t) => {
+  // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
+  const over = String(MAX_TIMER_DELAY_MS + 1);
+  for (const key of ["worker.pollIntervalMs", "worker.leaseDurationMs"]) {
+    await assert.rejects(
+      render({ [key]: over }),
+      new RegExp(`${key.replace(".", "\\.")} must be at most ${MAX_TIMER_DELAY_MS} milliseconds`),
+    );
+  }
+  const rendered = await render({
+    "worker.pollIntervalMs": String(MAX_TIMER_DELAY_MS),
+    "worker.leaseDurationMs": String(MAX_TIMER_DELAY_MS),
+    // Only compared with work age, never a timer delay: the safe-integer bound still applies.
+    "worker.convergenceTimeoutMs": over,
+  });
+  for (const name of ["OCC_WORKER_POLL_INTERVAL_MS", "OCC_WORKER_LEASE_DURATION_MS"]) {
+    assert.match(rendered.stdout, new RegExp(`name: ${name}\\n\\s+value: "${MAX_TIMER_DELAY_MS}"`));
+  }
+  assert.match(
+    rendered.stdout,
+    new RegExp(`name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\\n\\s+value: "${over}"`),
+  );
+  // A values file delivers a float64, which takes the helper's other parsing path.
+  const directory = await temporaryDirectory(t, "occ-worker-timer-");
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, `worker:\n  leaseDurationMs: ${over}\n`, { mode: 0o600 });
+  await assert.rejects(
+    render({}, { valuesFiles: [valuesFile] }),
+    /worker\.leaseDurationMs must be at most 2147483647 milliseconds/,
+  );
+});
+
 test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-worker-timing-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-worker-timing-");
   const valuesFile = join(directory, "worker.yaml");
   await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
   const rendered = await render({}, { valuesFiles: [valuesFile] });
@@ -5394,8 +5576,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
   }
   await render({ "api.clients[0].podLabels.empty": "null" });
   await render({ "metrics.scraperNamespaceLabels": "false", "metrics.scraperPodLabels": "false" });
-  const directory = await mkdtemp(join(tmpdir(), "occ-peer-labels-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-peer-labels-");
   const path = join(directory, "values.json");
   const sandboxOptions = Object.fromEntries(
     Object.entries(sandbox).filter(([key]) => !key.includes("ingressPeers")),
@@ -6283,6 +6464,30 @@ test(
       ],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
+    }
+  },
+);
+
+test(
+  "gateway routing service type is limited to the EnvoyProxy service types",
+  tooling,
+  async () => {
+    // EnvoyProxy envoyService.type accepts only these three. Any other value rendered, and the
+    // apply failed after the pre-install hooks had migrated and bootstrapped the Installation.
+    for (const serviceType of ["clusterIP", "ExternalName"]) {
+      await assert.rejects(
+        render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }),
+        /gatewayRouting\.serviceType must be ClusterIP, LoadBalancer or NodePort/,
+        serviceType,
+      );
+    }
+    for (const serviceType of ["LoadBalancer", "NodePort"]) {
+      const objects = await resources(
+        (await render({ ...gatewayRoutingValues, "gatewayRouting.serviceType": serviceType }))
+          .stdout,
+      );
+      const envoy = objects.find(({ kind }) => kind === "EnvoyProxy");
+      assert.equal(envoy.spec.provider.kubernetes.envoyService.type, serviceType);
     }
   },
 );

@@ -294,6 +294,12 @@ pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].approvers
 pluginApproverOverrides["codex-plugin:calendar@openai-curated-remote"].tools[
   "app_calendar/create_event"
 ].approvers = [{ channel: "slack", id: "team:TDEMO123:user:UDEMO124" }];
+const pluginApproverNoneHints = JSON.parse(pluginSelections);
+pluginApproverNoneHints["codex-plugin:calendar@openai-curated-remote"].approvers = [];
+const pluginApproverPreservedHints = JSON.parse(pluginSelections);
+pluginApproverPreservedHints["codex-plugin:calendar@openai-curated-remote"].approvers = [
+  { channel: "teams", id: "person-1" },
+];
 const pluginPreviewGap =
   "Catalog entries, local placeholder logos, and Driver capabilities are passed directly to the production component as Storybook fixtures. These previews do not verify PAT access, plugin availability, or runtime policy enforcement.";
 const pluginDiscovery = {
@@ -3083,6 +3089,24 @@ export const scenarios = {
     description:
       "A rejected save retains its Configuration. Reload clears stale choices; retry requires a current repository and access level. Starting a new draft explicitly leaves repository-scoped recovery.",
   },
+  createRosterModelSelection: {
+    group: "Pages/Create Agent",
+    name: "Change a roster's shared primary model",
+    path: create,
+    modelFallbackSelection: true,
+    modelRosterSelection: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+    ],
+    description:
+      "Model ID changes the shared primary in defaults and matching explicit roster entries, preserving local policies and ordered fallbacks. Inherited model selections stay omitted. Simulated UI proof; no deployment or model request occurs.",
+    steps: [
+      "Change Model ID from primary-model to replacement-model, then leave the field.",
+      "Open Advanced settings. Configuration JSON has the new primary in defaults, main and assistant; inherited has no model field.",
+      "Clear Model ID and enter another-model. Local aliases, parameters and ordered fallbacks remain, and unreferenced old provider rows are retired.",
+    ],
+  },
   createModelFallbackSelection: {
     group: "Pages/Create Agent",
     name: "Choose an existing fallback as primary",
@@ -4307,6 +4331,55 @@ export const scenarios = {
     steps: [
       "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
       "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
+      "Open No Slack approvers hints and Preserved non-Slack approver for the hidden no-approvers sentences.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversNoneHints: {
+    group: "Pages/Agent detail",
+    name: "No Slack approvers hints",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverNoneHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar starts with an empty approver list on No Slack approvers. The hint says no Slack user can approve and the people picker is hidden. Selected Slack users with that empty list asks for people and shows the picker.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users and leave the list empty. The hint asks you to select people, and the picker is visible.",
+      "Change it back to No Slack approvers. The first sentence returns and the picker hides again.",
+    ],
+    gap: overrideApproverGap,
+  },
+  pluginApproversPreservedChannel: {
+    group: "Pages/Agent detail",
+    name: "Preserved non-Slack approver",
+    path: draft,
+    slack: true,
+    auth: "codex_pat",
+    agentPlugins: pluginApproverPreservedHints,
+    agentPluginApprovers: [{ channel: "slack", id: "team:TDEMO123:user:UDEMO123" }],
+    pluginCapabilities: overrideApproverCapabilities,
+    pluginDiscovery,
+    actions: [
+      click("Plugins"),
+      click("Configure plugins"),
+      { selector: 'button[aria-label="Calendar"]', click: true },
+    ],
+    description:
+      "Calendar has no Slack approvers and keeps one simulated non-Slack entry. No Slack approvers says no Slack user can approve, names that preserved entry, and hides the people picker. Selected Slack users still counts zero Slack approvers while that entry remains.",
+    steps: [
+      "Read Calendar plugin approvers: No Slack user can approve. 1 other channel entries are preserved. The people picker is hidden.",
+      "Change Calendar plugin approvers to Selected Slack users. The picker is shown, and the hint stays 0 Slack approvers selected because the simulated non-Slack entry remains.",
+      "Change it back to No Slack approvers. The preserved-entry sentence returns and the picker hides again. The teams / person-1 entry is fixture data, not a real channel.",
     ],
     gap: overrideApproverGap,
   },
@@ -7851,6 +7924,7 @@ export const scenarios = {
 
 for (const [id, state, name] of [
   ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  ["policyUnicodeExecutable", "unicode", "Unicode executable path remains complete"],
   [
     "policyConfigurationAlternate",
     "alternate",
@@ -7920,6 +7994,18 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "unicode"
+      ? {
+          description:
+            "A normalized executable path has 281 Unicode code points and 551 UTF-16 code units, within the API schema's 512-code-point limit.",
+          steps: [
+            "Copy the full executable path from Installation delegation ceiling. Choose Review suggestion, then paste the copied path into Executable path. Confirm the value still ends with /tool.",
+            "Choose Review changes. Confirm the complete executable path, including /tool, appears in Proposed rules. Choose Save and confirm policy v2 keeps that same path while the current revision stays unchanged.",
+            "Reset the story to repeat. The six directory components each contain 45 Deseret letters (U+10400); the path is 1091 UTF-8 bytes.",
+          ],
+          gap: "Simulated UI proof only. This story does not validate a real executable, save to OCC, apply OpenShell policy or start a workload.",
+        }
+      : {}),
     ...(state === "refreshRace"
       ? {
           description:

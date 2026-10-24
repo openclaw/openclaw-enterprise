@@ -178,6 +178,7 @@ export const GatewayNetworkError = story("gatewayNetworkError");
 
 export const GatewayNetworkAdmitted = story("gatewayNetworkAdmitted");
 export const PolicyDenials = story("policyDenials");
+export const PolicyUnicodeExecutable = story("policyUnicodeExecutable");
 export const PolicyDenialsEmpty = story("policyDenialsEmpty");
 export const PolicyDenialsDisabled = story("policyDenialsDisabled");
 export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
