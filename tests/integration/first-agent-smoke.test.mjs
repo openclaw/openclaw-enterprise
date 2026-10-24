@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -13,6 +14,8 @@ import {
   clusterEventLines,
   createApi,
   observeAgentStop,
+  postgresImage,
+  publishPostgresImage,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
@@ -450,4 +453,119 @@ test("cluster events print oldest to newest by observed instant, whatever field 
     "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
     "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
   ]);
+});
+
+test("the smoke copies Local Setup's PostgreSQL pin, not another image", async () => {
+  const source = await readFile(
+    new URL("../../internal/occdev/openshell_k3d.go", import.meta.url),
+    "utf8",
+  );
+  assert.equal(postgresImage, /developmentPostgres\s*=\s*"([^"]+)"/.exec(source)?.[1]);
+  assert.match(postgresImage, /@sha256:[a-f0-9]{64}$/);
+});
+
+const pinnedPostgresId = `sha256:${"c".repeat(64)}`;
+
+// A fake engine and registry for publishPostgresImage. The registry serves
+// `manifest` under the digest the push records, unless `servedDigest` differs.
+function postgresCopyFixture({ config = pinnedPostgresId, manifestBody, servedDigest } = {}) {
+  const manifest = Buffer.from(
+    manifestBody ??
+      JSON.stringify({
+        schemaVersion: 2,
+        mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+        config: { digest: config },
+        layers: [],
+      }),
+  );
+  const digest = servedDigest ?? `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+  const commands = [];
+  const pulls = [];
+  const fetches = [];
+  return {
+    commands,
+    pulls,
+    fetches,
+    digest,
+    pull: async (image) => {
+      pulls.push(image);
+    },
+    runCommand: async (command, args) => {
+      commands.push([command, ...args]);
+      const joined = args.join(" ");
+      if (joined === `image inspect --format {{.Id}} ${postgresImage}`) {
+        return { stdout: `${pinnedPostgresId}\n` };
+      }
+      if (joined.startsWith("image inspect --format {{json .RepoDigests}} ")) {
+        return {
+          stdout: JSON.stringify([
+            "postgres@sha256:" + "d".repeat(64),
+            `127.0.0.1:5000/oce-smoke/postgres@${digest}`,
+          ]),
+        };
+      }
+      return { stdout: "" };
+    },
+    fetchRegistry: async (url, init) => {
+      fetches.push({ url, accept: init.headers.accept, redirect: init.redirect });
+      return new Response(manifest, { status: 200 });
+    },
+  };
+}
+
+test("the PostgreSQL copy pulls the pin and returns the loopback registry digest", async () => {
+  const fixture = postgresCopyFixture();
+  const reference = await publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture });
+  assert.equal(reference, `127.0.0.1:5000/oce-smoke/postgres@${fixture.digest}`);
+  assert.deepEqual(fixture.pulls, [postgresImage]);
+  assert.deepEqual(fixture.commands, [
+    ["docker", "image", "inspect", "--format", "{{.Id}}", postgresImage],
+    // Tagged by the verified image ID, never by a name that could resolve elsewhere.
+    ["docker", "tag", pinnedPostgresId, "127.0.0.1:5000/oce-smoke/postgres:18.6"],
+    ["docker", "push", "127.0.0.1:5000/oce-smoke/postgres:18.6"],
+    [
+      "docker",
+      "image",
+      "inspect",
+      "--format",
+      "{{json .RepoDigests}}",
+      "127.0.0.1:5000/oce-smoke/postgres:18.6",
+    ],
+  ]);
+  assert.deepEqual(fixture.fetches, [
+    {
+      url: `http://127.0.0.1:5000/v2/oce-smoke/postgres/manifests/${fixture.digest}`,
+      accept:
+        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+      redirect: "error",
+    },
+  ]);
+});
+
+test("the PostgreSQL copy refuses a registry manifest that names another image", async () => {
+  const fixture = postgresCopyFixture({ config: `sha256:${"e".repeat(64)}` });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /the registry copy of PostgreSQL is not the pinned image/,
+  );
+});
+
+test("the PostgreSQL copy refuses manifest bytes that do not match the recorded digest", async () => {
+  const fixture = postgresCopyFixture({ servedDigest: `sha256:${"f".repeat(64)}` });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /the registry manifest does not match/,
+  );
+});
+
+test("the PostgreSQL copy needs a loopback registry and touches nothing otherwise", async () => {
+  for (const registry of ["0.0.0.0:5000", "registry.example:5000", "127.0.0.1", "localhost:5000"]) {
+    const fixture = postgresCopyFixture();
+    await assert.rejects(
+      publishPostgresImage({ registry, ...fixture }),
+      /the PostgreSQL copy needs a loopback registry/,
+      registry,
+    );
+    assert.deepEqual([fixture.pulls, fixture.commands, fixture.fetches], [[], [], []], registry);
+  }
 });

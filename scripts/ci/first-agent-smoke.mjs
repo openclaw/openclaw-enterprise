@@ -41,6 +41,7 @@ import {
   createModelProviderFiles,
   writeModelProviderTrust,
 } from "../../tests/helpers/runtime-model-provider.mjs";
+import { ensureImage } from "./image-pull.mjs";
 import { compareEvents, eventObservedTime } from "./kubernetes-event-time.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -327,8 +328,8 @@ async function pulledDigest(tag) {
   return recordedDigest(tag);
 }
 
-async function recordedDigest(tag) {
-  const { stdout } = await run("docker", [
+async function recordedDigest(tag, runCommand = run) {
+  const { stdout } = await runCommand("docker", [
     "image",
     "inspect",
     "--format",
@@ -338,6 +339,71 @@ async function recordedDigest(tag) {
   const repository = tag.slice(0, tag.lastIndexOf(":"));
   const reference = JSON.parse(stdout).find((digest) => digest.startsWith(`${repository}@`));
   assert.match(reference ?? "", /@sha256:[a-f0-9]{64}$/, `no registry digest for ${tag}`);
+  return reference;
+}
+
+// Local Setup's PostgreSQL pin: developmentPostgres in internal/occdev/openshell_k3d.go.
+export const postgresImage =
+  "docker.io/library/postgres:18.6@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae";
+
+// The image-pull.mjs retry helper over `run`.
+async function pullExecFile(command, args, { timeoutMs }) {
+  try {
+    return await run(command, args, { timeout: timeoutMs });
+  } catch (error) {
+    error.stderr = error.result?.stderr ?? "";
+    error.timedOut = error.result?.signal === "SIGKILL";
+    throw error;
+  }
+}
+
+// Copy the pinned PostgreSQL image into the loopback registry, so the k3d node
+// pulls it by digest like the checkout's images, instead of Local Setup pulling
+// it from Docker Hub and exporting and importing it beside the cluster checks.
+// The engine verifies the pin when it pulls. Its push recompresses the layers,
+// so the registry digest differs from the pin, but the registry's manifest must
+// name the pinned image's config, which fixes every layer's uncompressed digest
+// (containerd checks them as it unpacks).
+export async function publishPostgresImage({
+  registry,
+  runCommand = run,
+  fetchRegistry = fetch,
+  pull = (image) => ensureImage(image, { execFile: pullExecFile }),
+}) {
+  assert.match(registry, /^127\.0\.0\.1:\d+$/, "the PostgreSQL copy needs a loopback registry");
+  await pull(postgresImage);
+  const id = (
+    await runCommand("docker", ["image", "inspect", "--format", "{{.Id}}", postgresImage])
+  ).stdout.trim();
+  assert.match(id, /^sha256:[a-f0-9]{64}$/, `no image ID for ${postgresImage}`);
+  const tag = `${registry}/oce-smoke/postgres:${/:([^:/@]+)@/.exec(postgresImage)[1]}`;
+  await runCommand("docker", ["tag", id, tag]);
+  await runCommand("docker", ["push", tag], { timeout: 10 * minute });
+  const reference = await recordedDigest(tag, runCommand);
+  const digest = reference.slice(reference.indexOf("@") + 1);
+  const response = await fetchRegistry(
+    `http://${registry}/v2/oce-smoke/postgres/manifests/${digest}`,
+    {
+      headers: {
+        accept:
+          "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  assert.ok(response.ok, `registry manifest ${reference}: HTTP ${response.status}`);
+  const manifest = Buffer.from(await response.arrayBuffer());
+  assert.equal(
+    `sha256:${createHash("sha256").update(manifest).digest("hex")}`,
+    digest,
+    `the registry manifest does not match ${reference}`,
+  );
+  assert.equal(
+    JSON.parse(manifest.toString("utf8")).config?.digest,
+    id,
+    `the registry copy of PostgreSQL is not the pinned image: ${reference}`,
+  );
   return reference;
 }
 
@@ -378,10 +444,22 @@ async function buildImages({ preparedGit = false } = {}) {
   // Labels, user, entrypoint and every other layer are inherited unchanged.
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
-  const [controller, runtime] =
-    (await builderDriver()) === "docker-container"
-      ? await bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context })
-      : await buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context });
+  const driver = await builderDriver();
+  // Both finish before a failure is reported, so neither keeps running unseen.
+  const settled = await Promise.allSettled([
+    driver === "docker-container"
+      ? bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context })
+      : buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }),
+    // The prepared-Git acceptance keeps the archive path for every image.
+    preparedGit
+      ? undefined
+      : step("PostgreSQL image to the loopback registry", () => publishPostgresImage({ registry })),
+  ]);
+  const failure = settled.find(({ status }) => status === "rejected");
+  if (failure) {
+    throw failure.reason;
+  }
+  const [[controller, runtime], postgres] = settled.map(({ value }) => value);
   const repository = {};
   if (preparedGit) {
     const tag = `${registry}/oce-smoke/repository:${revision}`;
@@ -412,17 +490,23 @@ async function buildImages({ preparedGit = false } = {}) {
   }
   await exportEnvironment({
     ...repository,
-    // The k3d node pulls the controller and runtime images from this loopback
-    // registry by digest instead of importing exported archives.
+    // The k3d node pulls the controller, runtime and PostgreSQL images from
+    // this loopback registry by digest instead of importing exported archives.
     ...(preparedGit
       ? {}
-      : { OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer }),
+      : {
+          OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer,
+          OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres,
+        }),
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
     OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
   });
   log(`controller ${controller}`);
   log(`runtime ${runtime}`);
+  if (postgres) {
+    log(`PostgreSQL ${postgres}`);
+  }
 }
 
 async function builderDriver() {
