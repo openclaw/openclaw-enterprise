@@ -8,6 +8,7 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-24 22:05: Say that a Secret value textarea saves CRLF line endings as LF. (fix-backlog-1024b)
 - 2026-10-20 08:40: Create Agent sends no IAM grant a session knows is refused; a failed permission read offers Retry permission check. (fix-1020c)
 
 - 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
