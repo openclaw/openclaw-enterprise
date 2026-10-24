@@ -3623,6 +3623,11 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
       { ...readinessWait, timeoutMs: 0 },
       structuralRefusal("/gateway/readiness/timeoutMs", "minimum"),
     ],
+    // A Node.js timer fires a longer delay after 1 ms, so the wait would poll back to back.
+    [
+      { ...readinessWait, timeoutMs: 1_000, pollIntervalMs: 2_147_483_648 },
+      structuralRefusal("/gateway/readiness/pollIntervalMs", "maximum"),
+    ],
     [
       { ...readinessWait },
       [

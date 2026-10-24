@@ -17,6 +17,22 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
+
+**What breaks.** Controller startup refuses an OpenShell Sandbox
+`gateway.readiness.pollIntervalMs` above `2147483647`. Earlier builds accepted
+values up to `9007199254740991`, but Node.js fires a longer timer after 1 ms,
+so the readiness wait polled Kubernetes back to back until `timeoutMs`.
+
+**Who is affected.** Only Installations that set the poll interval above
+`2147483647` (about 24.8 days).
+
+**How to tell.** Startup fails with `STARTUP_FAILED`, and the Installation
+loader reports `/gateway/readiness/pollIntervalMs` as not satisfying `maximum`.
+
+**Steps.** Set the value to `2147483647` or less (or remove it for the
+1-second default), then start the controller again.
+
 ## 2026-10-24: worker timer settings are capped at 2147483647 ms
 
 **What breaks.** `helm install` and `helm upgrade` refuse `worker.pollIntervalMs`
