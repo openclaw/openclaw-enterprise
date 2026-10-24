@@ -16,6 +16,7 @@ import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbo
 import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
 import { createPostgresAgentApp } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { expireWorkLease } from "../helpers/postgres-worker-revision-support.mjs";
 
 async function createPolicyApp(t, recordOperations = false, { laxDriver = false } = {}) {
   const grant = {
@@ -826,10 +827,7 @@ test(
     assert.equal(admitted.statusCode, 202, admitted.body);
     const claim = await queue.claim();
     assert.equal(claim.agentTarget, "sandbox_policy");
-    await pool.query(
-      "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE idempotency_key=$1",
-      [claim.idempotencyKey],
-    );
+    await expireWorkLease(pool, claim.idempotencyKey);
 
     const blocker = await pool.connect();
     await blocker.query("BEGIN");

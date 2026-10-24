@@ -22,6 +22,7 @@ import {
   startController,
   verifyPlatformStateStoreContract,
 } from "../helpers/postgres-platform-state.mjs";
+import { makeWorkDue } from "../helpers/postgres-worker-revision-support.mjs";
 
 async function ensureInstallation(state, name) {
   const existing = await state.loadInstallation();
@@ -413,10 +414,7 @@ test(
     );
     assert.deepEqual(requeued.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const secondClaim = await claimProvisioningWork(pool, workId);
     const settledBeforeFailure = await state.transact((unit) =>
       unit.provisioning.settleEffect(workId, {
@@ -482,10 +480,7 @@ test(
     );
     assert.deepEqual(retryWork.rows, [{ state: "queued", completed_at: null, reason_code: null }]);
 
-    await pool.query(
-      "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-      [workId],
-    );
+    await makeWorkDue(pool, workId);
     const terminalClaim = await claimProvisioningWork(pool, workId);
     const cancelled = await state.transact((unit) =>
       unit.provisioning.cancel(terminalClaim, {

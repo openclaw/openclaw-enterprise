@@ -46,6 +46,7 @@ import {
   completion,
   repositoryAttempts,
   repositoryBoundary,
+  makeWorkDue,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 // Deployment, dispatch, convergence and the persisted lifecycle. Credential-source withdrawals and
@@ -1004,11 +1005,7 @@ revisionTest(
           [candidate.idempotencyKey],
         )
       ).rows.map(({ code }) => code);
-    const makeDue = () =>
-      fixture.observerPool.query(
-        "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key = $1",
-        [candidate.idempotencyKey],
-      );
+    const makeDue = () => makeWorkDue(fixture.observerPool, candidate.idempotencyKey);
 
     // A normal pending observation restores the failure budget to zero. It must
     // still be distinguishable from a deployment that has never been checked.
