@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-24"
-last_updated_session: authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b
+last_updated_session: authoring-run/adac7683-9281-441d-a539-a422c7b66bce
 ---
 
 # Protected credential request flow
@@ -21,8 +21,8 @@ The Token Service issues, renews and retires material.
 
 ## Entry Points
 
-- Trigger: an installed supervisor sends `HttpCredentialAccess.Resolve`, followed
-  by `AuthorizeSend` and `HttpResponsePreReturn.Evaluate` over authenticated TLS
+- Trigger: an installed supervisor opens `HttpInstallationExchange.Exchange` over
+  authenticated TLS to resolve, authorize and protect one request
   (`apps/controller/src/drivers/egress-proxy/openshell-authority.ts:createOpenShellEgressAuthority`).
 - Assumptions: source admission and Agent deployment produced an exact plan; a current
   verified loaded-enforcement receipt permits installation; the running Agent's service
@@ -140,13 +140,16 @@ maintenance: Harness-only restart recovery is [not automatic](../reference/crede
 
 ### 2. Capture identity, operation and first authority decision
 
-Each TLS stream carries one `HttpInstallationExchange.Exchange`. After bearer auth,
-a random 32-byte challenge admits up to 1,024 pending openings until signed acceptance,
+Each authenticated TLS stream carries one `HttpInstallationExchange.Exchange`.
+Up to 1,024 pending openings hold a 32-byte challenge until acceptance,
 closure or 30 seconds. The owner rechecks the bearer, gateway-signed `exchange_key`
 and supervisor Ed25519 signature over `openshell-exchange-v1`, zero byte, challenge
-and binary opening. JSON cannot supply keys; bearer-only RPCs refuse.
+and binary opening. Openings cannot supply keys. Bearer-only RPCs refuse.
 
-Before awaiting work, the adapter copies the request and binds private stream custody.
+The adapter binds stream custody and copies the request before awaiting work.
+It joins the signed path and raw query verbatim. Misplaced delimiters, fragments
+and malformed escapes refuse. Workspace catalog discovery requires exactly
+`GET https://chatgpt.com/backend-api/codex/models?client_version=0.163.0`.
 Proxy bounds and snapshots bodies/headers and reserves auth slots; OCC copies peer
 descriptors. Resolution, send and response lookup require an unexpired peer.
 Send/response require the captured sender, Sandbox, instance, exchange, installation
@@ -308,6 +311,8 @@ response custody and NetworkPolicy with the selected chart/image. Observe origin
 None.
 
 ## Changelog
+
+- 2026-10-24 11:09: Preserve signed catalog queries. (authoring-run/adac7683-9281-441d-a539-a422c7b66bce - b9ff83995cc1b2dc03a6de4c8172cc20167c51c9)
 
 - 2026-10-24 07:10: Bind workspace credentials to their admitted sender and retain Git access after confirmed model withdrawal. (authoring-run/f0f87daa-3c51-4559-b105-23c8c3d6084b - 5ad11ff5e27b16d83e0560d8ca35f1233d48d2af)
 

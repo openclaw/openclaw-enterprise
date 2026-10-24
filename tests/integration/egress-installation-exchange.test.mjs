@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { generateKeyPairSync } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { createCodexWorkspacePatProvider } from "../../apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts";
 import { staticEgressFixture, unary } from "../helpers/static-egress.mjs";
 
 test("the TLS exchange refuses missing, invalid, expired and gateway identity before challenge", async (t) => {
@@ -201,6 +202,80 @@ test("A resolves, authorizes and receives the protected actual reply on its acce
   assert.equal(returned.response.status, 200);
   assert.equal(returned.response.response_complete, true);
   assert.doesNotMatch(returned.response.body.toString(), /Bearer/);
+});
+
+test("the signed installation exchange admits only the provider's exact catalog query", async (t) => {
+  const path = "/backend-api/codex/models";
+  const query = "client_version=0.163.0";
+  const workspace = "fixture-workspace";
+  let sourceId;
+  const provider = createCodexWorkspacePatProvider({
+    workspaceForSource: (source) => (source.id === sourceId ? workspace : undefined),
+  });
+  const f = await staticEgressFixture(t, {
+    protectedSourceOnly: true,
+    // This installation admits only the catalog route, on one origin.
+    configurePreparedTokens: () => ({
+      ...provider,
+      routes: (source, binding) =>
+        provider.routes(source, binding).filter((route) => route.path === path),
+    }),
+    async admitSource({ app, namespace, agent, secret, path: sources }) {
+      const created = await app.request("POST", sources, {
+        body: { name: "workspace-pat", type: "codex-pat", secrets: { access_token: secret.ref } },
+      });
+      assert.equal(created.status, 201);
+      sourceId = created.data.id;
+      const updated = await app.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+        body: {
+          configurationId: agent.configurationId,
+          harnessAuth: { method: "credential_source", sourceId },
+          credentialSources: [{ sourceId }],
+        },
+      });
+      assert.equal(updated.status, 200, JSON.stringify(updated.body));
+      return { source: created.data, agent: updated.data };
+    },
+  });
+  const capture = (changed = {}) => {
+    const captured = f.capture();
+    Object.assign(captured.request, {
+      target: {
+        scheme: "https",
+        host: "chatgpt.com",
+        port: 443,
+        method: "GET",
+        path,
+        query,
+        ...changed,
+      },
+      headers: [{ name: "chatgpt-account-id", value: workspace }],
+      body: Buffer.alloc(0),
+    });
+    return captured;
+  };
+  const reads = f.secretReads;
+  const catalog = capture();
+  const { ready } = await f.resolve(catalog);
+  assert.ok(ready, "the exact version in the signed query selects the catalog");
+  assert.ok((await f.authorize(f.permitRequest(catalog, ready))).allowed);
+  assert.equal(f.secretReads, reads + 1);
+  for (const changed of [
+    { query: "client_version=0.163.1" },
+    { query: query + "&" + query },
+    { query: "?" + query },
+    { query: query + "#" },
+    { query: "client_version=%30.163.0" },
+    { query: "client_version=%" },
+    { path: path + "?" + query, query: "" },
+    { host: "another.example" },
+  ]) {
+    const denied = await f.beginExchange();
+    denied.stream.write(denied.opening(capture(changed)));
+    assert.ok((await denied.next()).resolved.refused);
+    await assert.rejects(denied.next(), /exchange ended without another message/);
+  }
+  assert.equal(f.secretReads, reads + 1, "refused requests receive no material");
 });
 
 // The supervisor reports stream progress on the same exchange; the lease carries the
