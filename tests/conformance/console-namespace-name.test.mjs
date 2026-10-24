@@ -142,5 +142,13 @@ test("the console refuses exactly the workspace files the API refuses, naming th
       JSON.stringify(content.slice(0, 20)),
     );
   }
-  assert.match(workspaceFileProblem("SOUL.md", "x\0y"), /in SOUL\.md,/);
+  // Each refusal names the file and only the rule it breaks (finding 2366).
+  assert.equal(
+    workspaceFileProblem("SOUL.md", "x\0y"),
+    "Use valid Unicode without NUL characters in SOUL.md.",
+  );
+  assert.equal(
+    workspaceFileProblem("SOUL.md", "a".repeat(16_385)),
+    "Use at most 16 KiB (16,384 UTF-8 bytes) in SOUL.md.",
+  );
 });

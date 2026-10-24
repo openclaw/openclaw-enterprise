@@ -29,16 +29,18 @@ type FileFailure = ReturnType<typeof requestFailure>;
 const WORKSPACE_FILE_MAX_BYTES = 16384;
 
 /**
- * Why the API would refuse `content` for the workspace file `name`, naming the file, or "" when
- * it would accept it. The Workspace tab and Create Agent's initial workspace files share it
- * (finding 2341).
+ * Why the API would refuse `content` for the workspace file `name`, naming the file and only the
+ * rule it breaks, or "" when it would accept it. The Workspace tab and Create Agent's initial
+ * workspace files share it (findings 2341, 2366).
  */
 export function workspaceFileProblem(name: string, content: string) {
-  return content.includes("\0") ||
-    !content.isWellFormed() ||
-    new TextEncoder().encode(content).length > WORKSPACE_FILE_MAX_BYTES
-    ? `Use valid Unicode without NUL characters in ${name}, within 16 KiB of UTF-8 content.`
-    : "";
+  if (content.includes("\0") || !content.isWellFormed()) {
+    return `Use valid Unicode without NUL characters in ${name}.`;
+  }
+  if (new TextEncoder().encode(content).length > WORKSPACE_FILE_MAX_BYTES) {
+    return `Use at most 16 KiB (16,384 UTF-8 bytes) in ${name}.`;
+  }
+  return "";
 }
 
 function fileError(error: FileFailure, writing: boolean) {
@@ -223,10 +225,19 @@ export function renderWorkspaceFiles(
       editor.setCustomValidity("");
       updateControls();
     });
+    // Save and Reload are disabled while their request runs, which drops focus to the page.
+    // Focus that was in this file's form goes back to `target` when the request settles
+    // (finding 2366).
+    const returnFocus = (held: boolean, target: HTMLElement) => {
+      if (held && context.isCurrent() && document.activeElement === document.body) {
+        target.focus();
+      }
+    };
     async function load(discard = false) {
       if (pending || !context.isCurrent()) {
         return;
       }
+      const held = form.contains(document.activeElement);
       operations += 1;
       pending = true;
       rereadFailed = false;
@@ -285,6 +296,7 @@ export function renderWorkspaceFiles(
           pending = false;
           writing = false;
           updateControls();
+          returnFocus(held, reload);
           // A version change during this request may have been answered by the old version.
           if (refreshAfterPending) {
             refreshAfterPending = false;
@@ -313,6 +325,7 @@ export function renderWorkspaceFiles(
         validateFields([editor]);
         return;
       }
+      const held = form.contains(document.activeElement);
       operations += 1;
       pending = true;
       writing = true;
@@ -354,6 +367,7 @@ export function renderWorkspaceFiles(
           pending = false;
           writing = false;
           updateControls();
+          returnFocus(held, editor);
           // A version change during this request may have been answered by the old version.
           if (refreshAfterPending) {
             refreshAfterPending = false;
