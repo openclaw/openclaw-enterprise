@@ -12,8 +12,9 @@ it does not qualify this stock adapter or upgrade its v5/v6 guarantees.
 The bundled OpenShell Driver therefore refuses `git-write` delivery: deploy returns
 `409 REPOSITORY_GIT_SENDER_UNQUALIFIED` and creates no revision, and a revision
 admitted before this check fails with the same code instead of waiting for the
-convergence deadline. Use [native prepared Git](prepared-native-git.md) or a separately
-installed sender qualified for the profile, or remove the binding. A `git-read` or
+convergence deadline. Remove the binding, select a separately installed sender qualified
+for the profile, or use [native prepared Git](prepared-native-git.md), which runs without
+a Sandbox or Credential Proxy. A `git-read` or
 `git-full` binding has no protected delivery profile, so deploy refuses it on any
 Credential Proxy with `409 REPOSITORY_GIT_PROFILE_UNSUPPORTED`.
 

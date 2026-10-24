@@ -678,8 +678,14 @@ export async function loadInstallationConfiguration(options: {
     serviceAccount = Object.freeze({ id: nonempty(selection.id, "drivers.service_account.id") });
   }
   if (drivers.repo !== undefined) {
+    // Finding 2361: startup refuses repository.nativeSender while a Sandbox is selected, so
+    // that advice alone was a dead end for an OpenShell Installation.
     throw new Error(
-      "drivers.repo native admission is retired. Drain accepted work ON THE ORIGINAL owner before cutover, then configure repository.nativeSender with repository.preparedGitHub. Do not replay uncertain work.",
+      `drivers.repo native admission is retired. Drain accepted work ON THE ORIGINAL owner before cutover, then ${
+        drivers.sandbox === undefined
+          ? "configure repository.nativeSender with repository.preparedGitHub."
+          : "configure repository.openShell with repository.preparedGitHub (git-write needs a qualified sender), or use repository.nativeSender without drivers.sandbox."
+      } Do not replay uncertain work.`,
     );
   }
   const repositoryConfiguration = githubRepositoryConfiguration(

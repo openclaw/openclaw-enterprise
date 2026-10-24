@@ -26,6 +26,7 @@ import {
   DriverConfigurationRegistry,
   InstalledDriver,
   OpenClawController,
+  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   SandboxNetworkPolicyConflictError,
@@ -1046,12 +1047,30 @@ test("Repository capability remains optional when no repository Backend or Drive
   const deployed = await f.request("POST", `${f.collection}/${agent.id}/deploy`);
   assert.equal(deployed.status, 202, JSON.stringify(deployed));
   assert.equal(Object.hasOwn(deployed.data, "repositoryCredentials"), false);
-  const missingDriver = await f.request("PATCH", `${f.collection}/${agent.id}`, {
-    configurationId: f.configuration.id,
-    repositoryBindings: selection,
-  });
-  assert.equal(missingDriver.status, 503, JSON.stringify(missingDriver));
-  assert.equal(missingDriver.error.code, "DEPENDENCY_UNAVAILABLE");
+  // Finding 2362: binding a repository with no repository Driver configured is a permanent
+  // Installation state, not an outage, so create and update name the setting instead of a 503.
+  for (const [method, path, body] of [
+    [
+      "PATCH",
+      `${f.collection}/${agent.id}`,
+      { configurationId: f.configuration.id, repositoryBindings: selection },
+    ],
+    [
+      "POST",
+      f.collection,
+      {
+        name: `Repository Agent ${randomUUID()}`,
+        configurationId: f.configuration.id,
+        repositoryBindings: selection,
+      },
+    ],
+  ]) {
+    const missingDriver = await f.request(method, path, body);
+    assert.equal(missingDriver.status, 409, `${method}: ${JSON.stringify(missingDriver)}`);
+    assert.equal(missingDriver.error.code, "RESOURCE_CONFLICT", method);
+    assert.equal(missingDriver.error.message, RepositoryDriverNotConfiguredError.description);
+  }
+  assert.equal((await f.request("GET", f.collection)).data.length, 1, "no Agent was created");
   const unchanged = await f.request("GET", `${f.collection}/${agent.id}`);
   assert.equal(Object.hasOwn(unchanged.data, "repositoryBindings"), false);
   const options = await f.request("GET", `${f.collection}/repository-options`);

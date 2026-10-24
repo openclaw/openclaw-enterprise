@@ -215,6 +215,25 @@ test("Credential Proxy startup preserves the selection and refuses retired keys"
       });
     }
   }
+
+  // Finding 2361: the retired drivers.repo refusal named only native Git, which startup refuses
+  // while a Sandbox is selected. It now names the path that works for the selected Sandbox.
+  for (const sandbox of [true, false]) {
+    await t.test(`retired drivers.repo, Sandbox selected=${sandbox}`, async () => {
+      const invalid = structuredClone(configuration);
+      invalid.drivers.repo = { id: "repository-credentials", configuration: {} };
+      if (!sandbox) {
+        delete invalid.drivers.sandbox;
+      }
+      await writeFile(path, JSON.stringify(invalid));
+      await assert.rejects(
+        load(),
+        sandbox
+          ? /drivers\.repo native admission is retired\..*configure repository\.openShell with repository\.preparedGitHub .*or use repository\.nativeSender without drivers\.sandbox\./
+          : /drivers\.repo native admission is retired\..*configure repository\.nativeSender with repository\.preparedGitHub\./,
+      );
+    });
+  }
 });
 
 test("Installation startup validates the optional external observability URL", async (t) => {

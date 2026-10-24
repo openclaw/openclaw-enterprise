@@ -286,6 +286,7 @@ import {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
+  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
   SandboxRepositoryRecipientUnverifiedError,
@@ -444,6 +445,7 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   quotedSettingKey,
+  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
@@ -13490,6 +13492,9 @@ export class OpenClawController {
     }
     if (bindings.length === 0) {
       return undefined;
+    }
+    if (!this.selections.has("repo")) {
+      throw new RepositoryDriverNotConfiguredError();
     }
     let driver: RepositoryPolicyDriver;
     try {
