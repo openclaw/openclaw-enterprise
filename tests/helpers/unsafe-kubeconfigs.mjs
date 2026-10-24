@@ -74,9 +74,8 @@ async function writeKubeconfig(directory, scenario) {
   return { name: scenario.name, kubeconfigPath, context: scenario.context ?? context };
 }
 
-async function privateDirectory(t) {
-  const directory = await temporaryDirectory(t, "openclaw-unsafe-kubeconfig-");
-  return directory;
+function privateDirectory(t) {
+  return temporaryDirectory(t, "openclaw-unsafe-kubeconfig-");
 }
 
 /**
