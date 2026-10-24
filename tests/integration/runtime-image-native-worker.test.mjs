@@ -60,6 +60,7 @@ test(
       "tests/conformance/workspace-node-supervisor.test.mjs",
       "tests/helpers/available-port.mjs",
       "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+      "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
       "apps/controller/src/drivers/compute/node-program.ts",
       "apps/controller/src/drivers/compute/runtime-startup.ts",
       "apps/controller/src/drivers/plugin/runtime-translator.ts",

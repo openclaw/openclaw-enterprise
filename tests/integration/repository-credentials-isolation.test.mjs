@@ -18,25 +18,13 @@ async function deliveredImages(t) {
 }
 
 test(
-  "delivered service keeps provider credentials outside a separate Agent container",
-  { timeout: 180000 },
-  async (t) => {
-    const delivered = await deliveredImages(t);
-    if (delivered) {
-      const { qualifyIsolation, ...images } = delivered;
-      await qualifyIsolation(t, images);
-    }
-  },
-);
-
-test(
   "delivered development token service keeps the static token outside a separate Agent container",
   { timeout: 180000 },
   async (t) => {
     const delivered = await deliveredImages(t);
     if (delivered) {
       const { qualifyIsolation, ...images } = delivered;
-      await qualifyIsolation(t, { ...images, authority: "github-token" });
+      await qualifyIsolation(t, images);
     }
   },
 );

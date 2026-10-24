@@ -23,6 +23,12 @@ accepts service keys. Expiry clears private content and drafts. Sign in again to
 return to the validated page after access checks.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
+## Customize deployment branding
+
+Operators can replace the displayed product name, logo, browser icons, and semantic
+colors with a mounted [theme bundle](console/theming.md). See
+[Apply a console theme](../guides/deploy/console-theme.md) for deployment steps.
+
 ## Identify the control-plane build
 
 With `debug=true`, the sidebar wordmark shows the first eight characters of the
@@ -47,6 +53,10 @@ hidden. Namespace rows open their Agents.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
 destination heading; **Open navigation** opens the mobile drawer.
+
+Click an Agent name or an open area of its row to open its details. Version links
+and Stop or Delete buttons keep their separate actions. Keyboard users can Tab to
+the Agent name and press Enter.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still

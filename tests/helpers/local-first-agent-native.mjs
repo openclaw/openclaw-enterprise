@@ -16,6 +16,8 @@ const deploymentProgressCodes = new Set([
   "REVISION_IMAGE_PULL_FAILED",
   "WORKSPACE_NODE_PENDING",
   "WORKSPACE_NODE_BINDING_PENDING",
+  "REPOSITORY_GIT_MATERIAL_PENDING",
+  "WORKSPACE_NODE_RECONNECT_PENDING",
   "WORKSPACE_SETUP_RETRYING",
   "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
   "LEASE_EXPIRED",
@@ -553,14 +555,24 @@ async function nativeWorkerProof({
         worktreeSource: "empty",
       });
       assert.equal(created.key, key);
-      session = { key, sessionId: created.sessionId };
+      stage = "create-session-id-missing";
+      const { sessionId } = created;
+      assert.ok(typeof sessionId === "string" && sessionId.trim().length > 0);
+      session = { key, sessionId };
       stage = "required-placement";
       while (!signal.aborted) {
-        const described = await call("sessions.describe", { key, agentId: "main" });
-        if (described.session?.placement?.state === "active") {
+        const described = await call("sessions.describe", { key, agentId: "main" }).catch(() => {
+          stage = "required-placement-describe-rejected";
+          assert.fail();
+        });
+        const state = described.session?.placement?.state;
+        if (state === "active") {
           break;
         }
-        assert.ok(!["failed", "reclaimed", "local"].includes(described.session?.placement?.state));
+        if (["failed", "reclaimed", "local"].includes(state)) {
+          stage = `required-placement-terminal-${state}`;
+          assert.fail();
+        }
         await delay(500, undefined, { signal });
       }
       signal.throwIfAborted();

@@ -6,12 +6,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:tls";
 import { chromium } from "playwright";
-import { unusedPort, waitFor } from "./qa-utils.mjs";
+import { availablePort } from "./available-port.mjs";
+import { prepareQaConsoleTheme } from "./qa-installation.mjs";
+import { waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
-export async function createQaBrowser(f) {
+export async function createQaBrowser(f, { themed }) {
+  if (themed) {
+    await prepareQaConsoleTheme(f);
+  }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
-  const port = await unusedPort();
+  const port = await availablePort();
   const nativeOrigin = `https://${nativeHost}:${port}`;
   const ca = f.browserCA ?? join(f.directory, "browser-ca.crt");
   let relay;
@@ -93,6 +98,9 @@ export async function createQaBrowser(f) {
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(f.consoleUrl + "/console/");
+  if (themed) {
+    assert.equal(await page.title(), "Example Agents");
+  }
   await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
   await page.getByLabel("Password").fill(f.credentials.password);
   const signedIn = page.waitForResponse(
@@ -222,6 +230,11 @@ export async function createQaBrowser(f) {
       }
     },
     async verify(agent) {
+      assert.equal(await page.locator(".sidebar .brand-name").textContent(), "Example Agents");
+      assert.equal(
+        await page.locator(".sidebar .brand img").getAttribute("src"),
+        "/console/theme/logo.png",
+      );
       const gateway = await f.gatewayUrl(agent);
       let origin = nativeOrigin;
       if (f.controlPlane === "compose") {

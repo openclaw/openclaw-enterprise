@@ -264,9 +264,10 @@ kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system 
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-On an upgrade, `installation-check` first loads the Installation as API
-startup does and names a refused setting and file; the running API keeps
-serving. Migration runs before bootstrap; an unstarted container has no logs.
+On an upgrade, `installation-check` runs first. It loads any Console theme
+bundle and the Installation as API startup does. It names the refused setting or
+file. The running API keeps serving. Migration runs before bootstrap; an
+unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow
@@ -294,6 +295,19 @@ worker logs and the [tenant RoleBindings](../deploy/production-agents.md#grant-t
 After fixing the cause, repeat `occ installation get` and confirm the Namespace
 reports `ready` before creating an Agent there. A healthy control plane does
 not prove an Agent has deployed or can run a model.
+
+## A deployment fails because Kubernetes refused a Secret
+
+`KUBERNETES_SECRET_WRITE_FORBIDDEN` means Kubernetes answered `403` to one of
+the version's private Secret writes or readbacks, so the worker failed the
+deployment without retrying. A preparation failure's
+`worker.compute-prepare-failed` log line names the `step`. Check that the worker's
+[tenant RoleBindings](../deploy/production-agents.md#grant-tenant-rolebindings)
+grant `get`, `create` and `update` on `secrets` in the Agent's Kubernetes
+namespaces (with an execution cluster, also the control cluster's Gateway
+namespace), and that no admission policy or ResourceQuota refuses Secrets
+there. Then deploy again. A running version's maintenance does not fail: it
+retries and recovers by itself once the grant is fixed.
 
 ## An Agent's Gateway or Harness Pod stays unready
 

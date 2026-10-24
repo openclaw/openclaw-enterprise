@@ -11,7 +11,7 @@ import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, initials, panel, sorted } from "./shell.mjs";
+import { brandContents, createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
@@ -34,11 +34,15 @@ let installationAccessProbe = null;
 let installationAdmin = null;
 const installationAccessStorageKey = "occ.console.installationAccess";
 const deniedReadsStorageKey = "occ.console.deniedReads";
+// Set once this tab has a session, until it signs out; see rememberSignedIn.
+const signedInStorageKey = "occ.console.signedIn";
 const deniedReadsLimit = 200;
 let loggingOut = false;
 let navigateAgentTab = null;
 // The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
 let leaveGuard = null;
+// Whether the shown page has a write in flight that a reload or tab close would cut short.
+let writeInFlight = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -216,6 +220,29 @@ function signInUnavailableFailure(label) {
 // password or an attach cannot help, so only an administrator is named.
 function accountDisabledFailure(label) {
   return `Your account is disabled, so you cannot sign in with ${label}. Ask an administrator to enable it.`;
+}
+
+// Only a tab that had a session says it expired; a first visit to a deep link, or one after
+// signing out, just asks to sign in (finding 1893). The mark is in tab storage, so a reload
+// after expiry still says it.
+function rememberSignedIn(signedIn) {
+  try {
+    if (signedIn) {
+      sessionStorage.setItem(signedInStorageKey, "1");
+    } else {
+      sessionStorage.removeItem(signedInStorageKey);
+    }
+  } catch {
+    // Without tab storage a reload after expiry asks to sign in without saying why.
+  }
+}
+
+function recalledSignedIn() {
+  try {
+    return sessionStorage.getItem(signedInStorageKey) !== null;
+  } catch {
+    return false;
+  }
 }
 
 function pinSessionKey(value) {
@@ -758,6 +785,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   }
   navigateAgentTab = null;
   leaveGuard = null;
+  writeInFlight = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -1016,12 +1044,7 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element(
-        "p",
-        { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OpenClaw Enterprise",
-      ),
+      element("p", { className: "brand" }, ...brandContents("sign-in")),
       element("h1", {}, "Sign in"),
       usernameHint,
       form,
@@ -1373,6 +1396,8 @@ async function loadPage({
     }
   }
   try {
+    // A pinned key alone covers a provider exchange that confirmed a session now missing.
+    const hadSession = session !== null || pinnedSessionKey !== null || recalledSignedIn();
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -1394,7 +1419,8 @@ async function loadPage({
       showLogin(
         providerError !== null
           ? (reasonFailure ?? providerFailure(providerError.label))
-          : current.feature !== "login" &&
+          : hadSession &&
+              current.feature !== "login" &&
               current.url.pathname !== "/console/" &&
               current.url.pathname !== "/console"
             ? "Your session has expired."
@@ -1404,6 +1430,7 @@ async function loadPage({
       return;
     }
     sessionResolved = true;
+    rememberSignedIn(true);
     const owner = sessionOwnerKey(session);
     // Drafts belong to the session that wrote them: a read retried after an unavailable check
     // keeps them (finding 1935); any other session clears them.
@@ -1648,6 +1675,7 @@ async function loadPage({
       }
       navigateAgentTab = retainedState.tabNavigation;
       leaveGuard = retainedState.leaveGuard ?? null;
+      writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1862,6 +1890,27 @@ async function loadPage({
           leaveGuard = refuse;
         }
       },
+      // A page whose writes hold it open (an Agent's share, a draft's save) says when one is in
+      // flight, so a reload or tab close asks first too (finding 2125).
+      setWriteInFlight(check) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.writeInFlight = check;
+          writeInFlight = check;
+        }
+      },
+      // A page that holds only for its own write sets both guards here, so it cannot hold in-app
+      // navigation and still let a reload or tab close cut the write short (finding 2181).
+      holdWhileWriting({ writing, held, released }) {
+        agentContext.setLeaveGuard(() => {
+          if (!writing()) {
+            released?.();
+            return false;
+          }
+          held();
+          return true;
+        });
+        agentContext.setWriteInFlight(writing);
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
@@ -2023,7 +2072,7 @@ async function loadPage({
         renderRows,
       );
     } else if (current.feature === "secrets") {
-      renderSecrets({ ...agentContext, items });
+      renderSecrets({ ...agentContext, items, sorted });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -2051,14 +2100,7 @@ async function loadPage({
       resetReads();
       clearPrivate();
       shell = null;
-      publicPanel(
-        sessionResolved ? "Namespace access unavailable" : "Session unavailable",
-        sessionResolved
-          ? "Could not check Namespace access. Try again."
-          : "Could not check your session. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(sessionResolved, error.status);
       return;
     }
     mountedRouteKey = null;
@@ -2354,14 +2396,7 @@ async function revalidateMountedAgent(current) {
     if (checking !== "detail") {
       // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
-      publicPanel(
-        checking === "session" ? "Session unavailable" : "Namespace access unavailable",
-        checking === "session"
-          ? "Could not check your session. Try again."
-          : "Could not check Namespace access. Try again.",
-        "Retry",
-        () => void loadPage(),
-      );
+      showAdmissionUnavailable(checking !== "session", error.status);
       return;
     }
     if ([400, 403, 404].includes(error.status)) {
@@ -2487,6 +2522,30 @@ function settingsView() {
   );
 }
 
+// The shared session or Namespace read failed, so no private page can show. Once the session
+// is confirmed, a refusal can be lasting (an account whose access was removed), and this panel
+// has no account menu, so it offers Sign out beside Retry (finding 1894).
+function showAdmissionUnavailable(sessionChecked, status) {
+  if (!sessionChecked) {
+    publicPanel(
+      "Session unavailable",
+      "Could not check your session. Try again.",
+      "Retry",
+      () => void loadPage(),
+    );
+    return;
+  }
+  publicPanel(
+    status === 403 ? "No access" : "Namespace access unavailable",
+    status === 403
+      ? "Your account has no access to this Installation. Try again or sign out."
+      : "Could not check Namespace access. Try again.",
+    "Retry",
+    () => void loadPage(),
+    { label: "Sign out", action: () => void logout() },
+  );
+}
+
 async function logout() {
   loggingOut = true;
   pendingIntent = null;
@@ -2497,6 +2556,7 @@ async function logout() {
   clearPrivate();
   forgetInstallationAccess();
   forgetDeniedReads();
+  rememberSignedIn(false);
   publicPanel("Signing out…", "Confirming that your session has ended.");
   let confirmed = false;
   try {
@@ -2539,9 +2599,10 @@ document.addEventListener("visibilitychange", () => {
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work
-// (finding 1902).
+// (finding 1902). It would also cut short a write in flight, such as the second of a share's
+// two bindings (finding 2125).
 window.addEventListener("beforeunload", (event) => {
-  if (!loggingOut && drafts.hasUnsaved()) {
+  if (!loggingOut && (drafts.hasUnsaved() || writeInFlight?.())) {
     event.preventDefault();
     event.returnValue = "";
   }

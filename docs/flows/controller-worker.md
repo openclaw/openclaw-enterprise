@@ -315,7 +315,7 @@ budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
 recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
 evidence, up to 5 minutes, but is at least four times the stop's duration.
 Each deferral records the refusal (`repeatEvidence`) for deployment status and
-`worker.completed`. Later passes retry only that stop, and errors keep waiting,
+`worker.completed`. Later passes retry only that stop, and outages keep waiting,
 unless superseded or an authorization or backend refusal lifted (past the
 deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 

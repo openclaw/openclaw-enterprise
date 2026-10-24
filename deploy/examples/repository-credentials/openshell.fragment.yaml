@@ -1,0 +1,17 @@
+# Merge with a bundled Kubernetes/OpenShell Installation using dedicated Codex.
+# Release remains blocked until the protected sender and TLS path are qualified.
+repository:
+  openShell:
+    registrationName: oce-prepared-git
+    authority:
+      host: 0.0.0.0
+      port: 8445
+      certificatePath: /etc/openclaw/openshell-git/tls.crt
+      privateKeyPath: /etc/openclaw/openshell-git/tls.key
+      issuerPublicKeyPath: /etc/openclaw/openshell-git/gateway-public.pem
+      issuer: openshell-gateway:openshell-gateway
+      audience: oce-prepared-git
+      keyId: current
+  preparedGitHub:
+    custodyKeyPath: /etc/openclaw/prepared-repository/custody.key
+    privateKeyPath: /etc/openclaw/prepared-repository/private-key.pem

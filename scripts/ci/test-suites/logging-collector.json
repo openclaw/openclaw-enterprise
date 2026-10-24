@@ -17,7 +17,9 @@
         "native Collector preserves Kubernetes identity after a dropped record sharing Pod metadata",
         "native Collector keeps bounded runtime wrapper diagnostics from Gateway and Codex Pods",
         "the Collector exports every OCC API and worker event the docs name",
-        "native Collector exports OCC lifecycle, dependency and authentication warnings with bounded fields"
+        "native Collector exports OCC lifecycle, dependency and authentication warnings with bounded fields",
+        "the Collector keeps exactly the code fields the OCC log sanitizer keeps",
+        "native Collector exports OpenShell Git expiry and delivery events with the sanitizer's code fields"
       ]
     },
     {
