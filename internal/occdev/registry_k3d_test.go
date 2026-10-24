@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -750,4 +751,159 @@ func TestDevelopmentRegistryImageWithoutALocalCopy(t *testing.T) {
 			t.Fatalf("want the platform refusal, got %v %v", err, commands())
 		}
 	})
+}
+
+// TestDevelopmentImageRegistryAttachmentIsRecorded pins the state.json record
+// occ dev down relies on after a killed start: written before the connect,
+// cleared once the registry is detached.
+func TestDevelopmentImageRegistryAttachmentIsRecorded(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	network := "k3d-" + state.Cluster
+	path := filepath.Join(state.directory, "state.json")
+	marker := filepath.Join(t.TempDir(), "connected")
+	// The connect fails unless state.json already names the attachment.
+	cases := strings.Replace(registryPullCases(state.Cluster, marker, registryListed(registryTestRuntime)),
+		`"network connect `+network+` `+registryTestContainer+`") `,
+		`"network connect `+network+` `+registryTestContainer+`") grep -q '"imageRegistryNetwork":"`+network+`"' `+shellQuote(path)+` || exit 95; `, 1)
+	for _, detach := range []string{"by the last pull", "by the caller"} {
+		t.Run(detach, func(t *testing.T) {
+			commands := fakeProfileCommands(t, map[string]string{"docker": cases})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+			r.env[developmentImageRegistrySetting] = registryTestContainer
+			r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] = registryTestRuntime
+			if err := r.selectDevelopmentImageRegistry(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.attachDevelopmentImageRegistry(context.Background(), state); err != nil {
+				t.Fatalf("%v %v", err, commands())
+			}
+			recorded := readJSONFile(t, path)
+			if recorded["imageRegistryContainer"] != registryTestContainer || recorded["imageRegistryNetwork"] != network || recorded["cluster"] != state.Cluster {
+				t.Fatalf("the attachment was not recorded: %v", recorded)
+			}
+			if detach == "by the last pull" {
+				if _, err := r.importDevelopmentImage(context.Background(), state, registryTestRuntime); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := r.detachDevelopmentImageRegistry(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if countCalls(commands(), "docker network disconnect ") != 1 {
+				t.Fatalf("expected one disconnect: %v", commands())
+			}
+			cleared := readJSONFile(t, path)
+			if _, ok := cleared["imageRegistryNetwork"]; ok || cleared["imageRegistryContainer"] != nil || cleared["cluster"] != state.Cluster {
+				t.Fatalf("the detached attachment is still recorded: %v", cleared)
+			}
+		})
+	}
+}
+
+// developmentDownFixture records a Kubernetes-only stack whose state.json
+// names a registry attachment, as a start killed while attached leaves it.
+func developmentDownFixture(t *testing.T, container, network string) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "state")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := developmentState{
+		Version: 3, Repository: root, ComputeDriver: "kubernetes", SandboxDriver: "none",
+		DeploymentMode: "k3d", PlatformNamespace: "oce-system", APIPort: 3000, BrowserPort: 8443,
+		ContainerEngine: "docker", Cluster: "occ-dev-recorded", DockerHost: "unix:///fixture/docker.sock",
+		KeyPath: filepath.Join(directory, "initial-admin-service-key.json"), KeyOwned: true,
+		ImageRegistryContainer: container, ImageRegistryNetwork: network, directory: directory,
+	}
+	if err := os.WriteFile(filepath.Join(directory, ".openclaw-development"), []byte(stateMarker), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := rewriteState(&state); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "kubernetes")
+	t.Setenv("OCC_DEVELOPMENT_SANDBOX_DRIVER", "none")
+	t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", directory)
+	return directory
+}
+
+func TestDevelopmentStateRegistryAttachment(t *testing.T) {
+	for name, tc := range map[string]struct {
+		container, network string
+		valid              bool
+	}{
+		"none":                           {valid: true},
+		"the recorded cluster's network": {container: registryTestContainer, network: "k3d-occ-dev-recorded", valid: true},
+		"another cluster's network":      {container: registryTestContainer, network: "k3d-occ-dev-other"},
+		"no container":                   {network: "k3d-occ-dev-recorded"},
+		"no network":                     {container: registryTestContainer},
+		"an option for a container":      {container: "--help", network: "k3d-occ-dev-recorded"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := readState(developmentDownFixture(t, tc.container, tc.network))
+			if tc.valid != (err == nil) {
+				t.Fatalf("valid %v, got %v", tc.valid, err)
+			}
+		})
+	}
+}
+
+// TestDownDetachesARecordedRegistryAttachment covers a start killed while the
+// registry was attached: down detaches it before k3d deletes the cluster,
+// which keeps a network still in use.
+func TestDownDetachesARecordedRegistryAttachment(t *testing.T) {
+	network := "k3d-occ-dev-recorded"
+	inspect := `"container inspect --format {{with index .NetworkSettings.Networks \"` + network + `\"}}{{.IPAddress}}{{end}} ` + registryTestContainer + `")`
+	disconnect := "docker network disconnect " + network + " " + registryTestContainer
+	k3d := `"cluster list -o json") echo '[{"name":"occ-dev-recorded"}]' ;;
+"cluster delete occ-dev-recorded") ;;`
+	for name, tc := range map[string]struct {
+		docker, want string
+		disconnects  int
+		recorded     bool
+	}{
+		"attached": {docker: inspect + ` echo ` + registryTestAddress + ` ;;
+"network disconnect ` + network + ` ` + registryTestContainer + `") ;;`, disconnects: 1, recorded: true},
+		"already detached": {docker: inspect + ` ;;`, recorded: true},
+		"container removed": {docker: inspect + ` echo 'Error: No such container' >&2; exit 1 ;;
+"container ls --all --format {{.Names}}") echo other-container ;;`, recorded: true},
+		"container present but unreadable": {docker: inspect + ` exit 1 ;;
+"container ls --all --format {{.Names}}") printf '%s\n' other-container ` + registryTestContainer + ` ;;`, recorded: true, want: "detach the development image registry from " + network},
+		"nothing recorded": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			container, recordedNetwork := "", ""
+			if tc.recorded {
+				container, recordedNetwork = registryTestContainer, network
+			}
+			directory := developmentDownFixture(t, container, recordedNetwork)
+			commands := fakeProfileCommands(t, map[string]string{"docker": tc.docker, "k3d": k3d})
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err := Down(ctx, Options{Repository: filepath.Dir(directory), Out: &bytes.Buffer{}, Err: &bytes.Buffer{}})
+			calls := commands()
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "preserving") {
+					t.Fatalf("want %q, got %v", tc.want, err)
+				}
+				// The state stays for a retry of down, which detaches first again.
+				if _, err := readState(directory); err != nil {
+					t.Fatalf("the recovery state was lost: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("%v %v", err, calls)
+			}
+			if countCalls(calls, disconnect) != tc.disconnects || countCalls(calls, "docker ") > 0 && !tc.recorded {
+				t.Fatalf("unexpected registry commands: %v", calls)
+			}
+			// The delete still runs, after any disconnect.
+			if i := slices.Index(calls, "k3d cluster delete occ-dev-recorded"); i < 0 || (tc.disconnects > 0 && slices.Index(calls, disconnect) > i) {
+				t.Fatalf("the registry was not detached before the cluster delete: %v", calls)
+			}
+		})
+	}
 }

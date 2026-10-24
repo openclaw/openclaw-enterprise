@@ -431,6 +431,36 @@ export async function publishPostgresImage({
   return reference;
 }
 
+// The image selection Local Setup reads. The prepared-Git acceptance keeps
+// the archive path for every image, so it selects no registry and no
+// PostgreSQL copy.
+export function smokeImageEnvironment({
+  preparedGit,
+  repository = {},
+  registryContainer,
+  controller,
+  runtime,
+  postgres,
+  providerImage,
+  modelDirectory,
+}) {
+  return {
+    ...repository,
+    // The k3d node pulls the controller, runtime and PostgreSQL images from
+    // this loopback registry by digest instead of importing exported archives.
+    ...(preparedGit
+      ? {}
+      : {
+          OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: registryContainer,
+          ...(postgres ? { OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres } : {}),
+        }),
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
+    ...(providerImage ? { OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE: providerImage } : {}),
+  };
+}
+
 async function buildImages({ preparedGit = false } = {}) {
   const revision = (await run("git", ["rev-parse", "--verify", "HEAD"])).stdout.trim();
   assert.match(revision, /^[a-f0-9]{40}$/);
@@ -519,21 +549,18 @@ async function buildImages({ preparedGit = false } = {}) {
     repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
     repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
   }
-  await exportEnvironment({
-    ...repository,
-    // The k3d node pulls the controller, runtime and PostgreSQL images from
-    // this loopback registry by digest instead of importing exported archives.
-    ...(preparedGit
-      ? {}
-      : {
-          OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer,
-          ...(postgres ? { OCC_DEVELOPMENT_POSTGRES_IMAGE: postgres } : {}),
-        }),
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
-    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
-    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
-    ...(providerImage ? { OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE: providerImage } : {}),
-  });
+  await exportEnvironment(
+    smokeImageEnvironment({
+      preparedGit,
+      repository,
+      registryContainer: slotNames.registryContainer,
+      controller,
+      runtime,
+      postgres,
+      providerImage,
+      modelDirectory,
+    }),
+  );
   log(`controller ${controller}`);
   log(`runtime ${runtime}`);
   if (postgres) {

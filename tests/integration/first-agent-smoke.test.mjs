@@ -21,6 +21,7 @@ import {
   publishPostgresImage,
   runtimeNodeBaseImage,
   smokeBakeDefinition,
+  smokeImageEnvironment,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
@@ -507,6 +508,36 @@ test("the prepared-Git bake still loads both images and builds no provider image
     pushOutput("runtime"),
   ]);
   assert.equal(target["smoke-provider"], undefined);
+});
+
+test("only the registry acceptance selects the loopback registry and the PostgreSQL copy", () => {
+  const images = {
+    registryContainer: "oce-first-agent-smoke-registry",
+    controller: `127.0.0.1:5000/oce-smoke/controller@sha256:${"1".repeat(64)}`,
+    runtime: `127.0.0.1:5000/oce-smoke/runtime@sha256:${"2".repeat(64)}`,
+    postgres: `127.0.0.1:5000/oce-smoke/postgres@sha256:${"3".repeat(64)}`,
+    modelDirectory: "/work/model",
+  };
+  const common = {
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: images.controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: images.runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: images.modelDirectory,
+  };
+  assert.deepEqual(smokeImageEnvironment({ ...images, preparedGit: false }), {
+    ...common,
+    OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: images.registryContainer,
+    OCC_DEVELOPMENT_POSTGRES_IMAGE: images.postgres,
+  });
+  // The prepared-Git acceptance imports every image from an archive: neither
+  // setting may reach Local Setup, even when a PostgreSQL copy exists.
+  const repository = {
+    OCC_DEVELOPMENT_REPOSITORY_IMAGE: `127.0.0.1:5000/oce-smoke/repository@sha256:${"4".repeat(64)}`,
+    OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER: images.registryContainer,
+  };
+  assert.deepEqual(smokeImageEnvironment({ ...images, preparedGit: true, repository }), {
+    ...repository,
+    ...common,
+  });
 });
 
 test("bake metadata selects both pushed images by registry digest", () => {
