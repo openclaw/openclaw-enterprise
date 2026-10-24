@@ -1064,6 +1064,8 @@ function runDevDown(env) {
   });
 }
 
+// A dev-up log the fixture may not have written yet: a missing file is no records, and blank
+// lines are skipped.
 function readJsonLines(path) {
   return readJsonLinesFile(path, { missingOk: true, skipBlank: true });
 }
