@@ -5,7 +5,7 @@ newer ones are on that page, in the
 [notices before 2026-10-24](breaking-changes-before-2026-10-24.md) and in the
 [notices before 2026-10-23](breaking-changes-before-2026-10-23.md), and older
 ones are in the
-[earlier notices](breaking-changes-archive.md). They still apply when you
+[notices from 2026-10-13](breaking-changes-archive.md). They still apply when you
 upgrade from a source commit older than their date. Entries are newest first.
 Steps marked _untested_ have not been run against a real Installation.
 

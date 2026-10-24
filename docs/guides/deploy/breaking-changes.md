@@ -8,7 +8,7 @@ you run now, here, in the
 [notices before 2026-10-24](breaking-changes-before-2026-10-24.md), in the
 [notices before 2026-10-23](breaking-changes-before-2026-10-23.md), in the
 [notices before 2026-10-15](breaking-changes-before-2026-10-15.md), in the
-[earlier notices](breaking-changes-archive.md), in the
+[notices from 2026-10-13](breaking-changes-archive.md), in the
 [notices before 2026-10-13](breaking-changes-before-2026-10-13.md), in the
 [notices before 2026-10-12](breaking-changes-before-2026-10-12.md), in the
 [notices before 2026-10-11](breaking-changes-before-2026-10-11.md) and in the

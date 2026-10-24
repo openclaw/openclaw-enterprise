@@ -56,11 +56,17 @@ an upgrade.
 
 For a compatibility-only upgrade, quiesce API, workers and other database writers,
 keep a recoverable database copy and matching release, and check the history
-using the existing migrator connection in `OCC_MIGRATION_DATABASE_URL`:
+using the existing migrator connection in `OCC_MIGRATION_DATABASE_URL`. From a
+release checkout, run:
 
 ```bash
-pnpm db:migrate --check
+pnpm db:migrate:production --check
 ```
+
+An image-only install runs the release controller image with
+`node scripts/migrate-production.mjs --check` instead; on Kubernetes, the
+[maintenance Pod](auth-maintenance.md#run-the-command) provides the image, the
+migrator credential and the database CA.
 
 If the check fails, stop. If it reports `completed`, no migration is pending.
 For `preCredentialProxy` (59 receipts), migration applies `0060` through `0063`.
@@ -68,9 +74,11 @@ For `prePreparedAttemptSettlement` (62 receipts), it applies only `0063`.
 Confirm the target and authorization before running the migration and checking again:
 
 ```bash
-pnpm db:migrate
-pnpm db:migrate --check
+pnpm db:migrate:production
+pnpm db:migrate:production --check
 ```
+
+In the controller image, run `scripts/migrate-production.mjs` without and then with `--check`.
 
 Migration reports its **starting** history; the last check must report
 `completed`. Upgrade the control plane without mixed-version
