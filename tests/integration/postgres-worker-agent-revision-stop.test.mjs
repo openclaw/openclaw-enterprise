@@ -19,7 +19,6 @@ import {
   completedPasses,
   completion,
   makeWorkDue,
-  parkWork,
   removeAccessBindings,
   repositoryAttempts,
   repositoryBoundary,
@@ -894,7 +893,10 @@ test(
     const closing = await deferred(3);
     assert.ok(Number(closing.delay_ms) < 60_000, `delay ${closing.delay_ms} ms`);
     // Retain the unsettled obligation while keeping it out of later scheduling.
-    await parkWork(fixture.observerPool, cleanupKey);
+    await fixture.observerPool.query(
+      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
+      [cleanupKey],
+    );
     await fixture.stop();
   },
 );

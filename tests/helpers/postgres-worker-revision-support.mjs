@@ -83,11 +83,6 @@ export function deferWork(pool, match, delay = "1 hour") {
   return updateWork(pool, "available_at = clock_timestamp() + $1::interval", match, [delay]);
 }
 
-// Make the matched Work never due, so no worker claims it until a test makes it due.
-export function parkWork(pool, match) {
-  return updateWork(pool, "available_at = 'infinity'", match);
-}
-
 // End the matched Work's lease a second ago, as if its worker had died, so another worker can
 // reclaim it without waiting out the lease.
 export function expireWorkLease(pool, match) {

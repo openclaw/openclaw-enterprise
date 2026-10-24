@@ -7,7 +7,6 @@ import {
   deferWork,
   expireWorkLease,
   makeWorkDue,
-  parkWork,
 } from "../helpers/postgres-worker-revision-support.mjs";
 
 async function dependencies(context, options = {}) {
@@ -1301,7 +1300,10 @@ test(
     await assert.rejects(queue.complete(cleanup), WorkClaimLostError);
     assert.equal((await readQueueRow(pool, firstCleanup.idempotencyKey)).state, "queued");
     // Retain the unresolved fixture while keeping it out of other test scheduling.
-    await parkWork(pool, firstCleanup.idempotencyKey);
+    await pool.query(
+      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
+      [firstCleanup.idempotencyKey],
+    );
   },
 );
 
@@ -1361,7 +1363,10 @@ test(
       "principal-stop-a",
       "principal-stop-b",
     ]);
-    await parkWork(pool, cleanup.rows[0].idempotency_key);
+    await pool.query(
+      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
+      [cleanup.rows[0].idempotency_key],
+    );
   },
 );
 
@@ -1900,7 +1905,10 @@ test(
         reason: "REPOSITORY_CLEANUP_PENDING",
       },
     ]);
-    await parkWork(pool, registered.idempotencyKey);
+    await pool.query(
+      "UPDATE occ.controller_work SET available_at = 'infinity' WHERE idempotency_key = $1",
+      [registered.idempotencyKey],
+    );
   },
 );
 
