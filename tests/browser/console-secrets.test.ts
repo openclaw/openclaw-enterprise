@@ -12,6 +12,7 @@ import type {
 import type {
   IAMAccessBindingResponse,
   IAMRoleResponse,
+  NamespaceListResponse,
   NamespaceWire,
   SecretDetailResponse,
   SecretListResponse,
@@ -197,6 +198,8 @@ test("unknown console Secret writes erase entered material and never replay muta
     1,
   );
   await replace.getByRole("button", { name: "Close" }).click();
+  const uncertainRow = page.locator(".secret-row").filter({ hasText: "Uncertain Secret" });
+  assert.equal(await uncertainRow.count(), 1);
   await page.getByRole("button", { name: "Uncertain Secret", exact: true }).click();
   await dialog(page, "Uncertain Secret")
     .getByRole("button", { name: "Delete Secret", exact: true })
@@ -213,6 +216,8 @@ test("unknown console Secret writes erase entered material and never replay muta
     ).length,
     1,
   );
+  // The check found it deleted, so the list behind the dialog drops it without a Refresh.
+  assert.equal(await uncertainRow.count(), 0);
 });
 
 test("checking an uncertain deletion cannot mistake another Secret for the deleted one", async (t) => {
@@ -507,6 +512,108 @@ test("a Secret name conflict allows correction, but a Namespace that stops being
     assert.equal(await submit.isDisabled(), true);
     assert.equal(await hasFocus(form.getByRole("button", { name: "Close" })), true);
   }
+});
+
+// Each refusal keeps its own meaning: a 429 leaves the form for another try, a 404 is a known
+// refusal rather than an unknown outcome, an incomplete consumer list cannot show deletion as
+// safe, and a Namespace that is not ready offers no replacement.
+test("Secret refusals keep their meaning, and incomplete consumers or a not-ready Namespace block changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret refusal meanings", { ready: true });
+  const secret = await fixture.createSecret(namespace.id, "Listed Secret", "synthetic-listed");
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const refusals: { status: number; code: string }[] = [
+    { status: 429, code: "RATE_LIMITED" },
+    { status: 404, code: "NOT_FOUND" },
+  ];
+  await page.route(`${fixture.origin}${secretPath(namespace)}`, (route) => {
+    const refusal = route.request().method() === "POST" ? refusals.shift() : undefined;
+    return refusal
+      ? route.fulfill({
+          status: refusal.status,
+          contentType: "application/json",
+          body: JSON.stringify({ error: { code: refusal.code, message: "refused" } }),
+        })
+      : route.fallback();
+  });
+  await login(page, fixture, secretsUrl(namespace));
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const create = dialog(page, "Create Secret");
+  const value = create.getByLabel("Value", { exact: true });
+  const submit = create.getByRole("button", { name: "Create Secret", exact: true });
+  await create.getByLabel("Secret name").fill("Refused Secret");
+  await value.fill("synthetic-rate-limited");
+  await submit.click();
+  await create
+    .getByRole("alert")
+    .filter({ hasText: "The value was not saved. Check the input and enter it again." })
+    .waitFor();
+  assert.equal(await value.inputValue(), "");
+  assert.equal(await value.isDisabled(), false, "a 429 allows another try");
+  assert.equal(await submit.isDisabled(), false);
+  await value.fill("synthetic-not-found");
+  await submit.click();
+  await create
+    .getByRole("alert")
+    .filter({
+      hasText: "This Secret or Namespace is no longer available. Close and Refresh the list.",
+    })
+    .waitFor();
+  assert.equal(await create.getByText(/Outcome unknown/).count(), 0);
+  assert.equal(await submit.isDisabled(), true, "a 404 needs a fresh read");
+  assert.equal(
+    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
+    2,
+  );
+  await create.getByRole("button", { name: "Close" }).click();
+
+  // A truncated consumer list names no consumer, yet more references exist than it shows.
+  await page.route(
+    `${fixture.origin}${secretPath(namespace)}/${secret.id}`,
+    async (route) => {
+      const response = await route.fetch();
+      const body: SecretDetailResponse = await response.json();
+      body.data.consumers = { ...body.data.consumers, truncated: true };
+      await route.fulfill({ response, json: body });
+    },
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: secret.name, exact: true }).click();
+  const detail = dialog(page, secret.name);
+  await detail.getByText(/This consumer list is incomplete/).waitFor();
+  await detail.getByText(/Deletion is blocked while references remain/).waitFor();
+  assert.equal(
+    await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
+    true,
+  );
+  await detail.getByRole("button", { name: "Close" }).click();
+
+  // The same Secret in a Namespace that is no longer ready: its value cannot be replaced.
+  await page.route(`${fixture.origin}/namespaces`, async (route) => {
+    const response = await route.fetch();
+    const body: NamespaceListResponse = await response.json();
+    body.data = body.data.map((item) =>
+      item.id === namespace.id ? { ...item, status: "provisioning" } : item,
+    );
+    await route.fulfill({ response, json: body });
+  });
+  await page.reload();
+  await page
+    .getByText("Secrets can be created or replaced after this Namespace is ready.")
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
+    true,
+  );
+  await page.getByRole("button", { name: secret.name, exact: true }).click();
+  const unready = dialog(page, secret.name);
+  await unready.getByText(/No current consumers were found/).waitFor();
+  assert.equal(
+    await unready.getByRole("button", { name: "Replace value", exact: true }).isDisabled(),
+    true,
+  );
 });
 
 test("pending Secret creation blocks navigation and replay, then session loss clears material", async (t) => {

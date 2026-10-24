@@ -469,6 +469,19 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
         await openAdvancedSettings(page);
         await editor.fill(JSON.stringify(cleared));
         assert.equal(await model.inputValue(), "");
+        // The kept draft keeps the clear pending: after navigation, the same edit leaves the
+        // control empty too. The marker proves the form was rebuilt from the draft.
+        await page.locator("#create-agent-form").evaluate((form: HTMLElement) => {
+          form.dataset.kept = "";
+        });
+        await page.getByRole("link", { name: "← Agents" }).click();
+        await page.waitForURL(/\/console\/agents(\?|$)/);
+        await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+        await page.getByLabel("Agent name", { exact: true }).waitFor();
+        assert.equal(await page.locator("#create-agent-form[data-kept]").count(), 0);
+        await openAdvancedSettings(page);
+        await editor.fill(JSON.stringify(cleared));
+        assert.equal(await model.inputValue(), "");
         if (values.agents.entries.inherited) {
           assert.deepEqual(cleared.agents.entries.inherited?.models, {
             [reference(replacement)]: values.agents.entries.inherited.models[reference(original)],
@@ -655,7 +668,7 @@ test("Main-only Preset models create drafts through the regular Agent APIs", asy
   }
 });
 
-test("Model edits preserve refusals for divergent and unqualified Advanced JSON primaries", async (t) => {
+test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap("Invalid roster editing");
   const namespace = await fixture.createNamespace("Invalid roster drafts", { ready: true });
@@ -682,7 +695,18 @@ test("Model edits preserve refusals for divergent and unqualified Advanced JSON 
     },
   );
   assert.equal(preset.status, 201);
-  for (const scenario of ["divergent", "unqualified"] as const) {
+  // Each roster is one the resolver refuses, and the control must leave it that way: divergent
+  // primaries, an unqualified primary, one with an empty provider or model, a default that names
+  // fallbacks but no primary, and an entry that inherits while no default selects a model.
+  const scenarios = [
+    "divergent",
+    "unqualified",
+    "empty provider",
+    "empty model",
+    "fallbacks without a primary",
+    "inherited without a default",
+  ] as const;
+  for (const scenario of scenarios) {
     for (const clearFirst of [false, true]) {
       await t.test(
         `${scenario}: ${clearFirst ? "clear then select" : "direct select"}`,
@@ -700,12 +724,22 @@ test("Model edits preserve refusals for divergent and unqualified Advanced JSON 
             const first = provider.models[0];
             assert.ok(first);
             provider.models.push({ ...first, id: "replacement-model", name: "replacement-model" });
+          } else if (scenario === "fallbacks without a primary") {
+            (invalid.agents.defaults as { model: unknown }).model = { fallbacks: [original] };
+          } else if (scenario === "inherited without a default") {
+            delete (invalid.agents.defaults as { model?: unknown }).model;
+            delete (invalid.agents.entries.editor as { model?: string }).model;
           } else {
-            invalid.agents.defaults.model = "bare";
-            invalid.agents.entries.writer.model = "bare";
-            invalid.agents.entries.editor.model = "bare";
+            const primary = {
+              unqualified: "bare",
+              "empty provider": "/bare",
+              "empty model": "bare/",
+            }[scenario];
+            invalid.agents.defaults.model = primary;
+            invalid.agents.entries.writer.model = primary;
+            invalid.agents.entries.editor.model = primary;
           }
-          const refusal = /same primary model|must name each model as/;
+          const refusal = /same primary model|must name each model as|is required when/;
           assert.throws(() => resolveConfiguredHarnessId(invalid), refusal);
           const editor = page.getByLabel("Configuration JSON", { exact: true });
           await editor.fill(JSON.stringify(invalid));
