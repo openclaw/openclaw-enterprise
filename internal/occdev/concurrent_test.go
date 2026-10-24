@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -53,25 +55,55 @@ func assertExited(t *testing.T, pidFile string) {
 	}
 }
 
+// overlapWriter records whether two writes were ever in progress at once. Each
+// write holds briefly, so unserialized writers would overlap.
+type overlapWriter struct {
+	inFlight   atomic.Int32
+	overlapped atomic.Bool
+	mu         sync.Mutex
+	data       bytes.Buffer
+}
+
+func (w *overlapWriter) Write(p []byte) (int, error) {
+	if w.inFlight.Add(1) > 1 {
+		w.overlapped.Store(true)
+	}
+	defer w.inFlight.Add(-1)
+	time.Sleep(time.Millisecond)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.Write(p)
+}
+
+func (w *overlapWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.String()
+}
+
 func TestConcurrentStepsShareOutputAndEnvironmentSafely(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	r := &runner{opts: Options{Out: &stdout, Err: &stderr}, env: map[string]string{"PATH": os.Getenv("PATH"), "STEP": "parent"}}
+	// One writer for both streams, as when a caller passes the same buffer.
+	output := &overlapWriter{}
+	r := &runner{opts: Options{Out: output, Err: output}, env: map[string]string{"PATH": os.Getenv("PATH"), "STEP": "parent"}}
 	step := func(name string) func(context.Context, *runner) error {
 		return func(ctx context.Context, r *runner) error {
 			// Each step writes through its own runner; the parent's map stays unchanged.
 			r.env["STEP"] = name
-			return r.run(ctx, "sh", "-c", `for i in 1 2 3 4 5 6 7 8; do echo "$STEP $BUILDKIT_PROGRESS $i"; echo "$STEP err" >&2; done`)
+			return r.run(ctx, "sh", "-c", `for i in 1 2 3 4 5 6 7 8; do echo "$STEP $BUILDKIT_PROGRESS $i"; echo "$STEP err" >&2; sleep 0.01; done`)
 		}
 	}
 	if err := r.concurrently(context.Background(), step("first"), step("second")); err != nil {
 		t.Fatal(err)
 	}
+	if output.overlapped.Load() {
+		t.Fatal("concurrent steps wrote to the shared output at the same time")
+	}
 	for _, name := range []string{"first", "second"} {
-		if got := strings.Count(stdout.String(), name+" plain "); got != 8 {
-			t.Fatalf("%s wrote %d of 8 lines with plain BuildKit progress: %q", name, got, stdout.String())
+		if got := strings.Count(output.String(), name+" plain "); got != 8 {
+			t.Fatalf("%s wrote %d of 8 lines with plain BuildKit progress: %q", name, got, output.String())
 		}
-		if got := strings.Count(stderr.String(), name+" err"); got != 8 {
-			t.Fatalf("%s wrote %d of 8 diagnostics: %q", name, got, stderr.String())
+		if got := strings.Count(output.String(), name+" err"); got != 8 {
+			t.Fatalf("%s wrote %d of 8 diagnostics: %q", name, got, output.String())
 		}
 	}
 	if r.env["STEP"] != "parent" {

@@ -281,7 +281,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 
 	// Nothing below needs the controller, PostgreSQL or repository images until
 	// the network check, so import them while the Codex sandbox check and the
-	// routing controller rollouts wait on the cluster.
+	// routing controller rollouts wait on the cluster. The runtime image is
+	// imported outside this overlap, so no two image builds run at once.
 	var codexSeccompProfile, routingPodCIDR string
 	var controllerImage, postgresImage, repositoryImage string
 	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
@@ -298,12 +299,6 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
 			return fmt.Errorf("install the private routing controllers: %w", err)
-		}
-		if sandboxDriver == "openshell" {
-			runtimeImage, err = r.importRuntime(ctx, state)
-			if err != nil {
-				return fmt.Errorf("import the development runtime image: %w", err)
-			}
 		}
 		return nil
 	}, func(ctx context.Context, r *runner) error {
@@ -327,6 +322,12 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	})
 	if err != nil {
 		return err
+	}
+	if sandboxDriver == "openshell" {
+		runtimeImage, err = r.importRuntime(ctx, state)
+		if err != nil {
+			return err
+		}
 	}
 	if routingPodCIDR != "" {
 		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")

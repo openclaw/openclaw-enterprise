@@ -9,7 +9,9 @@ import (
 )
 
 // concurrently runs independent Local Setup steps at the same time and returns
-// once every step and the commands it started have exited.
+// once every step has returned. A canceled step's commands are stopped through
+// its context: the command it is waiting on is killed, but not processes that
+// command started itself.
 //
 // Each step gets its own copy of the runner. The copies share the caller's
 // output, serialized unless it is a file, and a private copy of the command
