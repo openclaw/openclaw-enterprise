@@ -54,6 +54,71 @@ function clearSecretInputs(dialog: HTMLDialogElement) {
   }
 }
 
+// The API's Secret value rule (SecretValue in packages/contracts/src/api/common.ts): nonempty
+// UTF-8 without NUL, at most 65,536 UTF-8 bytes. tests/conformance/console-namespace-name.test.mjs
+// keeps the two equal.
+export const SECRET_VALUE_MAX_BYTES = 65536;
+
+/**
+ * Why the API would refuse `value` as a Secret value, or "" when it would accept it. An empty
+ * value is the required check's to report. The console sends the value exactly as entered.
+ */
+export function secretValueProblem(value: string) {
+  if (value.includes("\0") || /\p{Cs}/u.test(value)) {
+    return "Use valid UTF-8 without NUL characters.";
+  }
+  if (new TextEncoder().encode(value).length > SECRET_VALUE_MAX_BYTES) {
+    return "Use at most 65,536 UTF-8 bytes.";
+  }
+  return "";
+}
+
+/**
+ * A masked Secret value control and its Show value toggle, shared by the Secrets page and every
+ * inline Create Secret dialog (finding 2339). Put `reveal` just before `value` in a
+ * `.secret-value-field`. A textarea keeps multiline credential material exactly. Browsers
+ * without masking support get a native password field that refuses a line-break paste rather
+ * than dropping its line breaks. Each edit checks the value against the API's rule.
+ */
+export function secretValueControl(id: string, attributes: Record<string, string> = {}) {
+  const multiline = CSS.supports("-webkit-text-security", "disc");
+  const value = element(multiline ? "textarea" : "input", {
+    id,
+    required: true,
+    autocomplete: "off",
+    spellcheck: "false",
+    className: "secret-value secret-value--masked",
+    "data-secret-value": "",
+    ...attributes,
+    ...(multiline ? { rows: "3" } : { type: "password" }),
+  });
+  value.addEventListener("input", () => value.setCustomValidity(secretValueProblem(value.value)));
+  if (value instanceof HTMLInputElement) {
+    value.addEventListener("paste", (event) => {
+      if (/[\r\n]/.test(event.clipboardData?.getData("text") ?? "")) {
+        event.preventDefault();
+        value.setCustomValidity(
+          "This browser cannot mask multiline values. Use a browser with multiline masking support.",
+        );
+        validateFields([value]);
+      }
+    });
+  }
+  const reveal = button(
+    "Show value",
+    () => {
+      const masked = value.classList.toggle("secret-value--masked");
+      if (value instanceof HTMLInputElement) {
+        value.type = masked ? "password" : "text";
+      }
+      reveal.textContent = masked ? "Show value" : "Hide value";
+      reveal.setAttribute("aria-pressed", String(!masked));
+    },
+    { tone: "ghost", size: "sm", "aria-pressed": "false", "aria-controls": id },
+  );
+  return { value, reveal, multiline };
+}
+
 const REPLACEMENT_NOTICE =
   "Replacing a value keeps the Secret ID and bindings. Deploy consuming Agents again to deliver it. CredentialSources keep a separate copy and require an explicit source update. Existing values cannot be read back.";
 
@@ -389,52 +454,10 @@ export function renderSecrets(
       "data-trim": "",
     });
     name.addEventListener("input", () => name.setCustomValidity(namespaceNameProblem(name.value)));
-    // A textarea preserves multiline credential material. Browsers without masking support use
-    // a native password field and explicitly refuse line-break pastes rather than changing them.
-    const multiline = CSS.supports("-webkit-text-security", "disc");
     const valueNoticeId = "secret-value-notice";
-    const value = element(multiline ? "textarea" : "input", {
-      id: "secret-value",
-      required: true,
-      autocomplete: "off",
-      spellcheck: "false",
-      className: "secret-value secret-value--masked",
+    const { value, reveal, multiline } = secretValueControl("secret-value", {
       "aria-describedby": valueNoticeId,
-      "data-secret-value": "",
-      ...(multiline ? { rows: "3" } : { type: "password" }),
     });
-    value.addEventListener("input", () => {
-      let problem = "";
-      if (value.value.includes("\0") || /\p{Cs}/u.test(value.value)) {
-        problem = "Use valid UTF-8 without NUL characters.";
-      } else if (new TextEncoder().encode(value.value).length > 65536) {
-        problem = "Use at most 65,536 UTF-8 bytes.";
-      }
-      value.setCustomValidity(problem);
-    });
-    if (value instanceof HTMLInputElement) {
-      value.addEventListener("paste", (event) => {
-        if (/[\r\n]/.test(event.clipboardData?.getData("text") ?? "")) {
-          event.preventDefault();
-          value.setCustomValidity(
-            "This browser cannot mask multiline values. Use a browser with multiline masking support.",
-          );
-          validateFields([value]);
-        }
-      });
-    }
-    const reveal = button(
-      "Show value",
-      () => {
-        const masked = value.classList.toggle("secret-value--masked");
-        if (value instanceof HTMLInputElement) {
-          value.type = masked ? "password" : "text";
-        }
-        reveal.textContent = masked ? "Show value" : "Hide value";
-        reveal.setAttribute("aria-pressed", String(!masked));
-      },
-      { tone: "ghost", size: "sm", "aria-pressed": "false", "aria-controls": value.id },
-    );
     const valueField = field({
       label: "Value",
       control: value,

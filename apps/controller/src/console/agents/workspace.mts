@@ -23,6 +23,24 @@ interface WorkspaceDraft {
 
 type FileFailure = ReturnType<typeof requestFailure>;
 
+// The API's workspace file rule (normalizeInitialWorkspaceFiles in
+// packages/contracts/src/workspace-setup.ts and the workspace file write route): valid Unicode,
+// no NUL, at most 16 KiB of UTF-8.
+const WORKSPACE_FILE_MAX_BYTES = 16384;
+
+/**
+ * Why the API would refuse `content` for the workspace file `name`, naming the file, or "" when
+ * it would accept it. The Workspace tab and Create Agent's initial workspace files share it
+ * (finding 2341).
+ */
+export function workspaceFileProblem(name: string, content: string) {
+  return content.includes("\0") ||
+    !content.isWellFormed() ||
+    new TextEncoder().encode(content).length > WORKSPACE_FILE_MAX_BYTES
+    ? `Use valid Unicode without NUL characters in ${name}, within 16 KiB of UTF-8 content.`
+    : "";
+}
+
 function fileError(error: FileFailure, writing: boolean) {
   let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
   if (error.status === 403) {
@@ -288,14 +306,9 @@ export function renderWorkspaceFiles(
         return;
       }
       const content = editor.value;
-      if (
-        content.includes("\0") ||
-        !content.isWellFormed() ||
-        new TextEncoder().encode(content).length > 16384
-      ) {
-        editor.setCustomValidity(
-          "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
-        );
+      const problem = workspaceFileProblem(name, content);
+      if (problem) {
+        editor.setCustomValidity(problem);
         // The error goes under the file, without the browser's bubble (UX plan C3).
         validateFields([editor]);
         return;

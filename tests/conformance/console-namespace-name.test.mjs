@@ -11,6 +11,11 @@ import {
   suggestedSecretName,
 } from "../../apps/controller/src/console/agents/secret-picker.mts";
 import {
+  SECRET_VALUE_MAX_BYTES,
+  secretValueProblem,
+} from "../../apps/controller/src/console/secrets.mts";
+import { SecretValue } from "../../packages/contracts/src/api/common.ts";
+import {
   NAME_MAX_CHARACTERS as API_NAME_MAX_CHARACTERS,
   PLAIN_TEXT_PATTERN,
   isName,
@@ -76,4 +81,33 @@ test("suggested Secret names meet the Name rule and keep what the Secret is for"
       }
     }
   }
+});
+
+test("the console refuses exactly the Secret values the API refuses", () => {
+  // Every Create Secret form (the Secrets page and the inline dialogs) shares this check
+  // (finding 2339). The API caps the value at 65,536 characters by schema and 65,536 UTF-8 bytes
+  // in the Secret Driver; the console checks the bytes, which also bound the characters.
+  assert.equal(SecretValue.maxLength, SECRET_VALUE_MAX_BYTES);
+  const pattern = new RegExp(SecretValue.pattern, "u");
+  const apiAccepts = (value) =>
+    value.length >= 1 &&
+    value.length <= SecretValue.maxLength &&
+    pattern.test(value) &&
+    value.isWellFormed() &&
+    Buffer.byteLength(value, "utf8") <= SECRET_VALUE_MAX_BYTES;
+  for (const value of [
+    "token",
+    "  spaced token  ",
+    "line one\nline two\r\n",
+    "nul\0inside",
+    "lone\ud800surrogate",
+    "v".repeat(65_536),
+    "v".repeat(65_537),
+    "\u00e9".repeat(32_768),
+    "\u00e9".repeat(32_769),
+  ]) {
+    assert.equal(secretValueProblem(value) === "", apiAccepts(value), JSON.stringify(value.slice(0, 20)));
+  }
+  assert.equal(secretValueProblem("nul\0inside"), "Use valid UTF-8 without NUL characters.");
+  assert.equal(secretValueProblem("v".repeat(65_537)), "Use at most 65,536 UTF-8 bytes.");
 });

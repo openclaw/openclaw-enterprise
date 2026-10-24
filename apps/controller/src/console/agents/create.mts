@@ -37,6 +37,8 @@ import { type DeviceLogin, createDeviceLogin } from "./device-login.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretMetadata } from "./secret-picker.mjs";
+import { workspaceFileProblem } from "./workspace.mjs";
+import { namespaceNameProblem } from "../namespaces.mjs";
 import { createPresetFields } from "./presets.mjs";
 import { provisioningJob } from "./provisioning-job.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
@@ -154,8 +156,6 @@ type ProvisioningJob = ReturnType<typeof provisioningJob>;
 // so only this one is shown as sent.
 const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
-// The API's Agent name limit, in characters (code points).
-const AGENT_NAME_MAX_CHARACTERS = 200;
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm: (() => void) | null = null;
@@ -813,7 +813,7 @@ function renderAgentForm(
 
   const formId = "create-agent-form";
   // No maxlength: it counts UTF-16 code units, so an emoji would count twice. The API
-  // counts characters (code points), and so does this check.
+  // counts characters (code points), and so does namespaceNameProblem.
   const name = element("input", {
     id: "agent-name",
     name: "name",
@@ -821,12 +821,9 @@ function renderAgentForm(
     "data-trim": "",
     autocomplete: "off",
   });
-  const checkNameLength = () =>
-    name.setCustomValidity(
-      Array.from(name.value.trim()).length > AGENT_NAME_MAX_CHARACTERS
-        ? `Use at most ${AGENT_NAME_MAX_CHARACTERS} characters.`
-        : "",
-    );
+  // The API's Name rule: length and control characters, checked before any write, so a
+  // refused name never leaves a saved Configuration behind (finding 2340).
+  const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
   const dedicatedOption = element("option", { value: "dedicated" }, "Dedicated");
   const embeddedOption = element("option", { value: "embedded" }, "Embedded");
   const mode = element("select", { id: "execution-mode" }, dedicatedOption, embeddedOption);
@@ -1925,7 +1922,7 @@ function renderAgentForm(
       control.setCustomValidity("");
     }
     if (event.target === name) {
-      checkNameLength();
+      checkName();
     }
   });
   form.addEventListener("change", () => {
@@ -2928,8 +2925,13 @@ function renderAgentForm(
   }
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    // A restored draft sets the name without an input event.
-    checkNameLength();
+    // A restored draft sets the name and files without an input event.
+    checkName();
+    // The Workspace tab's check, naming the file; validateFields opens Advanced settings to it
+    // (finding 2341).
+    for (const [filename, input] of workspaceInputs) {
+      input.setCustomValidity(workspaceFileProblem(filename, input.value));
+    }
     if (
       pending ||
       outcomeUnknown ||
