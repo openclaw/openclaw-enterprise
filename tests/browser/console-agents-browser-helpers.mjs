@@ -388,7 +388,7 @@ export async function waitForEnabled(locator, timeoutMs = 10_000) {
   await locator.waitFor({ state: "attached", timeout: timeoutMs });
   await waitForCondition(
     () => locator.isEnabled(),
-    `${locator} to be enabled within ${timeoutMs} ms`,
+    `${locator} stayed disabled for ${timeoutMs} ms`,
     Math.max(1, deadline - Date.now()),
   );
 }
@@ -483,8 +483,19 @@ export async function waitForIdleFetches(page) {
   await page.waitForFunction(() => globalThis.inFlightFetchCount() === 0);
 }
 
-export async function waitForCondition(predicate, description, timeoutMs = 5_000) {
-  await waitUntil(description, predicate, { timeoutMs, intervalMs: 50 });
+// Polls `predicate` until it is truthy; on timeout, `message` alone is the failure.
+export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
+  try {
+    await waitUntil(message, predicate, { timeoutMs, intervalMs: 50 });
+  } catch (error) {
+    if (
+      error instanceof assert.AssertionError &&
+      error.message === `Timed out waiting for ${message}.`
+    ) {
+      assert.fail(message);
+    }
+    throw error;
+  }
 }
 
 export function nativeValues(marker, options = {}) {

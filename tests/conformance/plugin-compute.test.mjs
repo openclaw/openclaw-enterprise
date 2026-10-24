@@ -38,8 +38,8 @@ import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
-import { waitForResult } from "../helpers/wait-for.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
+import { waitForResult } from "../helpers/wait-for.mjs";
 
 const CODEX_LINEAR_NATIVE_ID = "linear@openai-curated-remote";
 const CODEX_LINEAR_REMOTE_ID = "plugin_asdk_app_69a089a326dc8191b32a3f2553f5be2c";
