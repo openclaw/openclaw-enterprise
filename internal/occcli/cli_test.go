@@ -956,6 +956,14 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 			"Harness Sandbox: starting (HARNESS_RESTARTING). The Harness process exited",
 		},
 		{map[string]any{"state": "unknown", "code": "UNAVAILABLE"}, "Harness Sandbox: unknown (UNAVAILABLE)\n\n"},
+		// Only a starting Harness is restarting: any other state keeps the bare code.
+		{
+			map[string]any{"state": "running", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(2)},
+			"Harness Sandbox: running (HARNESS_RESTARTING)\n\n",
+		},
+		// A code is echoed up to OCC's 64-character limit.
+		{map[string]any{"state": "unknown", "code": strings.Repeat("A", 64)}, "Harness Sandbox: unknown (" + strings.Repeat("A", 64) + ")\n\n"},
+		{map[string]any{"state": "unknown", "code": strings.Repeat("A", 65)}, "Harness Sandbox: unknown\n\n"},
 		// Anything but OCC's fixed states and codes is not echoed to the terminal.
 		{map[string]any{"state": "lost\u202e", "code": "x\u001b[2J"}, "Harness Sandbox: unknown\n\n"},
 		{nil, "No resources found."},
@@ -1365,7 +1373,9 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 	}
 }
 
-func TestAgentPolicyFacetMustBeNetworkingBeforeAnyRequest(t *testing.T) {
+// Every agent policy command checks its flags before a request: the facet, and for apply and
+// recommendations the revision ID and expected version.
+func TestAgentPolicyFlagsAreCheckedBeforeAnyRequest(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		requests++
@@ -1378,28 +1388,32 @@ func TestAgentPolicyFacetMustBeNetworkingBeforeAnyRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
-	for _, args := range [][]string{
-		{"agent", "policy", "get", "agt_1", "--facet="},
-		{"agent", "policy", "get", "agt_1", "--facet", "filesystem"},
-		{"agent", "policy", "get", "agt_1", "--facet", "process"},
-		{"agent", "policy", "update", "agt_1", "--facet", "filesystem", "--file", file},
-		{"agent", "policy", "apply", "agt_1", "--facet=", "--revision", "rev_1", "--expected-version", "1"},
-		{"agent", "policy", "editing", "agt_1", "--facet", "filesystem", "--enabled=false"},
-		{"agent", "policy", "recommendations", "agt_1", "--facet", "process", "--revision", "rev_1"},
+	const notNetworking = "--facet must be networking"
+	const emptyFacet = "--facet must name a sandbox policy facet such as networking"
+	const notRevision = `"deploy-1" is not a valid deployment ID: OCC accepts IDs that start with "rev_", not names; run "occ --namespace ns_1 agent revisions AGENT_ID" to find the ID`
+	for _, test := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"agent", "policy", "get", "agt_1", "--facet="}, emptyFacet},
+		{[]string{"agent", "policy", "get", "agt_1", "--facet", "filesystem"}, notNetworking},
+		{[]string{"agent", "policy", "get", "agt_1", "--facet", "process"}, notNetworking},
+		{[]string{"agent", "policy", "update", "agt_1", "--facet", "filesystem", "--file", file}, notNetworking},
+		{[]string{"agent", "policy", "apply", "agt_1", "--facet=", "--revision", "rev_1", "--expected-version", "1"}, emptyFacet},
+		{[]string{"agent", "policy", "editing", "agt_1", "--facet", "filesystem", "--enabled=false"}, notNetworking},
+		{[]string{"agent", "policy", "recommendations", "agt_1", "--facet", "process", "--revision", "rev_1"}, notNetworking},
+		{[]string{"agent", "policy", "apply", "agt_1", "--revision", "rev_1", "--expected-version", "0"}, "--expected-version must be positive"},
+		{[]string{"agent", "policy", "apply", "agt_1", "--revision", "deploy-1", "--expected-version", "1"}, notRevision},
+		{[]string{"agent", "policy", "recommendations", "agt_1", "--revision", "deploy-1"}, notRevision},
 	} {
 		requests = 0
 		command := New(io.Discard, io.Discard)
-		command.SetArgs(append(slices.Clone(connection), args...))
-		err := command.Execute()
-		want := "--facet must be networking"
-		if slices.Contains(args, "--facet=") {
-			want = "--facet must name a sandbox policy facet such as networking"
-		}
-		if err == nil || err.Error() != want {
-			t.Errorf("%v: error = %v, want %q", args, err, want)
+		command.SetArgs(append(slices.Clone(connection), test.args...))
+		if err := command.Execute(); err == nil || err.Error() != test.want {
+			t.Errorf("%v: error = %v, want %q", test.args, err, test.want)
 		}
 		if requests != 0 {
-			t.Errorf("%v: sent %d requests", args, requests)
+			t.Errorf("%v: sent %d requests", test.args, requests)
 		}
 	}
 	requests = 0

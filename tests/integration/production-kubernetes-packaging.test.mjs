@@ -3597,6 +3597,30 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except[0]`]: "10.1.0.0" },
       `${at}.ipBlock.except[0] requires an IPv4 or IPv6 CIDR`,
     ],
+    // The API server requires each except to be a strict subset of cidr (finding 2344): the
+    // same family, a longer prefix and inside the range, partial hex digits and IPv4 tails included.
+    ...[
+      ["10.0.0.0/8", "192.168.0.0/16"],
+      ["10.0.0.0/8", "10.0.0.0/8"],
+      ["10.0.0.0/16", "10.0.0.0/8"],
+      ["10.0.0.0/8", "2001:db8::/32"],
+      ["2001:db8::/32", "10.0.0.0/8"],
+      ["2001:db8::/32", "2001:db9::/48"],
+      ["2001:db8::/31", "2001:dba::/48"],
+      ["2001:db8::/32", "2001:db8::/32"],
+      ["::ffff:10.0.0.0/104", "::ffff:11.0.0.0/112"],
+    ].map(([cidr, except]) => [
+      { [`${peer}.ipBlock.cidr`]: cidr, [`${peer}.ipBlock.except[0]`]: except },
+      `${at}.ipBlock.except[0] must be a strict subset of ${at}.ipBlock.cidr`,
+    ]),
+    [
+      {
+        [`${peer}.ipBlock.cidr`]: "10.0.0.0/8",
+        [`${peer}.ipBlock.except[0]`]: "10.1.0.0/16",
+        [`${peer}.ipBlock.except[1]`]: "11.0.0.0/16",
+      },
+      `${at}.ipBlock.except[1] must be a strict subset of ${at}.ipBlock.cidr`,
+    ],
     [
       { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.excepts[0]`]: "10.1.0.0/16" },
       `${at}.ipBlock has unknown field excepts`,
@@ -3687,6 +3711,22 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8"] } }],
     ],
     [{ [`${peer}.ipBlock.cidr`]: "::/0" }, [{ ipBlock: { cidr: "::/0" } }]],
+    ...[
+      ["10.0.0.0/8", ["10.1.0.0/16", "10.255.255.255/32"]],
+      ["10.1.2.3/8", ["10.200.0.0/16"]],
+      ["2001:db8::/31", ["2001:db9:ffff::/48"]],
+      ["2001:DB8::/32", ["2001:db8:1::/48"]],
+      ["::/0", ["2001:db8::/32"]],
+      ["::ffff:10.0.0.0/104", ["::ffff:10.1.0.0/112"]],
+    ].map(([cidr, except]) => [
+      {
+        [`${peer}.ipBlock.cidr`]: cidr,
+        ...Object.fromEntries(
+          except.map((value, index) => [`${peer}.ipBlock.except[${index}]`, value]),
+        ),
+      },
+      [{ ipBlock: { cidr, except } }],
+    ]),
     [
       { [`${peer}.ipBlock.cidr`]: "2001:db8:1:2:3:4:5:6/128" },
       [{ ipBlock: { cidr: "2001:db8:1:2:3:4:5:6/128" } }],

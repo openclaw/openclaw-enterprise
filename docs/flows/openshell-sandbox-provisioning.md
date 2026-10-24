@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-24
-last_updated_session: authoring-run/5349f11a-ad14-42f1-bef9-5a53b3a632ed
+last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -233,9 +233,11 @@ private `tmp` child under the runtime home.
 `prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
 writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
 UID-fenced foreground deletion and writer Pod termination.
-Preparation requires `userNamespaces: false` and the pinned Gateway's default
-identity, without model credentials, ServiceAccount tokens, capabilities, or direct
-Pod creation.
+Preparation requires `userNamespaces: false`, at most one operator-mode ServiceAccount
+and the pinned Gateway's default identity, without model credentials, ServiceAccount
+tokens, capabilities, or direct Pod creation. `configureAgent` refuses dedicated OpenClaw
+at save and deploy without the first two, and the Installation then offers no dedicated
+OpenClaw mode.
 
 Document delivery is separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
@@ -370,6 +372,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 
 - 2026-10-24 13:29: Consolidate entries through October 14 in the linked history. (authoring-run/5349f11a-ad14-42f1-bef9-5a53b3a632ed - ce21c3b135a94193133b766be66e6a12120adf99)
 

@@ -36,6 +36,42 @@
 {{- end -}}
 {{- end -}}
 
+{{/* A checked CIDR as "<prefix> <address bits>": 32 bits for IPv4, 128 for IPv6. */}}
+{{- define "openclaw.networkPolicy.cidrBits" -}}
+{{- include "openclaw.networkPolicy.cidr" . -}}
+{{- $parts := splitList "/" (toString .value) -}}
+{{- $addr := first $parts -}}
+{{- $bits := "" -}}
+{{- if contains ":" $addr -}}
+{{- $nibbles := dict "0" "0000" "1" "0001" "2" "0010" "3" "0011" "4" "0100" "5" "0101" "6" "0110" "7" "0111" "8" "1000" "9" "1001" "a" "1010" "b" "1011" "c" "1100" "d" "1101" "e" "1110" "f" "1111" -}}
+{{- /* An embedded IPv4 tail stands in for the last two groups. */ -}}
+{{- $tail := regexFind "[0-9]+(?:\\.[0-9]+){3}$" $addr -}}
+{{- $tailBits := "" -}}
+{{- range $octet := ternary (splitList "." $tail) (list) (ne $tail "") -}}
+{{- $tailBits = printf "%s%08b" $tailBits (int $octet) -}}
+{{- end -}}
+{{- $hex := ternary (printf "%s0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") | lower -}}
+{{- $halves := splitList "::" $hex -}}
+{{- $left := list -}}
+{{- if ne (first $halves) "" -}}{{- $left = splitList ":" (first $halves) -}}{{- end -}}
+{{- $right := list -}}
+{{- if and (eq (len $halves) 2) (ne (last $halves) "") -}}{{- $right = splitList ":" (last $halves) -}}{{- end -}}
+{{- $groups := $left -}}
+{{- range until (int (sub 8 (add (len $left) (len $right)))) -}}{{- $groups = append $groups "0" -}}{{- end -}}
+{{- range $group := concat $groups $right -}}
+{{- range $nibble := splitList "" (printf "%s%s" (repeat (int (sub 4 (len $group))) "0") $group) -}}
+{{- $bits = printf "%s%s" $bits (get $nibbles $nibble) -}}
+{{- end -}}
+{{- end -}}
+{{- if $tailBits -}}{{- $bits = printf "%s%s" (substr 0 96 $bits) $tailBits -}}{{- end -}}
+{{- else -}}
+{{- range $octet := splitList "." $addr -}}
+{{- $bits = printf "%s%08b" $bits (int $octet) -}}
+{{- end -}}
+{{- end -}}
+{{- printf "%s %s" (last $parts) $bits -}}
+{{- end -}}
+
 {{/* A namespaceSelector or podSelector in a NetworkPolicy peer from values. */}}
 {{- define "openclaw.networkPolicy.selector" -}}
 {{- $name := .name -}}
@@ -124,12 +160,18 @@
 {{- fail (printf "%s.ipBlock has unknown field %s" $name $field) -}}
 {{- end -}}
 {{- end -}}
-{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "%s.ipBlock.cidr" $name) "value" $block.cidr) -}}
+{{- $cidr := splitList " " (include "openclaw.networkPolicy.cidrBits" (dict "name" (printf "%s.ipBlock.cidr" $name) "value" $block.cidr)) -}}
 {{- if not (or (kindIs "invalid" $block.except) (kindIs "slice" $block.except)) -}}
 {{- fail (printf "%s.ipBlock.except must be a list of CIDRs" $name) -}}
 {{- end -}}
-{{- range $index, $cidr := $block.except -}}
-{{- include "openclaw.networkPolicy.cidr" (dict "name" (printf "%s.ipBlock.except[%d]" $name $index) "value" $cidr) -}}
+{{- $prefix := int (first $cidr) -}}
+{{- range $index, $value := $block.except -}}
+{{- $except := splitList " " (include "openclaw.networkPolicy.cidrBits" (dict "name" (printf "%s.ipBlock.except[%d]" $name $index) "value" $value)) -}}
+{{- /* The API server requires a strict subset: same family, a longer prefix, inside cidr's range.
+An IPv4-mapped IPv6 except under an IPv4 cidr counts as a family mismatch here, on purpose. */ -}}
+{{- if or (ne (len (last $except)) (len (last $cidr))) (le (int (first $except)) $prefix) (ne (substr 0 $prefix (last $except)) (substr 0 $prefix (last $cidr))) -}}
+{{- fail (printf "%s.ipBlock.except[%d] must be a strict subset of %s.ipBlock.cidr: the same IP family, inside its range, with a longer prefix" $name $index $name) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- range $selector := list "namespaceSelector" "podSelector" -}}

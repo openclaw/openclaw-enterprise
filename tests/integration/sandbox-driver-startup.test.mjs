@@ -820,34 +820,60 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     () => driver.configureAgent(configuration, harness("openclaw", "embedded")),
     /supports only dedicated Harness revisions/,
   );
+  assert.throws(
+    () => driver.configureAgent(configuration, harness("other")),
+    /does not support the selected Harness runtime/,
+  );
 });
 
-// Native OpenClaw's private workspace preparation needs userNamespaces: false, and it runs
-// only after a dedicated deploy has stopped its predecessors. Agent save and deploy
-// admission call configureAgent, so they refuse the pair first (finding 2334).
-test("OpenShell refuses dedicated OpenClaw unless user namespaces are off", () => {
+// Native OpenClaw's private workspace preparation needs userNamespaces: false and at most one
+// operator-mode ServiceAccount, and it runs only after a dedicated deploy has stopped its
+// predecessors. Agent save and deploy admission call configureAgent, so they refuse those
+// settings first (findings 2334, 2346).
+test("OpenShell refuses dedicated OpenClaw on settings its workspace preparation refuses", () => {
   const configuration = { agents: { defaults: { model: "openai/gpt-5" } } };
   const harness = (id) => ({ id, version: "1.0.0", mode: "dedicated" });
-  for (const userNamespaces of [undefined, true]) {
+  const userNamespaces =
+    "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.";
+  const accounts =
+    "Dedicated OpenClaw needs at most one ServiceAccount in gateway.operatorWorkspaceResources of the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to remove the others.";
+  const serviceAccount = (name) => ({
+    apiVersion: "v1",
+    kind: "ServiceAccount",
+    metadata: { name },
+  });
+  const role = {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: "Role",
+    metadata: { name: "r" },
+  };
+  for (const [settings, message] of [
+    [(options) => delete options.kubernetes.userNamespaces, userNamespaces],
+    [(options) => (options.kubernetes.userNamespaces = true), userNamespaces],
+    [
+      (options) =>
+        (options.gateway.operatorWorkspaceResources = [serviceAccount("a"), serviceAccount("b")]),
+      accounts,
+    ],
+    // Control: one ServiceAccount beside other resources still prepares.
+    [(options) => (options.gateway.operatorWorkspaceResources = [serviceAccount("a"), role])],
+  ]) {
     const options = sandboxInstallation().drivers.sandbox.configuration;
-    if (userNamespaces === undefined) {
-      delete options.kubernetes.userNamespaces;
-    } else {
-      options.kubernetes.userNamespaces = userNamespaces;
-    }
+    settings(options);
     const driver = openShellDriver(workspaceGatewayClient(), options);
-    assert.throws(
-      () => driver.configureAgent(configuration, harness("openclaw")),
-      (error) => {
-        // workspace-setup-api.test.mjs proves the API's 400 with this message.
-        assert.ok(error instanceof ConfigurationHarnessError);
-        assert.equal(
-          error.message,
-          "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
-        );
-        return true;
-      },
-    );
+    if (message === undefined) {
+      assert.ok(driver.configureAgent(configuration, harness("openclaw")));
+    } else {
+      assert.throws(
+        () => driver.configureAgent(configuration, harness("openclaw")),
+        (error) => {
+          // workspace-setup-api.test.mjs proves the API's 400 with these messages.
+          assert.ok(error instanceof ConfigurationHarnessError);
+          assert.equal(error.message, message);
+          return true;
+        },
+      );
+    }
     // Codex never runs the preparation, so it is still admitted.
     assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
   }
@@ -879,6 +905,9 @@ test("OpenShell pins the Codex sandbox and approval reviewer while preserving ot
     });
     assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
     assert.equal(appServer.sandbox, "read-only");
+    // A disabled Codex plugin entry is enabled: the dedicated Codex Harness runs through it.
+    configuration.plugins.entries.codex.enabled = false;
+    assert.equal(driver.configureAgent(configuration, harness).plugins.entries.codex.enabled, true);
     // Status reads rerun the hook on stored work, so the pin must be idempotent.
     assert.deepEqual(driver.configureAgent(configured, harness), configured);
   }
@@ -1016,9 +1045,18 @@ test("OpenShell admits initial files only for its projected main workspace", () 
         ),
       /agents.entries.*must hold only main/,
     );
+    // A snapshot the hook never projected names the managed workspace, which is not the mount.
+    assert.throws(
+      () => driver.validateWorkspaceSetup(harness, {}),
+      /agents.defaults.workspace.*must be \/sandbox\/custom-workspace/,
+    );
     assert.throws(
       () => driver.validateWorkspaceSetup({ ...harness, mode: "embedded" }, configured),
       /require a dedicated/,
+    );
+    assert.throws(
+      () => driver.validateWorkspaceSetup({ ...harness, id: "other" }, configured),
+      /require a dedicated Codex or OpenClaw Harness/,
     );
   }
 });
