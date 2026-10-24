@@ -2219,7 +2219,7 @@ process.exit(2);
       { NODE_BASE_IMAGE: customNodeBaseImage.replace("node:24-", "node:22-") },
     );
     assert.equal(otherNode.status, 1);
-    assert.match(otherNode.stderr, /NODE_BASE_IMAGE must select an approved Node 24 image/);
+    assertStderrMatch(otherNode.stderr, /NODE_BASE_IMAGE must select an approved Node 24 image/);
 
     // A blank override is a missing input, not a reason to fall back to the default.
     const blank = await runPrepare(
@@ -2227,7 +2227,7 @@ process.exit(2);
       { NODE_BASE_IMAGE: "   " },
     );
     assert.equal(blank.status, 1);
-    assert.match(blank.stderr, /Missing required CI input\(s\): NODE_BASE_IMAGE/);
+    assertStderrMatch(blank.stderr, /Missing required CI input\(s\): NODE_BASE_IMAGE/);
   });
 
   // This command fixture tests preparation ordering only. The real launcher case
@@ -2362,55 +2362,42 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation accepts absent image inputs and refuses a readable admin key before prepared state exists", async (t) => {
+  test("provider-account preparation checks image inputs and admin key mode before prepared state exists", async (t) => {
     const root = await fixture(t);
     const adminKeyPath = join(root, "chatgpt-admin.key");
     const statePath = join(root, "missing-state.json");
     await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
     await chmod(adminKeyPath, 0o600);
+    const prepareProviderAccount = () =>
+      runPrepare(
+        [
+          "--lane",
+          "provider-account",
+          "--file",
+          "tests/integration/service-account-driver-real.test.mjs",
+          "--state",
+          statePath,
+        ],
+        {
+          OCC_TEST_OPENAI_MODEL: "gpt-test",
+          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
+          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
+          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
+          OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
+        },
+      );
 
-    const result = await runPrepare(
-      [
-        "--lane",
-        "provider-account",
-        "--file",
-        "tests/integration/service-account-driver-real.test.mjs",
-        "--state",
-        statePath,
-      ],
-      {
-        OCC_TEST_OPENAI_MODEL: "gpt-test",
-        OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-        OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-        OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
-      },
-    );
-
+    const result = await prepareProviderAccount();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /requires a prior prepareLane/);
+    assertStderrMatch(result.stderr, /requires a prior prepareLane/);
     assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
 
     // The admin key must stay private to the runner's user.
     await chmod(adminKeyPath, 0o644);
-    const readable = await runPrepare(
-      [
-        "--lane",
-        "provider-account",
-        "--file",
-        "tests/integration/service-account-driver-real.test.mjs",
-        "--state",
-        statePath,
-      ],
-      {
-        OCC_TEST_OPENAI_MODEL: "gpt-test",
-        OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-        OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-      },
-    );
+    const readable = await prepareProviderAccount();
     assert.equal(readable.status, 1);
-    assert.match(readable.stderr, /must have mode 0600/);
+    assertStderrMatch(readable.stderr, /ChatGPT admin key must have mode 0600/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   });
 
