@@ -55,3 +55,14 @@ export function jsonLineDestination(records) {
     },
   };
 }
+
+// A `createOccLogger` destination that parses each whole write into `records`, for tests that
+// expect the logger to write exactly one JSON value per write: a chunk with two lines fails.
+export function jsonChunkDestination(records) {
+  return {
+    write(chunk) {
+      records.push(JSON.parse(String(chunk)));
+      return true;
+    },
+  };
+}
