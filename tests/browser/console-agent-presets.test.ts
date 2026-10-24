@@ -1540,6 +1540,7 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     { allow: ["knowledge"] },
     { deny: ["codex"] },
     { enabled: false },
+    { entries: { codex: { enabled: false } } },
     { entries: { codex: { enabled: true }, " CODEX ": { enabled: false } } },
   ]) {
     const fixture = await createConsoleAppFixture(t);
@@ -1568,13 +1569,34 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     await openAdvancedSettings(page);
     const configuration = page.getByLabel("Configuration JSON", { exact: true });
-    await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+    const harness = page.getByLabel("Harness", { exact: true });
+    const beforeSwitch = JSON.parse(await configuration.inputValue());
     const requests = apiRequests(page, fixture.origin);
+    await harness.selectOption("codex");
+    if (policy.entries?.codex.enabled === false) {
+      assert.equal(
+        JSON.parse(await configuration.inputValue()).plugins.entries.codex.enabled,
+        beforeSwitch.plugins.entries.codex.enabled,
+      );
+      // A round trip must not erase the explicit disable and silently enable Codex later.
+      await harness.selectOption("openclaw");
+      assert.equal(
+        JSON.parse(await configuration.inputValue()).plugins.entries.codex.enabled,
+        false,
+      );
+      await harness.selectOption("codex");
+    }
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await page
       .getByRole("alert")
       .filter({ hasText: /Configuration setting plugins\./ })
       .waitFor();
+    if (policy.entries?.codex.enabled === false) {
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "set plugins.entries.codex.enabled to true" })
+        .waitFor();
+    }
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     const blocked = JSON.parse(await configuration.inputValue());
     for (const [key, value] of Object.entries(policy)) {
@@ -1591,6 +1613,7 @@ test("Codex policy conflicts stop Console creation before writes and allow an ex
     blocked.plugins.allow = ["knowledge", "codex"];
     blocked.plugins.deny = [];
     blocked.plugins.enabled = true;
+    blocked.plugins.entries.codex.enabled = true;
     delete blocked.plugins.entries[" CODEX "];
     await configuration.fill(JSON.stringify(blocked));
     const createdResponse = page.waitForResponse(

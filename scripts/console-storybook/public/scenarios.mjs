@@ -3236,6 +3236,26 @@ export const scenarios = {
     ],
     gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },
+  createNativePluginsDisabledEntry: {
+    group: "Pages/Create Agent",
+    name: "Codex explicitly disabled in Configuration",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: {
+      ...nativePlugins,
+      allow: ["knowledge", "openai", "codex"],
+      entries: { ...nativePlugins.entries, codex: { enabled: false } },
+    },
+    actions: nativePluginForm,
+    description:
+      "Selecting Codex preserves its explicit disable. Creation requires an explicit Configuration JSON repair; an absent entry still gets enabled runtime defaults.",
+    steps: [
+      "Inspect plugins.entries.codex.enabled: false, then select Codex. The entry stays disabled and the refusal names the exact Configuration JSON edit.",
+      "Switch to OpenClaw and back to Codex. The explicit disable remains. Try Create Agent: no validation or creation request is sent.",
+      "Set plugins.entries.codex.enabled to true in Configuration JSON, then select Create Agent. The simulated workflow starts provisioning.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
   createStandardOpenclawPreset: {
     group: "Pages/Create Agent",
     name: "Standard OpenClaw preset",

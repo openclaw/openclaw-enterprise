@@ -276,6 +276,7 @@ export const NativePluginsAllowlist = story("createNativePluginsAllowlist");
 export const NativePluginsEmptyAllowlist = story("createNativePluginsEmptyAllowlist");
 export const NativePluginsCodexRoundTrip = story("createNativePluginsCodexRoundTrip");
 export const NativePluginsDenyConflict = story("createNativePluginsDenyConflict");
+export const NativePluginsDisabledEntry = story("createNativePluginsDisabledEntry");
 
 export const CreateStandardOpenclawPreset = {
   ...story("createStandardOpenclawPreset"),

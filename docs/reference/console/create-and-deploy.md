@@ -54,6 +54,9 @@ block direct Secret-backed model and environment projection.
    **Reset template** replaces them.
    Harness switches preserve `plugins.allow` and `plugins.deny`, including
    unrestricted missing/empty allowlists; only Codex’s runtime entry changes.
+   An explicit `plugins.entries.codex.enabled: false` also survives switches.
+   To use Codex, set it to `true` in **Configuration JSON**; creation stays blocked
+   until you resolve the conflict. An absent entry gets enabled runtime defaults.
    If the Codex Preset's `["codex"]` allowlist blocks OpenClaw's OpenAI provider,
    explicitly change it to `["codex", "openai"]` in **Configuration JSON**, or keep
    the policy and choose a compatible Harness/provider. See

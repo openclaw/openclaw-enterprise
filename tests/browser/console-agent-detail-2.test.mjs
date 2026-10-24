@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
@@ -56,6 +55,7 @@ import {
   nativeAdminValues,
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // The Console Browser lane runs the two Agent detail test files in parallel.
 
@@ -2800,8 +2800,7 @@ async function waitForWorkspaceEditors(page, names) {
 }
 
 test("live workspace drafts survive navigation, stay Agent-scoped, and clear on explicit reload or save", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "console-workspace-drafts-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "console-workspace-drafts-");
   // Exercise the real Console, Fastify, and IAM paths with disk-backed file transport.
   // This checks UI navigation and file requests, not a live Agent gateway.
   const fixture = await createConsoleAppFixture(t, {
@@ -3484,8 +3483,7 @@ test("an Agent read answered after deletion was requested leaves the Workspace f
 });
 
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "console-workspace-missing-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
+  const root = await temporaryDirectory(t, "console-workspace-missing-");
   let unavailable = false;
   const fixture = await createConsoleAppFixture(t, {
     publicOrigin: true,

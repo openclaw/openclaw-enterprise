@@ -685,7 +685,7 @@ func TestOpenShellCandidateStartupRejectsBeforeResourceEffects(t *testing.T) {
 				t.Run(mode+"/"+component+"/"+failure, func(t *testing.T) {
 					root := t.TempDir()
 					statePath := filepath.Join(root, "state")
-					for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_SIGN_IN", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"} {
+					for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_SIGN_IN", "OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", developmentImageRegistrySetting} {
 						t.Setenv(key, "")
 					}
 					for key, value := range map[string]string{

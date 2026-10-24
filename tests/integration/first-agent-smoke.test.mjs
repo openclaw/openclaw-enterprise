@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -10,9 +11,16 @@ import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
   assertChatReply,
+  bakeReferences,
   clusterEventLines,
   createApi,
   observeAgentStop,
+  postgresImage,
+  providerImageDockerfile,
+  providerImageTag,
+  publishPostgresImage,
+  runtimeNodeBaseImage,
+  smokeBakeDefinition,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
@@ -450,4 +458,248 @@ test("cluster events print oldest to newest by observed instant, whatever field 
     "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
     "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
   ]);
+});
+
+const bakeInput = {
+  revision: "0123456789abcdef0123456789abcdef01234567",
+  controllerTag: "127.0.0.1:5000/oce-smoke/controller:0123456789abcdef0123456789abcdef01234567",
+  smokeRuntimeTag: "127.0.0.1:5000/oce-smoke/runtime:0123456789abcdef0123456789abcdef01234567",
+  context: "/work/runtime-trust",
+  providerContext: "/work/provider-image",
+  nodeRuntimeBaseImage: `docker.io/library/node:24-bookworm-slim@sha256:${"a".repeat(64)}`,
+  registryAddress: "172.17.0.3:5000",
+  caches: (role) => [`cache-${role}`],
+};
+const pushOutput = (name) =>
+  `type=image,name=172.17.0.3:5000/oce-smoke/${name}:${bakeInput.revision},push=true,registry.insecure=true`;
+
+test("the smoke bake only pushes the controller and runtime images, and loads the provider image", () => {
+  const { target } = smokeBakeDefinition({ ...bakeInput, load: false });
+  assert.deepEqual(target["smoke-controller"].output, [pushOutput("controller")]);
+  assert.deepEqual(target["smoke-runtime"].output, [pushOutput("runtime")]);
+  assert.deepEqual(target["smoke-controller"].labels, {
+    "org.opencontainers.image.revision": bakeInput.revision,
+  });
+  assert.deepEqual(target["smoke-provider"], {
+    context: "/work/provider-image",
+    contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+    args: { NODE_RUNTIME_BASE_IMAGE: bakeInput.nodeRuntimeBaseImage },
+    output: [`type=docker,name=oce-first-agent-smoke-model-provider:${bakeInput.revision}`],
+  });
+  for (const definition of Object.values(target)) {
+    for (const output of definition.output ?? []) {
+      assert.ok(
+        !output.startsWith("type=docker") || definition === target["smoke-provider"],
+        output,
+      );
+    }
+  }
+});
+
+test("the prepared-Git bake still loads both images and builds no provider image", () => {
+  const { target } = smokeBakeDefinition({ ...bakeInput, load: true });
+  assert.deepEqual(target["smoke-controller"].output, [
+    `type=docker,name=${bakeInput.controllerTag}`,
+    pushOutput("controller"),
+  ]);
+  assert.deepEqual(target["smoke-runtime"].output, [
+    `type=docker,name=${bakeInput.smokeRuntimeTag}`,
+    pushOutput("runtime"),
+  ]);
+  assert.equal(target["smoke-provider"], undefined);
+});
+
+test("bake metadata selects both pushed images by registry digest", () => {
+  const digest = (character) => `sha256:${character.repeat(64)}`;
+  const metadata = {
+    "smoke-controller": { "containerimage.digest": digest("1") },
+    "smoke-runtime": { "containerimage.digest": digest("2") },
+    "smoke-provider": { "containerimage.config.digest": digest("3") },
+  };
+  assert.deepEqual(bakeReferences(metadata, bakeInput), [
+    `127.0.0.1:5000/oce-smoke/controller@${digest("1")}`,
+    `127.0.0.1:5000/oce-smoke/runtime@${digest("2")}`,
+  ]);
+  for (const name of ["smoke-controller", "smoke-runtime"]) {
+    const incomplete = structuredClone(metadata);
+    incomplete[name]["containerimage.digest"] = "sha256:short";
+    assert.throws(
+      () => bakeReferences(incomplete, bakeInput),
+      new RegExp(`no containerimage.digest for ${name}`),
+    );
+  }
+  // The provider runs by its per-slot, per-revision name, in either engine image store.
+  assert.equal(
+    providerImageTag(bakeInput.revision),
+    `oce-first-agent-smoke-model-provider:${bakeInput.revision}`,
+  );
+});
+
+test("the provider image is the runtime's pinned Node base with only the runtime's ws package", async () => {
+  const dockerfile = await readFile(
+    new URL("../../deploy/runtime/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    runtimeNodeBaseImage(dockerfile),
+    /^docker\.io\/library\/node:24-[^@]+@sha256:[a-f0-9]{64}$/,
+  );
+  assert.throws(
+    () => runtimeNodeBaseImage("ARG NODE_RUNTIME_BASE_IMAGE=node:24-bookworm-slim\n"),
+    /pins no/,
+  );
+  assert.deepEqual(providerImageDockerfile.trim().split("\n"), [
+    "ARG NODE_RUNTIME_BASE_IMAGE",
+    "FROM ${NODE_RUNTIME_BASE_IMAGE}",
+    "COPY --from=smoke-runtime-base /app/node_modules/ws/ /app/node_modules/ws/",
+    `RUN node -e 'if (typeof require("/app/node_modules/ws").WebSocketServer !== "function") process.exit(1)'`,
+    "USER node",
+  ]);
+  // The stand-in loads ws from that path.
+  const endpoint = await readFile(
+    new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(endpoint, /createRequire\("\/app\/node_modules\/ws\/package\.json"\)\("ws"\)/);
+});
+
+test("the smoke copies Local Setup's PostgreSQL pin, not another image", async () => {
+  const source = await readFile(
+    new URL("../../internal/occdev/openshell_k3d.go", import.meta.url),
+    "utf8",
+  );
+  assert.equal(postgresImage, /developmentPostgres\s*=\s*"([^"]+)"/.exec(source)?.[1]);
+  assert.match(postgresImage, /@sha256:[a-f0-9]{64}$/);
+});
+
+const pinnedPostgresId = `sha256:${"c".repeat(64)}`;
+
+// A fake engine and registry for publishPostgresImage. The registry serves
+// `manifest` under the digest the push reports, unless `servedDigest` differs.
+function postgresCopyFixture({
+  config = pinnedPostgresId,
+  servedDigest,
+  status = 200,
+  driverStatus = '[["Backing Filesystem","extfs"]]',
+} = {}) {
+  const manifest = Buffer.from(
+    JSON.stringify({
+      schemaVersion: 2,
+      mediaType: "application/vnd.docker.distribution.manifest.v2+json",
+      config: { digest: config },
+      layers: [],
+    }),
+  );
+  const digest = servedDigest ?? `sha256:${createHash("sha256").update(manifest).digest("hex")}`;
+  const commands = [];
+  const pulls = [];
+  const fetches = [];
+  return {
+    commands,
+    pulls,
+    fetches,
+    digest,
+    pull: async (image) => {
+      pulls.push(image);
+    },
+    runCommand: async (command, args) => {
+      commands.push([command, ...args]);
+      const joined = args.join(" ");
+      if (joined === "info --format {{json .DriverStatus}}") {
+        return { stdout: `${driverStatus}\n` };
+      }
+      if (joined === `image inspect --format {{.Id}} ${postgresImage}`) {
+        return { stdout: `${pinnedPostgresId}\n` };
+      }
+      if (joined.startsWith("push ")) {
+        return {
+          stdout: `The push refers to repository [127.0.0.1:5000/oce-smoke/postgres]\n18.6: digest: ${digest} size: 3036\n`,
+        };
+      }
+      return { stdout: "" };
+    },
+    fetchRegistry: async (url, init) => {
+      fetches.push({ url, accept: init.headers.accept, redirect: init.redirect });
+      return new Response(manifest, { status });
+    },
+  };
+}
+
+test("the PostgreSQL copy pulls the pin and returns the loopback registry digest", async () => {
+  const fixture = postgresCopyFixture();
+  const reference = await publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture });
+  assert.equal(reference, `127.0.0.1:5000/oce-smoke/postgres@${fixture.digest}`);
+  assert.deepEqual(fixture.pulls, [postgresImage]);
+  assert.deepEqual(fixture.commands, [
+    ["docker", "info", "--format", "{{json .DriverStatus}}"],
+    ["docker", "image", "inspect", "--format", "{{.Id}}", postgresImage],
+    // Tagged by the verified image ID, never by a name that could resolve elsewhere.
+    ["docker", "tag", pinnedPostgresId, "127.0.0.1:5000/oce-smoke/postgres:18.6"],
+    ["docker", "push", "127.0.0.1:5000/oce-smoke/postgres:18.6"],
+  ]);
+  assert.deepEqual(fixture.fetches, [
+    {
+      url: `http://127.0.0.1:5000/v2/oce-smoke/postgres/manifests/${fixture.digest}`,
+      accept:
+        "application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json",
+      redirect: "error",
+    },
+  ]);
+});
+
+test("the PostgreSQL copy refuses a registry manifest that names another image", async () => {
+  const fixture = postgresCopyFixture({ config: `sha256:${"e".repeat(64)}` });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /the registry copy of PostgreSQL is not the pinned image/,
+  );
+});
+
+test("the PostgreSQL copy refuses manifest bytes that do not match the recorded digest", async () => {
+  const fixture = postgresCopyFixture({ servedDigest: `sha256:${"f".repeat(64)}` });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /the registry manifest does not match/,
+  );
+});
+
+test("the PostgreSQL copy needs a loopback registry and touches nothing otherwise", async () => {
+  for (const registry of ["0.0.0.0:5000", "registry.example:5000", "127.0.0.1", "localhost:5000"]) {
+    const fixture = postgresCopyFixture();
+    await assert.rejects(
+      publishPostgresImage({ registry, ...fixture }),
+      /the PostgreSQL copy needs a loopback registry/,
+      registry,
+    );
+    assert.deepEqual([fixture.pulls, fixture.commands, fixture.fetches], [[], [], []], registry);
+  }
+});
+
+test("the PostgreSQL copy refuses a registry that does not serve the pushed manifest", async () => {
+  const fixture = postgresCopyFixture({ status: 404 });
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /registry manifest 127\.0\.0\.1:5000\/oce-smoke\/postgres@sha256:[a-f0-9]{64}: HTTP 404/,
+  );
+});
+
+test("the PostgreSQL copy needs the digest docker push reports", async () => {
+  const fixture = postgresCopyFixture();
+  const runCommand = fixture.runCommand;
+  fixture.runCommand = async (command, args) =>
+    args[0] === "push" ? { stdout: "pushed\n" } : runCommand(command, args);
+  await assert.rejects(
+    publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }),
+    /docker push reported no digest/,
+  );
+  assert.deepEqual(fixture.fetches, []);
+});
+
+test("with the containerd image store PostgreSQL keeps the archive path", async () => {
+  const fixture = postgresCopyFixture({
+    driverStatus: '[["driver-type","io.containerd.snapshotter.v1"]]',
+  });
+  assert.equal(await publishPostgresImage({ registry: "127.0.0.1:5000", ...fixture }), undefined);
+  assert.deepEqual(fixture.pulls, []);
+  assert.deepEqual(fixture.commands, [["docker", "info", "--format", "{{json .DriverStatus}}"]]);
 });

@@ -25,6 +25,7 @@ import {
   productionCollectorValues,
   goToolEnvironment,
 } from "../helpers/production-chart.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 
@@ -453,8 +454,7 @@ test(
   "database routing refuses invalid ports before emitting NetworkPolicies",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "oce-database-port-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-database-port-");
     const valuesFile = join(directory, "ports.yaml");
     for (const port of [5342.5, 65536, 0, -1, "05342", "postgresql", "9223372036854775808"]) {
       await writeFile(valuesFile, `database:\n  port: ${JSON.stringify(port)}\n`);
@@ -483,8 +483,7 @@ test(
   "gateway routing refuses fractional YAML ports before emitting resources",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "oce-routing-ports-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "oce-routing-ports-");
     const valuesFile = join(directory, "ports.yaml");
     const routingValues = {
       ...gatewayRoutingValues,
@@ -968,8 +967,7 @@ test("production native examples satisfy the current Helm, Installation, and PVC
     await import("../../apps/controller/src/composition/installation-config.ts");
   // Operators must replace the trust placeholder with their observed proxy source.
   // A documentation-only address is never a runnable trust default.
-  const directory = await mkdtemp(join(tmpdir(), "occ-production-example-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-production-example-");
   const example = await readFile(new URL("installation.yaml", productionExamples), "utf8");
   assert.match(example, /<actual-proxy-source-cidr>/);
   const installationPath = join(directory, "installation.yaml");
@@ -1067,8 +1065,7 @@ test(
   async (t) => {
     const { loadInstallationConfiguration } =
       await import("../../apps/controller/src/composition/installation-config.ts");
-    const directory = await mkdtemp(join(tmpdir(), "occ-control-hostname-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-control-hostname-");
     const example = loadYaml(
       (await readFile(new URL("installation.yaml", productionExamples), "utf8")).replace(
         "<actual-proxy-source-cidr>",
@@ -2116,8 +2113,7 @@ test(
   "repository credential origin helper reports the rendered broker endpoint",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "broker-origin-helper-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "broker-origin-helper-");
     const valuesFile = join(directory, "values.json");
     await writeFile(
       valuesFile,
@@ -2192,8 +2188,7 @@ test(
   "image upgrade helper preserves the live broker endpoint before rendering Helm",
   tooling,
   async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "broker-upgrade-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "broker-upgrade-");
     const bin = join(directory, "bin");
     await mkdir(bin);
     const liveValues = join(directory, "live-values.yaml");
@@ -5290,8 +5285,7 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
 });
 
 test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-worker-timing-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-worker-timing-");
   const valuesFile = join(directory, "worker.yaml");
   await writeFile(valuesFile, "worker:\n  convergenceTimeoutMs: 1800000\n", { mode: 0o600 });
   const rendered = await render({}, { valuesFiles: [valuesFile] });
@@ -5391,8 +5385,7 @@ test("production peer matchLabels keep the native Kubernetes map contract", tool
   }
   await render({ "api.clients[0].podLabels.empty": "null" });
   await render({ "metrics.scraperNamespaceLabels": "false", "metrics.scraperPodLabels": "false" });
-  const directory = await mkdtemp(join(tmpdir(), "occ-peer-labels-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-peer-labels-");
   const path = join(directory, "values.json");
   const sandboxOptions = Object.fromEntries(
     Object.entries(sandbox).filter(([key]) => !key.includes("ingressPeers")),

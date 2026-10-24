@@ -94,7 +94,7 @@ function harnessPluginPolicyConflict(values: LaunchValues, harnessId: string, pr
     "enabled" in entry &&
     entry.enabled === false
   ) {
-    return `Configuration setting plugins.entries.${pluginId}.enabled must not be false ${requirement}.`;
+    return `Configuration setting plugins.entries.${pluginId}.enabled must not be false ${requirement}. To enable this plugin, open Advanced settings → Configuration JSON and set plugins.entries.${pluginId}.enabled to true.`;
   }
   return "";
 }
@@ -1242,17 +1242,22 @@ function renderAgentForm(
       }
     }
     values.models = { ...values.models, providers };
+    const codex = values.plugins?.entries?.codex;
+    const codexDisabled =
+      codex !== null && typeof codex === "object" && "enabled" in codex && codex.enabled === false;
     if (next.plugins) {
+      const runtimeEntry = {
+        ...next.plugins.entries.codex,
+        ...(codexDisabled ? { enabled: false } : {}),
+      };
       values.plugins = {
         ...values.plugins,
         entries: {
           ...values.plugins?.entries,
-          codex: resetTransport
-            ? next.plugins.entries.codex
-            : (values.plugins?.entries?.codex ?? next.plugins.entries.codex),
+          codex: resetTransport ? runtimeEntry : (codex ?? runtimeEntry),
         },
       };
-    } else if (values.plugins?.entries?.codex) {
+    } else if (values.plugins?.entries?.codex && !codexDisabled) {
       delete values.plugins.entries.codex;
     }
     configuration.value = JSON.stringify(values, null, 2);

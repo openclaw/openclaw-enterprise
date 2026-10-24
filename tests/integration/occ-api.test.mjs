@@ -7835,8 +7835,10 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
   );
 });
 
-test("SSH Compute refuses at Agent save and deploy a roster whose main Agent cannot read initial workspace files", async () => {
-  // Finding 2285: only the host refused these, at deployment, which retried until it failed.
+test("SSH Compute refuses at Agent save and deploy a roster or workspace whose main Agent cannot read initial workspace files", async () => {
+  // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
+  // failed. The host accepts only a path derived from each Agent's id, which a Configuration
+  // cannot name, so any explicit workspace is refused.
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },
@@ -7864,17 +7866,29 @@ test("SSH Compute refuses at Agent save and deploy a roster whose main Agent can
     });
   const roster =
     "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
+  const workspace = (setting) =>
+    `Configuration setting ${setting} must be unset for initial workspace files on SSH Compute: the host chooses the workspace under the Agent's own directory.`;
+  // Kubernetes Compute accepts this managed path; the SSH host never does.
+  const managed = "/home/node/.openclaw/workspace";
+  // Keep the model selection, or save treats the Configuration as a draft and checks nothing.
+  const defaults = { ...values.agents.defaults, workspace: managed };
   // (Configuration save itself refuses a null main entry.)
-  for (const agents of [
-    { entries: {} },
-    { ownership: "explicit", entries: { main: {}, helper: {} } },
+  for (const [agents, message] of [
+    [{ entries: {} }, roster],
+    [{ ownership: "explicit", entries: { main: {}, helper: {} } }, roster],
+    [{ defaults }, workspace("agents.defaults.workspace")],
+    // The main entry's workspace wins over the defaults, so the refusal names it.
+    [
+      { defaults, entries: { Main: { workspace: managed } } },
+      workspace("agents.entries.Main.workspace"),
+    ],
   ]) {
     const configuration = await createConfiguration(controller, namespace.id, withAgents(agents));
     const refused = await create("Unreadable setup", configuration.id, {
       initialWorkspaceFiles: files,
     });
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
-    assert.equal(refused.body.error.message, roster);
+    assert.equal(refused.body.error.message, message);
     // Without initial workspace files the same Configuration saves.
     const plain = await create(`Plain ${configuration.id}`, configuration.id);
     assert.equal(plain.status, 201, JSON.stringify(plain.body));
@@ -7899,6 +7913,16 @@ test("SSH Compute refuses at Agent save and deploy a roster whose main Agent can
   const deployed = await controller.request("POST", `${path}/deploy`);
   assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
   assert.equal(deployed.body.error.message, roster);
+  // A workspace added after save refuses the deploy too.
+  const moved = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+    { body: { values: withAgents({ entries: { Main: { workspace: managed } } }) } },
+  );
+  assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  const redeployed = await controller.request("POST", `${path}/deploy`);
+  assert.equal(redeployed.status, 400, JSON.stringify(redeployed.body));
+  assert.equal(redeployed.body.error.message, workspace("agents.entries.Main.workspace"));
   assert.deepEqual((await controller.request("GET", `${path}/revisions`)).data, []);
 });
 

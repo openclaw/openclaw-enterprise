@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
@@ -36,6 +35,7 @@ import {
   modelAtCapacityOutcome,
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -200,8 +200,7 @@ async function gatewayTurnWithFakeKubectl(
   atCapacity,
   failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
 ) {
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const calls = join(directory, "calls");
   await writeFile(calls, "");
   await writeFile(
@@ -598,8 +597,7 @@ test("a Namespace listing past its deadline keeps the conditions it read", async
 // read and then the timeout. The stand-in kubectl on PATH runs through the real client, so the
 // stalled read is a real child process the deadline kills.
 test("a Namespace listing stopped at its deadline reports the timeout alone", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
   const namespaceJson = JSON.stringify({
     spec: { finalizers: ["kubernetes"] },
     status: {
@@ -1238,8 +1236,7 @@ test(
     // The first test's abandoned cleanup arms the exit. The second times out mid-setup; its setup
     // then acquires a resource, waits past the grace for it, and registers its release. The exit
     // must wait for that release, and the setup must not go on to its second acquisition.
-    const directory = await mkdtemp(join(tmpdir(), "occ-teardown-acquisitions-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-teardown-acquisitions-");
     const first = join(directory, "first-resource");
     const second = join(directory, "second-resource");
     const exited = await runFailingTestScript(
@@ -1523,8 +1520,7 @@ test(
     // under a running worker, and skip the worker stop once the delete failed. Each file runs with
     // the helper replaced by a stand-in; a test that hands arrangeProductionTopology its own
     // node:test context records the delete first, and its file never exits.
-    const directory = await mkdtemp(join(tmpdir(), "occ-topology-teardown-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-topology-teardown-");
     const helper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url);
     const exportList = /^export \{([^}]+)\};$/m.exec(await readFile(helper, "utf8"));
     assert.ok(exportList, "the topology helper ends with one export { ... } list");
@@ -1618,8 +1614,7 @@ test(
   async (t) => {
     // A fake kubectl that records its pid and then stalls for 30 s, like a read on a stalled API
     // server (finding 1557). No cluster is involved.
-    const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "occ-fake-kubectl-");
     const started = join(directory, "started");
     await writeCommand(directory, "kubectl", `echo "$$" >> '${started}'\nexec sleep 30\n`);
     prependPath(t, directory);

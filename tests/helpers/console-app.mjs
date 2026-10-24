@@ -25,6 +25,7 @@ import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
 import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
+import { temporaryDirectory } from "./temporary-directory.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -395,8 +396,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   ) {
     // Native value validation (Preset seeding, inline credential checks) needs the
     // real storage Driver; the in-memory test Driver accepts any values.
-    const root = await mkdtemp(join(tmpdir(), "occ-console-configuration-"));
-    t.after(() => rm(root, { recursive: true, force: true }));
+    const root = await temporaryDirectory(t, "occ-console-configuration-");
     configurationDriver = new FilesystemConfigurationDriver(root);
   }
   let controller;

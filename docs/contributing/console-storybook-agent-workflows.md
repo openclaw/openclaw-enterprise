@@ -47,6 +47,10 @@ Explicitly change `plugins.allow` from `["codex"]` to `["codex", "openai"]` and
 submit again. **Native Plugins Deny Conflict**
 refuses Codex creation until the operator removes its denial. Edit Configuration
 JSON explicitly; selecting a Harness does not grant permission.
+**Native Plugins Disabled Entry** preserves `plugins.entries.codex.enabled: false`
+through Harness switches. Try creation, then set that field to `true` in
+**Configuration JSON** and submit again. An absent Codex entry still gets the
+normal enabled runtime defaults.
 
 In **Enter another model ID**, switch to **Choose a model from the list** and
 back: listed models survive both switches, focus moves to the active input, and
