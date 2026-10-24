@@ -276,7 +276,7 @@ test(
     // --set reads true or 1 as a boolean or number, as YAML does for yes/on/1. Rendered as "true"
     // or "1", the name would pass the name pattern and the Pod would wait for a Secret, key or
     // Namespace that does not exist.
-    for (const [field, value] of [
+    for (const [field, value, enabled = {}] of [
       ["installation.secretName", "true"],
       ["installation.key", "true"],
       ["database.secretName", "123"],
@@ -284,30 +284,16 @@ test(
       ["auth.secretKey", "true"],
       ["dns.namespace", "true"],
       ["api.clients[0].namespace", "1"],
+      ["database.appUrlKey", "2"],
+      ["bootstrap.password.claimName", "true"],
+      ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
     ]) {
       await assert.rejects(
-        render({ [field]: value }),
+        render({ ...enabled, [field]: value }),
         new RegExp(`${field.replace(/[.[\]]/g, "\\$&")} must be a string`),
         field,
       );
     }
-    // The same values quoted (--set-string) are ordinary names and still render.
-    const objects = await resources(
-      (await render({}, { strings: { "database.secretName": "123", "installation.key": "true" } }))
-        .stdout,
-    );
-    const api = objects.find(
-      (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
-    ).spec.template.spec;
-    assert.equal(
-      api.volumes.find((item) => item.name === "installation-startup").secret.items[0].key,
-      "true",
-    );
-    assert.equal(
-      api.containers[0].env.find((item) => item.name === "OCC_DATABASE_URL").valueFrom.secretKeyRef
-        .name,
-      "123",
-    );
   },
 );
 

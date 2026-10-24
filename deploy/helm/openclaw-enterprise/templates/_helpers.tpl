@@ -340,7 +340,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
 {{- /* Kubernetes DNS-subdomain object names, as in prepare-bootstrap-volume: at most 253 characters total. */ -}}
-{{- $claimName := toString .Values.bootstrap.password.claimName -}}
+{{- include "openclaw.requireString" (dict "label" "bootstrap.password.claimName" "value" .Values.bootstrap.password.claimName) -}}
+{{- $claimName := .Values.bootstrap.password.claimName -}}
 {{- if or (gt (len $claimName) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $claimName)) -}}
 {{- fail "bootstrap.password.claimName must be a DNS subdomain of at most 253 characters" -}}
 {{- end -}}
@@ -422,9 +423,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if and .Values.controlPlane.installationChecksum (not (regexMatch "^[a-f0-9]{64}$" .Values.controlPlane.installationChecksum)) -}}{{- fail "controlPlane.installationChecksum must be an empty string or a lowercase SHA-256 digest" -}}{{- end -}}
 {{- range $label, $key := dict "database.appUrlKey" .Values.database.appUrlKey "database.migrationUrlKey" .Values.database.migrationUrlKey -}}
-{{- if or (eq (toString $key) ".") (hasPrefix ".." (toString $key)) (gt (len (toString $key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $key))) -}}
-{{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" $label) -}}
-{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
 {{- end -}}
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
@@ -655,6 +654,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $routing.envoyNamespace -}}{{- fail "gatewayRouting.envoyNamespace must identify the existing Envoy Gateway controller namespace" -}}{{- end -}}
 {{- /* The Compute driver (isKubernetesNamespaceName) refuses anything that is not a DNS label of at most 63 characters, as Kubernetes does for a Namespace name. */ -}}
+{{- include "openclaw.requireString" (dict "label" "gatewayRouting.envoyNamespace" "value" $routing.envoyNamespace) -}}
 {{- if or (gt (len (toString $routing.envoyNamespace)) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" (toString $routing.envoyNamespace))) -}}
 {{- fail "gatewayRouting.envoyNamespace must be a Kubernetes namespace name (a DNS label of at most 63 characters)" -}}
 {{- end -}}

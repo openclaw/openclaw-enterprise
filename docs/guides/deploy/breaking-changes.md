@@ -20,15 +20,15 @@ real Installation.
 ## 2026-10-24: chart refuses unquoted numeric or boolean names
 
 **What breaks.** `helm install` and `helm upgrade` refuse a Secret,
-ConfigMap or Secret-key name, or the `dns.namespace` or
-`api.clients[].namespace` value, that YAML or `--set` reads as a number or
+ConfigMap, Secret-key or PersistentVolumeClaim name, or a `dns.namespace`,
+`api.clients[].namespace` or `gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
 boolean. Earlier charts rendered `secretName: 2024` as `"2024"` and
 `secretName: yes` as `"true"`.
 
-**Who is affected.** Values files with an unquoted all-digit name, or a name
-spelled `yes`, `no`, `on`, `off`, `true` or `false`.
+**Who is affected.** Values files with an unquoted name that YAML reads as a
+number or boolean, for example `2024`, `1e3`, `yes`, `on` or `false`.
 
-**How to tell.** The render fails with `<value> must be a string: quote a value
+**How to tell.** The render fails with `<field> must be a string: quote a value
 YAML reads as a number or boolean, or pass it with --set-string`.
 
 **Steps.** Quote the value in the values file, or pass it with
