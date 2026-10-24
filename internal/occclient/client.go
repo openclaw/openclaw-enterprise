@@ -193,13 +193,7 @@ func (client *Client) DeleteServiceAccount(namespaceID, serviceAccountID string,
 		}
 		return nil, nil
 	case http.StatusOK:
-		var envelope responseEnvelope
-		var data any
-		if json.Unmarshal(responseBody, &envelope) != nil || len(envelope.Data) == 0 ||
-			len(envelope.Meta) == 0 || json.Unmarshal(envelope.Data, &data) != nil {
-			return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)
-		}
-		return data, nil
+		return decodeResponseData(status, responseBody)
 	default:
 		if status >= http.StatusOK && status < http.StatusMultipleChoices {
 			return nil, fmt.Errorf("OCC returned an unexpected response (HTTP %d)", status)
@@ -331,6 +325,13 @@ func (client *Client) ListRepositoryOptions(namespaceID string) (any, error) {
 // GetAgent fetches an Agent.
 func (client *Client) GetAgent(namespaceID, agentID string) (any, error) {
 	return client.get("namespaces", namespaceID, "agents", agentID)
+}
+
+// GetAgentCallerPermissions reads the caller's advisory permission summary for
+// one Agent (update, deploy, operate, delete). It does not authorize a later
+// request; the CLI uses it only to choose advice.
+func (client *Client) GetAgentCallerPermissions(namespaceID, agentID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "permissions")
 }
 
 // UpdateAgent updates an Agent from a JSON document.

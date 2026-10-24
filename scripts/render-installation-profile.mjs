@@ -11,6 +11,7 @@ import {
   isKubernetesNamespaceName,
   isKubernetesResourceName,
 } from "../apps/controller/src/drivers/compute/kubernetes/resource-name.ts";
+import { modelEgressWarning } from "../apps/controller/src/drivers/compute/kubernetes/model-egress.ts";
 
 import {
   normalizeOpenAiBaseUrl,
@@ -19,6 +20,10 @@ import {
 } from "../apps/controller/src/drivers/openai-endpoint.ts";
 import { isBackendId, isName, NAME_RULE } from "../packages/contracts/src/api/plain-text.ts";
 import { imageReferenceProblem } from "../packages/occ/src/image-reference.ts";
+import {
+  preparedRepositoryBackend,
+  preparedRepositoryInstallation,
+} from "./lib/prepared-repository-installation.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -311,6 +316,11 @@ function codexModelBaseUrl(runtime, diagnostics) {
       openAiBaseUrlSpellingMessage(field, value) ??
         `${field} requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment.`,
     );
+  }
+  // Compute startup warns too: an operator's own NetworkPolicy can admit it (finding 2284).
+  const blocked = url === undefined ? undefined : modelEgressWarning(field, url);
+  if (blocked !== undefined) {
+    diagnostics.warnings.push(blocked);
   }
   return url ?? value;
 }
@@ -1217,6 +1227,8 @@ function buildInput(rawInput, diagnostics) {
     "repository",
     [
       "enabled",
+      "authority",
+      "preparedCustodySecretName",
       "image",
       "backendId",
       "registryConfigMapName",
@@ -1375,10 +1387,12 @@ function dedicatedSecrets(values, releaseName, namespace, diagnostics) {
       ]),
     ...(repository.enabled
       ? [
-          ...["serviceConfigSecretName", "appKeySecretName", "tlsSecretName"].map((key) => [
-            `repository.${key}`,
-            repository[key],
-          ]),
+          ...[
+            "serviceConfigSecretName",
+            "appKeySecretName",
+            "preparedCustodySecretName",
+            "tlsSecretName",
+          ].map((key) => [`repository.${key}`, repository[key]]),
           ["repository.publicCaSecretName", repository.publicCaSecretName, "ca"],
         ]
       : []),
@@ -2063,9 +2077,20 @@ function buildRendered(profile, parsed, diagnostics) {
   }
 
   if (repositoryEnabled) {
-    const repoDriverId = "repository-credentials";
+    if (repository.authority !== "prepared-git") {
+      diagnostics.errors.push(
+        "repository.authority must explicitly select prepared-git. The GitHub App signing gateway is retired; stop admissions and drain accepted work on its original owner before switching to worker Token Service custody. Do not transfer keys or replay uncertain work.",
+      );
+    }
     values.repositoryCredentials = {
       enabled: true,
+      authority: "prepared-git",
+      preparedCustodySecretName: asString(
+        repository,
+        ["repository", "preparedCustodySecretName"],
+        diagnostics,
+        resourceNameRule,
+      ),
       image: asString(repository, ["repository", "image"], diagnostics, {
         pattern: digestImage,
         validate: pullableImageReference,
@@ -2116,24 +2141,10 @@ function buildRendered(profile, parsed, diagnostics) {
         description: "an IPv4 CIDR",
       }),
     };
-    installation.backend.push({
-      id: values.repositoryCredentials.backendId,
-      type: "github",
-      configuration: {
-        registryPath: "/etc/openclaw/repository-registry/registry.json",
-      },
-      drivers: {
-        repo: repoDriverId,
-      },
-    });
-    installation.drivers.repo = {
-      id: repoDriverId,
-      configuration: {
-        controlSocket: "/run/openclaw/repository-control/private/control.sock",
-        sessionDurationSeconds: 86_400,
-        publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-      },
-    };
+    installation.backend.push(
+      preparedRepositoryBackend({ backendId: values.repositoryCredentials.backendId }),
+    );
+    installation.repository = preparedRepositoryInstallation({ sessionDurationSeconds: 86_400 });
     installation.drivers.compute.configuration.network.repositoryCredentials = {
       namespace,
       podLabels: {

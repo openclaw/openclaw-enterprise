@@ -54,8 +54,11 @@ unchanged or authority returns while removal retries. A revision with
 [Gateway outbound access](gateway-outbound.md) must close both routes before its
 terminal result is recorded. Removing a NetworkPolicy alone does not guarantee
 existing connections close. An admitted GET may drain before Harness termination;
-that Harness cannot start new requests afterward. A new authorized revision is
-required to restore access or select a replacement peer. Apply the
+that Harness cannot start new requests afterward. Deploy a new version
+to select a replacement peer. If the installation selects protected Credential Proxy while this
+revision is active, its authorized reconciliation closes the admitted reader access and
+observes the Harness stopped before reporting the old release failed. Incomplete observations
+keep withdrawal pending, even beyond the deployment convergence deadline. Apply the
 database migration before starting a controller that writes the new admission
 fact, and complete the rollout before admitting versions with that controller.
 

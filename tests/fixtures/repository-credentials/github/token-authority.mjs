@@ -7,6 +7,8 @@ export function createTokenAuthority({
   publicKey,
   lifetimeMs,
   repositoryId = fixtureRepositoryId,
+  additionalPermissions = [],
+  installationAccess = false,
 }) {
   const tokens = new Map();
   const issuesOfTokens = [];
@@ -47,10 +49,15 @@ export function createTokenAuthority({
     assert.ok(claims.iat <= clock.wallNow() / 1000);
     assert.ok(claims.exp > clock.wallNow() / 1000);
     assert.ok(claims.exp - claims.iat <= 600);
-    assert.deepEqual(body.repository_ids.map(String), [String(repositoryId)]);
-    const permissions = body.permissions;
+    const installation = installationAccess && Object.keys(body).length === 0;
+    if (!installation) {
+      assert.deepEqual(body.repository_ids.map(String), [String(repositoryId)]);
+    }
+    const permissions = installation ? { metadata: "read", contents: "write" } : body.permissions;
     const acceptedPermissions = [
+      ...additionalPermissions,
       { metadata: "read" },
+      { metadata: "read", contents: "write" },
       {
         metadata: "read",
         contents: "read",
@@ -100,7 +107,7 @@ export function createTokenAuthority({
       jwtDigest: createHash("sha256").update(jwt).digest("hex"),
       claims,
       permissions: { ...permissions },
-      repositoryIds: [...body.repository_ids],
+      repositoryIds: installation ? "installation" : [...body.repository_ids],
       expires,
     });
     return { token, expires, permissions };

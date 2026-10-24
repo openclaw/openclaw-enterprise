@@ -321,27 +321,38 @@ test("Live serving shows a lost Sandbox and its next step without moving the pag
     await page.route(deploymentRecordUrl(fixture, namespace.id, agent.id, revision.id), (route) =>
       route.fulfill(deploymentStatusResponse(revision, { status: "succeeded" })),
     );
+    await trackSettledFetches(page);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Lost Sandbox" }).waitFor();
-    await page.waitForLoadState("networkidle");
-    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent.
+    await waitForIdleFetches(page);
+    // The Agents list reads no Sandbox: a list costs no Sandbox Driver call per Agent. A read it
+    // started later would still count against the one read per page checked below.
     assert.deepEqual(harnessReads, []);
-    // The Sandbox read lands after the page shows, as on a gateway that takes a moment.
-    await page.route(`${fixture.origin}/namespaces/**/harness-status`, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      if (statusFailure) {
-        await route.fulfill({
-          status: 503,
-          json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
-        });
-        return;
-      }
-      await route.fallback().catch(() => {});
-    });
+    // The Sandbox read lands after the page shows, as on a gateway that takes a moment: it is
+    // held until the page shows Live serving's note waiting for it.
+    const sandboxRead = await holdRequests(
+      t,
+      page,
+      `${fixture.origin}/namespaces/**/harness-status`,
+      {
+        fulfill: statusFailure
+          ? {
+              status: 503,
+              json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } },
+            }
+          : null,
+      },
+    );
     await page.addInitScript(recordLayoutShifts);
-    await trackSettledFetches(page);
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+    await liveServing(page).locator(".stat-help", { hasText: "Checking Sandbox…" }).waitFor();
+    await sandboxRead.requested;
+    await nextFrames(page);
+    sandboxRead.release();
+    // The answer renders before any click below, which would excuse a shift it causes.
+    await waitForSettledFetches(page, new URL(harnessReads[0]).pathname, 1);
+    await nextFrames(page);
     await expectDeploymentOutcome(page, "Completed");
     return { page, harnessReads };
   }

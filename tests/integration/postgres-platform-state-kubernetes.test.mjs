@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import test from "node:test";
+import { describe, test } from "node:test";
 import { grantAgentSecretOperate } from "../helpers/postgres-harness-auth.mjs";
 import {
   adminEmail,
   admitted,
+  caseDatabasesAvailable,
   cleanupKubernetesNamespaces,
   createConfiguration,
   createKubernetesConfiguredAgent as createConfiguredAgent,
   createKubernetesHarnessAuth,
-  databaseUrl,
   defaultAgentConfigurationValues,
   grantTenantAccess,
   pollUntil,
+  prepareCaseDatabase,
   request,
   requiresPostgresAndKubernetesConfiguration,
   startKubernetesController,
@@ -35,12 +36,24 @@ const revisionSummary = (revision) => ({
   createdAt: revision.createdAt,
 });
 
-test(
+// Each case owns a database (prepareCaseDatabase), so its own Installation, and its own scoped
+// controller identity, platform namespace, ClusterRoles and binding (named from a random hash).
+// Its tenant namespaces are named from random Namespace IDs; it deletes the ones it creates,
+// and the one its bootstrap default Namespace gets stays until the lane deletes the cluster.
+// Its API and worker connect only to its database, so neither claims another case's work,
+// and every count and row a case asserts is its own. Nothing cluster-scoped is shared beyond
+// what the lane's other files already use at the same time, so under the CI runner the cases
+// run two at a time (the describe at the end of this file).
+const ownDatabase = { lane: "k3d-fixture-state", testFile: import.meta.url };
+const cases = [];
+const stateCase = (...definition) => cases.push(definition);
+
+stateCase(
   "real OCC subprocesses retain Installation, Namespace, Agent, IAM, audit, and work after restart",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
 
     const first = await startKubernetesController(context);
@@ -151,12 +164,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "real OCC creates concurrent Namespace Agents and durably associates revisions with their owner",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     const process = await startKubernetesController(context);
 
@@ -335,6 +348,7 @@ test(
       },
       harness: revision.harness,
       compute: revision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(persistedRevision.rows[0].active_revision_id, revision.id);
     assert.equal(activeAgent.activeRevisionId, revision.id);
@@ -372,12 +386,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "independent PostgreSQL API and worker provision isolated Namespaces, activate admitted revisions, and tombstone deletion",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     const api = await startKubernetesController(context);
 
@@ -518,12 +532,12 @@ test(
   },
 );
 
-test(
+stateCase(
   "PostgreSQL API and worker preserve immutable deployments, stable identities, and tenant isolation",
   requiresPostgresAndKubernetesConfiguration,
   async (context) => {
     const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: databaseUrl });
+    const pool = new Pool({ connectionString: await prepareCaseDatabase(context, ownDatabase) });
     context.after(() => pool.end());
     let api = await startKubernetesController(context);
 
@@ -812,6 +826,7 @@ test(
       },
       harness: firstRevision.harness,
       compute: firstRevision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.deepEqual(persistedRevisions.rows[1].admitted_spec, {
       configuration_id: secondRevision.configurationId,
@@ -825,6 +840,7 @@ test(
       },
       harness: secondRevision.harness,
       compute: secondRevision.compute,
+      execution_admission: { version: 2, mode: "unprotected" },
     });
     assert.equal(
       persistedRevisions.rows[0].service_principal_id,
@@ -910,5 +926,15 @@ test(
         resource_id === secondRevision.id && action === "openclaw.agents.lifecycle.activate",
     );
     assert.equal(secondActivation.details.previousRevisionId, firstRevision.id);
+  },
+);
+
+describe(
+  "PostgreSQL platform state on live Kubernetes",
+  { concurrency: caseDatabasesAvailable ? 2 : 1 },
+  () => {
+    for (const definition of cases) {
+      test(...definition);
+    }
   },
 );

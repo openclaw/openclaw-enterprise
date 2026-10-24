@@ -157,6 +157,7 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_HELM_CHART`,
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
+To test a candidate release, [select its OpenShell images by digest](local-openshell-images.md).
 
 For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
 

@@ -10,8 +10,10 @@ Enter to open. Use the keyboard, not the mouse.
    Focus moves between tabs and wraps at either end, but no tab opens and the
    address keeps its `tab=`.
 3. Press End, then Enter. **Access** opens, the address shows
-   `tab=access`, and the strip marks it selected.
-4. Go Back. **Configuration** is selected again and focus moves to it.
+   `tab=access`, and the strip marks it selected. To open **Workspace files**
+   from Access, press Left twice, then Enter; the address shows `tab=workspace`.
+4. Go Back once for each tab you opened. **Configuration** is selected again
+   and focus moves to it.
 5. Press End, then Tab and Shift+Tab. Focus returns to the selected tab, not
    the one the arrows last reached.
 6. Narrow the frame to phone width. The strip scrolls sideways. Its right edge

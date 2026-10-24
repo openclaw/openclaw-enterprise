@@ -471,12 +471,12 @@ export function renderSecrets(
     current.body.append(form);
     current.actions.append(submit);
     (replacing ? value : name).focus();
-    let unknown = false;
+    let canSubmit = true;
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (
         current.pending ||
-        unknown ||
+        !canSubmit ||
         !isOpen(current) ||
         !validateFields(replacing ? [value] : [name, value])
       ) {
@@ -529,37 +529,45 @@ export function renderSecrets(
           return;
         }
         const error = requestFailure(cause);
-        unknown = error.status === undefined || ![400, 403, 404, 409, 429].includes(error.status);
+        const { status, code } = error;
+        // A name conflict can be corrected here; a changed Secret or Namespace needs a fresh read.
+        const nameConflict = !replacing && status === 409 && code === "RESOURCE_CONFLICT";
+        canSubmit = status === 400 || status === 429 || nameConflict;
+        const unknown = !canSubmit && status !== 403 && status !== 404 && status !== 409;
         value.value = "";
         let description = "The value was not saved. Check the input and enter it again.";
         if (unknown) {
           description = replacing
             ? "Outcome unknown. The value may have changed and cannot be read back. Close this dialog and verify credential use before deciding to submit a new replacement."
             : "Outcome unknown. The Secret may have been created. Close this dialog and Refresh the list before deciding to create another.";
-        } else if (error.status === 403) {
+        } else if (status === 403) {
           description =
             "Your access does not include this Secret operation. Ask an administrator for access.";
-        } else if (error.status === 409) {
-          description = replacing
-            ? "This Secret cannot be replaced in its current state. Close and Refresh before trying again."
-            : "The name may already be in use, or the Namespace is not ready. Check the list and choose a unique name.";
-        } else if (error.status === 404) {
+        } else if (nameConflict) {
+          description =
+            "The name may already be in use. Check the list, choose a unique name, and enter the value again.";
+        } else if (status === 409) {
+          description =
+            code === "NAMESPACE_NOT_READY"
+              ? "This Namespace is not ready for Secret changes. Close and Refresh to check its current state."
+              : "The Secret cannot be saved in its current state. Close and Refresh before trying again.";
+        } else if (status === 404) {
           description =
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
         }
         showError(current, error, description, unknown ? "warning" : "danger");
-        submit.disabled = unknown || error.status === 403 || error.status === 404;
+        submit.disabled = !canSubmit;
         submit.textContent = replacing ? "Replace value" : "Create Secret";
-        name.disabled = unknown;
-        value.disabled = unknown;
-        reveal.disabled = unknown;
-        if (!unknown) {
-          value.focus();
+        name.disabled = !canSubmit;
+        value.disabled = !canSubmit;
+        reveal.disabled = !canSubmit;
+        if (canSubmit) {
+          (nameConflict ? name : value).focus();
         }
       } finally {
         current.pending = false;
         current.close.disabled = false;
-        if (isOpen(current) && document.activeElement === document.body) {
+        if (isOpen(current) && (!canSubmit || document.activeElement === document.body)) {
           current.close.focus();
         }
       }

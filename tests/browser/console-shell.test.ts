@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 import { fileBrowser, login, newPage, settledView } from "./console-agents-browser-helpers.mjs";
 
 // Every test opens its own context in one Chromium per file.
@@ -44,6 +46,28 @@ async function visibleBox(locator: Locator) {
   const box = await locator.boundingBox();
   assert.ok(box, "expected a visible element to measure");
   return box;
+}
+
+// A media change resizes a <picture>'s img at once, but the browser re-selects its <source> in a
+// later rendering step and changes currentSrc only when the newly selected file has loaded
+// (finding 2287), so wait for the mark the check expects and report the last one seen.
+async function waitForMark(
+  mark: Locator,
+  expected: { path: string; width: number; height: number },
+) {
+  let seen: unknown;
+  await waitFor(
+    () => `the mascot ${JSON.stringify(expected)}; it was ${JSON.stringify(seen)}`,
+    async () => {
+      seen = await mark.evaluate((img: HTMLImageElement) => ({
+        path: img.complete && img.naturalWidth > 0 ? new URL(img.currentSrc).pathname : "(loading)",
+        width: img.width,
+        height: img.height,
+      }));
+      return isDeepStrictEqual(seen, expected) ? seen : undefined;
+    },
+    5_000,
+  );
 }
 
 // The navigation uses an inverse surface, but its account menu uses the regular surface.
@@ -123,6 +147,13 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   const topbar = page.locator(".topbar");
   assert.equal(Math.round((await visibleBox(topbar)).height), 56);
   assert.equal(await topbar.locator(".brand").textContent(), "OpenClaw Enterprise");
+  const mark = topbar.locator(".brand img");
+  const inverse = { path: "/console/oce-mascot-inverse.png", width: 48, height: 38 };
+  await waitForMark(mark, inverse);
+  await page.emulateMedia({ forcedColors: "active" });
+  await waitForMark(mark, { path: "/console/oce-mascot.png", width: 20, height: 20 });
+  await page.emulateMedia({ forcedColors: "none" });
+  await waitForMark(mark, inverse);
   const header = await page
     .locator(".page-header")
     .evaluate((node) => node.getBoundingClientRect().bottom + globalThis.scrollY);
@@ -152,12 +183,16 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   assert.equal(await avatar.evaluate((node) => node === globalThis.document.activeElement), true);
 
   // Opening the drawer closes the avatar's menu and brings the desktop navigation into reach.
+  await page.setViewportSize({ width: 320, height: phone.viewport.height });
   await avatar.click();
   await navigation.click();
   assert.equal(await menu.isVisible(), false);
   assert.equal(await avatar.getAttribute("aria-expanded"), "false");
   const sidebar = page.locator("#navigation-drawer");
   await sidebar.waitFor({ state: "visible" });
+  const name = await visibleBox(sidebar.locator(".brand-name"));
+  const close = await visibleBox(sidebar.locator(".drawer-close"));
+  assert.ok(name.x + name.width <= close.x, "the wordmark leaves the close target clear at 320px");
   assert.equal(
     (await style(sidebar, "backgroundColor")).backgroundColor,
     await tokenColor(page, "--color-surface-inverse"),

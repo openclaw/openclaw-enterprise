@@ -192,6 +192,7 @@ async function fixture(
         type,
         config: { base_url: baseUrl },
         secrets: { api_key: secret.ref },
+        ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "registering",
         createdAt: new Date(now - 71_000).toISOString(),
@@ -237,6 +238,7 @@ async function fixture(
         config: type === "openai" ? config : toolConfig(type, config),
         secrets:
           type === "openai" ? { api_key: secret.ref } : { [SECRET_FIELD[type]]: toolSecret.ref },
+        ownerCapability: "credential_gateway",
         driverId: driver.id,
         state: "ready",
         createdAt: new Date().toISOString(),

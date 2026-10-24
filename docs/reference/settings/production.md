@@ -63,7 +63,8 @@ and stored ownership before accepting work. With the bundled Kubernetes Compute
 Driver, `drivers.compute.configuration` holds the
 [`KubernetesComputeDriverOptions` shape](../drivers/kubernetes-compute.md#configuration).
 Production use of that Driver requires `images.requireImmutableDigest: true`,
-digest-pinned gateway and Agent image references, and exactly one in-cluster
+digest-pinned gateway and Agent image references, projected ServicePrincipal
+credentials unless a Sandbox Driver is selected, and exactly one in-cluster
 identity or explicitly named kubeconfig/context. The processes then verify
 authenticated, TLS-checked, read-only Kubernetes Namespace access before serving
 requests or claiming work. Installed Drivers validate their own reviewed
@@ -237,17 +238,16 @@ replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.m
 
 ## Control-plane outbound proxy
 
-Helm `outboundProxy.enabled` defaults to `false`. When enabled, the controller
-image runs `control-plane-outbound-proxy.mjs` independently of OCC. It derives
-management destinations from trusted ChannelDriver composition and reads no
-credentials. The API-only Service requires nonempty IPv4
-`outboundProxy.denyCidrs` covering actual infrastructure, including public
+Helm `outboundProxy.enabled` defaults to `false`. Enabling it runs
+`control-plane-outbound-proxy.mjs` separately from OCC. Trusted ChannelDrivers determine management destinations;
+the proxy reads no credentials. The API-only Service requires nonempty IPv4
+`outboundProxy.denyCidrs` covering infrastructure, including public
 addresses. See the [Slack Driver](../drivers/slack-channel.md#enable-lookup-in-production)
 for caller restrictions and external `api.controlPlaneOutboundProxyUrl` setup.
 
 | Proxy variable                                 | Value and behavior                                                                                                                                  |
 | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH` | Required absolute JSON file containing only nonempty `denyCidrs`; Helm mounts its ConfigMap here. Maximum 1 MiB.                                    |
+| `OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH` | Required absolute JSON file containing only nonempty `denyCidrs`; Helm mounts its ConfigMap here. Limit: 1 MiB.                                     |
 | `OCC_OUTBOUND_PROXY_HOST`                      | IPv4 bind address; default `0.0.0.0`. NetworkPolicy controls callers.                                                                               |
 | `OCC_OUTBOUND_PROXY_PORT`                      | Decimal integer `0`–`65535`; default `3128`. Helm requires a nonzero Service port.                                                                  |
 | `OCC_OUTBOUND_PROXY_POLICY_PATH`               | Required JSON policy path for the generic standalone [Gateway proxy](../gateway-outbound.md). The control-plane wrapper derives its policy instead. |

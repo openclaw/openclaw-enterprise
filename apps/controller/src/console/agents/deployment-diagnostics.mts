@@ -4,6 +4,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure } from "../api-client.mjs";
 import { button, element, focusSaveOutcome, patchChildren, statusBlock } from "../dom.mjs";
+import { askInstallationAdministrator } from "./credential-access.mjs";
 import type { DeploymentContext } from "./deployment-evidence.mjs";
 import { displayDate, message, neutralDeploymentOutcome } from "./list.mjs";
 
@@ -246,7 +247,7 @@ export function createVersionDiagnostics(
               "danger",
               null,
               status === 403
-                ? "Diagnostics require Agent read and operate access plus read access to this version. Ask a Namespace administrator to confirm those grants."
+                ? `Diagnostics require Agent read and operate access plus read access to this version. Granting them ${askInstallationAdministrator("check those grants")}`
                 : status === 503
                   ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
                   : message(error),
