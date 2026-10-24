@@ -2230,6 +2230,14 @@ select:not([multiple])[size="1"] {
 .field input[type="radio"] {
   width: auto;
 }
+/* A fixed value (the inline Create Secret dialog's Binding key) reads as text, not as a field
+   the reader could edit (finding 2370). */
+.form-field input[readonly] {
+  border-color: transparent;
+  background: transparent;
+  padding-inline: 0;
+  font-family: var(--font-mono);
+}
 .field input[type="checkbox"],
 .field input[type="radio"],
 .form-field input[type="checkbox"],

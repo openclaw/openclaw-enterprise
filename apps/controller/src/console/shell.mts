@@ -360,7 +360,9 @@ export function createShell({
         ? (namespaces.find((item) => item.id === namespaceId)?.name ?? "Checking access…")
         : "Checking access…";
       if (session && !namespaceAdmissionPending) {
-        placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
+        // The page's panel names the missing access; the disabled selector only says it is empty
+        // (finding 2371).
+        placeholder = namespaceId === null ? "None" : "Namespace unavailable";
       }
       select.append(element("option", { value: "", disabled: true, selected: true }, placeholder));
     }

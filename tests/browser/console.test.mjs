@@ -647,6 +647,45 @@ test("console ignores stale collection successes and errors while switching Name
   assert.equal(await page.getByText("Current agent").isVisible(), true);
 });
 
+// A caller with no readable Namespace saw "No readable Namespaces" in the selector and the panel,
+// a Refresh in both the header and the panel, and "Namespaces remain available in navigation"
+// (finding 2371). The panel now says it once and leaves Refresh to the header.
+test("Agents with no readable Namespace names it once and keeps one Refresh", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  await fixture.createNamespace("Granted later", { ready: true });
+  const denyAll = {
+    id: "deny-all-namespace-read",
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  };
+  fixture.policy.restrictions.push(denyAll);
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  await login(page, fixture, "/console/agents");
+  const state = page.locator(".state-panel");
+  await state.getByRole("heading", { name: "No readable Namespaces", exact: true }).waitFor();
+  await state
+    .getByText(
+      "Ask an administrator to create a Namespace or grant you access to one, then Refresh.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await state.getByRole("button").count(), 0, "the panel adds no second Refresh");
+  assert.equal(await page.getByRole("button", { name: "Refresh", exact: true }).count(), 1);
+  assert.equal(await page.getByText("No readable Namespaces").count(), 1);
+  const selector = page.getByRole("combobox", { name: "Namespace", exact: true });
+  assert.equal(await selector.isDisabled(), true);
+  assert.equal(await selector.locator("option:checked").textContent(), "None");
+
+  // Granted access shows once the reader presses the header's Refresh.
+  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denyAll), 1);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  await expectNoText(page, /No readable Namespaces/, () => waitForIdleFetches(page));
+});
+
 test("an unchanged retained view without a Namespace selection selects the default once one is readable", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

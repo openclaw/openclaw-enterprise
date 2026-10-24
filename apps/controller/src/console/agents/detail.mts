@@ -782,8 +782,14 @@ export async function renderAgentDetail(
       badge.dataset.tone = tone;
     }
     liveServingNote.classList.toggle("stat-help-line", expected);
+    // Nothing sends a running version a request to verify it, so "Not verified" says why
+    // (finding 2367); a Sandbox note takes its place.
+    const unchecked =
+      tone === undefined && !deleting && currentRuntimeState === "running" && currentRevisionId
+        ? "OCC sends no test request."
+        : "";
     if (!expected) {
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     } else if (answer === null) {
       setDelayedText(liveServingNote, "", "Checking Sandbox…");
     } else if (lost) {
@@ -800,7 +806,7 @@ export async function renderAgentDetail(
       setText(liveServingNote, "Sandbox starting.");
     } else {
       // The Sandbox Driver keeps no record of this Sandbox.
-      setText(liveServingNote, "");
+      setText(liveServingNote, unchecked);
     }
   }
   function setLiveServing(mayBeOffline: boolean) {
