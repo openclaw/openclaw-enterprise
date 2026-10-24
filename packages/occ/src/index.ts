@@ -9053,8 +9053,9 @@ export class OpenClawController {
       // The pair as it will be stored. A pending workspace setup is delivered by the first
       // deployment, so it is checked against the Configuration this update names. A completed
       // setup is delivered by every deployment, so it is checked when the update names another
-      // Configuration or execution mode (finding 2296); an update that keeps both leaves an
-      // Agent a Configuration write broke editable, and deployment refuses that pair.
+      // Configuration or execution mode (finding 2296). An update that keeps both is not
+      // checked, so an Agent broken by a later Configuration edit stays editable; deployment
+      // refuses that pair.
       const workspaceSetup = await state.workspaceSetups.find(namespace.id, agent.id);
       const topologyChanged =
         input.configurationId !== agent.configurationId ||
