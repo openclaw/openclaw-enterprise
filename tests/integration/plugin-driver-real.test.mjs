@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
+import { verifyLinearRead } from "../helpers/linear-read.mjs";
 import {
   assertNoSecretMaterial,
   createPluginDriverRealFixture,
@@ -379,40 +380,7 @@ test(
       },
       backendId: "openai",
     });
-    await fixture.selectPlugin(agent.id, {
-      pluginId: linear.id,
-      enabled: true,
-      toolDefaults: { approval: "provider_default", reviewer: "auto" },
-    });
-    const deployed = await fixture.deployAndWait(agent);
-    assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, linear.id));
-    assert.deepEqual(deployed.status.warnings, []);
-    const [native] = await fixture.listCodexNativeCatalog(agent, [linear.id]);
-    assert.equal(native?.remotePluginId, linear.remoteId);
-    assert.ok(native.detailAvailable && native.appCount > 0);
-
-    // A transcript with the exact tool and result proves execution, not just selection.
-    const turnMarker = `CODEX_LINEAR_CATALOG_${randomUUID()}`;
-    const sessionKey = `agent:main:codex-linear-${randomUUID()}`;
-    const content = await fixture.normalGatewayTurn({
-      agent,
-      gatewayPassword: deployed.gatewayPassword,
-      sessionKey,
-      prompt: `${prompt}\nInclude this marker in the final answer: ${turnMarker}`,
-      expectedPatterns: [turnMarker],
-      secrets: [credential.accessToken, credential.workspaceId],
-    });
-    assertNoSecretMaterial(
-      content,
-      [credential.accessToken, credential.workspaceId],
-      "Agent output must not expose credentials.",
-    );
-    await fixture.assertSessionToolCallEvidence(agent, {
-      sessionKey,
-      turnMarker,
-      toolName,
-      resultPattern,
-    });
+    await verifyLinearRead(fixture, agent, credential, { remotePluginId: linear.remoteId });
   },
 );
 

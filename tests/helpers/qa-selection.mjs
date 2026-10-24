@@ -5,6 +5,7 @@ const scenarioPresets = {
   "model-ui": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
+  linear: ["Codex"],
   "git-write": ["OpenClaw", "Codex"],
   "git-push-denied": ["Codex"],
   slack: ["Codex"],
@@ -75,6 +76,13 @@ export function selectQaMatrix(env = process.env) {
   }
   if (activeScenarios.includes("calendar")) {
     requiredEnv.push("OCC_TEST_CODEX_CALENDAR_TOOL_NAME", "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT");
+  }
+  if (activeScenarios.includes("linear")) {
+    requiredEnv.push(
+      "OCC_TEST_CODEX_LINEAR_PROMPT",
+      "OCC_TEST_CODEX_LINEAR_TOOL_NAME",
+      "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
+    );
   }
   if (repository) {
     requiredEnv.push("OCC_TEST_QA_REPOSITORY_AUTHORIZED", "OCC_TEST_QA_REPOSITORY_INPUT_DIRECTORY");

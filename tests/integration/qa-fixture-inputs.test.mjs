@@ -181,11 +181,17 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   );
   assert.deepEqual(selected.cells[1].unselected, [
     "console-secrets",
+    "linear",
     "git-write",
     "git-push-denied",
     "slack",
   ]);
-  assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-push-denied", "slack"]);
+  assert.deepEqual(selected.cells[0].notApplicable, [
+    "calendar",
+    "linear",
+    "git-push-denied",
+    "slack",
+  ]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
     () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "model-ui,typo" }),
@@ -202,9 +208,39 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   });
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
+  const linear = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "linear",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+  });
+  assert.deepEqual(linear.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_CODEX_LINEAR_PROMPT",
+    "OCC_TEST_CODEX_LINEAR_TOOL_NAME",
+    "OCC_TEST_CODEX_LINEAR_RESULT_EXPECT",
+  ]);
+  assert.equal(linear.browser, false);
+  assert.equal(linear.repository, false);
+  assert.deepEqual(linear.cells[0].scenarios, ["linear"]);
+  const linearInputs = {
+    OCC_TEST_QA_CODEX_TOKEN_FILE: "/private/codex",
+    OCC_TEST_CODEX_LINEAR_PROMPT: "Read the configured disposable workspace metadata.",
+    OCC_TEST_CODEX_LINEAR_TOOL_NAME: "test.linear.read",
+    OCC_TEST_CODEX_LINEAR_RESULT_EXPECT: "workspace",
+  };
+  validateQaInputs(linear, linearInputs);
+  for (const missing of linear.requiredEnv) {
+    const inputs = { ...linearInputs };
+    delete inputs[missing];
+    assert.throws(() => validateQaInputs(linear, inputs), new RegExp(`${missing} is required`));
+  }
+  assert.throws(
+    () => selectQaMatrix({ OCC_TEST_QA_SCENARIOS: "linear", OCC_TEST_QA_PRESET: "OpenClaw" }),
+    /not applicable/,
+  );
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
   assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-write"]);
-  assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR|LINEAR/.test(name)));
   const secrets = selectQaMatrix({
     OCC_TEST_QA_SCENARIOS: "console-secrets",
     OCC_TEST_QA_PRESET: "Codex",
@@ -266,11 +302,14 @@ test("hosted QA materializes only selected credentials and rejects missing selec
     env: {
       RUNNER_TEMP: directory,
       GITHUB_ENV: githubEnv,
-      OCC_TEST_QA_SCENARIOS: "model-ui,calendar",
+      OCC_TEST_QA_SCENARIOS: "model-ui,calendar,linear",
       OPENAI_API_KEY: "synthetic-model-key",
       CODEX_ACCESS_TOKEN: "synthetic-codex-token",
       OCC_TEST_CODEX_CALENDAR_TOOL_NAME: "test.calendar.read",
       OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT: "email",
+      OCC_TEST_CODEX_LINEAR_PROMPT: "Read workspace metadata.",
+      OCC_TEST_CODEX_LINEAR_TOOL_NAME: "test.linear.read",
+      OCC_TEST_CODEX_LINEAR_RESULT_EXPECT: "workspace",
       // Even if a caller supplies unrelated credentials, do not write them.
       SLACK_APP_TOKEN: "unselected-secret",
       REPOSITORY_APP_KEY: "unselected-secret",

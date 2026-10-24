@@ -27,6 +27,7 @@ test(
     const { prepareQaRepository, verifyQaRepository, stopQaAgent } =
       await import("../helpers/qa-repository.mjs");
     const { verifyCalendarReviewPolicy } = await import("../helpers/calendar-review.mjs");
+    const { verifyLinearRead } = await import("../helpers/linear-read.mjs");
     const { verifyQaSlack } = await import("../helpers/qa-slack.mjs");
     const { assertGatewayModelTurn } = await import("../helpers/kubernetes-real.mjs");
     const artifacts = process.env.OCC_TEST_QA_ARTIFACTS
@@ -47,7 +48,6 @@ test(
       executionFilters,
       concurrency,
       exclusions: [
-        "Linear READ: explicitly excluded; provider currently broken",
         "Embedded OpenClaw Slack: unsupported",
         "OpenClaw Codex-native approvals: not applicable",
       ],
@@ -274,6 +274,23 @@ test(
                       },
                     ],
                     [
+                      "linear",
+                      async (agent, step) => {
+                        await step(
+                          "Linear plugin selection and successful native read",
+                          async () => {
+                            const credential = {
+                              accessToken: await protectedText(
+                                process.env.OCC_TEST_QA_CODEX_TOKEN_FILE,
+                                "Codex service-account credential",
+                              ),
+                            };
+                            await verifyLinearRead({ ...f, ...agent.native }, agent, credential);
+                          },
+                        );
+                      },
+                    ],
+                    [
                       "git-push-denied",
                       async (agent, step) => {
                         await step(
@@ -310,7 +327,7 @@ test(
                   });
                 } else if (preset === "OpenClaw") {
                   cellContext.diagnostic(
-                    "Slack and Codex-native approval policy: not applicable to Standard OpenClaw. Linear READ excluded throughout.",
+                    "Slack, Linear and Codex-native approval policy: not applicable to Standard OpenClaw.",
                   );
                 }
               },
