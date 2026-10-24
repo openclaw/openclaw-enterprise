@@ -6,13 +6,13 @@
 //
 // `images` builds the controller and runtime images from this checkout (reading
 // the hosted image caches when available), adds a private test CA to the
-// runtime image's trust store, and publishes both to a local registry (reachable
-// on loopback) so Local Setup can select them by digest. `run` starts the Kubernetes-only Local Setup
-// with those images, answers api.openai.com from a stand-in Responses provider,
-// runs scripts/first-agent.mjs for an embedded OpenClaw Agent, deploys one
-// dedicated Codex Agent through the API, reads both Agents' logs through
-// `occ agent logs`, stops and starts each once, and checks that every reported
-// status matches the cluster and a real model turn.
+// runtime image's trust store, and publishes both to a local registry, reachable
+// on loopback, so Local Setup can select them by digest. `run` starts the
+// Kubernetes-only Local Setup with those images, answers api.openai.com from a
+// stand-in Responses provider, runs scripts/first-agent.mjs for an embedded
+// OpenClaw Agent, deploys one dedicated Codex Agent through the API, reads both
+// Agents' logs through `occ agent logs`, stops and starts each once, and checks
+// that every reported status matches the cluster and a real model turn.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -477,13 +477,27 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
   await writeFile(file, `${JSON.stringify(definition, null, 2)}\n`);
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
-    run("docker", ["buildx", "bake", "--file", file, "smoke-controller", "smoke-runtime"], {
-      // Single-platform image manifests without attestation indexes, so the
-      // recorded digest is the image manifest's.
-      env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
-      timeout: 40 * minute,
-      label: "image-bake",
-    }),
+    // The trust context lies outside the working directory, so bake needs an
+    // explicit read grant for it (its check sometimes missed it, by target order).
+    run(
+      "docker",
+      [
+        "buildx",
+        "bake",
+        `--allow=fs.read=${context}`,
+        "--file",
+        file,
+        "smoke-controller",
+        "smoke-runtime",
+      ],
+      {
+        // Single-platform image manifests without attestation indexes, so the
+        // recorded digest is the image manifest's.
+        env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
+        timeout: 40 * minute,
+        label: "image-bake",
+      },
+    ),
   );
   return step("registry digests", () =>
     Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
