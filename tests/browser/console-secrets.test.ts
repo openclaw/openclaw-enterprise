@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Page, Route } from "playwright";
+import type { Page } from "playwright";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import type {
@@ -12,6 +12,7 @@ import type {
 import type {
   IAMAccessBindingResponse,
   IAMRoleResponse,
+  NamespaceListResponse,
   NamespaceWire,
   SecretDetailResponse,
   SecretListResponse,
@@ -197,6 +198,8 @@ test("unknown console Secret writes erase entered material and never replay muta
     1,
   );
   await replace.getByRole("button", { name: "Close" }).click();
+  const uncertainRow = page.locator(".secret-row").filter({ hasText: "Uncertain Secret" });
+  assert.equal(await uncertainRow.count(), 1);
   await page.getByRole("button", { name: "Uncertain Secret", exact: true }).click();
   await dialog(page, "Uncertain Secret")
     .getByRole("button", { name: "Delete Secret", exact: true })
@@ -214,10 +217,7 @@ test("unknown console Secret writes erase entered material and never replay muta
     1,
   );
   // The check found it deleted, so the list behind the dialog drops it without a Refresh.
-  assert.equal(
-    await page.locator(".secret-row").filter({ hasText: "Uncertain Secret" }).count(),
-    0,
-  );
+  assert.equal(await uncertainRow.count(), 0);
 });
 
 test("checking an uncertain deletion cannot mistake another Secret for the deleted one", async (t) => {
@@ -591,18 +591,14 @@ test("Secret refusals keep their meaning, and incomplete consumers or a not-read
   await detail.getByRole("button", { name: "Close" }).click();
 
   // The same Secret in a Namespace that is no longer ready: its value cannot be replaced.
-  const notReady = async (route: Route) => {
+  await page.route(`${fixture.origin}/namespaces`, async (route) => {
     const response = await route.fetch();
-    const body = await response.json();
-    for (const item of Array.isArray(body.data) ? body.data : [body.data]) {
-      if (item?.id === namespace.id) {
-        item.status = "provisioning";
-      }
-    }
+    const body: NamespaceListResponse = await response.json();
+    body.data = body.data.map((item) =>
+      item.id === namespace.id ? { ...item, status: "provisioning" } : item,
+    );
     await route.fulfill({ response, json: body });
-  };
-  await page.route(`${fixture.origin}/namespaces`, notReady);
-  await page.route(`${fixture.origin}/namespaces/${namespace.id}`, notReady);
+  });
   await page.reload();
   await page
     .getByText("Secrets can be created or replaced after this Namespace is ready.")

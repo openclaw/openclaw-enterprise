@@ -493,6 +493,7 @@ test("Create Agent refuses what the API would refuse before any write", async (t
     await submit.click();
     assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
     await assertShownError(name, NAME_RULE);
+    // An edited Name is checked too.
     await name.fill("model\tkey");
     await submit.click();
     assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
