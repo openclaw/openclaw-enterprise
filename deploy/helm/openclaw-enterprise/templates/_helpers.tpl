@@ -898,7 +898,7 @@ capabilities:
      A values file delivers a float64, and toString prints 1000000 and above as an exponent.
      With "port", also refuse leading zeros: callers pass the value through Sprig int, and
      startup's listener comparison refuses "08443". With "timer", also refuse values above
-     2147483647: Node.js fires a longer timer after 1 ms (the worker's MAX_TIMER_DELAY_MS). */}}
+     2147483647: Node.js fires a longer timer after 1 ms (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils). */}}
 {{- define "openclaw.positiveSafeInteger" -}}
 {{- $raw := toString .value -}}
 {{- if and (kindIs "float64" .value) (eq (floor .value) .value) -}}

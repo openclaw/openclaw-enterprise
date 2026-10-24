@@ -1616,8 +1616,9 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
   }
 });
 
-// Number() read "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312).
-test("Codex runtime refuses request timeouts and install deadlines a Node.js timer cannot wait for", () => {
+// Number() read "12abc" as NaN, "" as 0 and 3e9 as a request timeout that fires after 1 ms
+// (finding 2312). The install deadline shares the bound.
+test("Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms", () => {
   const timers = (env) =>
     JSON.parse(
       vm.runInNewContext(
