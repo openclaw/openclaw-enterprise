@@ -4881,7 +4881,12 @@ export class OpenClawController {
       try {
         check();
       } catch (error) {
-        if (error instanceof ScopeViolationError || error instanceof PluginPolicyValidationError) {
+        // Only create's own refusals: the base scope miss (an unconfigured Backend or one of
+        // another kind) and the Plugin Driver's policy refusal, never a subclass.
+        if (
+          error?.constructor === ScopeViolationError ||
+          error instanceof PluginPolicyValidationError
+        ) {
           refuse(field, error.message);
         }
         throw error;

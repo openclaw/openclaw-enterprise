@@ -20,15 +20,17 @@ real Installation.
 
 ## 2026-10-24: Preset saves check literal Agent launch fields
 
-**What breaks.** Preset create and update, and seeding `presets.files` copies at
-startup or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
+**What breaks.** Preset create and update, and seeding a missing `presets.files`
+copy at startup, bootstrap or Namespace creation, refuse a template whose `agent.name`, `agent.executionMode`,
 `agent.backendId` or `agent.pluginApprovers` is written without a variable token
 and breaks the rule Agent create applies (for example `executionMode: turbo`,
-a Backend the Installation does not configure, or a non-Slack approver).
+a Backend the Installation does not configure, or a non-Slack approver while a
+Plugin Driver is selected).
 Earlier builds saved it, and every Agent created from it was refused.
 
 **Who is affected.** Installations whose `presets.files` hold such a field, and
-API clients that save one. Stored Presets still read and render.
+API clients that save one. Existing copies and other stored Presets still read
+and render.
 
 **How to tell.** The write answers `400`, or startup or Namespace creation
 fails, with a message such as
