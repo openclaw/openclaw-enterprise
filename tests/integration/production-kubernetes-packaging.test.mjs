@@ -25,6 +25,7 @@ import {
   productionValues as values,
   productionCollectorValues,
   goToolEnvironment,
+  renderExecutionChart,
 } from "../helpers/production-chart.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -270,6 +271,37 @@ test(
   },
 );
 
+const stringNameMessage =
+  "must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string";
+const stringNameDatabaseCa = {
+  "database.caSecretName": "occ-database-ca-test",
+  "database.caKey": "ca.pem",
+  "database.caMountPath": "/etc/openclaw/database-ca",
+};
+const stringNameCaValues = {
+  database: stringNameDatabaseCa,
+  oidc: {
+    ...stringNameDatabaseCa,
+    "auth.oidc.enabled": "true",
+    "auth.recoveryUserId": "recovery-admin_1",
+    "auth.oidc.issuer": "https://tenant.idp.example.test/",
+    "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+    "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+    "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+    "auth.oidc.secretName": "oidc-client",
+    "auth.oidc.clientIdKey": "client-id",
+    "auth.oidc.clientSecretKey": "client-secret",
+    "auth.oidc.caSecretName": "oidc-ca",
+    "auth.oidc.caSecretKey": "ca.crt",
+  },
+  execution: {
+    "executionCluster.enabled": "true",
+    "executionCluster.apiKubeconfigSecretName": "execution-api",
+    "executionCluster.workerKubeconfigSecretName": "execution-worker",
+    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+  },
+};
+
 test(
   "operator-named Secrets, keys and namespaces reject YAML booleans and numbers",
   tooling,
@@ -288,15 +320,77 @@ test(
       ["database.appUrlKey", "2"],
       ["bootstrap.password.claimName", "true"],
       ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
+      ["gatewayRouting.gatewayName", "2024", gatewayRoutingValues],
+      ["gatewayRouting.tlsSecretName", "true", gatewayRoutingValues],
+      ["api.consoleTheme.configMapName", "true"],
+      ["api.consoleTheme.checksum", "1"],
+      ["controlPlane.installationChecksum", "1"],
+      // Finding 2321: these fields meet an eq comparison first, which cannot compare a string
+      // with a number or boolean and used to fail with a Go template type error instead.
+      ["database.caKey", "1", stringNameCaValues.database],
+      ["auth.oidc.secretName", "2024", stringNameCaValues.oidc],
+      ["database.caSecretName", "2024", stringNameCaValues.oidc],
+      ["auth.oidc.caSecretName", "2024", stringNameCaValues.oidc],
+      ["executionCluster.apiKubeconfigSecretName", "2024", stringNameCaValues.execution],
+      ["executionCluster.workerKubeconfigSecretName", "true", stringNameCaValues.execution],
     ]) {
       await assert.rejects(
         render({ ...enabled, [field]: value }),
-        (error) => error.message.includes(`${field} must be a string`),
+        (error) => error.message.includes(`${field} ${stringNameMessage}`),
         field,
       );
     }
+    // An optional name that reads as false or 0 is still unset, as the notice says.
+    for (const [value, mounted] of [
+      ["occ-database-ca-test", true],
+      ["false", false],
+      ["0", false],
+    ]) {
+      const { stdout } = await render({
+        ...stringNameCaValues.database,
+        "database.caSecretName": value,
+      });
+      assert.equal(stdout.includes("/etc/openclaw/database-ca"), mounted, value);
+    }
   },
 );
+
+test("execution chart names reject YAML booleans and numbers", tooling, async () => {
+  // Finding 2322: the execution chart rendered TLS Secret "2024", a DNS peer in Namespace
+  // "true" and an EnvoyProxy in Namespace "true", so Harness Pods silently lost DNS.
+  for (const [field, value] of [
+    ["routing.hostname", "123"],
+    ["routing.gatewayClassName", "1"],
+    ["routing.gatewayName", "true"],
+    ["routing.envoyNamespace", "true"],
+    ["routing.tlsSecretName", "2024"],
+    ["dns.namespace", "true"],
+    ["dns.namespace", "false"],
+  ]) {
+    await assert.rejects(
+      renderExecutionChart("--set", `${field}=${value}`),
+      ({ stderr }) => stderr.includes(`${field} ${stringNameMessage}`),
+      `${field}=${value}`,
+    );
+  }
+  const objects = await resources(
+    (
+      await renderExecutionChart(
+        "--set-string",
+        "routing.tlsSecretName=2024",
+        "--set-string",
+        "dns.namespace=true",
+      )
+    ).stdout,
+  );
+  const gateway = objects.find((item) => item.kind === "Gateway");
+  assert.equal(gateway.spec.listeners[0].tls.certificateRefs[0].name, "2024");
+  const policy = objects.find((item) => item.kind === "NetworkPolicy");
+  assert.equal(
+    policy.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+    "true",
+  );
+});
 
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
@@ -5980,7 +6074,7 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
   for (const hostname of ["123", "true"]) {
     await assert.rejects(
       template("--set", `routing.hostname=${hostname}`),
-      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
+      /routing\.hostname must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string/,
       hostname,
     );
   }
@@ -6012,25 +6106,7 @@ test(
   "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
   tooling,
   async () => {
-    const template = (...values) =>
-      execute(
-        helm,
-        [
-          "template",
-          "oce",
-          "deploy/helm/openclaw-execution",
-          "--set",
-          "routing.hostname=agents.example.invalid",
-          "--set",
-          "routing.gatewayClassName=private-envoy-gateway",
-          "--set",
-          "routing.tlsSecretName=agents-tls",
-          "--set-json",
-          'routing.controlPlaneCidrs=["198.51.100.0/24"]',
-          ...values,
-        ],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
+    const template = renderExecutionChart;
     const proxyPolicy = async (stdout) =>
       (await resources(stdout)).find(
         (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",

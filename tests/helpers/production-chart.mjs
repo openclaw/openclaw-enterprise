@@ -143,3 +143,28 @@ export async function parseProductionChart(manifests) {
   });
   return parsed.trim().split("\n").map(JSON.parse);
 }
+
+/**
+ * `helm template` of the openclaw-execution chart with the routing values it requires, then
+ * `extraArgs` (such as "--set", "dns.namespace=true"). A refused render rejects with Helm's stderr.
+ */
+export function renderExecutionChart(...extraArgs) {
+  return execute(
+    helm,
+    [
+      "template",
+      "oce",
+      "deploy/helm/openclaw-execution",
+      "--set",
+      "routing.hostname=agents.example.invalid",
+      "--set",
+      "routing.gatewayClassName=private-envoy-gateway",
+      "--set",
+      "routing.tlsSecretName=agents-tls",
+      "--set-json",
+      'routing.controlPlaneCidrs=["198.51.100.0/24"]',
+      ...extraArgs,
+    ],
+    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
+  );
+}

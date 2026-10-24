@@ -38,13 +38,19 @@ aborted every claim and polled without pause.
 ## 2026-10-24: chart refuses unquoted numeric or boolean names
 
 **What breaks.** `helm install` and `helm upgrade` refuse a Secret,
-ConfigMap, Secret-key or PersistentVolumeClaim name, or a `dns.namespace`,
-`api.clients[].namespace` or `gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
-boolean. Earlier charts rendered `secretName: 2024` as `"2024"` and
-`secretName: yes` as `"true"`.
+ConfigMap, Secret-key or PersistentVolumeClaim name, a Gateway or
+GatewayClass name, or a `dns.namespace`, `api.clients[].namespace` or
+`gatewayRouting.envoyNamespace` value, that YAML or `--set` reads as a number or
+boolean. The `openclaw-execution` chart refuses the same for its `routing`
+names, `routing.envoyNamespace` and `dns.namespace`. Earlier charts rendered
+`secretName: 2024` as `"2024"` and `secretName: yes` as `"true"`.
 
 **Who is affected.** Values files with an unquoted name that YAML reads as a
-number or boolean, for example `2024`, `1e3`, `yes`, `on` or `false`.
+number or boolean, for example `2024`, `1e3`, `yes` or `on`. An optional name
+that reads as `false` or `0`, such as `database.caSecretName: false`, still
+counts as unset, as before. The execution chart's `routing.gatewayName`,
+`routing.envoyNamespace` and `dns.namespace` have defaults, so it refuses
+`false` there.
 
 **How to tell.** The render fails with `<field> must be a string: quote a value
 YAML reads as a number or boolean, or pass it with --set-string`.
