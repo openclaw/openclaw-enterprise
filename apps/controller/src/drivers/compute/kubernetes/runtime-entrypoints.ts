@@ -3725,6 +3725,23 @@ function codexProbeStatusFailure(message, detail) {
   };
 }
 
+// codex is the npm launcher: a timeout that killed only it left the native child retrying with
+// the pipes open (finding 2274). Run the native binary the launcher would start.
+function codexCheckExecutable() {
+  for (const directory of (process.env.PATH ?? "").split(":")) {
+    let launcher;
+    try { launcher = require("node:fs").realpathSync(directory + "/codex"); } catch { continue; }
+    if (!launcher.endsWith("/@openai/codex/bin/codex.js")) return "codex";
+    let root = launcher.slice(0, -12);
+    try {
+      root = require("node:module").createRequire(launcher)
+        .resolve("@openai/codex-linux-" + process.arch + "/package.json").slice(0, -12);
+    } catch {}
+    return root + "vendor/" + (process.arch === "arm64" ? "aarch64" : "x86_64") + "-unknown-linux-musl/bin/codex";
+  }
+  return "codex";
+}
+
 function probeCodexAuthentication(timeout) {
   let result;
   // Set once stdout parsed into well-formed events; malformed output classifies stderr only.
@@ -3758,7 +3775,7 @@ function probeCodexAuthentication(timeout) {
       "sleep_tool", "goals", "workspace_dependencies", "skill_search",
       "skill_mcp_dependency_install", "tool_suggest", "recommended_plugins", "request_permissions_tool",
     ];
-    result = spawnSync("codex", [
+    result = spawnSync(codexCheckExecutable(), [
 ${disableUnboundedConnectionRetries ? '      "--disable", "unbounded_connection_retries",\n' : ""}      ...disabled.flatMap((feature) => ["--disable", feature]),
       "-a", "never", "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
       "--skip-git-repo-check", "--json", "--sandbox", "read-only", "--cd", directory,
