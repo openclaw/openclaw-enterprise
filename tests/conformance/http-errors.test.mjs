@@ -11,6 +11,7 @@ import {
   ConfigurationValidationError,
 } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import {
+  isStaleGeneration,
   PROVISIONING_REFUSAL_CODES,
   preAdmissionRefusal,
 } from "../../apps/controller/src/console/agents/list.mts";
@@ -23,6 +24,7 @@ import {
   AuthorizationDeniedError,
   ChannelCredentialError,
   ChannelDirectoryError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   CredentialGatewayNotConfiguredError,
   CredentialTokenUnsettledError,
@@ -1064,6 +1066,25 @@ test("Create Agent and Deploy show the API's reason only for a named 503 refusal
       serverMessage: failure.message,
     });
     assert.equal(shown, UNNAMED_503_CASES.includes(name) ? undefined : failure.message, name);
+  }
+});
+
+// Only the API's generation conflict, marked by its /expectedGeneration detail, offers Reload
+// draft; any other RESOURCE_CONFLICT, with or without details, meets the same refusal again
+// after a reread (finding 1511).
+test("only the Configuration generation conflict reads as a stale save in the console", () => {
+  const consoleError = (error) => {
+    const failure = requestFailure(error);
+    const detailPaths = failure.details?.map(({ path }) => path);
+    return { status: failure.status, code: failure.code, ...(detailPaths && { detailPaths }) };
+  };
+  assert.equal(isStaleGeneration(consoleError(new ConfigurationGenerationConflictError())), true);
+  for (const error of [
+    new ResourceStateConflictError(INTERNAL),
+    new ResourceStateConflictError(INTERNAL, [{ path: "/name", code: "INVALID_VALUE" }]),
+    new ResourceConflictError(INTERNAL),
+  ]) {
+    assert.equal(isStaleGeneration(consoleError(error)), false, consoleError(error));
   }
 });
 
