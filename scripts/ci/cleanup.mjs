@@ -365,6 +365,9 @@ async function emptyK3dSharedStorage(resource) {
     "--pull=never",
     "--network=none",
     "--user=0",
+    // The k3d nodes are privileged; this container is not, so SELinux hosts would deny it the
+    // unlabelled bind mount.
+    "--security-opt=label=disable",
     "--entrypoint=find",
     "--volume",
     `${storage}:/storage`,

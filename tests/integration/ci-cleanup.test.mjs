@@ -156,6 +156,9 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
     { owner: prefix, name: clusterName },
     clusterDirectory,
   );
+  // An empty shared storage (no volume was ever written, or the node image was never pulled)
+  // needs no root container: cleanup must not try to start one with --pull=never.
+  await mkdir(join(clusterDirectory, "storage"));
   const deletedMarker = join(root, "deleted");
   await writeCommand(
     join(root, "bin"),
@@ -210,6 +213,7 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
     /images rm registry\.example\/gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
   );
   assert.match(dockerCommands, new RegExp(`images rm localhost/${clusterName}/occ-test:local`));
+  assert.doesNotMatch(dockerCommands, /^run /m);
   await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
 });
@@ -274,7 +278,7 @@ test("cleanup empties a fixture lane's shared k3d storage as root after deleting
   assert.deepEqual(
     (await commandCalls(dockerLog)).filter((call) => call.startsWith("run ")),
     [
-      `run --rm --pull=never --network=none --user=0 --entrypoint=find --volume ${storage}:/storage ${nodeImage} /storage -mindepth 1 -delete`,
+      `run --rm --pull=never --network=none --user=0 --security-opt=label=disable --entrypoint=find --volume ${storage}:/storage ${nodeImage} /storage -mindepth 1 -delete`,
     ],
   );
   await assert.rejects(() => stat(clusterDirectory), { code: "ENOENT" });
