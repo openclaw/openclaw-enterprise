@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-23
-last_updated_session: authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7
+last_updated_session: agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68
 ---
 
 # Harness Execution Topology Flow
@@ -135,14 +135,23 @@ independently places the Gateway Pod and private-state initializer on trusted no
 After Harness readiness, preparation starts a candidate Gateway if its predecessor is stopped or unready. Activation waits for workspace node enrollment. Dedicated Codex keeps `agent-<agent digest>-workspace` across versions.
 `KubernetesComputeDriver.gatewayNativeHookRelayConfiguration` binds its callbacks to the Agent route; `AGENT_WITH_NODE_ENTRYPOINT` prepares private capability storage and TLS trust, and OpenClaw authorizes callbacks. See [native hook routing](../reference/gateway-routing.md#native-node-endpoint).
 
-Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute owns the Gateway; SandboxDriver owns the native Harness. Its node retains identity, workspace and model credentials. OpenShell's version provider delivers setup and the Gateway CA; startup combines inherited trust, writes a private one-use target and reconnects with the persisted device token. Renewal and cleanup retain exact provider ownership.
+Compute owns the Gateway; SandboxDriver owns the native Harness, with separate
+ServiceAccounts. The Harness retains identity, workspace and model credentials.
+OpenShell delivers version-owned setup and Gateway CA files; startup combines
+trust, writes a private one-use target and reconnects with the saved device token.
+Renewal and cleanup preserve exact ownership.
 
 `internal/occdev/kubernetes.go:writeInstallation` permits Node and pinned Codex model egress. Native workers connect outbound without an app-server endpoint. Compute binds `dedicated-native` with `inference: "worker"`; a missing or disconnected Harness fails without Gateway inference. Exact callbacks and session admission scope transport to the Agent.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:nativeRuntimeConfiguration`
-projects admitted OpenAI models and an environment SecretRef into canonical
-`models.providers.openai`.
+projects `models.providers.openai` and an environment SecretRef. It retains
+normalized model HTTPS endpoints (port 443, paths ending in `/v1`), using the first
+as provider default. Custom endpoints require `credential_source`; Secret-backed
+keys stay OpenAI-only. Invalid URLs fail admission.
+`apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
+checks every model against the immutable source endpoint before attachment.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`.
+writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
+Compute and Sandbox supply private temporary directories.
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` pins default/main workspace to its data mount; file transfer uses that root absent an endpoint override. Node-local snapshots provide models/credentials and authorized workspaces, without an inference file, grant catalog or retired `nativeInferenceConfig`.
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
@@ -296,17 +305,13 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 ## Changelog
 
+- 2026-10-23 15:51: Rebase the native endpoint trace onto current lifecycle behavior; preserve older entries in linked history. (agent:roboclaw:dashboard:578a8b10-8406-4f5c-a2cc-21ab6524bf68 - 0b326680a7a388de9331c2ae9f0a7cadf2788fe7)
+
 - 2026-10-23 13:33: Trace protected Codex connection failure behavior and condense the activation flow. (authoring-run/d909ff44-894e-4e57-91e2-ab5bea7532c7 - 162c9131f3dacb48979fba68bec7e88af317e6b3)
 
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
-
-- 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
-
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
-- 2026-10-10 04:41: Reconcile endpoint validation and routing with credential refresh, native approval and readiness contracts. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
 - 2026-10-10 02:49: Refuse native listener TLS before deployment work. (authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628 - 5d303757fb488fe34c8cbb9e7b6b975921fc1061)
 

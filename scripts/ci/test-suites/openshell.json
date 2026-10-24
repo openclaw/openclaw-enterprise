@@ -61,5 +61,6 @@
         "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
     }
-  ]
+  ],
+  "optionalEnv": ["OCC_TEST_LOCAL_FIRST_AGENT_NATIVE_PROVIDER_FILE"]
 }

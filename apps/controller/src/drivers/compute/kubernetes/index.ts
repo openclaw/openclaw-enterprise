@@ -2942,6 +2942,7 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
+  authMethod: HarnessAuthSnapshot["method"],
 ): object {
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
@@ -3001,26 +3002,21 @@ function nativeRuntimeConfiguration(
         "must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw",
       );
     }
-    let endpoint: URL | undefined;
-    try {
-      endpoint = new URL(baseUrl as string);
-    } catch {
-      endpoint = undefined;
-    }
+    const endpoint = normalizeOpenAiBaseUrl(baseUrl as string);
     if (
       endpoint === undefined ||
-      endpoint.protocol !== "https:" ||
-      endpoint.hostname !== "api.openai.com" ||
-      endpoint.port !== "" ||
-      endpoint.username !== "" ||
-      endpoint.password !== "" ||
-      endpoint.search !== "" ||
-      endpoint.hash !== "" ||
-      endpoint.pathname.replace(/\/$/u, "") !== "/v1"
+      openAiBaseUrlRewritesIpv4(baseUrl as string) ||
+      new URL(endpoint).port !== ""
     ) {
       throw createError(
         `${setting}.baseUrl`,
-        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
+        "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+      );
+    }
+    if (authMethod !== "credential_source" && endpoint !== "https://api.openai.com/v1") {
+      throw createError(
+        `${setting}.baseUrl`,
+        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
@@ -3051,6 +3047,7 @@ function nativeRuntimeConfiguration(
     return {
       id,
       api,
+      baseUrl: endpoint,
       name: isNonEmptyString(entry.name) ? entry.name : id,
       contextWindow,
       maxTokens,
@@ -3069,7 +3066,7 @@ function nativeRuntimeConfiguration(
     models: {
       providers: {
         openai: {
-          baseUrl: "https://api.openai.com/v1",
+          baseUrl: runtimeModels[0]!.baseUrl,
           apiKey: { source: "env", provider: "model", id: MODEL_API_KEY },
           models: runtimeModels,
         },
@@ -3092,7 +3089,11 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   }
   return {
     configuration: JSON.stringify(
-      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+      nativeRuntimeConfiguration(
+        revision.configuration,
+        preparationSettingError,
+        revision.harnessAuth.method,
+      ),
     ),
   };
 }
@@ -4463,7 +4464,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError);
+      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
