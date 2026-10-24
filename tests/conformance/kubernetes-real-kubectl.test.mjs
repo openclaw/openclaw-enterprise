@@ -1561,7 +1561,6 @@ test(
         const env = {
           ...process.env,
           TOPOLOGY_TEARDOWN_RECORD: record,
-          OCC_TEST_SKILL_SOURCE_LIFECYCLE: "1",
           OCC_TEST_SLACK_PROXY_URL: "http://127.0.0.1:3128",
           OCC_TEST_SLACK_CHANNEL_ID: "C0",
           OCC_TEST_SLACK_SENDER_BOT_TOKEN: "xoxb-sender",

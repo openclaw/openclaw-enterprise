@@ -5,8 +5,8 @@ const scenarioPresets = {
   "model-ui": ["OpenClaw", "Codex"],
   "console-secrets": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
-  "git-full": ["OpenClaw", "Codex"],
-  "git-read": ["Codex"],
+  "git-write": ["OpenClaw", "Codex"],
+  "git-push-denied": ["Codex"],
   slack: ["Codex"],
 };
 

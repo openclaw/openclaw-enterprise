@@ -1,3 +1,4 @@
+import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import type {
@@ -31,6 +32,7 @@ import {
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
+import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { currentComputeAbortSignal, withComputeAbortSignal } from "../operation-context.ts";
 import {
   AGENT_READINESS_ENTRYPOINT,
@@ -430,6 +432,15 @@ export class DockerComputeDriver implements ComputeDriver {
   private lifecycleStarted = false;
   private podmanApi = false;
 
+  /**
+   * Every topology runs one gateway container per Agent, so a candidate replaces the active
+   * revision's gateway. Exclusive replacement makes the worker stop predecessors first and stop
+   * a refused candidate, instead of leaving it serving under the predecessor (finding 1800).
+   */
+  requiresStoppedPredecessors(): boolean {
+    return true;
+  }
+
   constructor(options: DockerComputeDriverOptions) {
     required(options.images.gateway, "Docker gateway image");
     required(options.images.agent, "Docker Codex Agent image");
@@ -543,10 +554,17 @@ export class DockerComputeDriver implements ComputeDriver {
     );
   }
 
+  validateExecutionAdmission(
+    revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,
+  ): void {
+    assertExecutionReleaseAllowed(revision);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): Promise<ComputeReadiness> {
+    assertExecutionReleaseAllowed(revision);
     if (revision.harnessAuth !== undefined) {
       this.validateHarnessAuth();
     }
@@ -640,28 +658,14 @@ export class DockerComputeDriver implements ComputeDriver {
       gatewayCreated = gateway.created ? gateway.containerName : undefined;
       return { ...result, ready: gateway.ready };
     } catch (error) {
-      const failures = [error];
-      for (const name of [gatewayCreated, agentCreated]) {
-        if (name === undefined) {
-          continue;
-        }
-        try {
-          await this.removeContainer(name);
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (launchPrepared) {
-        try {
-          await this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true });
-        } catch (cleanupError) {
-          failures.push(cleanupError);
-        }
-      }
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Docker workload preparation and cleanup failed.");
-      }
-      throw error;
+      throw await failureAfterCleanup(error, "Docker workload preparation and cleanup failed.", [
+        ...[gatewayCreated, agentCreated]
+          .filter((name): name is string => name !== undefined)
+          .map((name) => () => this.removeContainer(name)),
+        ...(launchPrepared
+          ? [() => this.lifecycle.beforeWorkloadStop(prepared, { cleanup: true })]
+          : []),
+      ]);
     }
   }
 

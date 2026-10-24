@@ -62,14 +62,12 @@ creation are deferred; `exec` runs inside the selected Harness sandbox.
 
 ## Configuration
 
-Select `drivers.sandbox` in trusted Installation YAML. OpenShell requires the
-bundled Kubernetes Compute Driver; installed Compute Drivers fail startup.
-Select an [`openshell` Backend](../backends.md#openshell-gateway) whose
-`drivers.sandbox` matches this ID and its
-[Credential Gateway](openshell-credential-gateway.md#configure-the-driver) member.
-The Backend owns connections; Sandbox configuration rejects `endpoint`,
-`scheme`, `serviceName`, `port`, `auth`, `requestTimeoutMs`, and
-`rootCertificatePath` in `gateway`.
+Select `drivers.sandbox` in Installation YAML with bundled Kubernetes Compute;
+installed Compute Drivers fail startup. Its [`openshell` Backend](../backends.md#openshell-gateway)
+must match this ID and the [Credential Gateway](openshell-credential-gateway.md#configure-the-driver).
+Backend `rootCertificatePath` supplies public CA trust for the Agent Gateway's WSS
+endpoint. Sandbox `gateway` rejects connection fields: `endpoint`, `scheme`,
+`serviceName`, `port`, `auth`, `requestTimeoutMs`, and `rootCertificatePath`.
 
 ```yaml
 drivers:
@@ -249,8 +247,8 @@ supervisor rereads it before node retries and retains valid setup during project
 gaps. The raw app-server token stays outside the provider. Plugins and repository
 broker configuration fail before creation.
 
-Agent revision cleanup deletes the Sandbox before its runtime provider; Namespace
-cleanup removes unused profiles. Adoption requires matching
+Agent revision cleanup deletes the Sandbox before its Git and runtime providers; Namespace
+cleanup removes leftover Git providers and unused profiles. Adoption requires matching
 Namespace, Agent, and Agent revision IDs and nonsecret configuration,
 except when renewing an expired setup envelope. Failed or timed-out Sandbox creation may complete remotely. The provider remains
 for normal Agent revision cleanup with the Sandbox.

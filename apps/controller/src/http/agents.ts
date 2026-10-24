@@ -128,17 +128,11 @@ async function listRepositoryOptions({
   params,
   namespaceId,
 }: Parameters<ResourceHandler>[0]) {
-  const query = request.query as { descriptionRefs?: string };
-  const descriptionRefs = query.descriptionRefs?.split(",") ?? [];
-  if (new Set(descriptionRefs).size !== descriptionRefs.length) {
-    throw failure(400, "INVALID_REQUEST", "Repository description references must be unique.");
-  }
   const result = await controller
     .listRepositoryOptions(
       context.actorId,
       namespaceId,
       context.operation.operationId === "listAgentRepositoryOptions" ? params.agentId : undefined,
-      descriptionRefs,
     )
     .catch((error: unknown) => {
       if (error instanceof RepositoryOptionsUnavailableError) {
@@ -153,7 +147,7 @@ async function listRepositoryOptions({
       allowedProfiles,
       ...(description === undefined ? {} : { description }),
     })),
-    meta: { requestId: request.id, descriptionsPending: result.descriptionsPending },
+    meta: { requestId: request.id },
   });
 }
 
@@ -187,6 +181,50 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
   return {
     listRepositoryOptions,
     listAgentRepositoryOptions: listRepositoryOptions,
+    async listAgentStandingApprovals({ controller, context, namespaceId, params, request, reply }) {
+      const data = await controller.listAgentStandingApprovals(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
+    async listAgentStandingApprovalScopes({
+      controller,
+      context,
+      namespaceId,
+      params,
+      request,
+      reply,
+    }) {
+      const data = await controller.listAgentStandingApprovalScopes(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.header("cache-control", "no-store").send({ data, meta: { requestId: request.id } });
+    },
+    async removeAgentStandingApproval({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      reply,
+      mutationEvent,
+      transactIAM,
+    }) {
+      await transactIAM(async (unit) => {
+        await controller.removeAgentStandingApproval(context.actorId, {
+          namespaceId,
+          agentId: params.agentId!,
+          approvalId: params.approvalId!,
+          expectedGeneration: (body as { expectedGeneration: number }).expectedGeneration,
+        });
+        await unit.audit.append(mutationEvent({ kind: "agent", id: params.agentId!, namespaceId }));
+      });
+      reply.status(204).send();
+    },
     async provisionAgent({
       controller,
       context,
@@ -309,13 +347,20 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
       body,
       namespaceId,
       mutationEvent,
+      transactIAM,
     }) {
       const agentId = params.agentId!;
-      const agent = await controller.transact(async (unit) => {
+      const update = body as Omit<UpdateAgentInput, "namespaceId" | "agentId">;
+      // Standing approval changes hold the same session authority as an IAM policy write.
+      const transact =
+        update.repositoryStandingApproval === undefined
+          ? controller.transact.bind(controller)
+          : transactIAM;
+      const agent = await transact(async (unit) => {
         const updated = await controller.updateAgent(
           context.actorId,
           {
-            ...(body as Omit<UpdateAgentInput, "namespaceId" | "agentId">),
+            ...update,
             namespaceId,
             agentId,
           },

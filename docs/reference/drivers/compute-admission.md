@@ -132,6 +132,8 @@ applies the same
 with the same messages, at Agent save and in preparation. It accepts both paths on
 either topology, since one volume backs both, and also refuses `skipBootstrap`
 and `skipOptionalBootstrapFiles` on `agents.defaults` or `main`.
+SSH Compute applies the shared roster rule, with its message, at Agent save; the
+host checks the workspace path, under the Agent's own directory, at deployment.
 
 ## Related
 

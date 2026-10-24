@@ -47,7 +47,7 @@ const exchange = (port, path, body = Buffer.alloc(0), headers = {}) =>
   });
 
 test(
-  "gateway profiles preserve Reader reads, Contributor PR work and Collaborator issue work",
+  "development token sessions enforce configured REST and read-only GraphQL permissions",
   { timeout: 20000 },
   async (t) => {
     const fixture = await startCredentialServiceFixture(t, {
@@ -94,8 +94,7 @@ test(
       method: "POST",
       body: { query: "query { viewer { login } }" },
     });
-    assert.equal(graphRead.status, 200);
-    assert.equal(JSON.parse(graphRead.body).data.viewer.login, "fixture-bot");
+    assert.equal(graphRead.status, 400);
 
     const pull = await gatewayRequest(fixture, `${path}/pulls`, {
       method: "POST",
@@ -144,14 +143,6 @@ test(
     assert.equal(fixture.github.trace.length, before);
     assert.equal(fixture.github.issues.get(issue).title, "Collaborator issue");
 
-    // Shared conversation routes defer issue-versus-PR authority to the provider token.
-    // This controlled provider models its refusal; it is not live GitHub qualification.
-    const ordinaryComment = await gatewayRequest(fixture, `${path}/issues/${issue}/comments`, {
-      method: "POST",
-      body: { body: "refused ordinary issue discussion" },
-    });
-    assert.equal(ordinaryComment.status, 403);
-    assert.equal(fixture.github.comments.size, 1);
     assert.equal(
       (
         await gatewayRequest(collaborator, `${path}/issues/${issue}/comments`, {
@@ -161,23 +152,7 @@ test(
       ).status,
       201,
     );
-
-    // Even Reader GraphQL is dispatched once as a possible write; no replay is
-    // introduced when the provider response disappears.
-    fixture.github.disconnectAfterMutation("POST", "/graphql");
-    const graphBefore = fixture.github.trace.length;
-    const lost = await gatewayRequest(reader, "/graphql", {
-      method: "POST",
-      body: { query: "query { viewer { login } }" },
-    });
-    assert.equal(lost.status, 502);
-    assert.equal(fixture.github.trace.length, graphBefore + 1);
-    assert.equal(fixture.github.issuesOfTokens.length, 3);
-    assert.ok(
-      fixture.github.issuesOfTokens.every(
-        (token) => token.repositoryIds.length === 1 && token.repositoryIds[0] === 73,
-      ),
-    );
+    assert.equal(fixture.github.issuesOfTokens.length, 0);
     assert.deepEqual(fixture.github.errors, []);
   },
 );
@@ -187,7 +162,8 @@ test(
   { timeout: 15000 },
   async (t) => {
     const fixture = await startCredentialServiceFixture(t, {
-      profile: "git-read",
+      profile: "git-write",
+      configuration: { allowGraphql: true },
       gateway: { listen: "127.0.0.1:0" },
     });
     const repository = 'repository(owner: "fixture", name: "repository")';

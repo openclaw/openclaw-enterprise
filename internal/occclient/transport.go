@@ -188,7 +188,10 @@ func (client *Client) send(method string, segments []string, body any) (any, err
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		return nil, client.apiError(status, header, responseBody)
 	}
+	return decodeResponseData(status, responseBody)
+}
 
+func decodeResponseData(status int, responseBody []byte) (any, error) {
 	var envelope responseEnvelope
 	if err := json.Unmarshal(responseBody, &envelope); err != nil || len(envelope.Data) == 0 || len(envelope.Meta) == 0 {
 		return nil, fmt.Errorf("OCC returned an invalid response (HTTP %d)", status)

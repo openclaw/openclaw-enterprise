@@ -756,11 +756,23 @@ func TestDeploymentStatusTableShowsErrorAsCodeAndMessage(t *testing.T) {
 func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
 	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	agentPath := "GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID
 	_, _, err := runOCC(t, map[string]string{
-		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions": `[]`,
+		agentPath + "/revisions":   `[]`,
+		agentPath + "/permissions": `{"update":true,"deploy":true,"operate":true,"delete":true}`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
 	if err == nil || !strings.Contains(err.Error(), `run "occ --namespace `+testNamespaceID+` agent deploy `+testAgentID+`" first`) {
 		t.Fatalf("expected a deploy hint, got %v", err)
+	}
+	// The list is filtered by revision read, so a caller who cannot deploy hears
+	// which grant lists revisions instead (finding 522).
+	_, _, err = runOCC(t, map[string]string{
+		agentPath + "/revisions":   `[]`,
+		agentPath + "/permissions": `{"update":false,"deploy":false,"operate":false,"delete":false}`,
+	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
+	want := "agent " + testAgentID + " has no revision you can read; listing revisions needs revision read (ask an administrator to grant it)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("reader error = %v, want %q", err, want)
 	}
 }
 

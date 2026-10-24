@@ -390,53 +390,10 @@ describe("CI preparation", { concurrency }, () => {
     ACTIONS_RESULTS_URL: "https://cache.example.test/",
   };
 
-  // The docker shim records argv only: this proves the cache credential stays out of
-  // build arguments and every output preparation hands on, not out of docker's environment.
-  test("repository platform preparation restores the runtime image cache without exporting it", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "success",
-      "repository-credentials-platform",
-      imageCacheEnv,
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    const calls = (await commands.commands()).filter(({ command }) => command === "docker");
-    const runtime = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--load"));
-    assert.equal(runtime.length, 1);
-    const { args } = runtime[0];
-    // The engine lacked the probed image, so the lane loaded the build.
-    const probes = calls.filter(({ args }) => args[0] === "buildx" && args.includes("--output"));
-    assert.deepEqual(
-      probes.map(({ args: probe }) => probe.slice(7)),
-      [args.slice(3)],
-    );
-    assert.deepEqual(args.slice(0, 3), ["buildx", "build", "--load"]);
-    assert.equal(
-      args[args.indexOf("--cache-from") + 1],
-      `type=gha,version=2,scope=oce-ci-runtime-${process.platform}-${process.arch}-v1,timeout=60s`,
-    );
-    assert.equal(args.includes("--cache-to"), false);
-    // The fixture derives from the loaded runtime image through the engine's own builder.
-    const fixtureBuilds = calls.filter(({ args }) => args[0] === "build");
-    assert.equal(fixtureBuilds.length, 1);
-    assert.equal(fixtureBuilds[0].args[fixtureBuilds[0].args.indexOf("--builder") + 1], "default");
-    assert.ok(fixtureBuilds[0].args.includes(`RUNTIME_IMAGE=${args[args.indexOf("-t") + 1]}`));
-    const state = await readFile(commands.statePath, "utf8");
-    const githubEnv = await readFile(commands.githubEnv, "utf8");
-    assert.match(githubEnv, /^OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE=/m);
-    assert.doesNotMatch(
-      JSON.stringify(calls) + state + githubEnv + prepared.stdout + prepared.stderr,
-      /synthetic-cache-credential/,
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-  });
-
   test("image cache preparation refuses missing credentials and unmapped lanes before building", async (t) => {
     for (const [lane, env] of [
       // A cache lane without its runtime token.
-      ["repository-credentials-platform", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
+      ["images-packaging", { ...imageCacheEnv, ACTIONS_RUNTIME_TOKEN: "" }],
       // A lane outside the cache map, even with credentials.
       [
         "docker-model",
@@ -492,6 +449,14 @@ describe("CI preparation", { concurrency }, () => {
         assert.equal(args[args.indexOf("--cache-from") + 1], `${cache},timeout=60s`, event);
         assert.equal(args.includes("--cache-to"), false, event);
       }
+      assert.doesNotMatch(
+        JSON.stringify(calls) +
+          (await readFile(commands.statePath, "utf8")) +
+          (await readFile(commands.githubEnv, "utf8")) +
+          prepared.stdout +
+          prepared.stderr,
+        /synthetic-cache-credential/,
+      );
       const cleaned = await commands.cleanup();
       assert.equal(cleaned.status, 0, `${event}: ${cleaned.stderr}`);
     }
@@ -983,77 +948,13 @@ describe("CI preparation", { concurrency }, () => {
   test("ordinary k3d preparation rejects mutable K3s overrides before creating state", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "state.json");
-    const result = await runPrepare(
-      ["--lane", "repository-credentials-platform", "--state", statePath],
-      {
-        OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
-        OCC_DOCKER_BIN: join(root, "no-docker-command"),
-      },
-    );
+    const result = await runPrepare(["--lane", "k3d-fixture-state", "--state", statePath], {
+      OPENCLAW_CI_K3S_IMAGE: "rancher/k3s:latest",
+      OCC_DOCKER_BIN: join(root, "no-docker-command"),
+    });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /OPENCLAW_CI_K3S_IMAGE must be an immutable/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
-  });
-
-  test("repository platform preparation binds runtime clients, an owned gateway and a fresh migrated database", async (t) => {
-    const commands = await fixtureImageCommands(t, "success", "repository-credentials-platform");
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 0, prepared.stderr);
-    for (const phase of [
-      "postgres-start",
-      "k3d-create",
-      "runtime-image-build",
-      "platform-fixture-build",
-      "postgres-cluster-image-build",
-      "image-stream-import",
-      "platform-image-import",
-    ]) {
-      assert.match(
-        prepared.stderr,
-        new RegExp(
-          `\\[ci-timing\\] lane=repository-credentials-platform phase=${phase} duration_ms=\\d+`,
-        ),
-      );
-    }
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const cluster = state.resources.find(({ kind }) => kind === "k3d-cluster");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM, "1");
-    assert.equal(state.env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS, "172.19.0.1");
-    assert.match(
-      state.env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE,
-      new RegExp(
-        `^localhost/openclaw-ci-image-[a-z0-9-]+/repository-platform@sha256:${"c".repeat(64)}$`,
-      ),
-    );
-    const imported = state.resources.find(({ kind }) => kind === "k3d-image");
-    assert.equal(imported.cluster, cluster.name);
-    assert.equal(imported.status, "ready");
-    assert.equal(state.env.OPENAI_API_KEY, undefined);
-
-    const file = await commands.prepareFile(
-      "tests/integration/repository-credentials-platform.test.mjs",
-    );
-    assert.equal(file.status, 0, file.stderr);
-    const migrated = JSON.parse(await readFile(commands.statePath, "utf8"));
-    const database = migrated.resources.find(({ kind }) => kind === "postgres-database");
-    assert.match(database.name, /^openclaw_k8s_/);
-    assert.equal(database.status, "ready");
-    const calls = await commands.commands();
-    assert.ok(
-      calls.some(({ command, args }) => command === "corepack" && args[1] === "db:migrate"),
-    );
-    const builds = calls.filter(({ command, args }) => command === "docker" && args[0] === "build");
-    assert.equal(builds.length, 2);
-    for (const { args } of builds) {
-      assert.equal(args[args.indexOf("--builder") + 1], "default");
-      assert.ok(args.includes("--load"));
-    }
-    assert.ok(
-      builds[1].args.includes(`RUNTIME_IMAGE=${builds[0].args[builds[0].args.indexOf("-t") + 1]}`),
-    );
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-    await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
   test("PostgreSQL CI selects and contains the per-file IAM barrier fixture", async (t) => {
@@ -1479,31 +1380,6 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.deepEqual(await readdir(root), ["order"]);
   });
 
-  test("repository platform preparation refuses a public relay gateway before importing images", async (t) => {
-    const commands = await fixtureImageCommands(
-      t,
-      "public-gateway",
-      "repository-credentials-platform",
-    );
-    const prepared = await commands.prepare();
-    assert.equal(prepared.status, 1);
-    assert.match(prepared.stderr, /private IPv4 Docker host gateway/);
-    // The image builds overlap cluster creation; nothing reaches the refused cluster.
-    assert.equal(
-      (await commands.commands()).some(({ args }) => args[0] === "exec" && args[1] === "-i"),
-      false,
-    );
-    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
-    assert.equal(
-      state.resources.some(({ kind }) => kind === "k3d-image"),
-      false,
-    );
-    assert.equal(state.env, undefined);
-    await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
-    const cleaned = await commands.cleanup();
-    assert.equal(cleaned.status, 0, cleaned.stderr);
-  });
-
   test("installed repository preparation is refused before prerequisite checks or side effects", async (t) => {
     const root = await fixture(t);
     const statePath = join(root, "installed-state.json");
@@ -1676,10 +1552,10 @@ for (let index = 0; index < Number(times); index += 1) {
     ]);
   });
 
-  test("ordinary CI groups require platform proof and exclude installed live repository writes", async () => {
+  test("ordinary CI groups require controlled repository coverage and exclude installed live repository writes", async () => {
     const manifest = loadTestSuites(join(repositoryRoot, "scripts/ci/test-suites.json"));
     for (const name of ["ci", "full"]) {
-      assert.ok(manifest.groups[name].includes("repository-credentials-platform"));
+      assert.ok(manifest.groups[name].includes("repository-credentials-container"));
       assert.ok(!manifest.groups[name].includes("repository-credentials-installed"));
       for (const lane of manifest.groups[name]) {
         assert.notEqual(manifest.lanes[lane].env?.OCC_TEST_REPOSITORY_CREDENTIALS_REAL, "1");

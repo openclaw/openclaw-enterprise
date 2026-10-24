@@ -70,13 +70,15 @@ gatewayRouting:
 
 # Opt in only after provisioning Namespace IDs and the referenced immutable registry,
 # protected service configuration, App key, TLS certificate and separate public CA.
-# The matching Installation must select repo and its Compute peer.
+# The matching Installation selects repository.nativeSender, preparedGitHub and its Compute peer.
 repositoryCredentials:
   enabled: false
   # image: registry.example.invalid/openclaw-enterprise/repository-credentials@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
   # backendId: github-primary
   # registryConfigMapName: occ-repository-registry-v1
   # serviceConfigSecretName: occ-repository-service-config
+  # authority: prepared-git
+  # preparedCustodySecretName: occ-repository-custody
   # appKeySecretName: occ-repository-app-key
   # tlsSecretName: occ-repository-tls
   # publicCaSecretName: occ-repository-public-ca
