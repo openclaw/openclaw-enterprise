@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { validateHeaderValue } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import type {
   AgentRevision,
@@ -135,6 +136,12 @@ export function humanRuntimeAccess(
   if (!Array.isArray(scopes) || scopes.some((scope) => typeof scope !== "string")) {
     return { reason: "role_unavailable" };
   }
+  const scopeHeader = scopes.join(",");
+  try {
+    validateHeaderValue("x-openclaw-scopes", scopeHeader);
+  } catch {
+    return { reason: "role_unavailable" };
+  }
   const sharedAdministrator =
     !hasRuntimeRoleConfiguration(revision.configuration) &&
     runtimeRole === ADMINISTRATOR_RUNTIME_ROLE;
@@ -172,7 +179,7 @@ export function humanRuntimeAccess(
           "x-occ-identity": `${RUNTIME_PERSON_IDENTITY_PREFIX}${principalId}`,
           [RUNTIME_ROLE_HEADER]: encodeURIComponent(runtimeRole),
           [RUNTIME_ROLE_POLICY_HEADER]: runtimeRolePolicyHash(role.permissions),
-          "x-openclaw-scopes": scopes.join(","),
+          "x-openclaw-scopes": scopeHeader,
         },
   };
 }

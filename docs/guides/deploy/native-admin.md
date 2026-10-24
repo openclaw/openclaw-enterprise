@@ -157,7 +157,7 @@ its matching identity fields and opt-in settings in the saved Configuration.
 
 ## Configure each Agent
 
-Configure each Agent after the API feature and wildcard route are enabled. Deploy the Agent, then assign your existing Principal ID through **Share Agent**. Kubernetes offers `platform-administrator` for full native access without defining named roles. To use restricted roles and individual native profiles, configure and deploy `gateway.roles` first, then select a configured role. Without that assignment, the status endpoint returns `403`, including for Installation administrators. For configured roles, Kubernetes adds the trusted role headers and reserved service and administrator policies; retain canonical native role definitions in OCE. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+Enable the API feature and wildcard route, deploy the Agent, then assign your Principal ID through **Share Agent**. Kubernetes offers `platform-administrator` without named roles. For restricted roles and individual profiles, configure and deploy `gateway.roles` first. Without an assignment, status returns `403`, including for Installation administrators. Kubernetes adds trusted role headers and reserved policies; keep native role definitions in OCE. The Agent must trust its exact derived origin. Open this status URL in an authenticated console browser before the final redeploy:
 
 ```text
 https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
@@ -323,8 +323,13 @@ Check the [session lifetime](../../reference/authentication.md#session-lifecycle
 before changing configuration: password-only sessions last seven days; sessions
 with external sign-in enabled last eight hours. Native Agent activity does not
 refresh them. An Agent revision change closes native WebSockets without expiring
-the OCE login. After expiry, reload the Agent root or open its console page to
-sign in again; native recovery ends at Agent detail.
+the OCE login.
+
+If an open Gateway tab offers **Reconnect in browser**, select it. Your sign-in
+may have expired, or your access may have changed. If OCE asks you to sign in,
+it checks your access again and returns you to that Agent’s detail page. Select
+**Open admin console** to continue. With an older runtime, open the Agent root
+or its console page to start the same recovery.
 
 If expiry coincides with controller restarts, check persistent session storage
 and whether the configured auth secret changed. In-memory sessions disappear

@@ -434,6 +434,7 @@ async function missingProfileFixture(t, observations, options = {}) {
       ),
     reads: () => missingReads,
     installations: () => installations,
+    applied: () => [...applied.values()],
     async assertCleanup() {
       assert.equal(cleanupCalls, 1);
       assert.equal(
@@ -480,6 +481,21 @@ for (const [label, first] of [
     await control.assertCleanup();
   });
 }
+
+// Each probe's Node process is PID 1 and ignores SIGTERM. Local Setup's cleanup
+// (prepareDevelopmentCodexSeccompProfile) waits for the probe Namespace, so the
+// default 30 s grace was idle time. Both paths share this Pod spec; the CI path
+// is the one with an offline fixture.
+test("codex seccomp probe Pods stop within a one-second grace period", async (t) => {
+  const control = await missingProfileFixture(t, [missingProfileWaiting]);
+  await control.run();
+  const pods = control.applied();
+  assert.equal(pods.length, 3, "RuntimeDefault, installed-profile and missing-profile probes");
+  for (const pod of pods) {
+    assert.equal(pod.spec.terminationGracePeriodSeconds, 1, pod.metadata.name);
+  }
+  await control.assertCleanup();
+});
 
 test("missing-profile preparation preserves pending timeout and cleanup", async (t) => {
   const control = await missingProfileFixture(t, [{ name: "probe" }], { timeoutMs: 5 });

@@ -15,6 +15,7 @@ import {
   CredentialGatewayNotConfiguredError,
   CredentialSourceConfigError,
   CredentialSourceDriverError,
+  CredentialTokenUnsettledError,
   CredentialWithdrawalInProgressError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -33,6 +34,9 @@ import {
   PostgresCommitOutcomeUnknownError,
   ResourceConflictError,
   ResourceStateConflictError,
+  ProtectedExecutionNetworkPolicyError,
+  RepositoryGitProfileUnsupportedError,
+  RepositoryGitSenderUnqualifiedError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsError,
   ScopeViolationError,
@@ -720,6 +724,10 @@ export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof CredentialGatewayNotConfiguredError) {
     return failure(409, "CREDENTIAL_GATEWAY_NOT_CONFIGURED", error.message);
   }
+  if (error instanceof CredentialTokenUnsettledError) {
+    // Names only the retry time; raised only after delete on the source and its lookup.
+    return failure(409, "CREDENTIAL_TOKEN_UNSETTLED", error.message);
+  }
   if (error instanceof CredentialWithdrawalInProgressError) {
     // A fixed message naming the way out; raised only after delete on the source and its lookup.
     return failure(409, "CREDENTIAL_WITHDRAWAL_IN_PROGRESS", error.message);
@@ -821,6 +829,20 @@ export function requestFailure(error: unknown): RequestFailure {
     return failure(409, "RESOURCE_CONFLICT", error.message, [
       { path: "/expectedGeneration", code: "INVALID_VALUE" },
     ]);
+  }
+  if (error instanceof RepositoryGitProfileUnsupportedError) {
+    // Finding 2204: raised only after the deploy grant, with a fixed message naming the
+    // supported delivery profiles.
+    return failure(409, RepositoryGitProfileUnsupportedError.code, error.message);
+  }
+  if (error instanceof RepositoryGitSenderUnqualifiedError) {
+    // Finding 2199: raised only after the deploy grant, with a fixed message naming the
+    // Installation capability and the supported alternatives.
+    return failure(409, RepositoryGitSenderUnqualifiedError.code, error.message);
+  }
+  if (error instanceof ProtectedExecutionNetworkPolicyError) {
+    // Finding 2053: raised only after the caller's policy or deploy grants, with a fixed message.
+    return failure(409, "SANDBOX_POLICY_PROTECTED_EXECUTION", error.message);
   }
   if (error instanceof ResourceStateConflictError) {
     return failure(409, "RESOURCE_CONFLICT", error.message, error.details);

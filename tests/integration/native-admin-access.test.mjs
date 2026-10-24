@@ -1552,16 +1552,28 @@ test("native access explains UI, missing-role and pairing failures after deploym
   const context = await createNativeAdminFixture(t);
   const { fixture, namespace, agent, revision } = context;
   let previousRevisionId = revision.id;
-  for (const reason of ["ui_configuration", "role_unavailable", "device_approval_required"]) {
+  for (const scenario of [
+    "ui_configuration",
+    "role_unavailable",
+    "device_approval_required",
+    "invalid_scope_header",
+  ]) {
+    const reason = scenario === "invalid_scope_header" ? "role_unavailable" : scenario;
     const values = structuredClone(revision.configuration);
     if (reason === "ui_configuration") {
       values.gateway.controlUi.enabled = false;
     }
-    if (reason === "role_unavailable") {
+    if (scenario === "role_unavailable") {
       delete values.gateway.roles.definitions.administrator;
     }
     if (reason === "device_approval_required") {
       values.gateway.auth.trustedProxy.deviceAutoApprove.scopes = ["operator.read"];
+    }
+    if (scenario === "invalid_scope_header") {
+      // A deployed role with matching approval still cannot supply an invalid proxy header.
+      const scopes = ["operator.read\r\nx-injected: yes"];
+      values.gateway.roles.definitions.administrator.scopes = scopes;
+      values.gateway.auth.trustedProxy.deviceAutoApprove.scopes = scopes;
     }
     await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
     const deployed = await fixture.controller.deployAgent(

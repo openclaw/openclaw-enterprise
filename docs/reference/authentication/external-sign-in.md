@@ -182,7 +182,7 @@ GitHub may answer `404`, not `403`, for an organization where the App is not ins
 misspelled organization or team slug, or (unverified) an unauthorized SAML session. That
 refuses every member as `MEMBERSHIP_REQUIRED` with no warning log. If known members are
 refused, check the slugs, that the App is installed on each listed organization, and that its
-owner accepted Members: read.
+owner accepted Members: read. [Issue #3300](https://github.com/openclaw/openclaw-enterprise/issues/3300) tracks verification of GitHub’s responses when App or SAML access is missing.
 
 Membership is checked only at sign-in. Turning the list on applies from the next sign-in
 after the API restarts; existing sessions run until they expire (at most 8 hours), so revoke

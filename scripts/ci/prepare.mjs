@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, isIPv4 } from "node:net";
 import {
@@ -29,6 +29,7 @@ import {
 } from "./k3d-diagnostics.mjs";
 import { prepareGatewayRouting } from "./routing.mjs";
 import { prepareLogging, readDefaultCollectorImage } from "./logging.mjs";
+import { ownedName, randomSuffix, slug } from "./resource-names.mjs";
 import { pullImage } from "./image-pull.mjs";
 import { keycloakResourceKind, prepareKeycloak, readKeycloakImage } from "./keycloak.mjs";
 import { imageInventory, laneImagesResourceKind } from "./lane-images.mjs";
@@ -70,7 +71,6 @@ const fixtureLanes = new Set([
 const lanesWithoutK3sAddons = new Set([
   ...fixtureLanes,
   "images-runtime-startup",
-  "repository-credentials-platform",
   "k3d-observability",
 ]);
 const disabledK3sAddons = Object.freeze(["traefik", "servicelb", "metrics-server"]);
@@ -126,29 +126,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function randomSuffix(bytes = 6) {
-  return randomUUID()
-    .replaceAll("-", "")
-    .slice(0, bytes * 2);
-}
-
-function slug(value, separator = "-") {
-  return String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, separator)
-    .replace(new RegExp(`${separator}+`, "g"), separator)
-    .replace(new RegExp(`^${separator}|${separator}$`, "g"), "");
-}
-
-function ownedName(prefix, label, { maxLength = 63, separator = "-" } = {}) {
-  const suffix = randomSuffix();
-  const normalizedPrefix = slug(prefix, separator);
-  const normalizedLabel = slug(label, separator) || "resource";
-  const fixedLength = normalizedPrefix.length + suffix.length + 2;
-  const labelLength = Math.max(1, maxLength - fixedLength);
-  return [normalizedPrefix, normalizedLabel.slice(0, labelLength), suffix].join(separator);
 }
 
 function databaseName(kind, label) {
@@ -921,16 +898,13 @@ async function validateLaneInputsBeforeSideEffects(lane, env = {}) {
 }
 
 // Lanes that restore the hosted BuildKit cache. Only the main-only warm job
-// (ci-image-cache.yml) exports it, building with images-packaging's state. The
-// repository platform lane loads its runtime image into the Docker engine so a
-// default-builder fixture build can derive from it.
+// (ci-image-cache.yml) exports it, building with images-packaging's state.
 const imageCacheLanes = new Map([
   ["images-packaging", { localStore: false }],
   ["images-model-probes", { localStore: false }],
   ["images-runtime-startup", { localStore: false }],
   ["images-runtime-startup-2", { localStore: false }],
   ["images-runtime-startup-3", { localStore: false }],
-  ["repository-credentials-platform", { localStore: true }],
 ]);
 
 function imageCache(role) {
@@ -1955,53 +1929,6 @@ async function pinFixtureImageInK3d(cluster, image) {
   );
 }
 
-// The platform image needs no cluster, so the lane overlaps it with k3d creation.
-async function buildRepositoryPlatformImage(statePath, state) {
-  const runtime = await timedPreparation(state.lane, "runtime-image-build", () =>
-    buildRuntimeImages(statePath, state, { runtime: true, localStore: true }),
-  );
-  const image = `localhost/${ownedName("openclaw-ci-image", state.prefix, { maxLength: 48 })}/repository-platform:local`;
-  const resource = addResource(state, "image-tag", { name: image, owner: state.prefix });
-  await writeState(statePath, state);
-  // Derive the controlled Harness from the delivered runtime so its Git/gh
-  // clients and credential material entrypoint remain the production ones.
-  await timedPreparation(state.lane, "platform-fixture-build", () =>
-    execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-      "build",
-      "--builder",
-      "default",
-      "--load",
-      "--pull=false",
-      "--build-arg",
-      `RUNTIME_IMAGE=${runtime.env.OCC_TEST_RUNTIME_IMAGE}`,
-      "-f",
-      join(repositoryRoot, "tests/fixtures/repository-credentials/Dockerfile.platform-fixture"),
-      "-t",
-      image,
-      join(repositoryRoot, "tests/fixtures/repository-credentials"),
-    ]),
-  );
-  await markResourceReady(statePath, state, resource);
-  return image;
-}
-
-async function repositoryPlatformHostAddress(cluster) {
-  const result = await execFile(process.env.OCC_DOCKER_BIN ?? "docker", [
-    "inspect",
-    "--format",
-    "{{json .NetworkSettings.Networks}}",
-    `k3d-${cluster.name}-server-0`,
-  ]);
-  const address = JSON.parse(result.stdout)[`k3d-${cluster.name}`]?.Gateway;
-  if (
-    !isIPv4(address ?? "") ||
-    !/^(?:10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/.test(address)
-  ) {
-    throw new Error("The owned k3d network must expose a private IPv4 Docker host gateway.");
-  }
-  return address;
-}
-
 function immutableDigest(image) {
   return image.match(/@sha256:([a-f0-9]{64})$/i)?.[1]?.toLowerCase();
 }
@@ -2941,44 +2868,6 @@ async function prepareLane({ lane, statePath }) {
           1,
         ),
       );
-      break;
-    }
-    case "repository-credentials-platform": {
-      // PostgreSQL, the cluster and the image builds are independent. The
-      // gateway check runs as soon as the cluster exists, and nothing is
-      // imported into a cluster that failed it.
-      const [, { cluster, hostAddress }, platformImage] = await timedPreparation(
-        name,
-        "postgres-cluster-image-build",
-        () =>
-          prepareTogether([
-            () =>
-              timedPreparation(name, "postgres-start", () =>
-                ensurePostgresServer(resolvedStatePath, state),
-              ),
-            async () => {
-              const cluster = await timedPreparation(name, "k3d-create", () =>
-                ensureK3dCluster(resolvedStatePath, state),
-              );
-              return { cluster, hostAddress: await repositoryPlatformHostAddress(cluster) };
-            },
-            () => buildRepositoryPlatformImage(resolvedStatePath, state),
-          ]),
-      );
-      env.OCC_TEST_KUBERNETES_KUBECONFIG = cluster.kubeconfig;
-      env.OCC_TEST_KUBERNETES_CONTEXT = cluster.context;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_HOST_ADDRESS = hostAddress;
-      env.OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE = (
-        await timedPreparation(name, "platform-image-import", () =>
-          registerImageInK3d(
-            resolvedStatePath,
-            state,
-            cluster,
-            platformImage,
-            "OCC_TEST_REPOSITORY_CREDENTIALS_PLATFORM_IMAGE",
-          ),
-        )
-      ).reference;
       break;
     }
     case "repository-credentials-installed": {

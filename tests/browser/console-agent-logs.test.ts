@@ -1244,7 +1244,10 @@ test("an operator without administer sees status but no log text and is never re
     "operate",
   ]);
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
+  // A fake clock, so the 10 s status poll below runs without waiting it out in real time.
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
   const url = detailUrl(fixture, namespace.id, agent.id, revisionId, "logs");
   await login(page, fixture, url, operator.credentials);
 
@@ -1265,13 +1268,14 @@ test("an operator without administer sees status but no log text and is never re
     1,
   );
   // Status keeps polling every 10 s; the denied log view is not requested again.
+  await page.clock.runFor(10_000);
   await waitForCondition(
     () =>
       requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length >=
       2,
     "the runtime strip refreshes",
-    15_000,
   );
+  await waitForIdleFetches(page);
   assert.equal(logRequests(requests, revisionId).length, denied);
 });
 

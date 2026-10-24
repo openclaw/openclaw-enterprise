@@ -158,6 +158,8 @@ principal. It checks the saved Agent before granting access, without creating an
 A member without Installation administration gets no retry: open the saved Agent and
 ask an Installation administrator to grant it. If your permissions could not be checked,
 select **Retry permission check**.
+If the configuration check times out, your entries stay in the form. Select
+**Create Agent** again to repeat the check and continue.
 If a create response is missing or identifies a different resource, the write may still
 have succeeded. Check the displayed IDs and the Agents list before starting again.
 For an uncertain Credential Source, select **Check credential registration** to look up

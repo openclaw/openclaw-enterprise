@@ -140,6 +140,10 @@ stops reads. Missing provenance stays explicit.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
+`agents/collection.mts:renderAgentList` forwards plain clicks on row content to
+its Agent-name link. It ignores links, buttons (even disabled), modified clicks and selected text.
+Focusing the name preserves return focus. Keyboard users activate that link.
+
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
 actions, and overview appear together after access checks. Back cancels the read;
@@ -147,7 +151,7 @@ a second Back does nothing, and refocusing does not interrupt it. Other routes t
 an Agent keep the current page, or show loading after 400 ms on a fresh load.
 Once visible, loading stays at least 300 ms (`loadingMinimumMs`).
 
-Other first visits and Refresh show loading after 250 ms. A return or refocus
+Other first visits and Refresh show loading after 250 ms. Return/refocus
 keeps the current page inert, with its own header and disabled Namespace selector;
 after one second it says **Still checking…**. The Console retains up to 16 views
 by route, Namespace, and session owner, excluding passwords and discovery state.
@@ -172,8 +176,7 @@ cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, be
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
 not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
-A changed user or session key clears retained views and drafts before further
-private reads. Missing sessions open login; failed reads offer Retry.
+Changing users or sessions clears retained views and drafts before private reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
 

@@ -15,6 +15,7 @@ import {
   validateSandboxNetworkGrants,
 } from "@openclaw-enterprise/contracts";
 import {
+  SandboxNetworkPolicyConflictError,
   WorkClaimLostError,
   type ClaimedWork,
   type PlatformUnitOfWork,
@@ -184,6 +185,13 @@ export async function reconcileSandboxPolicy(
       await fail("SANDBOX_POLICY_UNSUPPORTED");
       return "permanent";
     }
+    // A protected execution runs under its exact protected egress policy; applying an
+    // Agent policy to that Sandbox would replace it. OCC refuses the application first
+    // (finding 2053); this names the same rule for work queued before that refusal.
+    if (revision.executionAdmission.mode === "protected") {
+      await fail("SANDBOX_POLICY_PROTECTED_EXECUTION");
+      return "permanent";
+    }
     try {
       const { contribution } = options.configurations.resolve(
         "sandbox",
@@ -249,6 +257,11 @@ export async function reconcileSandboxPolicy(
     } catch (error) {
       if (options.signal.aborted || error instanceof WorkClaimLostError) {
         throw error;
+      }
+      // The Driver refused the policy before applying it (finding 2144); a retry cannot help.
+      if (error instanceof SandboxNetworkPolicyConflictError) {
+        await fail("SANDBOX_POLICY_UNSUPPORTED");
+        return "permanent";
       }
       if (claim.attemptCount >= options.maxAttempts || claim.ageMs >= options.deadlineMs) {
         await fail("SANDBOX_POLICY_UNCONFIRMED");

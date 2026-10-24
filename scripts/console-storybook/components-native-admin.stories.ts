@@ -28,3 +28,4 @@ export const AdministratorNeedsAssignment = {
   name: "Administrator Needs Assignment",
 };
 export const NativeDisabled = { ...story("nativeDisabled"), name: "Disabled and hidden" };
+export const NativeRefreshing = { ...story("nativeRefreshing"), name: "Refreshing access" };

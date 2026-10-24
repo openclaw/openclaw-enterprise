@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-20
-last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
+updated: 2026-10-24
+last_updated_session: authoring-run/b03c3827-26e7-498c-a025-39aff6107cf8
 ---
 
 # Agent Native Admin UI Flow
@@ -17,7 +17,7 @@ and proxies native HTTP and WebSocket traffic.
 
 - Trigger: Console opens an Agent URL, or `scripts/first-agent.mjs --control-ui` creates a compatible local Compose/OpenShell Agent.
 - Source: `scripts/first-agent.mjs:nativeConfiguration`
-- Source: `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
+- Source: `apps/controller/src/console/agents/runtime-access.mts:renderRuntimeAccess`
 - Source: `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 - Assumptions: The API has a valid controller session, `agentNativeAdmin.enabled` is true, `agentNativeAdmin.domain` and `agentNativeAdmin.sharedCookieDomain` are configured, Better Auth emits the shared session cookie at that parent domain, and private Agent gateway routing can return a `ComputeDriver.getAgentRuntimeAccess` value.
 
@@ -84,7 +84,7 @@ An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
 
-`apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
+`apps/controller/src/console/agents/runtime-access.mts:renderRuntimeAccess`
 
 Agent detail reads `${path}/native-admin`. Disabled responses and ordinary-user denials hide the panel; denied Installation administrators see self-assignment guidance and **Refresh access**. Other states explain refusals. Only `available` shows **Open OpenClaw** with `noopener noreferrer`.
 
@@ -149,11 +149,7 @@ When enabled, native admin passes the configured shared cookie domain to Better 
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook intercepts the native admin domain before routing, so an
-Agent origin cannot expose console or controller routes. OCC authenticates the
-shared session, resolves the IAM identity and exact Agent, requires `use` and a runtime assignment,
-then checks the selected version and native configuration. An attributable IAM
-denial records the human and Agent in the denial audit.
+The `onRequest` hook intercepts Agent hosts before routing, excluding console/controller routes. OCC authenticates the shared session, resolves the human and exact Agent, requires `use` and a runtime assignment, and checks the selected version and native configuration. IAM denials audit the human and Agent.
 
 Without a valid session, a user-activated, top-level HTML GET to `/`,
 `/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
@@ -193,7 +189,7 @@ The proxy requires an exact, non-null Agent `Origin`, sanitizes the request and 
 `apps/controller/src/drivers/compute/kubernetes/runtime-access.ts:humanRuntimeAccess`
 `deploy/runtime/openclaw-trusted-proxy-role.patch`
 
-Kubernetes offers configured roles and reserved `platform-administrator`. [Runtime access](../reference/agent-native-admin.md#who-can-open-it) defines upgrade grants and administrator compatibility. Malformed roles deny entry.
+Kubernetes offers configured roles and `platform-administrator`; [runtime access](../reference/agent-native-admin.md#who-can-open-it) defines upgrade grants and compatibility. Malformed roles deny entry. `humanRuntimeAccess` rejects invalid scope headers with `role_unavailable` before proxy handoff.
 
 Configured roles use `/people/namespaces/<namespaceId>/agents/<agentId>`, `oce:<Principal ID>` and a policy digest; service traffic uses `/namespaces`. Preparation preserves the serving route across failed candidates; role-free successors leave it for predecessor retirement. OCC overwrites browser authority headers.
 
@@ -261,6 +257,8 @@ checks role changes and selective revocation with real model turns.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 09:18: Trace scope-header rejection before proxy handoff. (authoring-run/b03c3827-26e7-498c-a025-39aff6107cf8 - 04fa993cf6562e5d2eedf6ee4dae37e2cc7eb82c)
 
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 

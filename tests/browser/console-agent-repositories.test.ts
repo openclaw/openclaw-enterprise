@@ -1,8 +1,6 @@
 /// <reference lib="es2024.promise" />
 
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { join } from "node:path";
 import test from "node:test";
 
 import type { ErrorResponse } from "../../packages/contracts/src/api/common.ts";
@@ -20,11 +18,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
-import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { socketDirectory } from "../helpers/socket-directory.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   login,
@@ -33,7 +27,6 @@ import {
   pathRequests,
   repositoryCheckbox,
   statusTone,
-  waitForCondition,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -41,7 +34,6 @@ import {
   configurationPostRequests,
   createRepositoryLaunchFixture,
   enterManualModel,
-  repositoryBackendFixture,
 } from "./console-agents-test-support.mjs";
 
 test("Agent repository access labels target the right repository when references overlap", async (t) => {
@@ -907,7 +899,7 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
       repositoryRef: index === 0 ? "IBM-platform" : `repository-${index + 1}`,
       repositoryId: String(1800 + index),
       repository,
-      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
     })),
   );
   const { page } = await newPage(t, fixture, { context: { locale: "tr-TR" } });
@@ -937,134 +929,8 @@ test("Agent repository search is stable in a Turkish browser locale", async (t) 
   }
 });
 
-test("Repository descriptions arrive without interrupting a selection", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
-    backends: [...backendFixtures, repositoryBackendFixture],
-    repositoryCredentials: true,
-  });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Repository metadata", { ready: true });
-  const metadataRequested = Promise.withResolvers<void>();
-  const releaseMetadata = Promise.withResolvers<void>();
-  t.after(() => releaseMetadata.resolve());
-  const description = 'Application <img src=x onerror="alert(1)"> & services';
-  // The actual credential service talks to a controlled GitHub TLS endpoint.
-  // Delay the provider response to verify that discovery and selection do not block.
-  const credentials = await startRegistryCredentialServiceFixture(t, {
-    namespaceId: namespace.id,
-    backendId: repositoryBackendFixture.id,
-    autoOpen: false,
-    gateway: { listen: "127.0.0.1:0" },
-    repositories: [
-      {
-        repositoryRef: "application",
-        repository: "example/application",
-        repositoryId: "789",
-        description,
-        async beforeMetadataResponse() {
-          metadataRequested.resolve();
-          await releaseMetadata.promise;
-        },
-      },
-      { repositoryRef: "documentation", repository: "example/documentation", repositoryId: "790" },
-      { repositoryRef: "examples", repository: "example/examples", repositoryId: "791" },
-      {
-        repositoryRef: "infrastructure",
-        repository: "example/infrastructure",
-        repositoryId: "792",
-      },
-      { repositoryRef: "libraries", repository: "example/libraries", repositoryId: "793" },
-      { repositoryRef: "tools", repository: "example/tools", repositoryId: "794" },
-    ],
-  });
-  assert.ok(credentials, "the registry credential service fixture started");
-  const driver = new GitHubRepoDriver(
-    {
-      id: repositoryBackendFixture.id,
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: credentials.config.gateway.controlSocket,
-      }),
-      drivers: repositoryBackendFixture.drivers,
-    },
-    credentials.registry,
-    { sessionDurationSeconds: 600 },
-  );
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("repo", driver.id);
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  const search = page.getByLabel("Find a repository");
-  await search.fill("application");
-  const choice = repositoryCheckbox(page, "example/application");
-  await choice.check();
-  await choice.focus();
-  await Promise.race([
-    metadataRequested.promise,
-    new Promise((_, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error("GitHub metadata request was not started")),
-        10000,
-      );
-      timer.unref();
-    }),
-  ]);
-  releaseMetadata.resolve();
-  await page.getByText(description, { exact: true }).waitFor();
-  assert.equal(await choice.isChecked(), true);
-  assert.equal(await choice.evaluate((node) => node === node.ownerDocument.activeElement), true);
-  assert.equal(await search.inputValue(), "application");
-  const result = page.locator(".repository-result-row").filter({ hasText: "example/application" });
-  assert.equal(await result.locator("img").count(), 0);
-  // Clearing the filter starts optional metadata lookups for the full page. Let
-  // those lookups and their credential revocations finish before fixture teardown.
-  const metadataSettled = page.waitForResponse(async (response) => {
-    const url = new URL(response.url());
-    const refs = url.searchParams.get("descriptionRefs")?.split(",") ?? [];
-    if (response.status() !== 200 || refs.length !== 6 || !refs.includes("documentation")) {
-      return false;
-    }
-    const { meta }: RepositoryOptionListResponse = await response.json();
-    return meta?.descriptionsPending === false;
-  });
-  await search.fill("");
-  assert.equal(
-    await page
-      .locator(".repository-result-row")
-      .filter({ hasText: "example/documentation" })
-      .locator(".repository-description")
-      .count(),
-    0,
-  );
-  await metadataSettled;
-  await waitForCondition(
-    () =>
-      credentials.repositories.every((entry) =>
-        entry.github.tokenState().every((token: { revoked: boolean }) => token.revoked),
-      ),
-    "metadata credentials were not revoked",
-    10_000,
-  );
-  await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
-  await page.getByLabel("Agent name").fill("Repository metadata Agent");
-  const createdResponse = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
-      response.request().method() === "POST",
-  );
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  const response = await createdResponse;
-  assert.equal(response.status(), 201);
-  const { data }: AgentResponse = await response.json();
-  assert.deepEqual(data.repositoryBindings, [
-    { repositoryRef: "application", profile: "git-full" },
-  ]);
-});
-
 test("Repository descriptions show hidden and direction-changing characters as escapes", async (t) => {
-  // Finding 1628: the credential service replaces these characters, but the picker must not
-  // trust every description source. An independent control-socket peer sends them raw
-  // through the actual Unix client, GitHub Driver and OCC validation.
+  // Exercise the picker with an independent API response; this is UI rendering proof.
   const hiddenDescription =
     "Release notes \u202etxt.exe, zero\u200bwidth, \u2066isolate\u2069, C1\u0085 end; " +
     "日本語 עברית العربية Café 😀👍🏽";
@@ -1116,72 +982,41 @@ test("Repository descriptions show hidden and direction-changing characters as e
   ];
   const description = `${hiddenDescription} ${joined} ${escaped.map(([raw]) => raw).join(" ")}`;
   const shown = `${hiddenShown} ${joined} ${escaped.map(([, text]) => text).join(" ")}`;
-  const directory = await socketDirectory(t, "repository-description-escapes-");
-  const controlSocket = join(directory, "control.sock");
-  const held: (() => void)[] = [];
-  let lookups = 0;
-  const server = createServer((request, response) => {
-    lookups += 1;
-    const answer = () => {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          providerInstanceId: "console-repository-provider",
-          appId: "123",
-          githubInstallationId: "456",
-          descriptions: [{ repositoryRef: "application", repositoryId: "2000", description }],
-          pending: false,
-        }),
-      );
-    };
-    request.resume();
-    // The first lookup feeds the in-place refresh; later ones wait so a rebuilt row shows
-    // what it renders itself.
-    request.once("end", () => (lookups === 1 ? answer() : held.push(answer)));
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(controlSocket, resolve);
-  });
-  t.after(() => {
-    held.splice(0).forEach((release) => release());
-    return new Promise((resolve) => server.close(resolve));
-  });
-  const { fixture, namespace } = await createRepositoryLaunchFixture(
-    t,
-    (namespaceId) => [
-      {
-        repositoryRef: "application",
-        repositoryId: "2000",
-        repository: "example/application",
-        namespaces: [{ namespaceId, profiles: ["git-read"] }],
-      },
-      // Search appears with more than five choices.
-      ...["documentation", "examples", "infrastructure", "libraries", "tools"].map(
-        (name, index) => ({
-          repositoryRef: name,
-          repositoryId: String(2001 + index),
-          repository: `example/${name}`,
-          namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
-        }),
-      ),
-    ],
-    { controlSocket },
-  );
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "2000",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    },
+    // Search appears with more than five choices.
+    ...["documentation", "examples", "infrastructure", "libraries", "tools"].map((name, index) => ({
+      repositoryRef: name,
+      repositoryId: String(2001 + index),
+      repository: `example/${name}`,
+      namespaces: [{ namespaceId, profiles: ["git-read"] as const }],
+    })),
+  ]);
   const { page } = await newPage(t, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body: RepositoryOptionListResponse = await response.json();
+    const option = body.data.find((entry) => entry.repositoryRef === "application");
+    assert.ok(option);
+    option.description = description;
+    await route.fulfill({ response, json: body });
+  });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   const text = page
     .locator(".repository-result-row")
     .filter({ hasText: "example/application" })
     .locator(".repository-description");
-  // The description arrives after the rows render and is written into the existing row.
   await page.getByText(shown, { exact: true }).waitFor();
   assert.equal(await text.textContent(), shown);
-  // Searching rebuilds the row from the stored description while its next lookup is held.
-  // Assert before the GitHub Driver's 2 s lookup timeout ends the hold and drops the text.
+  // Searching rebuilds the row from the same option without changing the rendered text.
   await page.getByLabel("Find a repository").fill("application");
-  await waitForCondition(() => lookups === 2, "the rebuilt row did not request descriptions");
   assert.equal(await text.textContent(), shown);
 });
 

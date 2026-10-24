@@ -1,6 +1,6 @@
 # Understand the Agent detail page
 
-Open **Agents**, then select an Agent. For setup, see
+Open **Agents**, then click an Agent name or an open area of its row. For setup, see
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 Saved settings don’t establish Agent or Slack connection health.
 

@@ -47,7 +47,7 @@ The response reports:
 | `unavailable` | No version is serving yet: the Agent has no selected version, or a newer version is replacing it.               |
 | `available`   | The caller may open the returned `url` for the selected version.                                                |
 
-A stopped Agent with no selected version returns only `status: "stopped"`, including before its first deployment and after stop reconciliation clears its selected version. A stopped Agent with a version that OCC can select still includes its target fields. If a desired-running Agent has no selected version, OCC returns `unavailable` in the success envelope so the console can show a retryable state. A dependency outage, the IAM Driver included, returns `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, denied IAM access and missing sessions also use the normal protected-route error envelope.
+Stopped Agents without a selected version return only `status: "stopped"`, including before first deployment and after stop reconciliation. Those with a selectable version include target fields. Desired-running Agents without a selected version return `unavailable` in the success envelope for console retry. Dependency outages, including IAM, return `503 DEPENDENCY_UNAVAILABLE`. Malformed requests, IAM denials and missing sessions use the protected-route error envelope.
 
 Changing the selected Compute Driver does not migrate existing versions. After
 lifecycle and native-configuration checks, OCC compares the selected Driver's ID
@@ -69,6 +69,8 @@ When someone opens the Agent root `/` or a copied `/chat/main` link without a va
 
 After sign-in, `GET /native-admin/return/<key>` requires exact Agent `use` and a runtime assignment. It returns Namespace and Agent IDs even while stopped; unknown and unauthorized keys both return `404`. Recovery opens Agent detail; launching chat remains separate. Previews, API/WebSocket requests and actual authorization denials retain their refusal behavior.
 
+In an already-open Gateway tab, the Control UI offers **Reconnect in browser** if a reconnect fails and its same-origin health request receives `401` or `403`. Following the link opens `/` on the current Agent host. The UI does not navigate automatically or carry forward the chat path or query. The response is a reason to check access, not proof that a session expired. OCC decides whether that navigation reaches sign-in or is refused.
+
 ## Agent host identity
 
 OCC derives a stable browser host from the Installation ID, Namespace ID, Agent ID, and configured `agentNativeAdmin.domain`. The hostname is opaque and must not be reused for another Agent identity. The derived host is separate from the console origin, which gives each Agent UI its own browser origin.
@@ -79,7 +81,7 @@ An Agent URL uses the derived host directly:
 https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 ```
 
-The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
+Native-host admission resolves the irreversible host hash to the exact Agent through platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
 
 The Kubernetes human route uses a separate `/people` path:
 
@@ -97,7 +99,7 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 
 ## Native authority and drift
 
-With configured roles, the native Gateway sees `oce:<Principal ID>`, a stable account identifier verified against the OCE session, and the server-selected role. It finds or creates that native profile and commits the named role before admitting its connection. The proxy also supplies a SHA-256 digest of the role definition; missing roles or changed native definitions reject admission. Browser-supplied identity, role, policy-digest and scope headers are discarded.
+With configured roles, the native Gateway sees `oce:<Principal ID>`, a stable account identifier verified against the OCE session, and the server-selected role. It finds or creates that native profile and commits the named role before admitting its connection. The proxy also supplies a SHA-256 digest of the role definition; missing roles or changed native definitions reject admission.
 
 For native authenticated HTTP, creating a profile or changing its role retires the authority captured before acquisition. That request returns `401` before the handler runs; a separate request uses the committed role. OCC never automatically replays an HTTP write. WebSocket admission acquires authority after role publication.
 
@@ -136,7 +138,7 @@ device state, plugins, or other persistent gateway data.
 - Availability returns `stopped` without a selected version, or `unavailable` while awaiting deployment/replacement. Dependency outages return `503`. Routing, native configuration or an unqualified Compute descriptor returns `unsupported` with the derived origin. Its `reason` distinguishes `ui_configuration`, `role_unavailable`, `device_approval_required` and `transport_unsupported`.
 - Disabled and ordinary-user denials hide the panel. Denied Installation administrators see a Sharing hint and **Refresh access**. Explicit refresh retries; automatic reloads retain the denial. Other states show feedback; available access opens `url`.
 - Attributable IAM denials remain audit events for status checks, native-host proxy admission, and recurring WebSocket lease renewal. Those denial paths preserve the human IAM principal and exact Agent target instead of collapsing into unaudited dependency failures.
-- Proxied HTTP and WebSocket requests strip browser credentials, service keys, forwarded headers, native identity/scope headers, and native `Set-Cookie` before responding through OCC. WebSocket upgrades require a non-null exact Agent `Origin`; accepted `101` connections audit `websocket.connect` with `connectionId` and `websocket.close` with the same `connectionId` plus `closeReason`, refresh authorization every 25 seconds, close when a lease check fails or takes more than 5 seconds, set `closeReason` to distinguish lifecycle, revocation, dependency, client, upstream, and shutdown paths, and are destroyed during API `preClose`.
+- Proxying follows the [shared session boundary](#shared-session-boundary). WebSocket upgrades require a non-null exact Agent `Origin`. Accepted connections audit `websocket.connect` and `websocket.close` with a shared `connectionId`. Authorization repeats every 25 seconds; failure or a 5-second timeout closes both sockets. `closeReason` distinguishes lifecycle, revocation, dependency, client, upstream and shutdown. API `preClose` destroys retained sockets.
 
 ## Related
 

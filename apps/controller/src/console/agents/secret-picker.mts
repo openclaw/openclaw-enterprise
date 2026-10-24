@@ -23,8 +23,35 @@ type SecretContext = Partial<AgentAccessContext> & {
   installationAdmin?: boolean | null;
 };
 
+// The API's Name length for Secrets (NAME_MAX_CHARACTERS in packages/contracts/src/api/plain-text.ts,
+// in code points). Node tests import this module, so it cannot reach namespaces.mts's copy;
+// tests/conformance/console-namespace-name.test.mjs keeps the values equal.
+export const SECRET_NAME_MAX_CHARACTERS = 200;
+// The suggested name's ending that shortening keeps: what the Secret is for, such as
+// "harness authentication" or "Slack bot token".
+const SUGGESTED_NAME_KEPT_ENDING = 40;
+
+/**
+ * A suggested Secret name within the API's Name length. Suggestions join the Agent name, which
+ * may itself use every allowed character, with what the Secret is for, so a long one keeps that
+ * ending and shortens the middle (finding 1809).
+ */
+export function suggestedSecretName(suggestion: string) {
+  const characters = Array.from(suggestion.trim());
+  if (characters.length <= SECRET_NAME_MAX_CHARACTERS) {
+    return characters.join("");
+  }
+  const start = characters.slice(0, SECRET_NAME_MAX_CHARACTERS - SUGGESTED_NAME_KEPT_ENDING - 1);
+  const ending = characters.slice(-SUGGESTED_NAME_KEPT_ENDING);
+  return `${start.join("").trimEnd()}…${ending.join("").trimStart()}`;
+}
+
 export function secretIdForBinding(binding: unknown) {
-  return secretSource(responseFields(binding).source)?.id ?? null;
+  return secretSourceForBinding(binding)?.id ?? null;
+}
+
+export function secretSourceForBinding(binding: unknown) {
+  return secretSource(responseFields(binding).source);
 }
 
 function secretSource(value: unknown): SecretReference | null {
@@ -238,6 +265,9 @@ export function createSecretReferenceField({
     className: "secret-typeahead-listbox",
     role: "listbox",
     "aria-label": "Available Secrets",
+    // The combobox keeps DOM focus and points at options with aria-activedescendant. A
+    // scrolling list is otherwise a Tab stop that hides on blur and drops focus (finding 1919).
+    tabindex: "-1",
     hidden: "",
   });
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
@@ -506,7 +536,7 @@ export function createSecretReferenceField({
       required: "",
       "data-trim": "",
       autocomplete: "off",
-      value: createSecretName(),
+      value: suggestedSecretName(createSecretName()),
     });
     const value = element("input", {
       id: `create-${id}-value`,
@@ -726,8 +756,13 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        setStatusTone(status, "danger");
         const expired = requestFailure(error).status === 401;
+        // A binding staged while this read was pending keeps its hint, as on success: Save
+        // still applies it (finding 1748). A lost session is still reported.
+        if (staged && !expired) {
+          return;
+        }
+        setStatusTone(status, "danger");
         status.textContent = expired
           ? "Your session has expired."
           : `Secrets unavailable. ${message(error)}`;
@@ -737,7 +772,21 @@ export function createSecretReferenceField({
       });
   }
 
-  input.addEventListener("focus", () => {
+  const withinListbox = (node: EventTarget | null) =>
+    node instanceof Node && listbox.contains(node);
+  // Pressing the list's scrollbar can still focus it; hand focus back without closing the list.
+  listbox.addEventListener("focus", () => {
+    if (input.disabled) {
+      closeListbox({ restoreSelection: true });
+    } else {
+      input.focus();
+    }
+  });
+  input.addEventListener("focus", (event) => {
+    // Focus coming back from the picker's own list keeps the search and the open list.
+    if (withinListbox(event.relatedTarget)) {
+      return;
+    }
     searchQuery = "";
     input.select();
     // A field showing its error opens on click, typing or ArrowDown, not on focus: the console's
@@ -796,7 +845,11 @@ export function createSecretReferenceField({
       closeListbox({ restoreSelection: true });
     }
   });
-  input.addEventListener("blur", () => {
+  input.addEventListener("blur", (event) => {
+    // Focus moving into the open list stays within the picker; only leaving it closes the list.
+    if (withinListbox(event.relatedTarget)) {
+      return;
+    }
     const typed = listboxOpen && !manuallyDisabled ? typedSecret() : undefined;
     if (typed !== undefined) {
       selectOption({ kind: "secret", secret: typed });

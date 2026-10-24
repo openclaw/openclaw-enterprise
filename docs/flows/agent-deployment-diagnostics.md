@@ -128,6 +128,8 @@ and Agent state stay unchanged.
   code, because these checks do not test model credentials.
 - A `failed` check named after a startup step, such as `peer-bridge-record`,
   means the runtime is holding that failure. Its Logs tab shows the remedy.
+  `egress-enrollment` with code `UNAVAILABLE` is a protected execution whose
+  Harness could not enroll with its egress proxy before the model check.
 - A dedicated Codex model check cause whose detail ends `-attempt2`, such as
   `turn-failed-attempt2`, means the check was retried once, after a timeout, a
   transient failure or a network or 5xx exit, and the second attempt failed that

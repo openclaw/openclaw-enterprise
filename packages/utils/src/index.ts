@@ -1,6 +1,7 @@
 export {
   asRecord,
   deepFreeze,
+  freezeSnapshot,
   immutableCopy,
   immutableSnapshot,
   isImmutableSnapshot,
@@ -11,3 +12,4 @@ export { sha256Hex } from "./hashing.ts";
 export { numericErrorStatus } from "./errors.ts";
 export { cookieHeaderFromSetCookie, readCappedBody } from "./http.ts";
 export { hasControlCharacter } from "./text.ts";
+export { publicCaBundle } from "./tls.ts";
