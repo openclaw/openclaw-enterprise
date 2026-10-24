@@ -730,6 +730,44 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
   ]);
 });
 
+test("a bootstrap that arrives while another is still in progress is refused", async () => {
+  const fixture = await createFixture();
+  const append = fixture.auditSink.append.bind(fixture.auditSink);
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let started;
+  const inProgress = new Promise((resolve) => {
+    started = resolve;
+  });
+  // Hold the first bootstrap at its audit write, after it has passed the guard but before
+  // it publishes the controller. A second bootstrap that gets this far releases it.
+  let bootstraps = 0;
+  fixture.auditSink.append = async (event) => {
+    if (event.kind === "bootstrap") {
+      bootstraps += 1;
+      if (bootstraps === 1) {
+        started();
+        await held;
+      } else {
+        release();
+      }
+    }
+    return append(event);
+  };
+  const first = request(fixture.app, "/installation/bootstrap", { body: { name: "First" } });
+  await inProgress;
+  const second = await request(fixture.app, "/installation/bootstrap", {
+    body: { name: "Second" },
+  });
+  release();
+  assert.equal(second.response.status, 409);
+  assert.equal(second.payload.error.code, "INSTALLATION_EXISTS");
+  assert.equal((await first).response.status, 201);
+  assert.equal(fixture.auditSink.events.filter((event) => event.kind === "bootstrap").length, 1);
+});
+
 test("an existing controller cannot be configured for a different Installation", async () => {
   const fixture = await createFixture();
   const installation = await bootstrap(fixture);
@@ -2122,6 +2160,15 @@ test("contract error details stay within the published path cap and name what a 
   assert.equal(emptyBody.response.status, 400);
   assert.equal(
     emptyBody.payload.error.message,
+    "The request does not match the operation contract: this operation accepts no request body.",
+  );
+  // A chunked body declares no length and a GET body is never parsed; the framing still counts.
+  const chunked = await request(fixture.app, `/namespaces/${namespace.id}`, {
+    headers: { "transfer-encoding": "chunked" },
+  });
+  assert.equal(chunked.response.status, 400);
+  assert.equal(
+    chunked.payload.error.message,
     "The request does not match the operation contract: this operation accepts no request body.",
   );
   const kept = await request(fixture.app, `/namespaces/${namespace.id}`);
