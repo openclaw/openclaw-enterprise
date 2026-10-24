@@ -1595,7 +1595,8 @@ test("production server and worker resolve singleton startup without an Installa
 
 // An unwritable readiness path left the worker running but never Ready (finding 2311). Both
 // health markers are probed before PostgreSQL; readiness through a sibling file, since its
-// marker must not appear before queue health does.
+// marker must not appear before queue health does. The code names the setting (finding 2327),
+// whether the path is relative, in a missing directory or an existing directory.
 test("worker refuses an unwritable readiness or liveness path before opening PostgreSQL", async (t) => {
   const path = await fixture(t);
   const directory = await temporaryDirectory(t, "occ-worker-markers-");
@@ -1605,23 +1606,35 @@ test("worker refuses an unwritable readiness or liveness path before opening Pos
     OCC_CONFIG_PATH: path,
     OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
   };
-  const missing = join(directory, "missing", "marker");
+  const occupied = join(directory, "occupied");
+  await mkdir(join(occupied, "entry"), { recursive: true });
+  const refusals = [
+    ["OCC_WORKER_READINESS_PATH", "WORKER_READINESS_PATH_INVALID"],
+    ["OCC_WORKER_LIVENESS_PATH", "WORKER_LIVENESS_PATH_INVALID"],
+  ].flatMap(([setting, code]) =>
+    ["marker", join(directory, "missing", "marker"), occupied].map((marker) => ({
+      setting,
+      code,
+      marker,
+    })),
+  );
   const ready = join(directory, "ready");
-  const [readiness, liveness, writable] = await settled([
-    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: missing }),
-    boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_LIVENESS_PATH: missing }),
+  const [writable, ...refused] = await settled([
     boot("apps/controller/src/worker.mjs", { ...shared, OCC_WORKER_READINESS_PATH: ready }),
+    ...refusals.map(({ setting, marker }) =>
+      boot("apps/controller/src/worker.mjs", { ...shared, [setting]: marker }),
+    ),
   ]);
-  for (const [name, worker] of [
-    ["readiness", readiness],
-    ["liveness", liveness],
-  ]) {
-    assert.equal(worker.status, 1, name);
+  for (const [index, { setting, code, marker }] of refusals.entries()) {
+    const worker = refused[index];
+    assert.equal(worker.status, 1, `${setting}=${marker}`);
     assert.equal(
       startupDiagnostic(worker.stderr, "worker.startup-error").code,
-      "WORKER_STARTUP_FAILED",
-      name,
+      code,
+      `${setting}=${marker}`,
     );
+    // The code names the setting; the configured path stays out of the log.
+    assert.ok(!worker.stderr.includes(directory), setting);
   }
   // A writable path reaches PostgreSQL, leaving neither the marker nor the probe behind.
   assert.equal(writable.status, 1);
@@ -1629,7 +1642,8 @@ test("worker refuses an unwritable readiness or liveness path before opening Pos
     startupDiagnostic(writable.stderr, "worker.startup-error").code,
     "PERSISTENCE_UNAVAILABLE",
   );
-  assert.deepEqual(await readdir(directory), []);
+  assert.deepEqual((await readdir(directory)).sort(), ["occupied"]);
+  assert.deepEqual(await readdir(occupied), ["entry"]);
 });
 
 test("only the actual API process reads ChatGPT admin credentials and backend accounts require PostgreSQL", async (t) => {
