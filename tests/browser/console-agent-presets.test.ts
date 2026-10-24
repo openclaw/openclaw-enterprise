@@ -470,10 +470,15 @@ test("Changing a Preset model keeps explicit and inherited roster selections dep
         await editor.fill(JSON.stringify(cleared));
         assert.equal(await model.inputValue(), "");
         // The kept draft keeps the clear pending: after navigation, the same edit leaves the
-        // control empty too.
+        // control empty too. The marker proves the form was rebuilt from the draft.
+        await page.locator("#create-agent-form").evaluate((form: HTMLElement) => {
+          form.dataset.kept = "";
+        });
         await page.getByRole("link", { name: "← Agents" }).click();
+        await page.waitForURL(/\/console\/agents(\?|$)/);
         await page.getByRole("button", { name: "Create Agent", exact: true }).click();
         await page.getByLabel("Agent name", { exact: true }).waitFor();
+        assert.equal(await page.locator("#create-agent-form[data-kept]").count(), 0);
         await openAdvancedSettings(page);
         await editor.fill(JSON.stringify(cleared));
         assert.equal(await model.inputValue(), "");
@@ -690,9 +695,9 @@ test("Model edits preserve refusals for invalid Advanced JSON rosters", async (t
     },
   );
   assert.equal(preset.status, 201);
-  // Each roster is one the resolver refuses, and the control must leave it that way: an
-  // unqualified primary, one with an empty provider or model, a default that names fallbacks but
-  // no primary, and an entry that inherits while no default selects a model.
+  // Each roster is one the resolver refuses, and the control must leave it that way: divergent
+  // primaries, an unqualified primary, one with an empty provider or model, a default that names
+  // fallbacks but no primary, and an entry that inherits while no default selects a model.
   const scenarios = [
     "divergent",
     "unqualified",
