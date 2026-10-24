@@ -227,6 +227,16 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     .waitFor();
   assert.equal(await createSecretDialog.getByLabel("Binding key").inputValue(), "SLACK_BOT_TOKEN");
   assert.equal(await createSecretDialog.getByLabel("Binding key").getAttribute("readonly"), "");
+  // The fixed key reads as text, not as a field like Name (finding 2370).
+  const fieldChrome = (label: string, exact = false) =>
+    createSecretDialog.getByLabel(label, { exact }).evaluate((node) => {
+      const style = getComputedStyle(node);
+      return { border: style.borderTopColor, background: style.backgroundColor };
+    });
+  const [fixedKey, nameField] = [await fieldChrome("Binding key"), await fieldChrome("Name", true)];
+  assert.equal(fixedKey.border, "rgba(0, 0, 0, 0)");
+  assert.equal(fixedKey.background, "rgba(0, 0, 0, 0)");
+  assert.notEqual(nameField.border, fixedKey.border);
   assert.equal(
     await createSecretDialog.getByLabel("Name", { exact: true }).inputValue(),
     "Console-created Agent Slack bot token",
