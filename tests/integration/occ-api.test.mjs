@@ -7837,7 +7837,8 @@ test("SSH Compute names a Harness authentication method other than runtime at Ag
 
 test("SSH Compute refuses at Agent save and deploy a roster or workspace whose main Agent cannot read initial workspace files", async () => {
   // Findings 2285 and 2289: only the host refused these, at deployment, which retried until it
-  // failed. The host derives the workspace path from a hash, so any explicit workspace fails.
+  // failed. The host accepts only a path derived from each Agent's id, which a Configuration
+  // cannot name, so any explicit workspace is refused.
   const computeDriver = new SshComputeDriver({
     ssh: { identityFile: "/tmp/ssh-test-key", knownHostsFile: "/tmp/ssh-test-hosts" },
     hosts: { "workspace-roster": { address: "127.0.0.1", user: "root" } },

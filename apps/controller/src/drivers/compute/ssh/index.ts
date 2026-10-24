@@ -467,8 +467,10 @@ export class SshComputeDriver implements ComputeDriver {
 
   // Agent create and update refuse a roster or workspace the host helper refuses at deployment,
   // where the refusal was retried until the deployment failed (findings 2285, 2289). The roster
-  // message is Docker's and Kubernetes's. The helper derives the workspace from a hash under its
-  // Agent root, so no explicit path can pass; it still checks the path as defence in depth.
+  // message is Docker's and Kubernetes's. The helper accepts only paths under a directory derived
+  // from each Agent's id, which a shared Configuration cannot name, so any explicit workspace is
+  // refused here; the helper still checks the path as defence in depth. Null counts as unset,
+  // as in the helper and the shared rule.
   validateWorkspaceSetup(
     _harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
@@ -478,9 +480,9 @@ export class SshComputeDriver implements ComputeDriver {
     const entry = requireWorkspaceSetupMainEntry(configuration, settingError);
     const defaults = asRecord(asRecord(configuration.agents)?.defaults);
     const setting =
-      entry.agent.workspace !== undefined
+      entry.agent.workspace != null
         ? `${entry.setting}.workspace`
-        : defaults?.workspace !== undefined
+        : defaults?.workspace != null
           ? "agents.defaults.workspace"
           : undefined;
     if (setting !== undefined) {
