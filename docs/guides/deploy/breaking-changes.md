@@ -104,6 +104,32 @@ loader names the setting, for example `/policy/process/runAsUser`.
 
 **Steps.** Correct the named setting, then start the controller again.
 
+## 2026-10-24: OpenShell refuses unknown settings, invalid Agent resources and protocols
+
+**What breaks.** Controller startup refuses an OpenShell Sandbox Driver
+configuration with an unknown key in `kubernetes`, `kubernetes.serviceAccount`,
+`kubernetes.sandboxDataMount`, `kubernetes.agentResources`, `policy`,
+`policy.process` or `gateway.readiness` (for example `policy.filesytem` or
+`kubernetes.userNamespace`), an `agentResources.requests` or `limits` value
+that is not a quoted Kubernetes quantity, or a
+`policy.networkPolicies[].endpoints[].protocol` that OpenShell refuses: a name
+other than `tcp`, `rest`, `websocket`, `graphql` or `sql`, an L7 protocol
+without `access`, or `access` on `tcp`. Earlier builds started: they ignored a
+misspelled key, so its default applied, and every Sandbox creation failed on the
+other values.
+
+**Who is affected.** OpenShell Installations with such a setting. Endpoints
+with `json-rpc` or `mcp` never worked, because OpenShell needs rules this
+setting cannot express.
+
+**How to tell.** Startup fails with `UNKNOWN_FIELD` at the object that holds
+the key, or `INVALID_VALUE` at `/kubernetes/agentResources/requests` (or
+`limits`) or at the endpoint's `protocol`.
+
+**Steps.** Fix or remove the key, quote each quantity (`cpu: "500m"`), and
+give each L7 endpoint an `access` preset or remove its protocol; then restart
+the controller.
+
 ## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox

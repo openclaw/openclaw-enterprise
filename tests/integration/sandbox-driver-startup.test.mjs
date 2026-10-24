@@ -3773,6 +3773,103 @@ test("startup refuses a non-boolean userNamespaces and an endpoint without ports
   );
 });
 
+// Typos in these objects were ignored, and the Gateway refused Agent resources it cannot
+// decode, or the API server their quantities, after a deploy stopped its predecessors
+// (findings 2353, 2356).
+test("startup refuses unknown OpenShell settings and invalid Agent resource quantities", async (t) => {
+  for (const [change, path] of [
+    [(c) => (sandboxOf(c).kubernetes.userNamespace = false), "/kubernetes"],
+    [
+      (c) => (sandboxOf(c).kubernetes.serviceAccount.name = "sandbox"),
+      "/kubernetes/serviceAccount",
+    ],
+    [
+      (c) => (sandboxOf(c).kubernetes.sandboxDataMount.readonly = true),
+      "/kubernetes/sandboxDataMount",
+    ],
+    [
+      (c) => (sandboxOf(c).kubernetes.agentResources = { request: {} }),
+      "/kubernetes/agentResources",
+    ],
+    [(c) => (sandboxOf(c).policy.filesytem = { readWrite: ["/data"] }), "/policy"],
+    [(c) => (sandboxOf(c).policy.process.runAsUserName = "sandbox"), "/policy/process"],
+    [
+      (c) => (sandboxOf(c).gateway.readiness = { ...readinessWait, timeoutMs: 1, pollInterval: 5 }),
+      "/gateway/readiness",
+    ],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      change,
+      structuralRefusal(path, "additionalProperties", "UNKNOWN_FIELD"),
+    );
+  }
+  const quantity = "Each value must be a quoted Kubernetes quantity, such as 500m or 1Gi.";
+  for (const agentResources of [
+    { requests: { cpu: "one" } },
+    { limits: { memory: 5 } },
+    { limits: { cpu: "1", "example.com/gpu": "1 Gi" } },
+  ]) {
+    const [section] = Object.keys(agentResources);
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).kubernetes.agentResources = agentResources),
+      invalidValue(`/kubernetes/agentResources/${section}`, quantity),
+    );
+  }
+  // Control: every known key, and quantities in each spelling the API server accepts, load.
+  const accepted = sandboxInstallation();
+  Object.assign(sandboxOf(accepted).kubernetes, {
+    agentResources: {
+      requests: { cpu: "500m", memory: "1Gi" },
+      limits: { cpu: "2", memory: "4e9", "example.com/gpu": "1" },
+    },
+  });
+  sandboxOf(accepted).kubernetes.sandboxDataMount.claimName = "workspace";
+  sandboxOf(accepted).gateway.readiness = { ...readinessWait, timeoutMs: 1, pollIntervalMs: 5 };
+  await loadInstallationFile(t, accepted);
+});
+
+// The Gateway refuses these protocols at CreateSandbox (finding 2335): unknown names, L7
+// protocols without an access preset, access on tcp, and json-rpc or mcp, which need rules.
+test("startup refuses OpenShell endpoint protocols the gateway refuses", async (t) => {
+  const unknown =
+    "Use tcp, rest, websocket, graphql or sql, or omit protocol; OpenShell needs rules for json-rpc and mcp, which this setting cannot express.";
+  for (const [endpoint, message] of [
+    [{ protocol: "http" }, unknown],
+    [{ protocol: "json-rpc" }, unknown],
+    [{ protocol: "mcp", access: "full" }, unknown],
+    [{ protocol: "rest" }, "Protocol rest needs an access preset (read_only, read_write or full)."],
+    [
+      { protocol: "WebSocket" },
+      "Protocol websocket needs an access preset (read_only, read_write or full).",
+    ],
+    [
+      { protocol: "tcp", access: "full" },
+      "Protocol tcp does not take an access preset; remove access, or use an L7 protocol.",
+    ],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => Object.assign(endpointOf(c), endpoint),
+      invalidValue("/policy/networkPolicies/0/endpoints/0/protocol", message),
+    );
+  }
+  // Control: the protocols the Gateway accepts without rules.
+  for (const endpoint of [
+    { protocol: "tcp" },
+    { protocol: "TCP" },
+    { protocol: "" },
+    { protocol: "rest", access: "read_only" },
+    { protocol: "sql", access: "full" },
+    { protocol: "graphql", access: "read_write" },
+  ]) {
+    const configuration = sandboxInstallation();
+    Object.assign(endpointOf(configuration), endpoint);
+    await loadInstallationFile(t, configuration);
+  }
+});
+
 // The schema leaves these open, so the Driver's own checks are the only refusal. Startup
 // reports each as the same generic detail, so every case must change one valid field of
 // the fixture, and the control below shows the fixture loads otherwise.
