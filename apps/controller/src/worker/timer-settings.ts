@@ -1,4 +1,5 @@
-// The worker's environment timing settings, and the bound for those that feed Node.js timers.
+// The worker process's numeric environment settings, and the bound for those that feed
+// Node.js timers.
 
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 

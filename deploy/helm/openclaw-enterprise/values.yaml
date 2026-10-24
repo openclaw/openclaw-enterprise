@@ -337,7 +337,7 @@ resources:
 worker:
   # Set to 0 to install the API and run initialization before starting the worker.
   replicaCount: 1
-  # Milliseconds, at most 2147483647 (the longest Node.js timer delay).
+  # pollIntervalMs and leaseDurationMs are timer delays: at most 2147483647 ms.
   pollIntervalMs: 250
   leaseDurationMs: 5000
   maxAttempts: 5

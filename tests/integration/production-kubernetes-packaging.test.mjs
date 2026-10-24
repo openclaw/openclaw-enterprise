@@ -5440,7 +5440,7 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
   assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
 });
 
-test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async () => {
+test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async (t) => {
   // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
   const over = String(MAX_TIMER_DELAY_MS + 1);
   for (const key of ["worker.pollIntervalMs", "worker.leaseDurationMs"]) {
@@ -5461,6 +5461,14 @@ test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooli
   assert.match(
     rendered.stdout,
     new RegExp(`name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\\n\\s+value: "${over}"`),
+  );
+  // A values file delivers a float64, which takes the helper's other parsing path.
+  const directory = await temporaryDirectory(t, "occ-worker-timer-");
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, `worker:\n  leaseDurationMs: ${over}\n`, { mode: 0o600 });
+  await assert.rejects(
+    render({}, { valuesFiles: [valuesFile] }),
+    /worker\.leaseDurationMs must be at most 2147483647 milliseconds/,
   );
 });
 
