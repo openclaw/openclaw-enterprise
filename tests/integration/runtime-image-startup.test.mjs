@@ -1736,6 +1736,12 @@ assert.equal(provenance.openclawBridgePatchSha256, "1d8b670e7029872262375a21da72
 assert.equal(provenance.openclawConnectPatchSha256, "906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2");
 assert.equal(provenance.codexDependencyPinPatchSha256, "7bb0ae29bf3259b245d7675b2c6a3abe521c8139095f75ce0c532188162de5e9");
 assert.equal(provenance.openclawRequiredWorkerAuthorityPatchSha256, "d07be9735250a5fb8be69086a96d4959f02caaeec6dc31990c03eed959bd17d8");
+// The patches the per-patch fields above omit; runtime-assets.test.mjs checks the full set.
+assert.equal(provenance.patches["openclaw-codex-preserve-on-request.patch"], "ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b");
+assert.equal(provenance.patches["openclaw-codex-full-access-profile.patch"], "bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931");
+assert.equal(provenance.patches["openclaw-required-worker-authority-regression.patch"], "1998cdd2321a68f97afb96470dcfb989a1460484c831b113b3af22dcabbf6189");
+assert.equal(provenance.patches["openclaw-control-ui-browser-reconnect.patch"], "964c500f981f343d8c131a213aad65ea47e2de4a9a5d11dbb57c3f30bead7065");
+assert.equal(Object.keys(provenance.patches).length, 8);
 assert.equal(provenance.codex.version, "0.163.0-alpha.2");
 assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
 assert.equal(Object.hasOwn(provenance, "codexVersion"), false);

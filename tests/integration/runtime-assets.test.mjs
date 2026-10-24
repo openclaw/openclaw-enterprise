@@ -146,4 +146,28 @@ packages:
   assert.equal(provenance.codex.version, "0.158.0");
   assert.equal(Object.hasOwn(provenance, "codexPatchSha256"), false);
   assert.equal(Object.hasOwn(provenance, "codexVersion"), false);
+  // Provenance must name every patch the image build applies, in order, so images with and
+  // without a patch differ there (finding 2290: three applied patches were missing).
+  const dockerfile = await readFile("deploy/runtime/Dockerfile", "utf8");
+  const applied = [
+    ...dockerfile.matchAll(
+      /^RUN echo '([a-f0-9]{64}) {2}\/tmp\/([^'\s]+\.patch)' \| sha256sum --check --strict \\\n\s+&& git apply /gm,
+    ),
+  ].map(([, sha256, file]) => [file, sha256]);
+  // Each patch the build copies in must be one it verifies and applies.
+  assert.equal(
+    applied.length,
+    [...dockerfile.matchAll(/^COPY deploy\/runtime\/\S+\.patch /gm)].length,
+  );
+  assert.ok(applied.length > 0);
+  assert.deepEqual(Object.entries(provenance.patches), applied);
+  // The per-patch fields recorded before `patches` keep their names and values.
+  for (const [field, file] of [
+    ["openclawBridgePatchSha256", "openclaw-codex-read-only-paths.patch"],
+    ["openclawConnectPatchSha256", "openclaw-connect-ephemeral-expired-setup.patch"],
+    ["codexDependencyPinPatchSha256", "stock-codex-0.163.0-alpha.2-dependency-pin.patch"],
+    ["openclawRequiredWorkerAuthorityPatchSha256", "openclaw-required-worker-authority.patch"],
+  ]) {
+    assert.equal(provenance[field], provenance.patches[file], field);
+  }
 });
