@@ -1,3 +1,5 @@
+import { verifyNamedWorkspace, type NamedWorkspace } from "./composition/named-workspace.ts";
+import { waitForStartupDependency, type WorkerStartupDependency } from "./worker/startup-gate.ts";
 import { reduceCredentialPolicy } from "@openclaw-enterprise/occ";
 import {
   assertExecutionReleaseAllowed,
@@ -1170,6 +1172,8 @@ export class ControllerWorker {
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
   private readonly mode: "development" | "production";
   private readonly emit: (event: Readonly<Record<string, unknown>>) => void;
+  private readonly namedWorkspace: NamedWorkspace | undefined;
+  private readonly startupDependency: WorkerStartupDependency | undefined;
   private readonly onHealthy: (() => Promise<void>) | undefined;
   private readonly onProgress: (() => Promise<void>) | undefined;
   private readonly abort = new AbortController();
@@ -1224,6 +1228,8 @@ export class ControllerWorker {
       "Worker convergence timeout",
     );
     const drivers = options.drivers;
+    this.namedWorkspace = drivers?.namedWorkspace;
+    this.startupDependency = drivers?.startupDependency;
     this.driverConfigurations = installationDriverConfigurations(drivers?.installation);
     for (const definition of this.driverConfigurations) {
       this.configurations.register(definition);
@@ -1379,6 +1385,7 @@ export class ControllerWorker {
     if (installation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before starting the worker.");
     }
+    await verifyNamedWorkspace(this.state, this.namedWorkspace);
     this.installation = installation;
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
@@ -1452,6 +1459,28 @@ export class ControllerWorker {
   }
 
   private async run(): Promise<void> {
+    if (this.startupDependency) {
+      try {
+        await waitForStartupDependency({
+          dependency: this.startupDependency,
+          signal: this.abort.signal,
+          pollIntervalMs: this.pollIntervalMs,
+          verifyIdentity: async () => {
+            await verifyNamedWorkspace(this.state, this.namedWorkspace);
+            await this.compute.preflight?.();
+          },
+          workAge: () => this.queue.startupWorkAge(this.convergenceTimeoutMs),
+          progress: () => this.progress(),
+          report: (status) => this.emit({ event: "worker.startup-gate", status }),
+        });
+      } catch {
+        if (!this.stopping) {
+          this.emit({ event: "worker.error", code: "STARTUP_DEPENDENCY_UNAVAILABLE" });
+        }
+        return;
+      }
+    }
+
     while (!this.stopping) {
       // Every pass starts here, including back-to-back claims that skip the idle delay.
       this.progress();

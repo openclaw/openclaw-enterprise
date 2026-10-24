@@ -30,7 +30,8 @@
     "tests/integration/production-image-qualification.test.mjs",
     "tests/integration/development-packaging.test.mjs",
     "tests/integration/container-publication-workflow.test.mjs",
-    "tests/integration/oidc-ca-trust.test.mjs"
+    "tests/integration/oidc-ca-trust.test.mjs",
+    "tests/integration/named-workspace-chart.test.ts"
   ],
   "files": [
     {
@@ -141,6 +142,12 @@
         "rendered Harness node CA carries the Gateway root and never the IdP root",
         "rendered OIDC CA assembly reaches the callback transport and preserves Gateway and public trust",
         "rendered API guard isolates real PostgreSQL TLS from IdP trust before startup"
+      ]
+    },
+    {
+      "path": "tests/integration/named-workspace-chart.test.ts",
+      "expectedTests": [
+        "named runtime Helm install and upgrade preserve identity and Git-disabled permissions"
       ]
     }
   ]

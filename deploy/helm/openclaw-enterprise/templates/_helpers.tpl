@@ -191,6 +191,27 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if gt (add (len (default list $githubLists.allowedOrgs)) (len (default list $githubLists.allowedTeams))) 10 -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams list at most 10 entries together" -}}{{- end -}}
 {{- if and (not (and $github $github.enabled)) (or (default list $githubLists.allowedOrgs) (default list $githubLists.allowedTeams)) -}}{{- fail "auth.github.allowedOrgs and auth.github.allowedTeams require auth.github.enabled: true; they limit GitHub sign-in only" -}}{{- end -}}
+{{- $named := .Values.namedWorkspace -}}
+{{- if or (ne (len $named) 5) (not (has $named.stage (list "disabled" "runtime"))) (not (has $named.startupCycle (list "independent" "gateway-readiness"))) -}}
+{{- fail "namedWorkspace requires stage disabled or runtime, installationId, namespaceId, uid and startupCycle independent or gateway-readiness; bootstrap is unsupported" -}}
+{{- end -}}
+{{- if eq $named.stage "disabled" -}}
+{{- if or $named.installationId $named.namespaceId $named.uid (ne $named.startupCycle "independent") -}}{{- fail "namedWorkspace binding and startup cycle require runtime stage" -}}{{- end -}}
+{{- else -}}
+{{- if .Values.preprovisionedNamespace -}}{{- fail "namedWorkspace and preprovisionedNamespace are mutually exclusive" -}}{{- end -}}
+{{- if or (not (regexMatch "^ins_[a-zA-Z0-9_-]{1,60}$" $named.installationId)) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" $named.namespaceId)) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" $named.uid)) -}}
+{{- fail "namedWorkspace runtime requires exact installationId, namespaceId and Kubernetes uid" -}}{{- end -}}
+{{- if or .Values.executionCluster.enabled (not .Values.gatewayRouting.enabled) (ne .Values.gatewayRouting.serviceType "ClusterIP") .Values.agentNativeAdmin.enabled .Values.slackProxy.enabled .Values.repositoryCredentials.enabled .Values.openshellGit.enabled .Values.egressAuthority.enabled .Values.preparedGitHub.custodySecretName .Values.preparedGitHub.issuerCidrs .Values.publicGithubRead.enabled .Values.gatewayRouting.sandbox.enabled .Values.backend.chatgpt.enabled .Values.api.clients .Values.auth.google.enabled .Values.auth.oidc.enabled -}}
+{{- fail "namedWorkspace requires private ClusterIP routing, API ingress deny-all, no sandbox listener, native admin, Slack, ChatGPT or Git/credential-issuer authority" -}}{{- end -}}
+{{- if and .Values.auth.github.enabled (not (or .Values.auth.github.allowedOrgs .Values.auth.github.allowedTeams)) -}}
+{{- fail "namedWorkspace GitHub sign-in requires an organization or team allowlist" -}}{{- end -}}
+{{- if .Values.auth.github.enabled -}}
+{{- if not .Values.auth.github.egressCidrs -}}{{- fail "namedWorkspace GitHub sign-in requires explicit bounded auth.github.egressCidrs" -}}{{- end -}}
+{{- range $cidr := .Values.auth.github.egressCidrs -}}
+{{- if has (last (splitList "/" (toString $cidr))) (list "0" "1") -}}{{- fail "namedWorkspace auth.github.egressCidrs must name approved sign-in networks, not default or split-default routes" -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- with $binding := .Values.preprovisionedNamespace -}}
 {{- if or (ne (len $binding) 2) (not (regexMatch "^ns_[a-zA-Z0-9_-]{1,60}$" (toString $binding.namespaceId))) (not (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString $binding.uid))) -}}
 {{- fail "preprovisionedNamespace requires exactly namespaceId and Kubernetes uid" -}}
@@ -328,17 +349,20 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- /* The bootstrap Job refuses plain HTTP unless the host is 127.0.0.1, localhost, or ::1. Helm reads http://[::1] as hostname ::1. Other spellings of 127.0.0.1 (127.1, 0177.0.0.1, a trailing dot) are refused here. */ -}}
 {{- if and (ne $baseUrl.scheme "https") (not (has (lower $baseUrl.hostname) (list "127.0.0.1" "localhost" "::1"))) -}}{{- fail "auth.baseUrl must use HTTPS unless its host is 127.0.0.1 or localhost or ::1; the bootstrap Job refuses plain HTTP elsewhere" -}}{{- end -}}
+{{- if ne .Values.namedWorkspace.stage "runtime" -}}
 {{- /* The bootstrap Job trims with JavaScript trim, lowercases, then requires local@domain.tld. The rendered env keeps the value as written. */ -}}
 {{- $adminEmailTrim := "^[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+|[\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" -}}
 {{- $adminEmail := lower (regexReplaceAll $adminEmailTrim (toString .Values.bootstrap.adminEmail) "") -}}
 {{- if not (regexMatch "^[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+@[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+\\.[^@\\t\\n\\x0B\\f\\r\\p{Zs}\\x{2028}\\x{2029}\\x{FEFF}]+$" $adminEmail) -}}
 {{- fail "bootstrap.adminEmail must contain a valid administrator email" -}}
 {{- end -}}
+{{- end -}}
 {{- /* The bootstrap Job checks installation.name with isName before it creates anything. */ -}}
 {{- $installationName := toString .Values.installation.name -}}
 {{- if or (ne $installationName (trim $installationName)) (hasPrefix "\uFEFF" $installationName) (hasSuffix "\uFEFF" $installationName) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $installationName)) -}}
 {{- fail "installation.name must follow the Name rule: 1 to 200 characters, with no leading or trailing whitespace and no control characters or line or paragraph separators" -}}
 {{- end -}}
+{{- if ne .Values.namedWorkspace.stage "runtime" -}}
 {{- if or (not .Values.bootstrap.password.claimName) (not .Values.bootstrap.password.mountPath) (not .Values.bootstrap.password.fileName) -}}
 {{- fail "bootstrap.password must reference an existing protected PVC output path" -}}
 {{- end -}}
@@ -364,6 +388,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not (hasPrefix "/" (toString .Values.bootstrap.password.mountPath)) -}}
 {{- fail "bootstrap.password.mountPath must be an absolute path" -}}
 {{- end -}}
+{{- end -}}
 {{- /* Database routing uses numeric TCP ports in bootstrap and controller NetworkPolicies. */ -}}
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.database.port))) (gt (int .Values.database.port) 65535) -}}
 {{- fail "database.port must be an integer TCP port from 1 to 65535" -}}
@@ -375,7 +400,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" (toString .Values.cluster.port))) (gt (int .Values.cluster.port) 65535) -}}
 {{- fail "cluster.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- if not .Values.api.clients -}}{{- fail "api.clients must contain exact approved client selectors" -}}{{- end -}}
+{{- if and (ne .Values.namedWorkspace.stage "runtime") (not .Values.api.clients) -}}{{- fail "api.clients must contain exact approved client selectors" -}}{{- end -}}
 {{- range $index, $client := .Values.api.clients -}}
 {{- if or (not $client.namespace) (not $client.podLabels) -}}
 {{- fail (printf "api.clients[%d] requires an exact namespace and nonempty Pod selector" $index) -}}

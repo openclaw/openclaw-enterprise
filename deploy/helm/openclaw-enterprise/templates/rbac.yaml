@@ -1,3 +1,5 @@
+{{- $binding := .Values.preprovisionedNamespace }}
+{{- if eq .Values.namedWorkspace.stage "runtime" }}{{- $binding = .Values.namedWorkspace }}{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -5,7 +7,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
-    {{- with .Values.preprovisionedNamespace }}
+    {{- with $binding }}
     resourceNames: [{{ printf "oce-%s" (.namespaceId | sha256sum | trunc 15) | quote }}]
     verbs: [get]
     {{- else }}
@@ -21,7 +23,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [namespaces]
-    {{- with .Values.preprovisionedNamespace }}
+    {{- with $binding }}
     resourceNames: [{{ printf "oce-%s" (.namespaceId | sha256sum | trunc 15) | quote }}]
     verbs: [get]
     {{- else }}
@@ -56,6 +58,7 @@ roleRef:
   kind: ClusterRole
   name: {{ .Release.Name }}-openclaw-namespace-observer
 ---
+{{- if or (ne .Values.namedWorkspace.stage "runtime") (eq (toString .Values.worker.replicaCount) "1") }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -102,6 +105,7 @@ rules:
   - apiGroups: [discovery.k8s.io]
     resources: [endpointslices]
     verbs: [get, list]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -162,3 +166,26 @@ rules:
     resources: [events]
     verbs: [get, list]
   {{- end }}
+
+{{- if eq .Values.namedWorkspace.stage "runtime" }}
+{{- $components := list "api" }}
+{{- if eq (toString .Values.worker.replicaCount) "1" }}{{- $components = append $components "worker" }}{{- end }}
+{{- range $component := $components }}
+{{- range $role := list $component "configuration" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Release.Name }}-openclaw-{{ $component }}-{{ $role }}
+  namespace: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: openclaw-enterprise-{{ $component }}
+    namespace: {{ $.Release.Namespace | quote }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $.Release.Name }}-openclaw-tenant-{{ $role }}
+{{- end }}
+{{- end }}
+{{- end }}

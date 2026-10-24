@@ -25,7 +25,9 @@ service OpenShell {
   rpc ExecSandbox(ExecSandboxRequest) returns (stream ExecSandboxEvent);
   // Operator mTLS only; upstream v0.1.4 (5a7728c3) credential retrieval.
   rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
+  // Public health does not authenticate the caller. GetCurrentUser accepts user or operator.
   rpc Health(HealthRequest) returns (HealthResponse);
+  rpc GetCurrentUser(GetCurrentUserRequest) returns (GetCurrentUserResponse);
   rpc GetGatewayInfo(GetGatewayInfoRequest) returns (GetGatewayInfoResponse);
   rpc CreateWorkspace(CreateWorkspaceRequest) returns (CreateWorkspaceResponse);
   rpc GetWorkspace(GetWorkspaceRequest) returns (GetWorkspaceResponse);
@@ -71,6 +73,14 @@ service OpenShell {
 }
 
 message HealthRequest {}
+
+message GetCurrentUserRequest {}
+
+// OpenShell v0.1.5 wire fields; display name, roles and scopes are intentionally omitted.
+message GetCurrentUserResponse {
+  string subject = 1;
+  string identity_provider = 5;
+}
 
 message HealthResponse {
   ServiceStatus status = 1;

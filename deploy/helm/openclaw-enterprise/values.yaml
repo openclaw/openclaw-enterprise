@@ -389,3 +389,14 @@ preparedGitHub:
 # Closed OpenShell canary only: operator-owned Namespace, no initialization Job.
 # Bind the existing OCE Namespace ID and independently observed Kubernetes UID.
 preprovisionedNamespace: {}
+
+# Attach an already bootstrapped installation; bootstrap is not supported here.
+# Runtime requires exact IDs and UID, with operator-managed private gateway routing.
+namedWorkspace:
+  stage: disabled
+  installationId: ""
+  namespaceId: ""
+  uid: ""
+  # independent does not gate work; gateway-readiness requires public Health and
+  # authenticated GetCurrentUser before recovery or claims.
+  startupCycle: independent

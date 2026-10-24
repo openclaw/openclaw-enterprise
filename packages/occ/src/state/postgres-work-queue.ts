@@ -1150,6 +1150,23 @@ export class PostgresWorkQueue {
     return value;
   }
 
+  /** Read original database-clock age without claiming, renewing or recovering work. */
+  async startupWorkAge(ageMs: number): Promise<"current" | "old" | "unknown"> {
+    positiveInteger(ageMs, "Worker startup age bound");
+    const result = await this.client.query(
+      `SELECT
+         COALESCE(bool_or(NOT isfinite(created_at) OR created_at > clock_timestamp()), false) AS unknown,
+         COALESCE(bool_or(created_at <= clock_timestamp() - $1::double precision * interval '1 millisecond'), false) AS old
+       FROM occ.controller_work WHERE state IN ('queued', 'claimed')`,
+      [ageMs],
+    );
+    const row = result.rows[0] as { unknown?: unknown; old?: unknown } | undefined;
+    if (typeof row?.unknown !== "boolean" || typeof row.old !== "boolean" || row.unknown) {
+      return "unknown";
+    }
+    return row.old ? "old" : "current";
+  }
+
   async pending(): Promise<number> {
     const pending = await this.client.query(
       `SELECT count(*)::integer AS count

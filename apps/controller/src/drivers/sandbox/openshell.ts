@@ -2775,6 +2775,44 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
   }
 
+  /** Startup checks must not create a workspace or invoke provider operations. */
+  async checkStartupDependency(
+    namespace: string,
+    signal: AbortSignal,
+  ): Promise<"ready" | "pending" | "identity-unavailable" | "forbidden"> {
+    signal.throwIfAborted();
+    try {
+      const client = this.gatewayClientForNamespace(namespace);
+      await client.health(signal);
+      signal.throwIfAborted();
+      if (client.checkIdentity === undefined) {
+        return "identity-unavailable";
+      }
+      await client.checkIdentity(signal);
+      signal.throwIfAborted();
+      return "ready";
+    } catch (error) {
+      signal.throwIfAborted();
+      const record = asRecord(error);
+      const code = record?.grpcStatus ?? record?.code;
+      if (code === 16) {
+        return "identity-unavailable";
+      }
+      if (code === 7 || error instanceof SandboxNamespaceRefusedError) {
+        return "forbidden";
+      }
+      // Only an actual remote unavailability/timeout or unhealthy reply is retryable.
+      if (
+        code === 14 ||
+        code === 4 ||
+        (error instanceof Error && error.message === "OpenShell gateway is not healthy.")
+      ) {
+        return "pending";
+      }
+      return "identity-unavailable";
+    }
+  }
+
   async ensureNamespace(context: SandboxNamespaceContext): Promise<void> {
     try {
       await this.ensureNamespaceWorkspace(context);

@@ -407,6 +407,8 @@ export interface OpenShellGatewayClient
     readonly version: string;
   }>;
   health(signal: AbortSignal): Promise<void>;
+  /** Required by the explicit startup gate; returns no caller identity or roles. */
+  checkIdentity?(signal: AbortSignal): Promise<void>;
   getGatewayInfo?(signal: AbortSignal): Promise<RecordValue>;
   /** Stock preview reads. The operator independently controls gateway access and every writer. */
   readExclusivePreviewWorkspace?(
@@ -606,6 +608,7 @@ type OpenShellMethod =
   | "GetProviderRefreshStatus"
   | "GetProviderCredentials"
   | "Health"
+  | "GetCurrentUser"
   | "GetGatewayInfo"
   | "GetSandboxPolicyStatus"
   | "GetWorkspace"
@@ -1427,6 +1430,21 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const status = response.status;
     if (status !== "SERVICE_STATUS_HEALTHY" && status !== 1) {
       throw new OpenShellGatewayFailure("OpenShell gateway is not healthy.");
+    }
+  }
+
+  async checkIdentity(signal: AbortSignal): Promise<void> {
+    const response = await this.unary("GetCurrentUser", {}, signal);
+    const provider = response.identity_provider;
+    const mode = this.options.auth?.mode;
+    const authenticated =
+      mode === "bearerTokenFile"
+        ? provider === "oidc" || provider === "cloudflare_access"
+        : (mode === "mtls" || mode === "mutualTls") && provider === "mtls";
+    // Stock permissive gateways can return a successful local_dev identity.
+    // Neither that response nor public Health proves the configured credential.
+    if (!isNonEmptyString(response.subject) || !authenticated) {
+      throw new OpenShellGatewayFailure("OpenShell gateway identity is unavailable.");
     }
   }
 
@@ -2604,9 +2622,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
             if (error !== null) {
               const details = asRecord(error)?.details;
               const code = statusCode(error);
-              // Refresh and plaintext-read errors must not expose credential backend messages.
+              // Identity, refresh and plaintext-read errors must not expose backend messages.
               if (
                 [
+                  "GetCurrentUser",
                   "GetProviderCredentials",
                   "ConfigureProviderRefresh",
                   "RotateProviderCredential",

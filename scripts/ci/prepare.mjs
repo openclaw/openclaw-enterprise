@@ -3196,6 +3196,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;
+    if (relativeFile === "tests/integration/named-workspace-runtime.test.ts") {
+      env.OCC_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (relativeFile === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs") {
       env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;
     }

@@ -403,9 +403,14 @@ function validateOpenShellBackend(
       throw new ScopeViolationError(path(id, `drivers.${key}`) + " is unsupported.");
     }
   }
-  if (!isNonEmptyString(drivers.sandbox) || !isNonEmptyString(drivers.credential_gateway)) {
+  if (
+    !isNonEmptyString(drivers.sandbox) ||
+    (drivers.credential_gateway !== undefined && !isNonEmptyString(drivers.credential_gateway)) ||
+    (drivers.credential_refresh !== undefined && drivers.credential_gateway === undefined)
+  ) {
     throw new ScopeViolationError(
-      path(id, "drivers") + " requires sandbox and credential_gateway members.",
+      path(id, "drivers") +
+        " requires sandbox; credential_gateway is required when credential_refresh is selected.",
     );
   }
   if (drivers.credential_refresh !== undefined && !isNonEmptyString(drivers.credential_refresh)) {
@@ -429,7 +434,9 @@ function validateOpenShellBackend(
     },
     drivers: {
       sandbox: drivers.sandbox,
-      credential_gateway: drivers.credential_gateway,
+      ...(drivers.credential_gateway === undefined
+        ? {}
+        : { credential_gateway: drivers.credential_gateway as string }),
       ...(drivers.credential_proxy === undefined
         ? {}
         : { credential_proxy: backendId(drivers.credential_proxy, "Egress Driver ID") }),
@@ -449,7 +456,9 @@ function backendMembers(backend: BackendDefinition): readonly string[] {
   }
   return [
     `sandbox:${backend.drivers.sandbox}`,
-    `credential_gateway:${backend.drivers.credential_gateway}`,
+    ...(backend.drivers.credential_gateway === undefined
+      ? []
+      : [`credential_gateway:${backend.drivers.credential_gateway}`]),
     ...(backend.drivers.credential_refresh === undefined
       ? []
       : [`credential_refresh:${backend.drivers.credential_refresh}`]),
@@ -528,11 +537,13 @@ export function validateSelectedBackendDrivers(
       requires("service_account", backend.drivers.service_account, "ServiceAccount Driver");
     } else {
       requires("sandbox", backend.drivers.sandbox, "Sandbox Driver");
-      requires(
-        "credential_gateway",
-        backend.drivers.credential_gateway,
-        "Credential Gateway Driver",
-      );
+      if (backend.drivers.credential_gateway !== undefined) {
+        requires(
+          "credential_gateway",
+          backend.drivers.credential_gateway,
+          "Credential Gateway Driver",
+        );
+      }
       if (backend.drivers.credential_refresh !== undefined) {
         requires(
           "credential_refresh",

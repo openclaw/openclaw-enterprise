@@ -106,6 +106,9 @@ spec:
           selector:
             matchLabels:
               openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+              {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+              kubernetes.io/metadata.name: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+              {{- end }}
         kinds:
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
@@ -126,6 +129,9 @@ spec:
           selector:
             matchLabels:
               openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+              {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+              kubernetes.io/metadata.name: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+              {{- end }}
         kinds:
           - group: gateway.networking.k8s.io
             kind: HTTPRoute
@@ -255,6 +261,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+              {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+              kubernetes.io/metadata.name: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+              {{- end }}
           podSelector:
             matchLabels:
               openclaw.dev/workload-role: agent
@@ -266,6 +275,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+              {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+              kubernetes.io/metadata.name: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+              {{- end }}
           podSelector:
             matchLabels:
               openshell.ai/boundary-role: supervisor
@@ -278,6 +290,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               openclaw-enterprise.io/gateway: {{ $routeNamespaceLabel | quote }}
+              {{- if eq $.Values.namedWorkspace.stage "runtime" }}
+              kubernetes.io/metadata.name: {{ printf "oce-%s" ($.Values.namedWorkspace.namespaceId | sha256sum | trunc 15) | quote }}
+              {{- end }}
           podSelector:
             matchLabels:
               openclaw.dev/workload-role: gateway

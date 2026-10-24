@@ -617,6 +617,25 @@ test("startup constructs the bundled OpenShell SandboxDriver before constructing
   );
 });
 
+test("startup composes a sandbox-only OpenShell Backend without credential authority", async (t) => {
+  const configuration = sandboxInstallation();
+  delete configuration.backend[0].drivers.credential_gateway;
+  delete configuration.drivers.credential_gateway;
+  const runtime = await loadInstallationFile(t, configuration);
+  assert.ok(runtime.sandboxDriver instanceof OpenShellSandboxDriver);
+  assert.equal(runtime.credentialGatewayDriver, undefined);
+  assert.equal(runtime.credentialRefreshDriver, undefined);
+  assert.deepEqual(runtime.installation.backend[0].drivers, { sandbox: "openshell-sandbox" });
+  // Selecting refresh still requires credential custody; omitting both gateway
+  // selections must not turn this into a sandbox-only configuration silently.
+  configuration.backend[0].drivers.credential_refresh = "openshell-refresh";
+  configuration.drivers.credential_refresh = { id: "openshell-refresh", configuration: {} };
+  await assert.rejects(
+    loadInstallationFile(t, configuration),
+    /credential_gateway is required when credential_refresh is selected/,
+  );
+});
+
 test("startup composes both OpenShell members from one Backend", async (t) => {
   // An explicit hard_requirement composes like the omitted default above.
   const configuration = sandboxInstallation();
@@ -702,7 +721,12 @@ test("startup identifies the rejected Credential Gateway executable", (t) =>
     structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
   ));
 
-test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
+test("startup rejects an OpenShell Backend whose selected members do not match", async (t) => {
+  await rejectsAtStartup(
+    t,
+    (c) => delete c.backend[0].drivers.credential_gateway,
+    /drivers\.credential_gateway must match the selected drivers\.credential_gateway\.id/,
+  );
   await rejectsAtStartup(
     t,
     (c) => delete c.drivers.credential_gateway,

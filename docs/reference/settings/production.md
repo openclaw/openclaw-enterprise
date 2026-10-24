@@ -303,3 +303,5 @@ Collector metrics use the same paired selector contract under
 `logging.collector.metrics`, on fixed port `8888`; metrics ingress is opt-in.
 The chart grants only the selected peer and port. Other NetworkPolicies remain
 additive, so review them when assessing effective access.
+
+For an already bootstrapped installation, see [named workspace runtime attachment](named-workspace.md).
