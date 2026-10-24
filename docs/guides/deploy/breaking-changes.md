@@ -19,6 +19,27 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: chart container resources are checked at render
+
+**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
+`slackProxy.resources` or `logging.collector.resources` entry with a negative
+quantity or a resource name other than `cpu`, `memory`,
+`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
+such as `example.com/gpu`. They also refuse a negative
+`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
+these and Kubernetes refused the Deployment or Pod when Helm applied it, after
+other objects of the release had changed. With `gatewayRouting.enabled`, a
+release name whose first 34 characters end in `.` now renders a valid Envoy
+NetworkPolicy name; earlier builds failed to create it.
+
+**Who is affected.** Releases that set one of these values by hand.
+
+**How to tell.** Helm fails before applying anything, naming the value, for
+example `resources.limits.cpu must not be negative`. A request above its limit
+is still left to Kubernetes, which refuses it when Helm applies the release.
+
+**Steps.** Remove the negative or unknown entry, and run the upgrade again.
+
 ## 2026-10-24: SSH Compute refuses runtime paths under /tmp
 
 **What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
@@ -132,27 +153,6 @@ example `gatewayRouting.sandbox.ingressPeers[0].ipBlock.cidr requires an IPv4 or
 IPv6 CIDR`.
 
 **Steps.** Correct or remove the named field, then run the upgrade again.
-
-## 2026-10-24: chart container resources are checked at render
-
-**What breaks.** `helm install` and `helm upgrade` refuse a `resources`,
-`slackProxy.resources` or `logging.collector.resources` entry with a negative
-quantity or a resource name other than `cpu`, `memory`,
-`ephemeral-storage`, `hugepages-<size>` or a domain-prefixed extended resource
-such as `example.com/gpu`. They also refuse a negative
-`logging.collector.state.sizeLimit` or `tmp.sizeLimit`. Earlier builds rendered
-these and Kubernetes refused the Deployment or Pod when Helm applied it, after
-other objects of the release had changed. With `gatewayRouting.enabled`, a
-release name whose first 34 characters end in `.` now renders a valid Envoy
-NetworkPolicy name; earlier builds failed to create it.
-
-**Who is affected.** Releases that set one of these values by hand.
-
-**How to tell.** Helm fails before applying anything, naming the value, for
-example `resources.limits.cpu must not be negative`. A request above its limit
-is still left to Kubernetes, which refuses it when Helm applies the release.
-
-**Steps.** Remove the negative or unknown entry, and run the upgrade again.
 
 ## 2026-10-24: OpenShell refuses OpenClaw Agents without user namespaces off
 
