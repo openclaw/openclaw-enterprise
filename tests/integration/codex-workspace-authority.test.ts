@@ -928,7 +928,9 @@ test("bundled workspace registration admits the five native routes and refuses s
       ...(route.path.endsWith("/models") && { query: "client_version=0.163.0" }),
     };
     captured.request.headers.push({ name: "chatgpt-account-id", value: workspace });
-    if (route.method === "GET") captured.request.body = Buffer.alloc(0);
+    if (route.method === "GET") {
+      captured.request.body = Buffer.alloc(0);
+    }
     return captured;
   });
   for (const req of captures) {
@@ -938,7 +940,9 @@ test("bundled workspace registration admits the five native routes and refuses s
     assert.ok((await f.authorize(f.permitRequest(req, ready))).allowed);
     const target = req.request.target;
     const url = new URL("https://" + target.host + target.path);
-    if ("query" in target) url.search = String(target.query);
+    if ("query" in target) {
+      url.search = String(target.query);
+    }
     const returned = await new Promise<Buffer>((resolve, reject) => {
       const request = httpsRequest(
         url,
