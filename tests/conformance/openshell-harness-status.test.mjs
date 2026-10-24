@@ -17,7 +17,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
-import { availablePort } from "../helpers/available-port.mjs";
+import { availablePort, refusingPort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -539,10 +539,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
   }
 });
 
-test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async () => {
-  const server = createServer();
-  const port = await listen(server);
-  await close(server);
+test("an unreachable OpenShell gateway listener is a dependency failure, not a starting Harness", async (t) => {
+  // A released port can be taken by a parallel test's listener; this one keeps refusing.
+  const refusing = await refusingPort();
+  t.after(() => refusing.release());
+  const { port } = refusing;
   const client = new GrpcOpenShellGatewayClient({ endpoint: `http://127.0.0.1:${port}` });
   for (const observe of [
     () =>

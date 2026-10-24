@@ -56,9 +56,9 @@ const githubHeaders = "accept accept-encoding connection host user-agent x-githu
 // side of its connection; `hold` opens connections that never finish their request headers.
 async function startReader(t) {
   const server = createPublicGithubReadServer();
-  const port = await listen(t, server);
   const clients = [];
   t.after(() => clients.forEach((client) => client.destroy()));
+  const port = await listen(t, server);
   const connect = async (options = {}) => {
     const accepted = once(server, "connection");
     const client = connectTcp({ port, host: "127.0.0.1", ...options });
