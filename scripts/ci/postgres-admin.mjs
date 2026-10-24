@@ -72,6 +72,10 @@ export async function runPostgresAdmin({ port, database = "postgres", statements
         });
       }
     }
+    // Inside the deadline too, so a server that never closes the session cannot hold the
+    // caller. Every statement has succeeded by now; a failed close changes nothing.
+    current = "closing the session";
+    await client.end().catch(() => {});
   })();
   // A late rejection of abandoned work is already reported as the timeout.
   work.catch(() => {});
@@ -84,7 +88,6 @@ export async function runPostgresAdmin({ port, database = "postgres", statements
   } finally {
     clearTimeout(timer);
   }
-  await client.end().catch(() => {});
 }
 
 function adminError(message, failure, { cause, ...properties } = {}) {
