@@ -75,7 +75,8 @@ stopped.
 `kubernetes.userNamespaces` unset or `true` and run OpenClaw Agents; none of
 those Agents could deploy. Codex Agents are unaffected.
 
-**How to tell.** The refusal names `kubernetes.userNamespaces: false`.
+**How to tell.** The refusal names `kubernetes.userNamespaces: false`; Create
+Agent and the Installation's `openclaw.settingRefusals` show it too.
 Provisioning status reads still report earlier requests.
 
 **Steps.** Set `kubernetes.userNamespaces: false` in the OpenShell Sandbox

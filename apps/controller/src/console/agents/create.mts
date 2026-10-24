@@ -1601,6 +1601,9 @@ function renderAgentForm(
   // The Installation's selected Sandbox Driver is unavailable right now, so it lists no OpenClaw
   // mode and refuses every Agent save (finding 1624).
   let sandboxDriverUnavailable = false;
+  // Admission's refusal when the Sandbox Driver could provision Dedicated OpenClaw but its
+  // settings refuse it; it names the setting to change (finding 2373).
+  let dedicatedSettingRefusal: string | undefined;
   // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
   let modeDefaulted =
     agent.executionMode === undefined && !Object.hasOwn(draft.inputs ?? {}, "mode");
@@ -2369,12 +2372,16 @@ function renderAgentForm(
     embeddedOption.disabled = embeddedRefused;
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
+    // A setting refusal names the setting to change, not another Sandbox Driver (finding 2373).
+    const dedicatedRefusalReason = dedicatedSettingRefusal
+      ? `its settings refuse Dedicated OpenClaw. ${dedicatedSettingRefusal}`
+      : "it cannot run Dedicated OpenClaw.";
     const modeRefusal = sandboxDriverOutage
       ? SANDBOX_DRIVER_OUTAGE
       : noOpenClawMode
         ? binding?.method === "runtime"
-          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset."
-          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
+          ? `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason} This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.`
+          : `OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and ${dedicatedRefusalReason}${dedicatedSettingRefusal ? "" : " Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."}`
         : openclawEmbeddedRefused && mode.value === "embedded"
           ? binding?.method === "runtime"
             ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
@@ -2442,7 +2449,9 @@ function renderAgentForm(
         return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
       }
       if (noOpenClawMode) {
-        return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+        return dedicatedSettingRefusal
+          ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and its settings refuse Dedicated OpenClaw."
+          : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
       }
       const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
       if (anthropic && mode.value !== "embedded") {
@@ -2690,6 +2699,9 @@ function renderAgentForm(
       openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
       sandboxDriverUnavailable =
         installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
+      const settingRefusal = installation.capabilities?.openclaw?.settingRefusals?.dedicated;
+      dedicatedSettingRefusal =
+        typeof settingRefusal === "string" && settingRefusal ? settingRefusal : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??

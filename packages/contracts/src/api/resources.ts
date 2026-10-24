@@ -327,8 +327,18 @@ const InstallationCapabilitiesSchema = Type.Object(
             maxItems: 2,
             uniqueItems: true,
             description:
-              "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+              "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save refuses Embedded with a selected Sandbox Driver, and Dedicated when the Sandbox Driver's settings refuse it (settingRefusals); it saves Dedicated without a Sandbox Driver that can provision it, which deploy refuses. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw with settings that allow it, and a selected Sandbox Driver that is unavailable admits neither.",
           }),
+          settingRefusals: Type.Optional(
+            Type.Object(
+              { dedicated: Type.Optional(Type.String({ minLength: 1 })) },
+              {
+                additionalProperties: false,
+                description:
+                  "Present when the selected Sandbox Driver can provision a mode missing from executionModes but its settings refuse it. Each value is the message Agent save and deploy return for that mode, naming the setting an operator changes. Absent for other reasons a mode is missing.",
+              },
+            ),
+          ),
           sandboxDriverUnavailable: Type.Optional(
             Type.Literal(true, {
               description:

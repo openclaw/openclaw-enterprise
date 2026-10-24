@@ -343,7 +343,8 @@ ownership/mode checks, foreground deletion and writer termination
 precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
 at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
 Gateway's default identity, without UID/GID overrides; Agent save refuses
-dedicated OpenClaw otherwise. Ordinary Kubernetes Compute may use `/home/node`
+dedicated OpenClaw otherwise, and the Installation's
+`openclaw.settingRefusals.dedicated` carries that refusal. Ordinary Kubernetes Compute may use `/home/node`
 and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
