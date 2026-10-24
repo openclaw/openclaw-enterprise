@@ -1,7 +1,7 @@
 ---
 created: 2026-09-07
-updated: 2026-10-14
-last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
+updated: 2026-10-22
+last_updated_session: authoring-run/42f58451-fded-4bed-8b34-e0c7217c2665
 ---
 
 <a id="pr-24-ssh-compute-flow"></a>
@@ -120,10 +120,36 @@ managed environment SecretRef; explicit trusted proxy retains its configured tru
 
 The helper creates or verifies a deterministic per-Agent system user and
 private group, then creates the Agent directory and reserves the lowest free
-port across the shared root. Root-owned account markers bind the UID/GID to the
-exact Driver, Namespace, Agent, and ServicePrincipal. Existing unowned accounts
-or conflicting markers fail closed. Agent-owned `home/` and `state/` use mode
-`0700` and persist across versions.
+port across the shared root. It writes `accounts/<runtimeUser>.json` with
+`pending: true` before `groupadd`. `id` exit 1 and a merged `getent` exit 2 are
+not proof the name is free, because a name service can return those statuses
+while the account exists. `groupadd` must create the group. If the name is
+already in use, the fresh claim is removed and that account is not adopted.
+Before creating a group, the helper refuses any user already in the local files database.
+After `groupadd` succeeds, the claim records that this helper created the group
+and the gid from the local files database. A kill in the gap before that
+record leaves the group unrecorded. Preparation then refuses it. Deletion
+removes only the claim. The name is not proof of ownership: verify the group's
+origin and that removal is safe with the host owner before releasing the name
+and retrying. The helper never adopts that unrecorded group. A killed `useradd` can leave the
+user in place. The next preparation accepts it only when the local user's gid
+is the recorded gid and the group came from an earlier attempt, then stores
+the uid. An already-existing user is refused when this attempt created the group,
+and its claim is removed so retry and deletion cannot treat that user as owned. If `useradd` creates the account and
+then fails before it returns, the claim stays so that resume can finish. For a
+group created during the failed attempt, rollback clears the claim once both
+local entries are confirmed absent, even if `userdel` removed the private group.
+Remaining entries or failed checks retain that claim. If a later preparation
+confirms that both local entries are absent, it resets the retained claim to a
+fresh one and requires `groupadd` to create the group again. Failed checks leave
+the retained claim unchanged. Namespace
+deletion still clears the claim when the recorded group is already gone. A different ServicePrincipal does not
+match the claim and is refused before account commands. An account with no
+marker is not adopted. The
+[SSH Compute reference](../reference/drivers/ssh-compute.md) states this marker
+contract. A finalized marker, including one written before pending claims
+existed, is verified by its recorded UID/GID and is not rewritten. Agent-owned
+`home/` and `state/` use mode `0700` and persist across versions.
 
 The helper creates `gateway-password.env` only when needed and missing,
 preserving its value across later versions. It does not migrate historical
@@ -179,7 +205,11 @@ Relinking permits cleanup after `disable` removed a custom directory's load-path
 Deletion runs `beforeNamespaceDelete` hooks, then validates every Agent, Agent revision,
 and unit in the deletion set before stopping gateways. The helper stops and
 disables owned units through `stopOwnedUnit`, removes their unit files, reloads systemd, and removes the
-Namespace tree, including persistent state, and its owned runtime accounts. The driver clears its in-memory
+Namespace tree, including persistent state, and its owned runtime accounts. A
+pending claim for that Namespace is part of the owned set: deletion removes the
+claim and any account it already created, and does not remove another
+Namespace's account. An account with no marker is not adopted or deleted here.
+The driver clears its in-memory
 bindings only after the host operation succeeds.
 
 Agent deletion (`ssh/index.ts:deleteAgentRuntimeCredentials`,
@@ -218,6 +248,18 @@ retire, which frees its gateway port.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-22 00:01: Restart a retained pending claim through fresh group creation after both local entries are confirmed absent; lookup errors leave the claim unchanged. (authoring-run/42f58451-fded-4bed-8b34-e0c7217c2665 - 8aa91ba91fe62a26b4ee4cd9a6d20a216470b3ad)
+
+- 2026-10-21 04:58: Clear a rolled-back preparation claim after both local account entries are confirmed absent, including private-group removal by `userdel`. (authoring-run/a8cd3da0-89d1-42c4-889b-944be56156f2 - 9d64343f63cab523c5841ad6a5c640834f23e753)
+
+- 2026-10-15 10:22: Distinguish groups created by the current attempt before accepting an existing user. (authoring-run/3514d5b8-3645-4154-815a-9abe487cd1de - 264692a5f462c76798d6629400eea139410bed4a)
+
+- 2026-10-15: Document the kill window after `groupadd` and before the gid is recorded. The operator runs `groupdel` on the runtime account name and retries; the leftover group is not adopted.
+
+- 2026-10-15: A pending claim records a group this helper created. `id` and merged `getent` not-found statuses do not prove a name is free, and an existing group is not adopted.
+
+- 2026-10-14: Trace the pending account claim written before `useradd`, its resume, and Namespace cleanup of that incomplete account. The marker contract stays in the SSH Compute reference.
 
 - 2026-10-14 12:23: Document stdout retention and local-client settlement on overflow. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

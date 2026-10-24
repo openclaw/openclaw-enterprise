@@ -5,6 +5,6 @@ name=
 for argument in "$@"; do name=$argument; done
 groups="$OCC_SSH_FIXTURE_STATE/accounts/groups"
 mkdir -p "$groups"
-[ ! -e "$groups/$name" ] || exit 1
+[ ! -e "$groups/$name" ] || exit 9
 node -p 'process.getgid()' > "$groups/$name"
 printf 'groupadd %s\n' "$name" >> "$OCC_SSH_FIXTURE_STATE/accounts.log"

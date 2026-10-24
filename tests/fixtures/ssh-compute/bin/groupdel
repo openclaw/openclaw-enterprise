@@ -4,6 +4,10 @@ set -eu
 name=${1:-}
 file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
 [ -f "$file" ] || exit 1
+# A surviving member makes groupdel fail, as it does for a user's private group.
+if [ -f "$OCC_SSH_FIXTURE_STATE/accounts/users/$name" ]; then
+  exit 1
+fi
 if [ -f "$OCC_SSH_FIXTURE_STATE/groupdel.fail" ]; then
   rm -f "$OCC_SSH_FIXTURE_STATE/groupdel.fail"
   exit 1

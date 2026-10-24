@@ -1,10 +1,43 @@
 #!/bin/sh
 set -eu
 : "${OCC_SSH_FIXTURE_STATE:?fixture state required}"
-database=${1:-}
-name=${2:-}
-[ "$database" = group ] || exit 1
-file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
-[ -f "$file" ] || exit 1
-gid=$(cat "$file")
-printf '%s:x:%s:\n' "$name" "$gid"
+if [ -f "$OCC_SSH_FIXTURE_STATE/getent.fail" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/getent.fail"
+  exit 99
+fi
+# One native not-found status, even when the fixture account exists.
+if [ -f "$OCC_SSH_FIXTURE_STATE/getent.absent" ]; then
+  rm -f "$OCC_SSH_FIXTURE_STATE/getent.absent"
+  exit 2
+fi
+database=
+name=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -s|--service)
+      shift 2 || exit 1
+      ;;
+    group|passwd)
+      database=$1
+      shift
+      name=${1:-}
+      shift || true
+      ;;
+    *)
+      exit 1
+      ;;
+  esac
+done
+[ -n "$database" ] && [ -n "$name" ] || exit 1
+if [ "$database" = group ]; then
+  file="$OCC_SSH_FIXTURE_STATE/accounts/groups/$name"
+  [ -f "$file" ] || exit 2
+  gid=$(cat "$file")
+  printf '%s:x:%s:\n' "$name" "$gid"
+  exit 0
+fi
+file="$OCC_SSH_FIXTURE_STATE/accounts/users/$name"
+[ -f "$file" ] || exit 2
+uid=$(sed -n '1p' "$file")
+gid=$(sed -n '2p' "$file")
+printf '%s:x:%s:%s:::\n' "$name" "$uid" "$gid"
