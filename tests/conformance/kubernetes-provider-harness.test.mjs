@@ -20,6 +20,8 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
@@ -1403,8 +1405,13 @@ test("provider Harness protected execution is released only on current signed in
       // Pin the commands the Driver renders, not only the exported entrypoints (#3310,
       // finding 2256): the Sandbox launch carries the workspace node; activation renders
       // the same Harness without it for the endpoint and status reads.
+      const historicalAdmission = "protected-codex-no-connection-retry:v1";
       const admission = driver.admitRevision(protectedRevision);
-      assert.equal(admission, "protected-codex-no-connection-retry:v1");
+      assert.equal(admission, `codex-launch:v2:${historicalAdmission}`);
+      const historical = {
+        ...protectedRevision,
+        compute: { ...protectedRevision.compute, admission: historicalAdmission },
+      };
       const admitted = {
         ...protectedRevision,
         compute: { ...protectedRevision.compute, admission },
@@ -1427,7 +1434,21 @@ test("provider Harness protected execution is released only on current signed in
       observation = installed;
       current = true;
       try {
-        for (const target of [admitted, protectedRevision]) {
+        for (const [target, entrypoint, withNode, disabled] of [
+          [
+            admitted,
+            PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+            PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+            true,
+          ],
+          [
+            historical,
+            LEGACY_PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+            LEGACY_PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+            true,
+          ],
+          [protectedRevision, AGENT_RUNTIME_ENTRYPOINT, AGENT_WITH_NODE_ENTRYPOINT, false],
+        ]) {
           const rendered = [];
           sandbox.enrollHarness = async ({ requirements }) => {
             rendered.push([requirements.command, true]);
@@ -1444,25 +1465,17 @@ test("provider Harness protected execution is released only on current signed in
             );
           }
           assert.equal(rendered.length, 2);
-          const disabled = target === admitted;
           for (const [command, node] of rendered) {
-            const legacy = node ? AGENT_WITH_NODE_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT;
-            const updated = node
-              ? PROTECTED_CODEX_WITH_NODE_ENTRYPOINT
-              : PROTECTED_CODEX_RUNTIME_ENTRYPOINT;
-            // A stored revision without the marker keeps its exact immutable command.
+            // Both historical forms keep the exact command of their stored revision.
             assert.deepEqual(command, [
               ...RUNTIME_WRAPPER_COMMAND,
-              ...nodeProgramArguments(disabled ? updated : legacy),
+              ...nodeProgramArguments(node ? withNode : entrypoint),
             ]);
             const outer = program(command.slice(RUNTIME_WRAPPER_COMMAND.length));
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            assert.equal(
-              codex,
-              disabled ? PROTECTED_CODEX_RUNTIME_ENTRYPOINT : AGENT_RUNTIME_ENTRYPOINT,
-            );
+            assert.equal(codex, entrypoint);
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
               codex.match(/unbounded_connection_retries/g)?.length ?? 0,
