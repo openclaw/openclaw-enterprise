@@ -29,7 +29,9 @@ an unknown key under `policy.filesystem`, and `kubernetes.agentResources`
 failed each dedicated deploy after its predecessors had stopped.
 
 **Who is affected.** Only Installations whose OpenShell Sandbox settings use
-one of these values; none of them could deploy an Agent.
+one of these values. Apart from a slash-only path such as `//` in
+`policy.filesystem.readOnly` (earlier builds refused only `/` there), none of
+them could deploy an Agent.
 
 **How to tell.** Startup fails with `STARTUP_FAILED`, and the Installation
 loader names the setting, for example `/policy/process/runAsUser`.

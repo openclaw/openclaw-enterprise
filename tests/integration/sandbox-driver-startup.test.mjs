@@ -3611,8 +3611,18 @@ test("startup refuses OpenShell process identities the gateway refuses", async (
       invalidValue(`/policy/process/${field}`, IDENTITY),
     );
   }
-  // Control: the gateway's own name and the top of its numeric range load.
-  for (const value of ["sandbox", "4294967294"]) {
+  const required = (path) => [
+    { path, code: "REQUIRED", message: "This configuration field is required." },
+  ];
+  await rejectsAtStartup(
+    t,
+    (c) => delete sandboxOf(c).policy.process.runAsGroup,
+    required("/policy/process/runAsGroup"),
+  );
+  await rejectsAtStartup(t, (c) => delete sandboxOf(c).policy.process, required("/policy/process"));
+  // Control: the gateway's own name, the top of its numeric range, and the spellings its
+  // u32 parser also accepts load.
+  for (const value of ["sandbox", "4294967294", "+5", "007"]) {
     const configuration = sandboxInstallation();
     sandboxOf(configuration).policy.process = { runAsUser: value, runAsGroup: value };
     await loadInstallationFile(t, configuration);
@@ -3625,6 +3635,7 @@ test("startup refuses OpenShell filesystem paths before any Sandbox is created",
     [{ readWrite: ["/tmp", "/"] }, "readWrite/1"],
     [{ readWrite: ["//"] }, "readWrite/0"],
     [{ readOnly: ["/usr/../etc"] }, "readOnly/0"],
+    [{ readOnly: ["/usr\0/etc"] }, "readOnly/0"],
   ]) {
     await rejectsAtStartup(
       t,
@@ -3644,6 +3655,10 @@ test("startup refuses OpenShell filesystem paths before any Sandbox is created",
       "The Sandbox data mount is read-only; remove it from readWrite.",
     ),
   );
+  // Control: a writable data mount may be listed in readWrite.
+  const writable = sandboxInstallation();
+  sandboxOf(writable).policy.filesystem = { readWrite: ["/sandbox/enterprise"] };
+  await loadInstallationFile(t, writable);
   await rejectsAtStartup(
     t,
     (c) => (sandboxOf(c).policy.filesystem = { includeWorkdir: "no" }),

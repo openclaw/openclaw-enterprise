@@ -2343,6 +2343,7 @@ export const configurationSchema = Object.freeze({
     },
     policy: {
       type: "object",
+      required: ["process", "networkPolicies"],
       properties: {
         filesystem: {
           type: "object",
@@ -2356,6 +2357,7 @@ export const configurationSchema = Object.freeze({
         landlockCompatibility: { const: "hard_requirement" },
         process: {
           type: "object",
+          required: ["runAsUser", "runAsGroup"],
           properties: { runAsUser: { type: "string" }, runAsGroup: { type: "string" } },
         },
         networkPolicies: {
