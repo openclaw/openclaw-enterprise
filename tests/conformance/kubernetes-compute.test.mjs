@@ -13770,6 +13770,21 @@ test("revision lifecycle rejects another driver or missing identity before clust
       "models.providers.openai.models.0.thinkingLevelMap",
       "must map thinking levels to strings or null",
     ],
+    // Preparation refused this only after a dedicated deployment stopped its predecessors.
+    [
+      {
+        ...dedicatedNativeConfiguration,
+        agents: {
+          ...dedicatedNativeConfiguration.agents,
+          defaults: {
+            ...dedicatedNativeConfiguration.agents.defaults,
+            embeddedAgent: { runtimeServer: { url: "ws://127.0.0.1:1" } },
+          },
+        },
+      },
+      "agents.defaults.embeddedAgent.runtimeServer",
+      "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
+    ],
   ]) {
     assert.throws(
       () =>
