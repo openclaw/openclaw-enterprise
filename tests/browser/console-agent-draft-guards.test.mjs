@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { NAMESPACE_NOT_READY_MESSAGE } from "../../apps/controller/src/console/agents/list.mts";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createConsoleRepositoryLaunchFixture } from "../helpers/console-repository-launch.mjs";
@@ -1330,6 +1331,22 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     await waitForEnabled(deploy);
     await page.unroute(`${fixture.origin}${path}/deploy`);
   }
+
+  // A Namespace that is not ready says where to look, not the API's bare sentence: the
+  // Namespace, not this Agent's saved state, is what must change.
+  await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
+      }),
+    }),
+  );
+  await deploy.click();
+  await page.getByText(NAMESPACE_NOT_READY_MESSAGE, { exact: true }).waitFor();
+  await waitForEnabled(deploy);
+  await page.unroute(`${fixture.origin}${path}/deploy`);
 });
 
 for (const mutation of ["authentication", "channel Secrets"]) {

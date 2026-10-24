@@ -1414,6 +1414,39 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   });
 }
 
+// The Configuration card's Model row reads agents.defaults.model in both shapes the native
+// Configuration accepts: a model reference, or an object that names the primary model.
+test("The Configuration card names the model given as a reference or as a primary model", async (t) => {
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace("Model summary", { ready: true });
+  const { page } = await newPage(t, fixture);
+  const values = nativeValues("model-summary");
+  const reference = values.agents.defaults.model;
+  assert.equal(typeof reference, "string");
+  const shapes = [
+    ["reference", reference],
+    ["primary model", { primary: reference }],
+  ];
+  for (const [index, [shape, model]] of shapes.entries()) {
+    const agent = await fixture.createAgent(namespace.id, `Model ${shape} Agent`, {
+      ...values,
+      agents: { ...values.agents, defaults: { ...values.agents.defaults, model } },
+    });
+    const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+    if (index === 0) {
+      await login(page, fixture, url);
+    } else {
+      await page.goto(String(url));
+    }
+    await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
+    assert.equal(
+      await page.locator('.configuration-summary dt:text-is("Model") + dd').textContent(),
+      reference,
+      `Model row for a ${shape}`,
+    );
+  }
+});
+
 test("Agent detail refocus checks access once without reloading an unfinished revision edit", async (t) => {
   const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Revision refocus", { ready: true });
