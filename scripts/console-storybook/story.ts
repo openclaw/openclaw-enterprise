@@ -29,7 +29,12 @@ function fixtureUrl(id: string, theme?: string) {
   return `/storybook-fixtures/${page}.html?story=${encodeURIComponent(id)}&v=${__CONSOLE_STORY_BUILD__}`;
 }
 
-type PreviewOptions = { frameWidth?: `${number}px`; name?: string; instructions?: string };
+type PreviewOptions = {
+  frameWidth?: `${number}px`;
+  frameHeight?: `${number}px`;
+  name?: string;
+  instructions?: string;
+};
 
 export function story(id: string, options: PreviewOptions = {}) {
   const scenario = getScenario(id);
@@ -78,7 +83,8 @@ export function story(id: string, options: PreviewOptions = {}) {
       frame.title = `${scenario.name}: interactive console`;
       const src = fixtureUrl(id, scenario.theme);
       frame.src = src;
-      frame.style.cssText = `display:block;width:100%;max-width:${frameWidth};height:min(900px, calc(100vh - 80px));min-height:480px;border:1px solid #d6d0c5;background:white`;
+      const frameHeight = options.frameHeight ?? "min(900px, calc(100vh - 80px))";
+      frame.style.cssText = `display:block;width:100%;max-width:${frameWidth};height:${frameHeight};min-height:480px;border:1px solid #d6d0c5;background:white`;
       frame.setAttribute(
         "sandbox",
         "allow-scripts allow-same-origin allow-forms allow-modals allow-popups",

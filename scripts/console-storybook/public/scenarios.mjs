@@ -429,7 +429,13 @@ export const scenarios = {
     name: "Mobile",
     path: "/console/secrets",
     mobile: true,
-    description: "The Secret list and dialogs at phone width. Simulated UI proof.",
+    actions: [{ selector: "#secret-search", value: "sec_demo_model" }],
+    description:
+      "Compare the same 390 × 844 page with one search result, then with a list that scrolls.",
+    steps: [
+      "Open the one Secret, then Replace value. The top bar, dimmed page and sheet reach the right edge, with no empty strip. Press Escape without entering a value.",
+      "Clear Search Secrets, scroll to the last Secret and open it. The sheet reaches the available edge: beside a classic scrollbar, or under an overlay scrollbar. Escape returns focus to that Secret.",
+    ],
   },
   secretsSearch: {
     group: "Pages/Secrets",
