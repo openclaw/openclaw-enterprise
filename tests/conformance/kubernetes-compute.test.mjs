@@ -5147,6 +5147,117 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
   );
 });
 
+// Preparation renders the native hook relay and the sandbox route into a dedicated Agent's
+// document, and refused a caller's conflicting value only after a dedicated deployment had
+// stopped its predecessors (findings 2315, 2317). Deployment admission now names the setting.
+test("deployment admission refuses the Compute-rendered settings preparation refuses", () => {
+  const driver = createKubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      gatewayRouting: {
+        ...gatewayRouting,
+        sandbox: { domain: "previews.example.test", publicPort: 9443 },
+      },
+    }),
+  );
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const configuration = createHarnessConfiguration("codex", "gpt-5");
+  const revision = routedRevision(driver, { configuration });
+  const { sandboxOrigin, sandboxPort } = driver.gatewaySandboxConfiguration(revision, configuration)
+    .mcp.apps;
+  const prepare = (document) =>
+    driver.gatewayNativeHookRelayConfiguration(
+      revision,
+      driver.gatewaySandboxConfiguration(revision, document),
+    );
+  const admit = (document, harness = codex, secretBindings = {}) =>
+    driver.validateHarnessAuth(harness, apiKeyAuth, document, secretBindings);
+  const changed = (change) => {
+    const document = structuredClone(configuration);
+    change(document);
+    return document;
+  };
+  const appServer = (document) => document.plugins.entries.codex.config.appServer;
+  const hookRelay = "plugins.entries.codex.config.appServer.nativeHookRelay";
+  const route = "match the Compute-owned sandbox route";
+
+  // Compute's own values, and a document that leaves them unset, pass both.
+  for (const document of [
+    configuration,
+    { ...configuration, mcp: { apps: { enabled: true, sandboxOrigin, sandboxPort } } },
+  ]) {
+    admit(document);
+    prepare(document);
+  }
+  for (const [document, setting, requirement] of [
+    [
+      changed((document) => {
+        appServer(document).nativeHookRelay = { url: "https://other-agent.example.test/hooks" };
+      }),
+      hookRelay,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    ],
+    [
+      changed((document) => {
+        document.plugins.entries.codex.config.appServer = "on";
+      }),
+      "plugins.entries.codex.config.appServer",
+      "must be an object on Dedicated Codex",
+    ],
+    [{ ...configuration, mcp: "on" }, "mcp", "must be an object"],
+    [{ ...configuration, mcp: { apps: [] } }, "mcp.apps", "must be an object"],
+    [
+      { ...configuration, mcp: { apps: { sandboxOrigin: "https://trusted-admin.example.test" } } },
+      "mcp.apps.sandboxOrigin",
+      `must be unset or ${route}`,
+    ],
+    [
+      { ...configuration, mcp: { apps: { sandboxPort: sandboxPort + 1 } } },
+      "mcp.apps.sandboxPort",
+      `must be unset or ${sandboxPort} to ${route}`,
+    ],
+  ]) {
+    const message = `Configuration setting ${setting} ${requirement}.`;
+    assert.throws(() => admit(document), { name: "ConfigurationHarnessError", message }, setting);
+    assert.throws(() => prepare(document), { message }, setting);
+    // They follow the Installation's runtime and routing, so Agent save leaves them to deployment.
+    admit(document, codex, null);
+  }
+  // Admission has no Agent identity: another Agent's origin passes it, and preparation refuses it.
+  const otherAgent = {
+    ...configuration,
+    mcp: {
+      apps: {
+        sandboxOrigin: sandboxOrigin.replace(/agent-[0-9a-f]{32}/, `agent-${"0".repeat(32)}`),
+      },
+    },
+  };
+  admit(otherAgent);
+  assert.throws(() => prepare(otherAgent), {
+    message: `Configuration setting mcp.apps.sandboxOrigin must be unset or ${route}.`,
+  });
+  // Without Compute's rendering the caller's values stay: an Embedded Agent keeps its native
+  // preview settings, and a Compute with no runtime or routing renders no hook relay.
+  const embedded = createHarnessConfiguration("openclaw", "gpt-5");
+  admit(
+    { ...embedded, mcp: { apps: { sandboxOrigin: "https://embedded-preview.example.test" } } },
+    { id: "openclaw", version: "1.0.0", mode: "embedded" },
+  );
+  const relayed = changed((document) => {
+    appServer(document).nativeHookRelay = { url: "https://hooks.example.test" };
+  });
+  for (const unrendered of [
+    createKubernetesComputeDriver(routedOptions()),
+    createKubernetesComputeDriver(
+      options({
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      }),
+    ),
+  ]) {
+    unrendered.validateHarnessAuth(codex, apiKeyAuth, relayed, {});
+  }
+});
+
 test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
   const twoCluster = twoClusterOptions();
   const harness = (hostname) => () =>
