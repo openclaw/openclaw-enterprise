@@ -20,8 +20,13 @@ provider credential is still valid. We cannot recall a request that already pass
    Stock OpenShell binds credentials to an endpoint, not permanently to a middleware service.
    OCE must control the workspace, policy, provider attachments and registration; a tenant
    cannot also attach that provider to another sandbox. Keep the request-binding manifest
-   immutable across replicas. Change those inputs by stopping the old execution and admitting
-   a new one. A deployment setting alone is not proof of that isolation.
+   immutable across replicas. To change those inputs, stop the old execution and admit a new one.
+   The sole proposed in-place exception is an authenticated, strictly reducing
+   [version 3 joint-profile withdrawal](#proposed-joint-profile-for-github-installation-access)
+   on the same uninterrupted execution. It may remove one grant and, only on Git withdrawal,
+   re-enroll the signer for the unchanged model grant as specified below. Any other change to
+   the admitted policy, registration, providers or runtime requires a new execution.
+   A deployment setting alone is not proof of that isolation.
 2. **Install the credential.** OCE provisions the usable credential to OpenShell, never to
    the workload. Keep signing keys and refresh custody with the selected lifecycle owner.
    Saving an update is not evidence that the supervisor applied it.
@@ -101,7 +106,7 @@ The registered workspace credential provider defines the five allowed operations
 
 For this bundled profile, qualify the packaged Codex executable for each supported runtime image and platform. The five network rules must name its verified path; a wildcard or shared interpreter is not a substitute. OpenShell can match a process by its executable or by an ancestor. This rule does not prove that Codex itself opened the connection.
 
-Reject a `git-write` or `github-installation` repository binding on an execution that selects this workspace source. A future combined selection must qualify all five operations alongside Git on one execution. Verify the Git recipient under its own grant; the model sender’s signing key does not establish Git authority. Require authenticated grant reduction in both directions.
+Generation 1 rejects both `git-write` and `github-installation` repository bindings on an execution that selects this workspace source.
 
 Classify workspace bootstrap separately from model generation. Identity discovery is `GET https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami`. Verify that the returned account belongs to the admitted workspace. A verified non-FedRAMP identity selects the fixed backend origin `https://chatgpt.com`; the issuer response cannot choose another destination. On that origin, qualify the exact reads the native client needs:
 
@@ -117,7 +122,27 @@ Accept a successful policy response only within the proposed 64 KiB uncompressed
 
 Qualify the shipped native client with a representative restriction: observe it being enforced before work and complete a model turn. Test explicit empty lists separately from missing fields, invalid fragments, unsuccessful responses and oversize bundles. Deny a withdrawn grant and changes to method, path, query, authority, account or routing headers. This read grants no general data access and leaves ordinary OAuth and API-key access unchanged.
 
-Exercise the shipped Codex client and selected sender against controlled HTTPS peers. Verify a full turn, marker-only Agent custody and denial of an unlisted GET on the correct host. For a future combined model and Git selection, hold a model request after its initial allow, withdraw the still-valid token's grant, then resume it. Neither that request nor a fresh one may reach the peer, and Git must still fetch. Withdraw Git separately and complete another model turn in the same conversation. A request whose credential was already released may finish.
+Exercise the shipped Codex client and selected sender against controlled HTTPS peers. Verify a full turn, marker-only Agent custody and denial of an unlisted GET on the correct host.
+
+### Proposed joint profile for GitHub installation access
+
+For the bundled pair, reserve `codex-workspace-pat-with-git-v2` in `drivers.credential_proxy.configuration.middlewareName`. Require the model exchange authority and a distinct mandatory Git middleware from `repository.openShell.registrationName`. The current Git configuration rejects this selector. Offer it only after both Drivers qualify the joint profile. The Agent needs a current workspace/model grant and a separately approved [`github-installation` binding](github-installation-access.md) under Namespace policy. The approval covers the GitHub App installation’s actual repositories and permissions. Standing approval is a separate choice. This profile refuses `git-write`; it never widens a narrower grant or falls back to another sender.
+
+Propose reduction version 3 for the joint profile. It requires an authenticated observation from the Gateway and the enforcing supervisor. Bind the model signer and both Git provider IDs, attachment epochs and rule digests to the same immutable execution, runtime and policy generation. Compare the complete applied policy with the admitted model policy plus exactly the Git rules for `github.com` (Basic) and `api.github.com` (required Bearer). Reject any difference outside the recorded reduction and its permitted signer transition. Never add access, substitute a Git provider, or adopt a restarted or replaced Sandbox or network supervisor under the old grant. Leave the existing model-only verifier and reduction versions 1 and 2 unchanged.
+
+On withdrawal, OCE denies new use. Durably record the operation ID, the enrolled model signer’s public-key fingerprint for the admitted execution and generation, the retained grant’s admitted ID, generation, scope and recipient, and the complete remaining policy.
+
+To remove Git, conditionally detach both providers and keep their original receipts. Fencing and successor acceptance each require an authenticated match on all four retained-grant fields. Fence the signer and unreleased requests only if the recorded key and generation are current. Verify this operation’s authenticated fence receipt for that key. At enrollment, authenticate that the same operation’s fence for that key is still current, and make the change conditional on that match. A historical receipt alone is insufficient. Require authenticated re-enrollment, fresh proof of possession on this execution, both Git absences and the unchanged model policy at the final applied generation.
+
+To remove model access, fence its credential release, verify all five model routes are absent, and verify both retained Git recipients under their unchanged grant. Retire only material owned solely by the withdrawn grant.
+
+A stale signer, conflicting observation or changed retained authority must not advance the operation. Partial changes and lost acknowledgments leave withdrawal incomplete. Keep the withdrawn grant denied and supervise the Agent. Retained access requires fresh authenticated evidence that the grant is current, all four fields match admission, and the complete remaining policy is applied. Any other grant transition requires a new execution. Observe the original operations without redispatch.
+
+On one joint execution, exercise all five model operations, fetch a previously missing Git object with authentication and perform an authorized GitHub API operation. Deny a repository or permission outside the approved installation. Reject an unknown profile, swapped provider IDs or changed rule digests; generation 1 must still refuse both Git binding kinds.
+
+Test each withdrawal in the original conversation with the withdrawn credential still valid. A stale withdrawal leaves the current signer untouched and enrolls no successor. Present a genuine fence receipt after another signer enrolls: reject late enrollment and leave that signer untouched. Reject an equal-permission substitute grant, narrower scope, changed grant generation or different recipient.
+
+After Git withdrawal, reject the old model key and unreleased requests, deny fresh Git and API requests before either origin, and complete a new model turn. After model withdrawal, neither a request held before credential release nor a fresh request may reach the model origin; Git must still fetch a missing object. After a partial detach or lost acknowledgment, restart only the OCE controller or worker while the Sandbox and network supervisor keep running. Recover the original operation without redispatch. A model request whose credential was already released may finish.
 
 ## Release test
 
