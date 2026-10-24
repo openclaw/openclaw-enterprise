@@ -600,11 +600,12 @@ async function ensurePostgresServer(statePath, state) {
 }
 
 // The lane's server is disposable (cleanup removes it with its volume), so it gives up
-// durability, which only a host crash would test: commits stop waiting for WAL flushes,
-// and the checkpoint each test database's DROP DATABASE waits for skips its fsyncs.
-// PostgreSQL containers wrote most of a loaded runner's IO. Recovery from a killed
-// server is unchanged. The reload lands before any test database exists. Developers'
-// compose.postgres.yaml server keeps PostgreSQL's defaults.
+// durability: commits stop waiting for WAL flushes, and the checkpoint each test
+// database's DROP DATABASE waits for skips its fsyncs. PostgreSQL containers wrote most
+// of a loaded runner's IO. A host crash could now corrupt the data and a server crash
+// could lose the last few hundred milliseconds of acknowledged commits; nothing kills
+// this server or reads it after a crash. The reload is requested before any test
+// database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
 const ciPostgresSettingsArgs = Object.freeze([
   "-v",
   "ON_ERROR_STOP=1",
