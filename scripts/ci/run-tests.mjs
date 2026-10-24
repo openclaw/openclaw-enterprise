@@ -652,7 +652,7 @@ function sanitizePreparationError(error) {
   if (
     code !== "CI_PREPARATION_COMMAND_FAILED" ||
     !["database-create", "database-schema", "database-migrate"].includes(stage) ||
-    !["spawn", "exit", "signal", "timeout"].includes(failure)
+    !["spawn", "exit", "signal", "timeout", "connect", "query"].includes(failure)
   ) {
     return result;
   }

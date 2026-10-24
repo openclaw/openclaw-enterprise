@@ -9,6 +9,7 @@ import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { startFakePostgres } from "../helpers/fake-postgres-server.mjs";
 import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
@@ -85,18 +86,40 @@ function runCleanup(statePath, env = {}) {
   });
 }
 
-function runK3dModelReset(statePath, env = {}) {
-  return spawnSync(process.execPath, [resetK3dModelPath, "--state", statePath], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    env: { ...process.env, ...env },
+// runCleanup's result, from an asynchronous child, so a fake PostgreSQL server in this
+// process (fake-postgres-server.mjs) can answer it. `args` default to cleanup.mjs's CLI.
+function runAsync(statePath, env = {}, args = [cleanupPath, "--state", statePath]) {
+  return new Promise((resolvePromise) => {
+    const child = spawn(process.execPath, args, {
+      cwd: repositoryRoot,
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
+    child.on("close", (status, signal) => {
+      clearTimeout(timer);
+      resolvePromise({ status, signal, stdout, stderr });
+    });
   });
+}
+
+// A fake lane PostgreSQL server for one case, stopped after it. Database drops reach it
+// over the lane server's published port (scripts/ci/postgres-admin.mjs).
+async function laneFakePostgres(t, onQuery) {
+  const postgres = await startFakePostgres({ onQuery });
+  t.after(() => postgres.close());
+  return postgres;
 }
 
 test("k3d routing reset removes only the owned test database", async (t) => {
   const root = await fixture(t);
   const containerLog = join(root, "container.log");
   await writeCommand(join(root, "bin"), "podman", "exit 0\n", { log: containerLog });
+  const postgres = await laneFakePostgres(t);
   const prefix = "openclaw-ci-local-reset1234567890";
   const statePath = join(root, "state.json");
   await writeState(statePath, {
@@ -111,7 +134,7 @@ test("k3d routing reset removes only the owned test database", async (t) => {
         owner: prefix,
         name: "openclaw_ci_pg_reset_case",
         composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-        port: 55433,
+        port: postgres.port,
       },
       {
         id: "database-1",
@@ -119,7 +142,7 @@ test("k3d routing reset removes only the owned test database", async (t) => {
         owner: prefix,
         name: "openclaw_k8s_reset_case",
         composeProject: "openclaw_ci_pg_reset_case",
-        port: 55433,
+        port: postgres.port,
       },
       {
         id: "cluster-1",
@@ -130,15 +153,18 @@ test("k3d routing reset removes only the owned test database", async (t) => {
     ],
   });
 
-  const result = runK3dModelReset(statePath, {
-    OCC_DOCKER_BIN: join(root, "bin/podman"),
-  });
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: join(root, "bin/podman") }, [
+    resetK3dModelPath,
+    "--state",
+    statePath,
+  ]);
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(
-    await readFile(containerLog, "utf8"),
-    /DROP DATABASE IF EXISTS "openclaw_k8s_reset_case"/,
-  );
+  assert.deepEqual(postgres.queries(), [
+    'postgres\tDROP DATABASE IF EXISTS "openclaw_k8s_reset_case" WITH (FORCE)',
+  ]);
+  // The drop needs no container engine command.
+  await assert.rejects(() => readFile(containerLog, "utf8"), { code: "ENOENT" });
   const retained = JSON.parse(await readFile(statePath, "utf8"));
   assert.deepEqual(
     retained.resources.map(({ id }) => id),
@@ -387,7 +413,7 @@ for (const scenario of [
   });
 }
 
-function failedDropState() {
+function failedDropState(port = 55434) {
   const prefix = "openclaw-ci-local-faileddrop1234567890";
   return {
     version: 1,
@@ -400,7 +426,7 @@ function failedDropState() {
         owner: prefix,
         name: "openclaw_ci_pg_failed_drop",
         composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-        port: 55434,
+        port,
       },
       {
         id: "database-1",
@@ -408,7 +434,7 @@ function failedDropState() {
         owner: prefix,
         name: "openclaw_ci_failed_drop",
         composeProject: "openclaw_ci_pg_failed_drop",
-        port: 55434,
+        port,
       },
     ],
   };
@@ -417,26 +443,28 @@ function failedDropState() {
 test("cleanup continues after a failed database drop and retains only the failed resource", async (t) => {
   const root = await fixture(t);
   const containerLog = join(root, "container.log");
-  const docker = await writeCommand(
-    join(root, "bin"),
-    "docker",
-    `case "$*" in
-  *" DROP DATABASE "*) echo "deliberate drop failure" >&2; exit 23 ;;
-esac
-`,
-    { log: containerLog },
+  const docker = await writeCommand(join(root, "bin"), "docker", "exit 0\n", { log: containerLog });
+  const postgres = await laneFakePostgres(t, (query) =>
+    query.startsWith("DROP DATABASE ") ? { error: "deliberate drop failure" } : undefined,
   );
   const statePath = join(root, "state.json");
-  const state = failedDropState();
+  const state = failedDropState(postgres.port);
   await writeState(statePath, state);
 
-  const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
+  const result = await runAsync(statePath, { OCC_DOCKER_BIN: docker });
 
   assert.equal(result.status, 1, result.stderr);
-  assert.match(result.stderr, /failed: deliberate drop failure/);
+  assert.match(
+    result.stderr,
+    /DROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH \(FORCE\) failed: deliberate drop failure/,
+  );
+  assert.deepEqual(postgres.queries(), [
+    'postgres\tDROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)',
+  ]);
+  // The server still goes down after the failed drop.
   assert.match(
     await readFile(containerLog, "utf8"),
-    / DROP DATABASE .*\n.* down --volumes --remove-orphans\n$/,
+    /^compose .* down --volumes --remove-orphans\n$/,
   );
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), {
     ...state,
@@ -447,16 +475,9 @@ esac
 
 test("cleanup drops a selected database before waiting for the CI state lock", async (t) => {
   const root = await fixture(t);
-  const dropLog = join(root, "drop.log");
-  await writeCommand(
-    join(root, "bin"),
-    "docker",
-    `require("node:fs").appendFileSync(${JSON.stringify(dropLog)}, process.argv.at(-1) + "\\n");
-`,
-    { interpreter: "node" },
-  );
+  const postgres = await laneFakePostgres(t);
   const statePath = join(root, "state.json");
-  const state = failedDropState();
+  const state = failedDropState(postgres.port);
   await writeState(statePath, state);
   // Another process holds the lock, as the runner does while it prepares a file.
   let release;
@@ -472,7 +493,7 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
       statePath,
     ],
     {
-      env: { ...process.env, OCC_DOCKER_BIN: join(root, "bin/docker") },
+      env: { ...process.env, OCC_DOCKER_BIN: join(root, "bin/must-not-run") },
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
@@ -483,13 +504,12 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
   // The drop must run while the lock is still held by this test.
   await waitUntil(
     "the drop to run without waiting for the lock",
-    () => readFile(dropLog, "utf8").catch(() => ""),
+    () => postgres.queries().length > 0,
     { timeoutMs: 20_000, intervalMs: 10 },
   );
-  assert.equal(
-    await readFile(dropLog, "utf8"),
-    'DROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)\n',
-  );
+  assert.deepEqual(postgres.queries(), [
+    'postgres\tDROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)',
+  ]);
   // The entry stays until the drop's process takes the lock.
   assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
   release();
@@ -548,11 +568,68 @@ for (const stream of ["stdout", "stderr"]) {
   );
 }
 
+// A cleanup whose only resource is an owned image tag; its removal is a container engine
+// command under cleanup's command budget.
+function imageTagState() {
+  const prefix = "openclaw-ci-local-hungimage1234567890";
+  return {
+    version: 1,
+    repositoryRoot,
+    prefix,
+    resources: [
+      {
+        id: "image-1",
+        kind: "image-tag",
+        owner: prefix,
+        name: "localhost/openclaw-ci-image-hung:local",
+      },
+    ],
+  };
+}
+
+test("cleanup bounds a database drop the server never answers and retains it", async (t) => {
+  const root = await fixture(t);
+  const postgres = await laneFakePostgres(t, (query) =>
+    query.startsWith("DROP DATABASE ") ? { hang: true } : undefined,
+  );
+  const statePath = join(root, "state.json");
+  const state = failedDropState(postgres.port);
+  await writeState(statePath, state);
+  const started = Date.now();
+  const result = await runAsync(
+    statePath,
+    {
+      OCC_DOCKER_BIN: join(root, "bin/must-not-run"),
+      OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "500",
+    },
+    [
+      "--input-type=module",
+      "-e",
+      `import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
+await cleanupResourceIds(process.argv[1], ["database-1"]);`,
+      statePath,
+    ],
+  );
+  const elapsed = Date.now() - started;
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(
+    result.stderr,
+    /Cleanup failed for postgres-database:openclaw_ci_failed_drop:.*DROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH \(FORCE\) timed out after 500 ms/,
+  );
+  assert.ok(elapsed < 10_000, `cleanup took ${elapsed} ms`);
+  assert.deepEqual(postgres.queries(), [
+    'postgres\tDROP DATABASE IF EXISTS "openclaw_ci_failed_drop" WITH (FORCE)',
+  ]);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
 // These are real command trees behind the supported container-binary override. The
 // wrapper and descendant do no container work; the descendant inherits both output
 // pipes and ignores TERM. Its finite lifetime also bounds a failed regression run.
 // Cleanup must leave the escaped descendant running, so the test releases it once it
-// has been observed alive instead of waiting out that lifetime in teardown.
+// has been observed alive instead of waiting out that lifetime in teardown. The hung
+// command is an image removal: database drops connect to the server directly (the case
+// above bounds those).
 for (const scenario of [
   "exit-before-timeout",
   "exit-on-term",
@@ -561,7 +638,7 @@ for (const scenario of [
   "escaped-group",
 ]) {
   test(
-    `cleanup bounds inherited pipes and retains a failed drop: ${scenario}`,
+    `cleanup bounds inherited pipes and retains a failed image removal: ${scenario}`,
     {
       skip: process.platform === "win32" && "POSIX process groups and executable fixtures",
     },
@@ -596,7 +673,7 @@ for (const scenario of [
         "docker",
         `      const { spawn } = require("node:child_process");
       const fs = require("node:fs");
-      if (!process.argv.includes("psql")) throw new Error("expected database drop");
+      if (process.argv.slice(2, 4).join(" ") !== "image rm") throw new Error("expected image removal");
       process.on("SIGTERM", () => {
         if (["exit-on-term", "close-on-term"].includes(${JSON.stringify(scenario)})) process.exit(0);
       });
@@ -612,15 +689,15 @@ for (const scenario of [
         { interpreter: "node" },
       );
       const statePath = join(root, "state.json");
-      const state = failedDropState();
+      const state = imageTagState();
       await writeState(statePath, state);
 
-      // Apply the short command budget only to the hung drop. A separate test checks
+      // Apply the short command budget only to the hung removal. A separate test checks
       // that cleanup continues to Compose down after a deterministic failure.
       // The deadline starts at fork, but the supervisor, wrapper and descendant are
       // Node processes that handle TERM only once booted. Under CPU pressure a TERM
       // during startup killed the descendant before its first heartbeat (finding
-      // 1652). The driver starts the drop's deadline once the heartbeat exists, when
+      // 1652). The driver starts the removal's deadline once the heartbeat exists, when
       // every process in the tree has its TERM handler, and records that start.
       const budgetStartPath = join(root, "budget-start");
       const drop = `import { existsSync, writeFileSync } from "node:fs";
@@ -651,7 +728,7 @@ for (const scenario of [
             process.exitCode = 2;
           }
         });
-        await cleanupResourceIds(statePath, ["database-1"]);`;
+        await cleanupResourceIds(statePath, ["image-1"]);`;
       const started = Date.now();
       const result = spawnSync(
         process.execPath,
@@ -678,7 +755,7 @@ for (const scenario of [
       assert.ok(elapsed < 2500, "cleanup exceeded the command and pipe deadlines");
       assert.match(
         result.stderr,
-        /Cleanup failed for postgres-database:openclaw_ci_failed_drop:.* psql .* timed out after 500 ms/,
+        /Cleanup failed for image-tag:localhost\/openclaw-ci-image-hung:local:.* image rm .* timed out after 500 ms/,
       );
       assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
       // PID state, not heartbeat timing, is the evidence: a heartbeat can stall under

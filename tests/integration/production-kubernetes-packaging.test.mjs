@@ -1162,7 +1162,7 @@ function routeNamespaceLabel(namespace, gatewayName) {
 }
 
 function envoyNetworkPolicyName(releaseName, namespace, gatewayName) {
-  return `${releaseName.slice(0, 34).replace(/-$/, "")}-${routeNamespaceLabel(
+  return `${releaseName.slice(0, 34).replace(/[-.]+$/, "")}-${routeNamespaceLabel(
     namespace,
     gatewayName,
   )}-envoy-dataplane`;
@@ -5388,6 +5388,15 @@ test(
     assert.notEqual(envoyPolicyName, alternateEnvoyPolicyName);
     assert.match(envoyPolicyName, /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
     assert.ok(envoyPolicyName.length <= 63);
+    // Truncating a dotted release name can leave a trailing "." (finding 2338).
+    for (const release of [`${"a".repeat(33)}.b`, `${"a".repeat(33)}-b`]) {
+      const names = (await resources((await render(gatewayRoutingValues, { release })).stdout))
+        .filter(({ kind }) => kind === "NetworkPolicy")
+        .map(({ metadata }) => metadata.name)
+        .filter((name) => name.endsWith("-envoy-dataplane"));
+      assert.equal(names.length, 1);
+      assert.match(names[0], new RegExp(`^${"a".repeat(33)}-[0-9a-f]{12}-envoy-dataplane$`));
+    }
     assert.ok(
       alternateObjects.some(
         ({ kind, metadata }) =>
@@ -5929,15 +5938,76 @@ test("Collector exporter ports preserve decimal meaning in Kubernetes YAML", too
   );
 });
 
+const collectorValues = {
+  "logging.collector.enabled": "true",
+  "logging.collector.image":
+    "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
+  "logging.collector.configSecretName": "occ-otel-collector-config",
+  "logging.collector.envSecretName": "occ-otel-collector-exporter",
+  "logging.collector.exporter.cidr": "203.0.113.10/32",
+};
+
+// Kubernetes refuses these at apply, after other objects of the release changed (finding 2337).
+test("Helm refuses unknown resource names and negative quantities", tooling, async () => {
+  const values = { ...collectorValues, ...slackProxyValues };
+  for (const [field, value, message] of [
+    ["resources.limits.cpu", "-1", "resources.limits.cpu must not be negative"],
+    ["resources.requests.cpu", "-.5m", "resources.requests.cpu must not be negative"],
+    [
+      "slackProxy.resources.requests.memory",
+      "-64Mi",
+      "slackProxy.resources.requests.memory must not be negative",
+    ],
+    [
+      "logging.collector.state.sizeLimit",
+      "-1Mi",
+      "logging.collector.state.sizeLimit must not be negative",
+    ],
+    [
+      "logging.collector.tmp.sizeLimit",
+      "-1",
+      "logging.collector.tmp.sizeLimit must not be negative",
+    ],
+    [
+      "resources.limits.gpu",
+      "1",
+      "resources.limits.gpu names a resource Kubernetes does not accept",
+    ],
+    [
+      "logging.collector.resources.requests.requests\\.example\\.com/gpu",
+      "1",
+      "requests.example.com/gpu names a resource",
+    ],
+    [
+      "slackProxy.resources.limits.hugepages-huge",
+      "4Mi",
+      "slackProxy.resources.limits.hugepages-huge names a resource",
+    ],
+  ]) {
+    await assert.rejects(render({ ...values, [field]: value }), (error) => {
+      assert.ok(error.stderr.includes(message), `${field}: ${error.stderr}`);
+      return true;
+    });
+  }
+  // Extended and huge page resources pass, and so does zero, signed or not. Request above
+  // limit is left to Kubernetes (#1676 keeps the chart to syntax checks).
+  await render({
+    ...values,
+    "resources.requests.cpu": "2",
+    "resources.limits.cpu": "500m",
+    "resources.requests.example\\.com/gpu": "1",
+    "resources.limits.example\\.com/gpu": "1",
+    "slackProxy.resources.limits.hugepages-2Mi": "4Mi",
+    "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
+    "slackProxy.resources.requests.ephemeral-storage": "-0",
+    "logging.collector.resources.requests.memory": "384e6",
+    "logging.collector.state.sizeLimit": "0",
+    "logging.collector.tmp.sizeLimit": "-0.0Mi",
+  });
+});
+
 test("Helm rejects obvious malformed quantity syntax", tooling, async () => {
-  const collector = {
-    "logging.collector.enabled": "true",
-    "logging.collector.image":
-      "docker.io/otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
-    "logging.collector.configSecretName": "occ-otel-collector-config",
-    "logging.collector.envSecretName": "occ-otel-collector-exporter",
-    "logging.collector.exporter.cidr": "203.0.113.10/32",
-  };
+  const collector = collectorValues;
   for (const isUpgrade of [false, true]) {
     const options = { isUpgrade };
     for (const [field, value] of [

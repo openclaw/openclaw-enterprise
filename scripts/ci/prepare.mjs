@@ -21,6 +21,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadTestSuites } from "./test-suites.mjs";
 import { cleanupResourceIds, deleteOwnedK3dCluster } from "./cleanup.mjs";
 import { withStateLock } from "./state-lock.mjs";
+import { runPostgresAdmin } from "./postgres-admin.mjs";
 import {
   ANSI_COLOR,
   captureK3dDiagnostics,
@@ -594,7 +595,7 @@ async function ensurePostgresServer(statePath, state) {
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
     { env: { OCC_POSTGRES_PORT: String(port) } },
   );
-  await postgresExec(resource, ["psql", ...ciPostgresSettingsArgs], "postgres-settings");
+  await postgresAdmin(resource, { statements: ciPostgresSettings, stage: "postgres-settings" });
   await markResourceReady(statePath, state, resource);
   return resource;
 }
@@ -606,32 +607,25 @@ async function ensurePostgresServer(statePath, state) {
 // could lose the last few hundred milliseconds of acknowledged commits; nothing kills
 // this server or reads it after a crash. The reload is requested before any test
 // database exists. Developers' compose.postgres.yaml server keeps PostgreSQL's defaults.
-const ciPostgresSettingsArgs = Object.freeze([
-  "-v",
-  "ON_ERROR_STOP=1",
-  "-U",
-  "postgres",
-  "-d",
-  "postgres",
-  "-c",
+const ciPostgresSettings = Object.freeze([
   "ALTER SYSTEM SET fsync = off",
-  "-c",
   "ALTER SYSTEM SET synchronous_commit = off",
-  "-c",
   "ALTER SYSTEM SET full_page_writes = off",
-  "-c",
   "SELECT pg_catalog.pg_reload_conf()",
 ]);
 
-async function postgresExec(resource, args, stage) {
-  await execFile(
-    process.env.OCC_DOCKER_BIN ?? "docker",
-    dockerArgsForPostgres(resource, "exec", "-T", "postgres", ...args),
-    {
-      env: { OCC_POSTGRES_PORT: String(resource.port) },
-      stage,
-    },
-  );
+// Administrative SQL on the lane's server, over its published port (postgres-admin.mjs). A
+// failed database step carries the closed diagnostic contract run-tests.mjs reports.
+async function postgresAdmin(server, { database, statements, stage }) {
+  try {
+    await runPostgresAdmin({ port: server.port, database, statements });
+  } catch (error) {
+    if (["database-create", "database-schema"].includes(stage)) {
+      error.code = "CI_PREPARATION_COMMAND_FAILED";
+      error.stage = stage;
+    }
+    throw error;
+  }
 }
 
 // A template must be a ready database this state owns on the same server. Nothing may
@@ -716,44 +710,26 @@ async function createDatabase(statePath, state, server, { kind, label, source, l
   await writeState(statePath, state);
 
   const grant = `GRANT CREATE ON DATABASE ${quoteIdentifier(name)} TO occ_migrator;`;
-  await postgresExec(
-    server,
-    [
-      "psql",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-U",
-      "postgres",
-      "-d",
-      "postgres",
-      "-c",
+  await postgresAdmin(server, {
+    statements: [
       `CREATE DATABASE ${quoteIdentifier(name)}${source === undefined ? "" : ` TEMPLATE ${quoteIdentifier(source)}`}`,
       // A copy carries the template's schemas, their ACLs and every migration, but not
       // the database-level grant, which lives in pg_database, so it is granted from here.
-      // Each -c is its own request (CREATE DATABASE refuses a transaction block) and psql
-      // stops at the first error. Every test's copy runs this under the CI state lock,
-      // where each `docker compose exec` costs about 0.25 s (finding 2180).
-      ...(source === undefined ? [] : ["-c", grant]),
+      // Each statement is its own request (CREATE DATABASE refuses a transaction block)
+      // and the first error stops the rest. Every test's copy runs this.
+      ...(source === undefined ? [] : [grant]),
     ],
-    "database-create",
-  );
+    stage: "database-create",
+  });
   const migrationUrl = postgresUrl("occ_migrator", "occ-migrator-local", server.port, name);
   if (source === undefined) {
-    await postgresExec(
-      server,
-      [
-        "psql",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-U",
-        "postgres",
-        "-d",
-        name,
-        "-c",
+    await postgresAdmin(server, {
+      database: name,
+      statements: [
         `${grant} CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
       ],
-      "database-schema",
-    );
+      stage: "database-schema",
+    });
     await execFile(process.env.OPENCLAW_CI_COREPACK_BIN ?? "corepack", ["pnpm", "db:migrate"], {
       env: { OCC_MIGRATION_DATABASE_URL: migrationUrl },
       stage: "database-migrate",

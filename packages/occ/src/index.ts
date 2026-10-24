@@ -1522,14 +1522,14 @@ function requireDedicatedNativeSupport(
 
 /**
  * Whether an OpenClaw Agent in this execution mode passes both save and deploy admission on this
- * Installation shape. It runs admission's own checks, so the Installation capability built from
- * it cannot disagree with them (#2670).
+ * Installation shape: true, or the refusal. It runs admission's own checks, so the Installation
+ * capability built from it cannot disagree with them (#2670).
  */
 function admitsOpenClawExecutionMode(
   sandbox: SandboxDriver | undefined,
   executionMode: HarnessExecutionMode,
   nativeWorkers: NativeWorkerSupportSource | undefined,
-): boolean {
+): true | Error {
   try {
     requireSandboxExecutionMode(sandbox, executionMode);
     const harness = Object.freeze({ id: "openclaw", version: "capability", mode: executionMode });
@@ -1544,7 +1544,7 @@ function admitsOpenClawExecutionMode(
       error instanceof NativeWorkerSupportError ||
       error instanceof DedicatedOpenClawSandboxError
     ) {
-      return false;
+      return error;
     }
     throw error;
   }
@@ -1996,6 +1996,7 @@ export class OpenClawController {
    */
   private openClawExecutionModes(): {
     executionModes: HarnessExecutionMode[];
+    settingRefusals?: Partial<Record<HarnessExecutionMode, string>>;
     sandboxDriverUnavailable?: true;
   } {
     let sandbox: SandboxDriver | undefined;
@@ -2007,10 +2008,21 @@ export class OpenClawController {
       }
       throw error;
     }
+    const executionModes: HarnessExecutionMode[] = [];
+    const settingRefusals: Partial<Record<HarnessExecutionMode, string>> = {};
+    for (const mode of HARNESS_EXECUTION_MODES) {
+      const admission = admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers);
+      if (admission === true) {
+        executionModes.push(mode);
+      } else if (mode === "dedicated" && admission instanceof ConfigurationHarnessError) {
+        // A Sandbox Driver that provisions dedicated OpenClaw but whose settings refuse it: say
+        // which setting, in admission's own words (finding 2373).
+        settingRefusals[mode] = admission.message;
+      }
+    }
     return {
-      executionModes: HARNESS_EXECUTION_MODES.filter((mode) =>
-        admitsOpenClawExecutionMode(sandbox, mode, this.nativeWorkers),
-      ),
+      executionModes,
+      ...(Object.keys(settingRefusals).length ? { settingRefusals } : {}),
     };
   }
 
