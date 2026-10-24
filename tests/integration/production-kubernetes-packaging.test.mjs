@@ -290,7 +290,7 @@ test(
     ]) {
       await assert.rejects(
         render({ ...enabled, [field]: value }),
-        new RegExp(`${field.replace(/[.[\]]/g, "\\$&")} must be a string`),
+        (error) => error.message.includes(`${field} must be a string`),
         field,
       );
     }
