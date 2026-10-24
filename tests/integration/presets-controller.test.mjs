@@ -9,6 +9,7 @@ import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers
 import { emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import {
+  NAME_RULE,
   renderPresetTemplate,
   validatePresetTemplate,
 } from "../../packages/contracts/src/index.ts";
@@ -868,6 +869,59 @@ describe("Presets", { concurrency: 2 }, () => {
       assert.deepEqual(rejected.body.error.details, details);
     }
     assert.deepEqual(await listPresets(fixture, namespace.id), []);
+  });
+
+  test("Preset save refuses literal Agent launch fields every launch refuses", async (t) => {
+    // Finding 1808: these saved and failed only at Agent create. A field that holds a variable
+    // token waits for its launch, even with a default, since a launch may fill it differently.
+    const fixture = await createFixture(t);
+    const namespace = await fixture.createNamespace("Preset launch fields", { ready: true });
+    const pluginDriver = new OCCPluginDriver();
+    fixture.controller.registerDriver(pluginDriver);
+    fixture.controller.selectDriver("plugin", pluginDriver.id);
+    const cases = [
+      [
+        { agent: { executionMode: "turbo" } },
+        'Preset agent.executionMode: must be "embedded" or "dedicated".',
+      ],
+      [
+        { agent: { backendId: "missing-backend" } },
+        "Preset agent.backendId: Backend does not match a configured Backend.",
+      ],
+      [
+        { agent: { pluginApprovers: [{ channel: "teams", id: "U123" }] } },
+        "Preset agent.pluginApprovers: The supplied plugin policies are invalid.",
+      ],
+      [{ agent: { name: " padded " } }, `Preset agent.name: must be ${NAME_RULE}.`],
+    ];
+    for (const [template, message] of cases) {
+      const rejected = await fixture.request("POST", collection(namespace.id), {
+        body: { name: "Rejected", template },
+      });
+      assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+      assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+      assert.equal(rejected.body.error.message, message);
+    }
+    assert.deepEqual(await listPresets(fixture, namespace.id), []);
+    // Tokens, valid literals and a null Backend still save.
+    const saved = await createPreset(fixture, namespace.id, "Launch fields", {
+      variables: { mode: { type: "string", default: "turbo" }, user: { type: "string" } },
+      agent: {
+        name: "Reviewer",
+        executionMode: "{{ vars.mode }}",
+        backendId: null,
+        pluginApprovers: [{ channel: "slack", id: "{{ vars.user }}" }],
+      },
+    });
+    assert.equal(saved.name, "Launch fields");
+    const replaced = await fixture.request("PATCH", presetPath(namespace.id, saved.id), {
+      body: { template: { agent: { executionMode: "turbo" } } },
+    });
+    assert.equal(replaced.status, 400, JSON.stringify(replaced.body));
+    assert.equal(
+      replaced.body.error.message,
+      'Preset agent.executionMode: must be "embedded" or "dedicated".',
+    );
   });
 
   test("method-only Preset authentication is a default, not an Agent credential", async () => {

@@ -4829,6 +4829,7 @@ export class OpenClawController {
     const template = normalizePresetTemplate(input, namespaceId);
     const { settings, unresolved, unresolvedType } =
       presetTemplateDefaultsWithPlaceholders(template);
+    this.validatePresetLaunchFields(template.agent);
     const values = settings.configuration?.values;
     if (values !== undefined) {
       const driver = this.configurationDriver();
@@ -4849,6 +4850,54 @@ export class OpenClawController {
       await driver.validateValues(values, options);
     }
     return template;
+  }
+
+  /**
+   * Literal Agent launch fields that Agent create refuses whatever a launch fills in, refused at
+   * Preset save with create's rule and the field's path (finding 1808). A field holding a
+   * variable token waits for its launch, even one with a default: a launch may fill it
+   * differently. Plugin approvers are checked only while a Plugin Driver is selected, as
+   * Agent create needs one for them.
+   */
+  private validatePresetLaunchFields(agent: PresetTemplate["agent"]): void {
+    if (agent === undefined) {
+      return;
+    }
+    const literal = (field: string) =>
+      Object.hasOwn(agent, field) && !JSON.stringify(agent[field]).includes("{{");
+    const refuse = (field: string, requirement: string): never => {
+      throw new PresetValidationError(`Preset agent.${field}: ${requirement}`);
+    };
+    if (literal("name") && !isName(agent.name)) {
+      refuse("name", `must be ${NAME_RULE}.`);
+    }
+    if (
+      literal("executionMode") &&
+      !["embedded", "dedicated"].includes(agent.executionMode as string)
+    ) {
+      refuse("executionMode", 'must be "embedded" or "dedicated".');
+    }
+    const checked = (field: string, check: () => unknown) => {
+      try {
+        check();
+      } catch (error) {
+        if (error instanceof ScopeViolationError || error instanceof PluginPolicyValidationError) {
+          refuse(field, error.message);
+        }
+        throw error;
+      }
+    };
+    if (literal("backendId") && agent.backendId !== null) {
+      checked("backendId", () => this.backendId(agent.backendId as BackendRef));
+    }
+    if (literal("pluginApprovers") && this.selections.has("plugin")) {
+      checked("pluginApprovers", () =>
+        this.validatePluginPolicies(
+          undefined,
+          normalizeAgentPluginApprovers(agent.pluginApprovers as PluginApprovers),
+        ),
+      );
+    }
   }
 
   /**

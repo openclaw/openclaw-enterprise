@@ -132,8 +132,8 @@ Namespace. Explicit scopes remain unchanged for same-Namespace validation.
 Template structure, variable declarations, default types, and credential
 references are checked without requiring unfilled variables. Password definitions
 have no defaults and can appear only as whole tokens at `agent.harnessAuth.secret`;
-literal credentials and substitution into ordinary settings are rejected. Ordinary Agent
-field validation is deferred to the creation APIs. When native values exist,
+literal credentials and substitution into ordinary settings are rejected. Literal Agent
+launch fields get create's rules (`validatePresetLaunchFields`); tokens wait. When native values exist,
 the selected Configuration Driver's
 `validateValues` checks their native credential rules; missing capability fails
 closed. Core owns no native configuration interpretation.
