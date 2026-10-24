@@ -9051,8 +9051,14 @@ export class OpenClawController {
       const savedConfiguration = this.savedConfigurationReader(configuration);
       await this.validateSavedPluginConfiguration(plugins ?? agent.plugins, savedConfiguration);
       // The pair as it will be stored. A pending workspace setup is delivered by the first
-      // deployment, so it is checked against the Configuration this update names.
+      // deployment, so it is checked against the Configuration this update names. A completed
+      // setup is delivered by every deployment, so it is checked when the update names another
+      // Configuration or execution mode (finding 2296); an update that keeps both leaves an
+      // Agent a Configuration write broke editable, and deployment refuses that pair.
       const workspaceSetup = await state.workspaceSetups.find(namespace.id, agent.id);
+      const topologyChanged =
+        input.configurationId !== agent.configurationId ||
+        (input.executionMode !== undefined && input.executionMode !== agent.executionMode);
       await this.validateSavedAgentTopology(
         state,
         resolveHarness,
@@ -9061,7 +9067,8 @@ export class OpenClawController {
           executionMode: input.executionMode ?? agent.executionMode,
           harnessAuth: requestedAuth === undefined ? previousAuth : requestedAuth,
           repositoryBindings: repositoryBindings ?? agent.repositoryBindings,
-          workspaceSetup: workspaceSetup !== undefined && !workspaceSetup.completed,
+          workspaceSetup:
+            workspaceSetup !== undefined && (!workspaceSetup.completed || topologyChanged),
           plugins: plugins ?? agent.plugins,
         },
         savedConfiguration,
