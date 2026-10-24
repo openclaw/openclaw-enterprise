@@ -446,6 +446,19 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       await assert.rejects(() => stat(commands.githubEnv), { code: "ENOENT" });
       const state = await commands.readState();
       assert.equal(state.env, undefined);
+      if (scenario === "storage-unready") {
+        // The initial rollout failed. Preparation settles the concurrent import for
+        // cleanup. It must not declare the cluster ready, pin the image or restart storage.
+        const resource = (kind) => state.resources.find((entry) => entry.kind === kind);
+        assert.equal(resource("k3d-image")?.status, "ready");
+        assert.equal(resource("k3d-cluster").status, "planned");
+        const calls = await commands.commands();
+        assert.ok(!calls.some(({ args }) => args.includes("restart") || args.includes("apply")));
+        const diagnostics = JSON.parse(
+          await readFile(`${commands.statePath}.diagnostics.json`, "utf8"),
+        );
+        assert.equal(diagnostics.lane, state.lane);
+      }
       await commands.cleanupSuccessfully();
     });
   }

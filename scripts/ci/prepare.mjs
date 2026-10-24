@@ -1478,9 +1478,6 @@ async function ensureK3dCluster(statePath, state) {
         }
         return waitForPluginStatusProxySource(cluster, destination);
       });
-      await k3dStage(state, "k3d-storage", () => verifyFixtureStorage(resource));
-    }
-    if (crossNodePluginStatus) {
       await logK3dHost(state, directory, "k3d-host-after");
     }
   } catch (error) {
@@ -1494,7 +1491,10 @@ async function ensureK3dCluster(statePath, state) {
     }
     throw error;
   }
-  await markResourceReady(statePath, state, resource);
+  // The fixture lanes mark the cluster ready when its storage rollout succeeds.
+  if (!crossNodePluginStatus) {
+    await markResourceReady(statePath, state, resource);
+  }
   return resource;
 }
 
@@ -1858,6 +1858,32 @@ async function importFixtureImage(statePath, state, cluster, built) {
     "OCC_TEST_KUBERNETES_IMAGE",
   );
   return { image: registered.reference, resourceId: built.resourceId };
+}
+
+// The fixture import needs the ready nodes, not the storage provisioner. Settle
+// both before the lane pins the image, restarts storage, or hands off to cleanup.
+async function prepareFixtureStorageAndImage(statePath, state, cluster, built) {
+  const { lane } = state;
+  const [storage, fixture] = await Promise.allSettled([
+    k3dStage(state, "k3d-storage", () => verifyFixtureStorage(cluster)).then(() =>
+      markResourceReady(statePath, state, cluster),
+    ),
+    timedPreparation(lane, "fixture-image-import", () =>
+      importFixtureImage(statePath, state, cluster, built),
+    ),
+  ]);
+  if (storage.status === "fulfilled" && fixture.status === "fulfilled") {
+    return fixture.value;
+  }
+
+  // Keep the storage or image transport diagnostics, writing once even if both failed.
+  const failure = fixture.status === "rejected" ? fixture.reason.k3dImageImportFailure : undefined;
+  if (storage.status === "rejected" || failure) {
+    await captureK3dDiagnostics({ execFile, cluster, lane, statePath, failure }).catch(() =>
+      progress(lane, "k3d diagnostics unavailable"),
+    );
+  }
+  throw storage.status === "rejected" ? storage.reason : fixture.reason;
 }
 
 async function pinFixtureImageInK3d(cluster, image) {
@@ -2280,15 +2306,9 @@ async function registerImageInK3d(statePath, state, cluster, image, envName) {
       importReference,
     ]);
   } catch (error) {
-    // Keep node state and logs, so a containerd outage shows its cause (finding 1006).
     if (fixtureLanes.has(state.lane)) {
-      await captureK3dDiagnostics({
-        execFile,
-        cluster,
-        lane: state.lane,
-        statePath,
-        failure: `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`,
-      }).catch(() => progress(state.lane, "k3d diagnostics unavailable"));
+      // The fixture lane collects node diagnostics after its storage check has also settled.
+      error.k3dImageImportFailure = `${envName} image import into k3d nodes failed: ${error.message.slice(0, 300)}`;
     }
     throw error;
   }
@@ -2690,8 +2710,7 @@ async function prepareLane({ lane, statePath }) {
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
     case "k3d-fixture-plugins": {
-      // PostgreSQL, the cluster and the fixture build are independent; the
-      // fixture is imported only after the cluster passed its readiness gates.
+      // PostgreSQL, cluster creation and the fixture build are independent.
       const [, cluster, built] = await timedPreparation(
         name,
         "postgres-cluster-fixture-build",
@@ -2711,8 +2730,8 @@ async function prepareLane({ lane, statePath }) {
               ),
           ]),
       );
-      const fixture = await timedPreparation(name, "fixture-image-import", () =>
-        importFixtureImage(resolvedStatePath, state, cluster, built),
+      const fixture = await timedPreparation(name, "fixture-storage-image-import", () =>
+        prepareFixtureStorageAndImage(resolvedStatePath, state, cluster, built),
       );
       // The pin and the storage check are independent; both wait on rollouts.
       await timedPreparation(name, "fixture-pin-storage-verify", () =>
