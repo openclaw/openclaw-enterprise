@@ -3580,6 +3580,10 @@ test("NetworkPolicy peers from values are refused before install", tooling, asyn
       `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
     ],
     [{ [`${peer}.ipBlock.cidr`]: "::/129" }, `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/08" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
     // Eight groups without ::, or fewer with exactly one ::.
     ...["1:2:3:4/64", "1:2:3:4::5:6:7:8/64", "1::2::3/64"].map((cidr) => [
       { [`${peer}.ipBlock.cidr`]: cidr },
