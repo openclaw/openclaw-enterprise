@@ -334,6 +334,10 @@
                       {
                         "page": "reference/drivers/openshell-sandbox",
                         "label": "OpenShell"
+                      },
+                      {
+                        "page": "reference/drivers/openshell-sandbox/harness-providers",
+                        "label": "OpenShell Harness Providers"
                       }
                     ]
                   },

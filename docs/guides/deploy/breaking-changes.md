@@ -19,6 +19,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: SSH Compute refuses runtime paths under /tmp
+
+**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
+is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
+[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
+and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
+started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
+under those and every deployment timed out. A root such as `/var/lib/./oce`
+worked and is now refused too.
+
+**Who is affected.** SSH Installations with such a path.
+
+**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
+`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
+
+**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
+directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
+the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
+and deploy again.
+
 ## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
 
 **What breaks.** Deployment admission refuses a dedicated Agent (Codex or
@@ -279,23 +299,3 @@ Compute` (or names the `main` entry's `workspace`).
 
 **Steps.** Remove that `workspace` setting, or use a Configuration without it,
 then save or deploy again. _untested_
-
-## 2026-10-24: SSH Compute refuses runtime paths under /tmp
-
-**What breaks.** Controller startup refuses an SSH Compute `runtime.root` that
-is `/`, has a `.` or `..` segment, or lies under `/tmp` or `/var/tmp`, as the
-[SSH Compute reference](../../reference/drivers/ssh-compute.md) already said,
-and a `nodePath` or `openclawPath` under `/tmp` or `/var/tmp`. Earlier builds
-started, but each Agent unit runs with `PrivateTmp`, so it could not reach paths
-under those and every deployment timed out. A root such as `/var/lib/./oce`
-worked and is now refused too.
-
-**Who is affected.** SSH Installations with such a path.
-
-**How to tell.** Startup fails with `INVALID_VALUE` at `/runtime/root`,
-`/runtime/nodePath`, `/runtime/openclawPath` or `/hosts`.
-
-**Steps.** Write a root with `.` or `..` segments in its resolved form (the same
-directory, so state is kept). Move a path under `/tmp` or `/var/tmp`, for example
-the state root to `/var/lib/openclaw-enterprise`. Then restart the controller
-and deploy again.
