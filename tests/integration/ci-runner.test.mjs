@@ -3582,7 +3582,21 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     second: "2026-09-29T00:00:10",
     laterCount: 196,
   });
+  const repeatedSeries = {
+    metadata: {
+      namespace: "occ-agent-a",
+      name: "repeated-series.event",
+      uid: "repeated-series",
+    },
+    involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+    type: "Warning",
+    reason: "RepeatedSeries",
+    message: "Repeated event",
+    eventTime: "2026-09-29T00:00:01Z",
+    series: { count: 7, lastObservedTime: "2026-09-29T00:20:00Z" },
+  };
   const events = [
+    { type: "ADDED", object: repeatedSeries },
     ...boundary.events.map((object) => ({ type: "ADDED", object })),
     event("occ-agent-a", "e1", "Pulled", "Successfully pulled image"),
     event("occ-agent-a", "e2", "Unhealthy", "Readiness probe failed"),
@@ -3704,20 +3718,26 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     ],
   );
   assert.equal(activity.events.length, 200);
-  assert.equal(activity.events[0].reason, boundary.newer.reason);
+  assert.equal(activity.events[0].reason, boundary.events[2].reason);
   assert.equal(
     activity.events.some(({ reason }) => reason === boundary.older.reason),
     false,
   );
-  assert.equal(activity.omitted.events, 1);
+  assert.equal(
+    activity.events.some(({ reason }) => reason === boundary.newer.reason),
+    false,
+  );
+  assert.equal(activity.omitted.events, 2);
   assert.deepEqual(
-    activity.events.slice(-3).map(({ reason, count }) => [reason, count]),
+    activity.events.slice(-4).map(({ reason, count }) => [reason, count]),
     [
       ["Pulled", 1],
       ["Failed", 1],
       ["Unhealthy", 3],
+      ["RepeatedSeries", 7],
     ],
   );
+  assert.equal(activity.events.at(-1).lastTimestamp, repeatedSeries.series.lastObservedTime);
   assert.doesNotMatch(text, /do-not-publish|unrelated system event/);
   // Raw watch streams hold full Pod specs; only the projection survives.
   assert.deepEqual(await readdir(clusterDirectory), []);
@@ -3868,12 +3888,47 @@ test("k3d diagnostics preserve equal-instant event order across precision varian
           newer,
         ],
       },
+      {
+        events: [
+          {
+            metadata: { namespace: "occ-agent-a", uid: "repeated-series" },
+            involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+            type: "Warning",
+            reason: "RepeatedSeries",
+            message: "Repeated event",
+            eventTime: "2026-10-21T00:00:01Z",
+            series: { count: 7, lastObservedTime: "2026-10-21T00:10:00Z" },
+          },
+          ...Array.from({ length: 200 }, (_, index) => ({
+            metadata: { namespace: "occ-agent-a", uid: `intervening-${index}` },
+            involvedObject: { kind: "Pod", name: "harness-0", namespace: "occ-agent-a" },
+            type: "Normal",
+            reason: `Intervening${index}`,
+            message: "Intervening event",
+            count: 1,
+            eventTime: new Date(
+              Date.parse("2026-10-21T00:00:01Z") + (index + 1) * 1_000,
+            ).toISOString(),
+          })),
+        ],
+      },
     ],
   });
   assert.deepEqual(
     projected.snapshots[0].events.map(({ reason }) => reason),
     [older.reason, "EqualFractional", newer.reason],
   );
+  assert.deepEqual(projected.snapshots[1].events.at(-1), {
+    namespace: "occ-agent-a",
+    kind: "Pod",
+    name: "harness-0",
+    type: "Warning",
+    reason: "RepeatedSeries",
+    message: "Repeated event",
+    count: 7,
+    firstTimestamp: "2026-10-21T00:00:01Z",
+    lastTimestamp: "2026-10-21T00:10:00Z",
+  });
 });
 
 test("audit fails when a referenced lane cannot be loaded", async (t) => {

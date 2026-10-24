@@ -238,7 +238,8 @@ supervisor Pods can reach that listener through narrow NetworkPolicies. See the
 `selectedDevelopmentDatabase` validates an optional disposable database name
 before effects. `installKubernetesControlPlane` uses that name in creation, readiness,
 migrator and application URLs. Bootstrap, API and worker share the limited
-application-role URL. Unselected profiles retain the existing database and
+application-role URL. PostgreSQL starts while the bootstrap volume is prepared;
+Helm waits for both. Unselected profiles retain the existing database and
 transport defaults. The [launch guide](../guides/deploy/local-openshell-images.md#select-the-protected-profile)
 owns inputs; [packaging verification](../testing/static-egress.md#protected-launch-packaging)
 distinguishes local proof from pending connected runtime qualification.
