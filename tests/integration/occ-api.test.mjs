@@ -6321,6 +6321,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // The API log names it with the request ID for the operator.
   const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
     repositoryCredentials: true,
+    routed: false,
   });
   computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
   const computeRefused = await injectedRequest(

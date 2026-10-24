@@ -3515,6 +3515,7 @@ test(
         // Installation's Compute Driver starts refusing the stored plan (no gateway routing).
         const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
           repositoryCredentials: true,
+          routed: false,
         });
         computeDriver.validateAgentProvisioning = (input) =>
           unrouted.validateAgentProvisioning(input);
@@ -3601,6 +3602,7 @@ test(
         // the fence of the transaction that would record the Configuration rejects the work.
         const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
           repositoryCredentials: true,
+          routed: false,
         });
         computeDriver.validateAgentProvisioning = (input) =>
           unrouted.validateAgentProvisioning(input);
@@ -3725,6 +3727,7 @@ test(
       // attempt's fence and every later one reject the work, and `/retry` would refuse too.
       const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
         repositoryCredentials: true,
+        routed: false,
       });
       computeDriver.validateAgentProvisioning = (input) =>
         unrouted.validateAgentProvisioning(input);
@@ -3919,6 +3922,7 @@ test(
     // would refuse it the same way, so the worker fails it on the first one and says why.
     const unrouted = createTestKubernetesComputeDriver("compute-provisioning-unrouted", {
       repositoryCredentials: true,
+      routed: false,
     });
     computeDriver.validateAgentProvisioning = (input) => unrouted.validateAgentProvisioning(input);
     await fixture.startWorker();
