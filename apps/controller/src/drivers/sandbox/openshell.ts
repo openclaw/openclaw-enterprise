@@ -52,8 +52,8 @@ import {
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
-import { MAX_TIMER_DELAY_MS } from "../../worker/timer-settings.ts";
 import { isDeepStrictEqual } from "node:util";
+import { MAX_TIMER_DELAY_MS } from "../../worker/timer-settings.ts";
 import type {
   AgentRevision,
   EgressInstallation,
