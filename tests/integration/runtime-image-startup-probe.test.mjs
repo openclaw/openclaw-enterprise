@@ -5,12 +5,15 @@
 // enrollment and the inactive Slack approver startup check are in
 // runtime-image-native-worker.test.mjs.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { imageSmokeTimeoutMultiplier } from "../helpers/image-smoke-timeout.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-observation.mjs";
 import {
+  image,
   imageTestOptions,
   runDocker,
   failureTail,
@@ -222,6 +225,58 @@ describe("runtime image startup model probes", { concurrency: 2 }, () => {
       assert.equal(result.sameIdentityAfterExpiredReplay, true);
       assert.equal(result.singleBootstrapCompletion, true);
       assert.equal(result.unpairedExpiredRejected, true);
+    },
+  );
+
+  // Native login and the generated authentication turn run from the selected image.
+  // The existing startup fixture intercepts app-server spawn; this is not a later conversation.
+  test(
+    "runtime image gates enterprise bootstrap on managed policy and a terminal assistant challenge",
+    imageTestOptions,
+    async (t) => {
+      const root = fileURLToPath(new URL("../../", import.meta.url));
+      for (const mode of ["valid", "incompatible"]) {
+        const name = `oce-enterprise-bootstrap-${randomUUID()}`;
+        t.after(() => runDocker(["rm", "-f", name]).catch(() => {}));
+        const { stdout } = await runDocker(
+          [
+            "run",
+            "--pull=never",
+            "--rm",
+            "--name",
+            name,
+            "--network",
+            "none",
+            "--user",
+            "1000:1000",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/tmp:size=128m,mode=1777",
+            "--mount",
+            `type=bind,src=${root},dst=/source,readonly`,
+            "--workdir",
+            "/source",
+            "-e",
+            "HOME=/tmp",
+            "-e",
+            "TMPDIR=/tmp",
+            "--entrypoint",
+            "node",
+            image,
+            "/source/tests/helpers/codex-enterprise-bootstrap.ts",
+            mode,
+          ],
+          { timeout: 120000 },
+        );
+        const result = JSON.parse(stdout);
+        assert.equal(result.incompatible, mode === "incompatible");
+        assert.equal(result.posts, mode === "valid" ? 1 : 0);
+        assert.equal(result.marker, mode === "valid");
+      }
     },
   );
 });

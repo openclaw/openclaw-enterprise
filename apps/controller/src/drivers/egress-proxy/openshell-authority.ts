@@ -28,6 +28,8 @@ type AuthorityCall = {
   authorization: string;
   signal: AbortSignal;
 };
+// The signed path and raw query are separate URI components. Preserve percent escapes verbatim.
+const malformedTargetPart = /[^A-Za-z0-9._~!$&'()*+,;=:@/%-]|%(?![A-Fa-f0-9]{2})/;
 const contractCapability = "openshell.supervisor-middleware.contract";
 export const record = (input: unknown): Wire => asRecord(input) ?? {};
 const string = (input: unknown): string => (typeof input === "string" ? input : "");
@@ -192,6 +194,7 @@ export function createOpenShellEgressAuthority(
     const port = Number(target.port);
     const host = string(target.host);
     const path = string(target.path);
+    const query = target.query ?? "";
     if (
       context.verified_credential_connector !== undefined ||
       target.scheme !== "https" ||
@@ -200,7 +203,10 @@ export function createOpenShellEgressAuthority(
       port < 1 ||
       port > 65535 ||
       !path.startsWith("/") ||
-      string(target.query) !== ""
+      path.startsWith("//") ||
+      malformedTargetPart.test(path) ||
+      typeof query !== "string" ||
+      malformedTargetPart.test(query)
     ) {
       return refused("denied");
     }
@@ -211,7 +217,7 @@ export function createOpenShellEgressAuthority(
         id: string(context.request_id),
         verifiedExecutionPolicyHash: string(call.request.verified_execution_policy_hash),
         method: string(target.method),
-        url: `https://${host}${port === 443 ? "" : `:${port}`}${path}`,
+        url: `https://${host}${port === 443 ? "" : `:${port}`}${path}${query ? `?${query}` : ""}`,
         headers: headers(evaluation.headers),
         body: bytes(evaluation.body),
         deadlineAt: timestamp(call.request.deadline),

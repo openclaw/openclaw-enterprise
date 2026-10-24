@@ -65,6 +65,7 @@ describe("runtime image native worker", { concurrency: 2 }, () => {
         "tests/conformance/workspace-node-supervisor.test.mjs",
         "tests/helpers/available-port.mjs",
         "apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+        "apps/controller/src/drivers/compute/codex-workspace-client.ts",
         "apps/controller/src/drivers/compute/harness-egress-enrollment.ts",
         "apps/controller/src/drivers/compute/node-program.ts",
         "apps/controller/src/drivers/compute/runtime-startup.ts",

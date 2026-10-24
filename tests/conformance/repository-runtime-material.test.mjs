@@ -1492,6 +1492,9 @@ const publicReader = {
   podLabels: { app: "read-public-github" },
   address: "10.43.0.19",
 };
+// The binding stored for this peer before Compute versioned the Codex launch command.
+const legacyPublicReaderAdmission =
+  "public-github-read:v1:1079206afdb1b0e9c28fce888b23f764c61a600759f75ba26f088d07fcd31a8d";
 
 function publicReaderPolicies(f) {
   return [...f.objects.values()].filter(
@@ -1544,7 +1547,7 @@ async function publicReaderAdmission() {
     domains: { [publicReader.address]: "allow" },
   };
   const admission = driver.admitRevision(revision);
-  assert.match(admission, /^public-github-read:v1:[a-f0-9]{64}$/);
+  assert.equal(admission, `codex-launch:v2:${legacyPublicReaderAdmission}`);
   return { f, revision, driver, admission };
 }
 
@@ -1558,7 +1561,7 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
     executionAdmission: { version: 3, mode: "protected" },
     egressPlan: { driver: owner.ref, routes: [] },
   };
-  assert.equal(f.driver.admitRevision(protectedRevision), undefined);
+  assert.equal(f.driver.admitRevision(protectedRevision), "codex-launch:v2:");
   assert.throws(
     () => pluginRuntimeSpecForRevision(protectedRevision, undefined, undefined, publicReader),
     /public GitHub reader cannot be selected for protected execution/,
@@ -1581,6 +1584,14 @@ function computeAfterProxyCutover(fixture) {
 // the Kubernetes transport are local fixtures; a successful prepare alone missed this cutover.
 test("the owning active reconcile withdraws its admitted reader across the Credential Proxy cutoff", async () => {
   const { f, revision, driver: ordinary, admission } = await publicReaderAdmission();
+  const stored = {
+    ...revision,
+    compute: { ...revision.compute, admission: legacyPublicReaderAdmission },
+  };
+  assert.equal(
+    ordinary.pluginRuntimeSnapshot(stored).runtime.publicGithubRead.address,
+    publicReader.address,
+  );
   revision.compute.admission = admission;
   const context = f.context(undefined);
   await ordinary.prepareRevision(revision, context);
@@ -1778,8 +1789,12 @@ test("API-admitted protected credential-free metadata projects no inference tool
   });
   // The production Compute release gate and the exact projection prepareRevisionWorkloads uses.
   driver.validateRevisionExecution(r, { currentEgressInstallation: async () => f.installation });
-  assert.equal(driver.admitRevision(r), undefined);
-  const { runtime } = driver.pluginRuntimeSnapshot(r);
+  const protectedAdmission = driver.admitRevision(r);
+  assert.equal(protectedAdmission, "codex-launch:v2:");
+  const { runtime } = driver.pluginRuntimeSnapshot({
+    ...r,
+    compute: { ...r.compute, admission: protectedAdmission },
+  });
   assert.equal(runtime.providerTools, "none");
   assert.equal(runtime.egressEnrollment.inference, false);
   assert.equal(runtime.publicGithubRead, undefined);

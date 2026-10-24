@@ -106,8 +106,8 @@ export const githubMetadataProvider: CredentialProviderDefinition =
     classify(route, request) {
       const { grant } = route.binding;
       return closedRequest(route, request) &&
-        grant.kind !== "inference" &&
-        grant.kind !== "prepared_scope"
+        (grant.kind === "github_repository_metadata" ||
+          grant.kind === "credential_free_repository_metadata")
         ? { kind: grant.kind, repository: grant.repository, repositoryId: grant.repositoryId }
         : undefined;
     },
@@ -125,8 +125,8 @@ export const githubMetadataProvider: CredentialProviderDefinition =
       const { trailers, headers } = response;
       const media = headers.filter(([name]) => name.toLowerCase() === "content-type");
       if (
-        operation.kind === "inference" ||
-        operation.kind === "prepared_scope" ||
+        (operation.kind !== "github_repository_metadata" &&
+          operation.kind !== "credential_free_repository_metadata") ||
         response.status !== 200 ||
         trailers?.length !== 0 ||
         response.body.byteLength > 64 * 1024 ||

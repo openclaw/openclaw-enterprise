@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import { constants } from "node:fs";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { access, readFile, writeFile } from "node:fs/promises";
-import { createServer, get, request, type ServerOptions } from "node:https";
+import { createServer, get, globalAgent, request, type ServerOptions } from "node:https";
+import { connect } from "node:tls";
+import { selfSigned } from "../helpers/certificates.mjs";
 import { json } from "node:stream/consumers";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -34,6 +37,7 @@ import {
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
 import { createBackendController } from "../helpers/postgres-backend-state.mjs";
+import { protectedModelSecret } from "../helpers/protected-model-secret.ts";
 import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
@@ -106,9 +110,21 @@ test(
 );
 
 test(
+  "an online external Driver independently reduces Git with verified policy reduction",
+  journeyOptions,
+  externalGitJourney("online-reducible-installation"),
+);
+
+test(
   "a capable registered Driver observes only the original lost rotation across worker replacement and withdrawal",
   journeyOptions,
   externalGitJourney("lost-rotation"),
+);
+
+test(
+  "an online external Driver retains Git after durable model-source withdrawal",
+  journeyOptions,
+  externalGitJourney("model-first"),
 );
 
 function repositoryConfiguration(input: {
@@ -307,9 +323,9 @@ function createCapabilityPeer(
   online: boolean,
   reducible = false,
 ) {
-  const capability = { profile, online, requests: 0 };
+  const capability = { profile, online, reducible, requests: 0 };
   const server = createServer(tls, (req, res) => {
-    if (req.method === "GET" && req.url === "/reduction-capability" && reducible) {
+    if (req.method === "GET" && req.url === "/reduction-capability" && capability.reducible) {
       res.writeHead(200).end(JSON.stringify({ version: 2, repositoryGit: true, denyAll: true }));
       return;
     }
@@ -337,7 +353,9 @@ function externalGitJourney(
     | "installation"
     | "online-installation"
     | "reducible-installation"
-    | "lost-rotation",
+    | "online-reducible-installation"
+    | "lost-rotation"
+    | "model-first",
 ) {
   return async (t: TestContext) => {
     let prepared: Awaited<ReturnType<typeof startPreparedGitHubGitOwner>> | undefined;
@@ -431,9 +449,15 @@ function externalGitJourney(
     await f.controller.handleNamespaceLifecycle(f.actor.id, createdNamespace.id, "ready");
     const namespace = { ...createdNamespace, status: "ready" as const };
     const { id: namespaceId } = namespace;
-    const online = scope === "online-installation";
+    const modelFirst = scope === "model-first";
+    const online =
+      modelFirst || scope === "online-installation" || scope === "online-reducible-installation";
     const lostRotation = scope === "lost-rotation";
-    const reducible = scope === "reducible-installation" || lostRotation;
+    const reducible =
+      modelFirst ||
+      scope === "reducible-installation" ||
+      scope === "online-reducible-installation" ||
+      lostRotation;
     const broad =
       !lostRotation && scope !== "repository"
         ? await installationOrigin(t, namespaceId)
@@ -441,6 +465,81 @@ function externalGitJourney(
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
       broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
     const installationApiOrigin = broad?.gh.origin;
+    const mixed = online && reducible;
+    let identityCalls = 0;
+    if (mixed) {
+      const identityTls = await selfSigned(await temporaryDirectory(t, "workspace-issuer-"), {
+        name: "workspace-issuer",
+        subjectAltName: "DNS:auth.openai.com",
+      });
+      const identityOrigin = await listen(
+        t,
+        createServer(identityTls, (req, res) => {
+          assert.equal(req.method, "GET");
+          assert.equal(req.headers.host, "auth.openai.com");
+          assert.equal(req.url, "/api/accounts/v1/user-auth-credential/whoami");
+          assert.equal(req.headers.authorization, "Bearer synthetic-online-pat");
+          identityCalls++;
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({
+              chatgpt_account_id: "synthetic-workspace",
+              chatgpt_account_is_fedramp: false,
+            }),
+          );
+        }),
+      );
+      const originalConnect = globalAgent.createConnection;
+      // Map only the fixed issuer to a synthetic peer; retain SNI and verified TLS.
+      t.mock.method(
+        globalAgent,
+        "createConnection",
+        function (options: Record<string, unknown>, callback: unknown) {
+          if (options.host !== "auth.openai.com") {
+            return originalConnect.call(globalAgent, options, callback as never);
+          }
+          return connect(
+            {
+              ...options,
+              host: "127.0.0.1",
+              port: Number(new URL(identityOrigin).port),
+              servername: "auth.openai.com",
+              ca: identityTls.cert,
+            },
+            callback as never,
+          );
+        },
+      );
+    }
+    let independentRequests = 0;
+    const modelReply = {
+      output: [
+        {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Synthetic model reply" }],
+        },
+      ],
+    };
+    const modelTraffic = { connections: 0, bytes: 0 };
+    const modelServer = mixed
+      ? createServer(tls, async (req, res) => {
+          independentRequests++;
+          assert.equal(req.url, "/backend-api/codex/responses");
+          assert.equal(req.method, "POST");
+          assert.equal(req.headers.authorization, "Bearer synthetic-online-pat");
+          assert.equal(((await json(req)) as { model: string }).model, "fixture");
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify(modelReply));
+        })
+      : undefined;
+    modelServer?.on("secureConnection", (socket) => {
+      modelTraffic.connections++;
+      socket.on("data", (bytes) => {
+        modelTraffic.bytes += bytes.length;
+      });
+    });
+    const modelOrigin = modelServer ? await listen(t, modelServer) : undefined;
     const conversation =
       scope === "reducible-installation" && codex
         ? await standingGitConversation(t, codex)
@@ -517,6 +616,7 @@ function externalGitJourney(
             certFile,
             releaseKey,
             installationApiOrigin,
+            ...(modelOrigin && { modelOrigin }),
             policyReduction: reducible,
             controlSecretFile,
           },
@@ -719,6 +819,28 @@ function externalGitJourney(
         }
         preparationStage = "configure-protected-execution";
         const wiring = await release.configure(context);
+        if (mixed) {
+          const installed = await release.observe(context, wiring);
+          assert.ok(installed?.enforcement.repositoryGitRecipient);
+          assert.equal(
+            await release.verify(context, { ...installed, sandboxId: randomUUID() }),
+            false,
+          );
+          assert.equal(
+            await release.verify(context, {
+              ...installed,
+              enforcement: {
+                ...installed.enforcement,
+                repositoryGitRecipient: {
+                  ...installed.enforcement.repositoryGitRecipient,
+                  authorization: "request-hook-observed",
+                },
+              },
+            }),
+            false,
+            "weaker recipient evidence cannot release v8",
+          );
+        }
         preparationStage = "enroll-protected-execution";
         assert.equal(
           await release.enroll(
@@ -795,6 +917,11 @@ function externalGitJourney(
       controller.selectDriver("credential_gateway", modelGateway.id);
     }
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
+    if (mixed) {
+      const modelSecret = await protectedModelSecret(t, namespaceId, tls);
+      controller.registerDriver(modelSecret);
+      controller.selectDriver("secret", modelSecret.id);
+    }
     for (const d of [apiDrivers.repositoryPolicy!, compute]) {
       controller.registerDriver(d);
       controller.selectDriver(d.capability, d.id);
@@ -843,51 +970,83 @@ function externalGitJourney(
       });
     }
     let independentSourceId: string | undefined;
-    let independentRequests = 0;
+    let independentAccess: { id: string } | undefined;
+    let independentGrant: Parameters<typeof controller.createIAMAccessBinding>[1] | undefined;
+
     if (reducible) {
-      const independentOrigin = await listen(
-        t,
-        createServer(tls, (req, res) => {
-          assert.equal(req.method, "GET");
-          assert.equal(req.url, "/repos/fixture/independent");
-          assert.equal(
-            req.headers.authorization,
-            undefined,
-            "independent binding carries no Git token",
+      const independentOrigin = mixed
+        ? undefined
+        : await listen(
+            t,
+            createServer(tls, (req, res) => {
+              assert.equal(req.method, "GET");
+              assert.equal(req.url, "/repos/fixture/independent");
+              assert.equal(
+                req.headers.authorization,
+                undefined,
+                "independent binding carries no Git token",
+              );
+              independentRequests++;
+              res
+                .writeHead(200, { "content-type": "application/json" })
+                .end(JSON.stringify({ id: 99, full_name: "fixture/independent" }));
+            }),
           );
-          independentRequests++;
-          res
-            .writeHead(200, { "content-type": "application/json" })
-            .end(JSON.stringify({ id: 99, full_name: "fixture/independent" }));
-        }),
+      const patSecret = mixed
+        ? await controller.createSecret(who, {
+            namespaceId,
+            name: "synthetic-pat",
+            value: "synthetic-online-pat",
+          })
+        : undefined;
+      const source = await controller.createCredentialSource(
+        who,
+        mixed
+          ? {
+              namespaceId,
+              name: "independent-model",
+              type: "codex-pat",
+              secrets: { access_token: patSecret!.ref },
+            }
+          : {
+              namespaceId,
+              name: "independent-metadata",
+              type: "credential-free-repository-metadata",
+              config: {
+                origin: independentOrigin!,
+                repository_id: "99",
+                repository: "fixture/independent",
+                agent_id: agentId,
+                authority: "execution",
+              },
+              secrets: {},
+            },
       );
-      const source = await controller.createCredentialSource(who, {
-        namespaceId,
-        name: "independent-metadata",
-        type: "credential-free-repository-metadata",
-        config: {
-          origin: independentOrigin,
-          repository_id: "99",
-          repository: "fixture/independent",
-          agent_id: agentId,
-          authority: "execution",
-        },
-        secrets: {},
-      });
       independentSourceId = source.id;
+      if (mixed) {
+        const admitted = await f.state.read((v) =>
+          v.credentialSources.findCredentialSource(namespaceId, source.id),
+        );
+        assert.ok(admitted);
+        assert.equal(admitted.egress?.adoption, "live");
+        assert.ok(admitted.egress && "verifiedIdentity" in admitted.egress);
+        assert.equal(admitted.egress.verifiedIdentity?.subject, "synthetic-workspace");
+        assert.equal(identityCalls, 1, "source enrollment uses the real fixed issuer verifier");
+      }
       const role = await controller.createIAMRole(who, {
         namespaceId,
         name: "independent-metadata-use",
         permissions: [{ action: "operate", resourceKind: "credential_source" }],
       });
-      await controller.createIAMAccessBinding(who, {
+      independentGrant = {
         namespaceId,
         subjectKind: "identity",
         subjectId: servicePrincipalId,
         roleId: role.id,
         resourceKind: "credential_source",
         resourceId: source.id,
-      });
+      };
+      independentAccess = await controller.createIAMAccessBinding(who, independentGrant);
       await controller.updateAgent(
         who,
         {
@@ -908,19 +1067,35 @@ function externalGitJourney(
     }
     const independentRead = async (expected: number) => {
       const response = await new Promise<import("node:http").IncomingMessage>((resolve, reject) => {
-        get(
-          new URL("/repos/fixture/independent", peer.url),
+        request(
+          new URL(mixed ? "/backend-api/codex/responses" : "/repos/fixture/independent", peer.url),
           {
             ca: awaitCa,
-            headers: { authorization: peer.clientHeader.slice("Authorization: ".length) },
+            method: mixed ? "POST" : "GET",
+            headers: {
+              authorization: peer.clientHeader.slice("Authorization: ".length),
+              ...(mixed && {
+                "content-type": "application/json",
+                "chatgpt-account-id": "synthetic-workspace",
+              }),
+            },
             agent: false,
           },
           resolve,
-        ).once("error", reject);
+        )
+          .once("error", reject)
+          .end(
+            mixed
+              ? JSON.stringify({ model: "fixture", input: "Synthetic request", store: false })
+              : undefined,
+          );
       });
       assert.equal(response.statusCode, expected);
       if (expected === 200) {
-        assert.deepEqual(await json(response), { id: 99, full_name: "fixture/independent" });
+        assert.deepEqual(
+          await json(response),
+          mixed ? modelReply : { id: 99, full_name: "fixture/independent" },
+        );
       } else {
         response.resume();
       }
@@ -953,14 +1128,61 @@ function externalGitJourney(
       assert.equal(gh.issuesOfTokens.length, 0);
       capability.profile = "github_installation";
     }
+    if (online && reducible) {
+      capability.reducible = false;
+      await assert.rejects(deploy, /404|200/);
+      assert.equal(gh.issuesOfTokens.length, 0, "unverified reduction cannot issue Git material");
+      capability.reducible = true;
+    }
     const probes = capability.requests;
     const revision = await deploy();
     assert.ok(capability.requests > probes, "API admission reached the capability-only HTTPS peer");
     assert.deepEqual(revision.executionAdmission, {
-      version: reducible ? 7 : online ? 5 : 4,
+      version: reducible ? (online ? 8 : 7) : online ? 5 : 4,
       mode: "protected",
     });
     assert.deepEqual(revision.egressPlan?.driver, owner.ref);
+    if (online && reducible) {
+      for (const version of [4, 5, 6, 7] as const) {
+        assert.throws(
+          () =>
+            assertExecutionAdmission({
+              ...revision,
+              executionAdmission: { version, mode: "protected" },
+            }),
+          /reduction|Repository/,
+        );
+      }
+      const missingReduction = { ...revision.egressPlan! };
+      delete missingReduction.policyReductionVersion;
+      assert.throws(
+        () =>
+          assertExecutionAdmission({
+            ...revision,
+            egressPlan: missingReduction,
+          }),
+        /reduction/,
+      );
+      assert.equal(
+        release.admits(
+          {
+            ...revision,
+            egressPlan: {
+              ...revision.egressPlan!,
+              driver: { ...owner.ref, configurationId: "0".repeat(64) },
+            },
+          },
+          "stored",
+        ),
+        false,
+        "a different installed configuration cannot adopt v8",
+      );
+      const restored = await f.state.read((v) =>
+        v.revisions.findRevision(namespaceId, agentId, revision.id),
+      );
+      assert.deepEqual(restored?.executionAdmission, revision.executionAdmission);
+      assert.deepEqual(restored?.egressPlan, revision.egressPlan);
+    }
     assert.equal(revision.repositoryCredentials?.standingApprovalId, approvalId);
     assert.equal(revision.harnessAuth.method, conversation ? "credential_source" : "runtime");
     if (conversation) {
@@ -1090,7 +1312,323 @@ function externalGitJourney(
         assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), oid);
         assert.equal((await git(["cat-file", "-t", oid])).stdout.trim(), "commit");
       };
-      await transfer(await origin.ref("main"));
+      if (modelFirst) {
+        await settleRevisionMaintenance(f, revision);
+        await transfer(await origin.ref("main"));
+        const original = await peer.observePolicy();
+        const originalDelivery = await pool.query(
+          "SELECT target, fence, preparation_attempt_id, material_version FROM occ.credential_deliveries WHERE revision_id=$1 AND target->>'transport'='registered-repository-git/v1'",
+          [revision.id],
+        );
+        assert.equal(originalDelivery.rowCount, 1);
+        let releaseModel!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          releaseModel = resolve;
+        });
+        let reached!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          reached = resolve;
+        });
+        peer.beforeModelSend = async () => {
+          reached();
+          await gate;
+        };
+        const beforeModel = { ...modelTraffic };
+        const held = independentRead(403);
+        await Promise.race([
+          ready,
+          held.then(() => {
+            throw new Error("Missing model hold");
+          }),
+        ]);
+        peer.reduction.loseReply = true;
+        peer.reduction.hideObservation = true;
+        await controller.withdrawAgentCredentialSource(who, {
+          namespaceId,
+          agentId,
+          credentialSourceId: independentSourceId!,
+        });
+        delete peer.beforeModelSend;
+        releaseModel();
+        await held;
+        await waitFor(
+          "model policy applied without acknowledgment",
+          () => peer.reduction.applies === 1 || undefined,
+          25_000,
+        );
+        await f.stop();
+        const reduced = await peer.observePolicy();
+        assert.equal(
+          await prepared.protectedGit!.recipients.observe(reduced),
+          undefined,
+          "an applied policy without a durable acknowledgment cannot replace the receipt",
+        );
+        await transport!.close();
+        await prepared.close();
+        assert.deepEqual(reduced.plan.routes, []);
+        assert.equal(reduced.plan.generation, original.plan.generation + 1);
+        assert.deepEqual(reduced.plan.repositoryGit, original.plan.repositoryGit);
+        assert.deepEqual(reduced.plan.execution, original.plan.execution);
+        assert.deepEqual(reduced.sender, original.sender);
+        assert.equal(reduced.sandboxId, original.sandboxId);
+        assert.deepEqual(
+          reduced.enforcement.repositoryGitRecipient,
+          original.enforcement.repositoryGitRecipient,
+        );
+        const pending = await f.state.read((view) =>
+          view.credentialSources.listCredentialPolicyReductions(namespaceId, revision.id),
+        );
+        assert.equal(pending.length, 1);
+        const [request] = pending;
+        assert.ok(request);
+        assert.equal(request.observed, undefined);
+        peer.reduction.hideObservation = false;
+        prepared = await startOwner();
+        transport = await bindRepositoryGitTransport(drivers, prepared, pool, emit);
+        await expireStoppedClaims(f, revision);
+        await f.start(compute, {
+          emit,
+          transformDrivers: () => ({
+            ...drivers,
+            computeDriver: compute,
+            configurationDriver: controller.selectedDriver("configuration"),
+          }),
+        });
+        await waitForRevisionPass(
+          "model withdrawal durably completed after replacement",
+          f,
+          revision,
+          async () =>
+            f.state.read(
+              async (view) =>
+                (
+                  await view.credentialSources.findCredentialWithdrawal(
+                    namespaceId,
+                    revision.id,
+                    independentSourceId!,
+                  )
+                )?.state === "revoked" || undefined,
+            ),
+          45_000,
+        );
+        const effective = await f.state.read((view) =>
+          view.credentialSources.findRevisionEgressInstallation(namespaceId, revision.id),
+        );
+        assert.deepEqual(effective, reduced);
+        const durable = await f.state.read((view) =>
+          view.credentialSources.listCredentialPolicyReductions(namespaceId, revision.id),
+        );
+        assert.deepEqual(durable, [{ ...request, observed: reduced }]);
+        assert.equal(peer.reduction.attempts, 1, "restart must not replay the lost POST");
+        assert.equal(peer.reduction.applies, 1);
+        assert.deepEqual([...new Set(peer.reduction.observations)], [request.request.operationId]);
+        const stored = await pool.query(
+          "SELECT installation FROM occ.egress_installations WHERE revision_id=$1",
+          [revision.id],
+        );
+        assert.deepEqual(
+          stored.rows.map((row) => row.installation),
+          [original],
+          "admission receipt remains immutable",
+        );
+        assert.deepEqual(
+          (
+            await pool.query(
+              "SELECT target, fence, preparation_attempt_id, material_version FROM occ.credential_deliveries WHERE revision_id=$1 AND target->>'transport'='registered-repository-git/v1'",
+              [revision.id],
+            )
+          ).rows,
+          originalDelivery.rows,
+          "no new Git delivery or grant",
+        );
+        await independentRead(403);
+        assert.deepEqual(modelTraffic, beforeModel);
+        assert.equal(independentRequests, 1);
+        // Force the ordinary sender to observe the effective policy, not a cached pre-withdrawal route.
+        const reconciliations = peer.delivery.reconciliations;
+        await waitFor(
+          "sender reconciles reduced policy",
+          () => peer.delivery.reconciliations > reconciliations + 1 || undefined,
+          10_000,
+        );
+        t.diagnostic(
+          "durable model withdrawal complete; original admission and Git delivery unchanged; sender observed reduced policy",
+        );
+        const uses = async () =>
+          (
+            await pool.query(
+              "SELECT count(*)::integer n FROM occ.prepared_repository_git_uses WHERE material_version=$1",
+              [first.materialVersion],
+            )
+          ).rows[0].n as number;
+        const usesBefore = await uses();
+        const decisionsBefore = peer.decisions.length;
+        await transfer(await origin.addCommit());
+        assert.equal(
+          await uses(),
+          usesBefore + 3,
+          "new requests pass the production Token Service and commit fresh use receipts",
+        );
+        assert.equal(
+          peer.decisions.length,
+          decisionsBefore + 3,
+          "fresh online authorizations for discovery, refs and pack",
+        );
+        for (const { decision } of peer.decisions.slice(decisionsBefore)) {
+          assert.ok(decision && typeof decision === "object" && "kind" in decision);
+          assert.equal(decision.kind, "allow");
+        }
+        const recipient = prepared.protectedGit!.recipients;
+        for (const invalid of [
+          original,
+          { ...reduced, sandboxId: randomUUID() },
+          { ...reduced, plan: { ...reduced.plan, generation: reduced.plan.generation - 1 } },
+          { ...reduced, plan: { ...reduced.plan, routes: original.plan.routes } },
+          {
+            ...reduced,
+            plan: { ...reduced.plan, repositoryGitAuthorization: "request-hook-observed" as const },
+          },
+          {
+            ...reduced,
+            enforcement: {
+              ...reduced.enforcement,
+              repositoryGitRecipient: {
+                ...reduced.enforcement.repositoryGitRecipient!,
+                processInstanceId: randomUUID(),
+              },
+            },
+          },
+        ]) {
+          assert.equal(
+            await recipient.observe(invalid),
+            undefined,
+            "only the exact effective receipt can retain Git",
+          );
+        }
+        const retained = await recipient.observe(reduced);
+        assert.deepEqual(retained, {
+          revisionId: revision.id,
+          fence: Number(originalDelivery.rows[0].fence),
+          observed: original,
+        });
+        assert.deepEqual(
+          await prepared.protectedGit!.online.githubInstallation!.readMaterial(
+            { ...retained!, fence: retained!.fence - 1 },
+            t.signal,
+          ),
+          { absent: "unprepared" },
+          "stale Git delivery fence cannot release material",
+        );
+        assert.equal(
+          (await f.state.read((view) => view.agents.findAgent(namespaceId, agentId)))
+            ?.activeRevisionId,
+          revision.id,
+        );
+        assert.equal(stopAttempts, 0);
+        assert.equal(identityCalls, 1);
+        assert.equal(
+          peer.delivery.installs,
+          1,
+          "retained Git never regrants or reinstalls material",
+        );
+        await nextMaintenancePass(f, revision, completions);
+        const beforeDeniedGit = traffic();
+        await controller.removeAgentStandingApproval(who, {
+          ...key,
+          approvalId,
+          expectedGeneration: 1,
+        });
+        assert.equal(
+          (await fetch(true)).code,
+          128,
+          "retention cannot bypass current standing approval",
+        );
+        assert.deepEqual(traffic(), beforeDeniedGit);
+        await independentRead(403);
+        assert.deepEqual(modelTraffic, beforeModel);
+        t.diagnostic(
+          "model-first: durable reduction after lost acknowledgment and replacement; immutable admission, exact retained Git recipient, new Git object, zero withdrawn model traffic",
+        );
+        return;
+      }
+      if (mixed) {
+        let releaseModel!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          releaseModel = resolve;
+        });
+        let reached!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          reached = resolve;
+        });
+        peer.beforeModelSend = async () => {
+          reached();
+          await gate;
+        };
+        const beforeDeniedModel = { ...modelTraffic };
+        const held = independentRead(403);
+        await Promise.race([
+          ready,
+          held.then(() => {
+            throw new Error("Model request ended before the authorization hold");
+          }),
+        ]);
+        await controller.deleteIAMAccessBinding(who, namespaceId, independentAccess!.id);
+        delete peer.beforeModelSend;
+        releaseModel();
+        await held;
+        await independentRead(403);
+        assert.equal(
+          independentRequests,
+          1,
+          "held and fresh withdrawn PAT requests never reach the model origin",
+        );
+        assert.deepEqual(
+          modelTraffic,
+          beforeDeniedModel,
+          "denied model requests create no TLS connection or HTTP bytes",
+        );
+        // Git still transfers a previously absent object while model authority is withdrawn.
+        await transfer(await origin.ref("main"));
+        const fresh = await controller.createIAMAccessBinding(who, independentGrant!);
+        assert.notEqual(
+          fresh.id,
+          independentAccess!.id,
+          "restoration requires distinct fresh authority",
+        );
+        const admitted = await f.state.read((view) =>
+          view.credentialSources.findCredentialSource(namespaceId, independentSourceId!),
+        );
+        assert.ok(admitted?.egress);
+        const changedGeneration = structuredClone(admitted.egress);
+        (changedGeneration.key.source as { generation: number }).generation++;
+        await assert.rejects(
+          pool.query("UPDATE occ.credential_sources SET egress=$2::jsonb WHERE id=$1", [
+            independentSourceId,
+            changedGeneration,
+          ]),
+          { code: "23514" },
+        );
+        await pool.query(
+          "UPDATE occ.credential_sources SET egress=egress-'verifiedIdentity' WHERE id=$1",
+          [independentSourceId],
+        );
+        await independentRead(403);
+        assert.equal(
+          independentRequests,
+          1,
+          "missing durable source identity cannot replay its prior authorization",
+        );
+        await pool.query("UPDATE occ.credential_sources SET egress=$2::jsonb WHERE id=$1", [
+          independentSourceId,
+          admitted.egress,
+        ]);
+        assert.equal(identityCalls, 1, "requests and restoration never refresh identity");
+        t.diagnostic(
+          "held and fresh PAT requests denied before origin; Git fetched while PAT authority withdrawn; fresh authority restored",
+        );
+      } else {
+        await transfer(await origin.ref("main"));
+      }
       if (broad) {
         const provider = broad.installation;
         const { repositories, apiRequests } = provider;
@@ -1934,7 +2472,7 @@ function externalGitJourney(
         assert.equal(peer.reduction.attempts, 2, "final route removal adds exactly one POST");
         assert.equal(peer.reduction.applies, 2);
         t.diagnostic(
-          "final reduction: attempts=2 applies=2; metadata requests=2, final read denied",
+          `final reduction: attempts=2 applies=2; ${mixed ? "model" : "metadata"} requests=2, final read denied`,
         );
         assertNoPreparationAfterWithdrawal();
         assert.equal(independentRequests, 2, "deny-all prevents a new independent origin request");

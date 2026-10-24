@@ -177,9 +177,15 @@ shell tools; `--replace-key` deploys current policy.
 OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
 PAT bootstrap (`prepareHarnessAuth`;
-`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
-writes an opaque placeholder to private `auth.json`, clears the child override,
-and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:agentRuntimeEntrypoint`)
+writes an opaque placeholder, clears the child override, and validates native login
+status. The current launcher sets `CODEX_HOME` to mode `0700` on each start and
+replaces `auth.json` with a mode-`0600` file in that directory. It holds the
+opened directory through signed release, each native login and probe attempt,
+and app-server launch. Before each invocation it verifies the directory and
+credential file still have their admitted identities, owner, and permissions.
+A mismatch holds startup unready. A held failure or successful app-server
+spawn closes the descriptor. Exiting the launcher also releases it. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
 admit bootstrap/model traffic; failure keeps versions inactive.
 API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
 preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
@@ -369,6 +375,10 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 - 2026-10-24 20:50: Refuse dedicated OpenClaw with several operator-mode ServiceAccounts at admission, and offer only admitted OpenClaw modes. (finding 2346)
 
+- 2026-10-24 13:29: Consolidate entries through October 14 in the linked history. (authoring-run/5349f11a-ad14-42f1-bef9-5a53b3a632ed - ce21c3b135a94193133b766be66e6a12120adf99)
+
+- 2026-10-24 10:23: Document credential placement and directory ownership through native Codex PAT startup. (authoring-run/e2810921-00cc-4f69-85ab-017b0b89ed89 - 04c1318d744ddfc810c51b2aa308fab5e6e62a7f)
+
 - 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 
 - 2026-10-21 23:06: Trace OCC delivery ownership and explicit withdrawal outcomes in the accompanying change. (authoring-run/785bc245-2a9c-4ebe-ad96-da5cdd3c4851 - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
@@ -387,18 +397,10 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 - 2026-10-15 18:17: Pin OpenShell v0.1.4. (authoring-run/openshell-014-rebase-20261015 - 64a3424a9)
 
-- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
-
 - 2026-10-15 08:47: Select explicit Codex permissions. (authoring-run/7eb24321-3670-4154-adde-41a0f1b36728 - 04514330688378316bd0641b8d5560da56aeff85)
 
 - 2026-10-15 02:25: Distinguish API-key and PAT isolation. (authoring-run/c11897e0-33a6-4276-b620-aaec6d57ab00 - 07eb950b5)
 
-- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
-
-- 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
-
 - 2026-10-15 16:14: Link frozen Agent policy admission and later live application. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
-
-- 2026-10-14 14:52: Validate and snapshot startup Sandbox network policy overrides through the Driver. (authoring-run/5e9763cf-c7fd-4990-94ac-6bc267d0287a - a28596ab8cf5e028a5eb91c276feb19a3775554c)
 
 [OpenShell Sandbox provisioning documentation history](openshell-sandbox-provisioning/history.md) preserves the older dated entries.

@@ -29,7 +29,17 @@ export async function protectedDriverPackage(
       ),
       "utf8",
     );
-    const js = stripTypeScriptTypes(source).replace('"./index.ts"', '"./index.mjs"');
+    const js = stripTypeScriptTypes(source)
+      .replace('"./index.ts"', '"./index.mjs"')
+      .replace(
+        '"../../../../apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts"',
+        JSON.stringify(
+          new URL(
+            "../../apps/controller/src/drivers/egress-proxy/codex-workspace-provider.ts",
+            import.meta.url,
+          ).href,
+        ),
+      );
     await writeFile(join(entry, name + ".mjs"), js);
   }
   return { directory, entry };

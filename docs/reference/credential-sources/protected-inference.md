@@ -4,12 +4,37 @@ Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell 
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
 same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. There is no caller binary allowlist or client hook.
+inherit that authority. The bundled workspace profile below also checks the
+executable or its ancestors.
 
 The bundled legacy OpenShell release cannot enforce this profile. Before using a
 candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)
 and test the actual static inference path. A repository metadata read exercises the
 shared exchange but does not establish static inference or Git transport support.
+
+## Select the bundled workspace exchange
+
+For a dedicated Codex Agent in a preprovisioned Namespace, set the Credential
+Proxy’s `middlewareName` to `codex-workspace-pat-https`, configure its installation
+exchange authority and leave `repositoryMiddlewareName` unset. Select the same
+TLS service in OpenShell. The authenticated Gateway must report exactly one
+registration with that name, implementation `oce/static-egress` version `1`,
+protocol major 1, and the execution capabilities as both required and supported.
+
+Bind the verified `codex-pat` source to the Agent and grant its service principal
+access to that source. The Agent uses a nonsecret login marker. The sender checks
+the loaded policy and registered supervisor key before releasing a request. It
+allows workspace identity, account selection, model catalog, Responses and managed
+policy requests. It excludes `GET /backend-api/wham/settings/user` and refuses
+either protected Git profile on the same execution.
+
+Qualify the sender and the immutable runtime image on each target platform.
+The five rules name the packaged Linux x64 and ARM64 Codex executable paths for
+version `0.163.0-alpha.2`. The local native turn covered Linux x64. ARM64
+requires separate qualification. Protect the executable and its parent
+directories against replacement or shadowing. A Codex descendant may make its
+own authorized request and receive its filtered response. It cannot read
+another request’s response or obtain the reusable workspace token.
 
 ## Execution admission cutoff
 
@@ -19,6 +44,16 @@ before creating one: an older worker refuses this revision. Version 2 represents
 unprotected admission only. Protected versions 4, 5 and 6 carry the distinct
 [repository authorization contracts](../repository-credentials/protected-openshell-git.md).
 Version 7 requires exact-dispatch Git and authenticated reduction v2 support.
+Version 8 instead requires online Git authorization and authenticated reduction v2.
+Each new Git request must obtain current authorization before credential injection;
+a request that already passed that check may finish. Version 8 does not promise
+an exact-dispatch first-write deadline. Its independent model exchange retains its
+own authenticated peer key and per-request source checks. Git does not use that
+key to claim exact dispatch. Removing Git preserves the admitted model routes;
+removing a model source preserves Git. Neither operation grants another source
+or restores a withdrawn route. The selected pair must verify the exact installed
+recipient before release and persist reductions so stale configuration cannot
+restore access. The bundled sender remains unqualified for this combination.
 Advertising v2 does not replace v4, v5 or v6 admission or imply v1 support.
 Ordinary v3 can omit reduction for one source; multiple static sources require
 explicit reduction v1 support. Production uses the selected Driver registration

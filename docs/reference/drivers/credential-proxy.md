@@ -44,6 +44,30 @@ access. Persist its operation identity and reduction tombstones so stale
 configuration or enrollment cannot restore removed routes. An empty retained
 route set must still enforce deny-all.
 
+### Verified static source identity
+
+A provider may implement `verifySource(material, lifetime)` to authenticate a static
+input before source admission. OCC supplies the authorized Secret Driver value and
+bounded read lifetime. The provider returns only `issuer`, `subject` and canonical
+`origin`. OCC binds these fields to the exact source key, Secret reference, Driver,
+material UID and version in `StaticEgressSource.verifiedIdentity`. It rechecks the
+version after verification, at Agent admission, before resolution and at send
+authorization. A missing or changed binding refuses access; it never refreshes identity
+as a side effect of an Agent request.
+
+For an external package that explicitly reports `codex-workspace-pat-https` generation
+1 with Proxy source ownership, Installation composition supplies the standard workspace
+verifier. It calls only `https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami`
+with normal TLS certificate and hostname verification and deployment-owned Node trust
+roots. Redirects and FedRAMP identities refuse. A verified non-FedRAMP identity selects
+`https://chatgpt.com`. There is no source URL, workspace override or trust option.
+
+This integration does not add the profile to stock Drivers or qualify a sender. The
+selected external pair must still report and enforce its capabilities. An unbound
+source update obtains fresh proof and advances the source generation. A bound source
+requires a separately admitted source and an explicit new grant; replacing its Secret
+cannot preserve the previous workspace grant.
+
 ### Delivery profiles
 
 `repositoryGitDeliveryProfile` admits exactly one repository binding:

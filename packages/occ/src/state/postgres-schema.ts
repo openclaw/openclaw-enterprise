@@ -706,17 +706,17 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND (
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7')
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '7'
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6','7','8')
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('7','8')
                   THEN ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '2'::jsonb
                   ELSE NOT (${table.admittedSpec}->'egress_plan' ? 'policyReductionVersion') OR
                     (${table.admittedSpec} #>> '{execution_admission,version}' = '3' AND ${table.admittedSpec} #> '{egress_plan,policyReductionVersion}' = '1'::jsonb) END
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7'))
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6','7','8'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
-                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' IN ('5','8')
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
                     WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
                       ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
@@ -2164,7 +2164,7 @@ export const credentialDeliveries = occSchema.table(
     }),
     primaryKey({ columns: [t.revisionId, t.bindingId] }),
     index("credential_deliveries_namespace").on(t.namespaceId),
-    unique("credential_deliveries_revision_id_target_key").on(t.revisionId, t.target),
+    // Migration 0065 owns the hash exclusion constraint on the revision and full JSONB target.
     check("credential_deliveries_binding_id_check", sql`${t.bindingId} <> ''`),
     check("credential_deliveries_target_check", sql`jsonb_typeof(${t.target}) = 'object'`),
     check("credential_deliveries_fence_check", sql`${t.fence} >= 1`),

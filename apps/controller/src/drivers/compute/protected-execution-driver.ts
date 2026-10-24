@@ -178,7 +178,10 @@ export class ProtectedExecutionDriver {
       !!enforcement.instanceId &&
       !!enforcement.configurationId &&
       !!enforcement.policyHash &&
-      (context.plan.repositoryGitAuthorization !== undefined
+      // v8 can retain an authenticated model exchange beside online Git. That key
+      // does not turn the Git request authorization into an exact-dispatch permit.
+      (context.plan.repositoryGitAuthorization !== undefined &&
+      !(context.plan.policyReductionVersion === 2 && context.plan.routes.length > 0)
         ? enforcement.peerKeyId === undefined
         : !!enforcement.peerKeyId) &&
       (!installed.plan.repositoryGit ||

@@ -5,6 +5,27 @@ refuse a request before it stores a Configuration or Agent, creates an Agent rev
 or stops a running one. The checks read only their arguments and the Driver's
 trusted Installation settings, never the backend.
 
+## Stored launch bindings
+
+Kubernetes Compute stores an internal `codex-launch:v2:` prefix in
+`compute.admission` for new dedicated Codex launches. Its payload retains the
+protected retry or public GitHub reader binding; the prefix grants no access.
+Generic older revisions have no Compute admission, so the prefix distinguishes
+old and new programs without changing the execution-admission schema.
+
+Preparation selects the program from the stored binding, never from observed
+Sandbox command text. Unprefixed admissions use their historical startup order and the native Codex
+executable for login and the model probe. New programs clear stale Ready before
+validation and status-server startup. Protected workspace login requires its
+bound profile and marker, and enrollment refusal occurs before native spawn.
+The protected payload also disables unbounded native connection retries in the
+probe and app-server.
+
+OpenShell reads an existing Sandbox before any create and compares exact ownership
+and specification. For unprefixed Codex revisions, OpenShell recognizes three earlier command payloads by digest: the npm launcher, the native binary before timer bounds, and the timer-bounded program before comment stripping. Each digest applies only to its own plain or workspace-node program and retry policy. The wrapper and all other fields must match. Adoption keeps the
+running command. Creation always uses the command selected by Compute. See the
+[execution flow](../../flows/harness-execution-topology.md#3-publish-safely-and-complete-activation-once).
+
 ## When OCC calls each check
 
 | Method                                                                            | Called at                                                                                                                                                                                    | Refusal                                                                                                                                                              |
