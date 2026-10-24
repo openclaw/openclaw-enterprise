@@ -16,7 +16,7 @@ only after session admission and ends at ordinary Agent detail.
 
 - `apps/controller/src/console/console.mjs:loadPage` checks the browser session.
 - `apps/controller/src/console/console.mjs:showLogin` offers available sign-in methods.
-- `apps/controller/src/console/navigation.mjs:createNavigation` validates page intents.
+- `apps/controller/src/console/navigation.mts:createNavigation` validates page intents.
 
 ## Flow
 
@@ -55,7 +55,7 @@ provider-error advice from "use your password" to asking an administrator. Pendi
 all; generations reject late redirects. With `sessionBinding`, `loadPage`
 exchanges the button's stored `attemptId` once for its key. Tabs then send
 their pinned `x-occ-session-key`, so a replaced cookie yields login.
-When login interrupts a recognized console route, `navigation.mjs` records its
+When login interrupts a recognized console route, `navigation.mts` records its
 page, validated Namespace ID, and recognized Agent version and tab without unrelated
 query parameters. Password
 sign-in carries that intent in the current view; external sign-in stores it in
@@ -64,9 +64,11 @@ console consumes it only after confirming that attempt and its session, and
 clears it on failure or logout. `showExpiredLogin` captures the validated current
 route before clearing private state on an API `401` or foreground session
 recheck. A missing session in `loadPage` also retains the requested route,
-including after a failed check. Sign-in reauthorizes that destination; it never
-restores drafts or replays a mutation. A `403` remains an access denial and does
-not start login. The login page accepts no return URL.
+including after a failed check. It says the session expired only when this tab
+had one: a mark in tab `sessionStorage`, set when a session resolves and cleared
+by logout, tells a reload after expiry from a first visit. Sign-in reauthorizes
+that destination; it never restores drafts or replays a mutation. A `403` remains
+an access denial and does not start login. The login page accepts no return URL.
 
 A native Agent recovery link can supply a 32-character lowercase hexadecimal key
 in the console root fragment. `loadPage` removes the fragment before sign-in and
@@ -89,6 +91,8 @@ owns the server side.
 `apps/controller/src/console/console.mjs:loadPage` checks the session and loads
 readable Namespaces before rendering the requested page. The Agent and Namespace
 reads use their usual authorization; an inaccessible resource remains unavailable.
+When the Namespace read fails after the session resolved, the page offers **Sign
+out** beside **Retry**, so an account refused with `403` is not stranded.
 See the [parent flow](../platform-console.md#3-authorize-the-selected-page-resource).
 
 ## Debugging and Verification

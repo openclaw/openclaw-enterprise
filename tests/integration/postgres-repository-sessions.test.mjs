@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { setTimeout as delay } from "node:timers/promises";
 import pg from "pg";
 import { PostgresPlatformState } from "../../packages/occ/src/state/postgres-state.ts";
 import {
@@ -15,6 +14,7 @@ import {
   repositoryGrant,
 } from "../fixtures/repository-credentials/session-state.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitForLockHolder } from "../helpers/postgres-lock-waits.mjs";
 
 function insertAttempt(
   pool,
@@ -274,17 +274,10 @@ test(
         );
         const pending = insertAttempt(admission, sessionAttempt(revision));
         const refused = assert.rejects(pending, { code: "23514" });
-        const timeout = Date.now() + 5_000;
-        while (
-          !(
-            await pool.query("SELECT cardinality(pg_blocking_pids($1)) > 0 AS blocked", [
-              admissionPid,
-            ])
-          ).rows[0].blocked
-        ) {
-          assert.ok(Date.now() < timeout, "admission must wait on its Namespace owner");
-          await delay(10);
-        }
+        await waitForLockHolder(pool, admissionPid, "admission to wait on its Namespace owner", {
+          timeoutMs: 5_000,
+          intervalMs: 10,
+        });
         // The owner commits deletion before the waiting INSERT may validate admission.
         await deleting.query("COMMIT");
         await refused;

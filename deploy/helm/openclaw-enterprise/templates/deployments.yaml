@@ -1,3 +1,5 @@
+{{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
+{{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
@@ -9,14 +11,19 @@ metadata:
   labels:
     {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 4 }}
 spec:
-  replicas: 1
   {{- if eq $component "api" }}
+  replicas: 1
   # One serving controller: sign-in limits and session admission are process-local.
   strategy:
     type: Recreate
   {{- else }}
+  {{- $replicas := toString $.Values.worker.replicaCount }}
+  {{- if not (has $replicas (list "0" "1")) }}
+    {{- fail "worker.replicaCount must be 0 or 1" }}
+  {{- end }}
+  replicas: {{ $replicas }}
   strategy:
-    {{- if $.Values.repositoryCredentials.enabled }}
+    {{- if $repositoryGit }}
     type: Recreate
     {{- else }}
     type: RollingUpdate
@@ -34,13 +41,18 @@ spec:
     metadata:
       labels:
         {{- include "openclaw.labels" (dict "root" $ "component" $component) | nindent 8 }}
-      {{- with $.Values.controlPlane.installationChecksum }}
+      {{- if or $.Values.controlPlane.installationChecksum (and (eq $component "api") $.Values.api.consoleTheme.configMapName $.Values.api.consoleTheme.checksum) }}
       annotations:
+        {{- with $.Values.controlPlane.installationChecksum }}
         openclaw.dev/installation-checksum: {{ . | quote }}
+        {{- end }}
+        {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName $.Values.api.consoleTheme.checksum }}
+        openclaw.dev/console-theme-checksum: {{ $.Values.api.consoleTheme.checksum | quote }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-{{ $component }}
-      {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+      {{- if and (eq $component "worker") $repositoryGit }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 75
       {{- else }}
@@ -53,6 +65,48 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if $.Values.backend.openshell.clientSecretName }}
+        - name: openshell-client
+          secret:
+            secretName: {{ $.Values.backend.openshell.clientSecretName | quote }}
+            items:
+              - {key: ca.crt, path: ca.crt}
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        {{- end }}
+        {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
+        - name: egress-authority-tls
+          secret:
+            secretName: {{ $.Values.egressAuthority.tlsSecretName | quote }}
+            items:
+              - {key: tls.crt, path: tls.crt}
+              - {key: tls.key, path: tls.key}
+        - name: egress-authority-issuer
+          secret:
+            secretName: {{ $.Values.egressAuthority.issuerSecretName | quote }}
+            items:
+              - {key: public.pem, path: issuer.pub}
+        {{- end }}
+        {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+        - name: openshell-git
+          projected:
+            defaultMode: 288 # 0440: readable by the normal Pod filesystem group.
+            sources:
+              - secret:
+                  name: {{ $.Values.openshellGit.tlsSecretName | quote }}
+                  items:
+                    - {key: tls.crt, path: tls.crt}
+                    - {key: tls.key, path: tls.key}
+              - configMap:
+                  name: {{ $.Values.openshellGit.issuerPublicKeyConfigMapName | quote }}
+                  items:
+                    - {key: gateway-public.pem, path: gateway-public.pem}
+        {{- end }}
+        {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+        - name: console-theme
+          configMap:
+            name: {{ $.Values.api.consoleTheme.configMapName | quote }}
+        {{- end }}
         {{- if $oidcCa }}
         - name: oidc-ca
           secret:
@@ -74,19 +128,21 @@ spec:
               - key: {{ $.Values.executionCluster.kubeconfigKey | quote }}
                 path: kubeconfig
         {{- end }}
-        {{- if $.Values.repositoryCredentials.enabled }}
+        {{- if $repositoryGit }}
         - name: repository-registry
           configMap:
             name: {{ $.Values.repositoryCredentials.registryConfigMapName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.registryKey | quote }}
                 path: registry.json
+        {{- if $repositoryBroker }}
         - name: repository-public-ca
           secret:
             secretName: {{ $.Values.repositoryCredentials.publicCaSecretName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.publicCaKey | quote }}
                 path: ca.crt
+        {{- end }}
         {{- if eq $component "worker" }}
         - name: worker-api-access
           projected:
@@ -106,6 +162,7 @@ spec:
                       fieldRef:
                         apiVersion: v1
                         fieldPath: metadata.namespace
+        {{- if $repositoryBroker }}
         - name: repository-inputs
           projected:
             defaultMode: 288 # 0440: root and the Pod filesystem group only.
@@ -116,17 +173,36 @@ spec:
                     - key: {{ $.Values.repositoryCredentials.serviceConfigKey | quote }}
                       path: config.json
               - secret:
-                  name: {{ $.Values.repositoryCredentials.appKeySecretName | quote }}
-                  items:
-                    - key: {{ $.Values.repositoryCredentials.appKeyKey | quote }}
-                      path: private-key.pem
-              - secret:
                   name: {{ $.Values.repositoryCredentials.tlsSecretName | quote }}
                   items:
                     - key: tls.crt
                       path: tls.crt
                     - key: tls.key
                       path: tls.key
+        {{- end }}
+        {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
+        - name: prepared-repository-owner
+          projected:
+            defaultMode: 288
+            sources:
+              - secret:
+                  name: {{ $.Values.repositoryCredentials.appKeySecretName | quote }}
+                  items:
+                    - key: {{ $.Values.repositoryCredentials.appKeyKey | quote }}
+                      path: private-key.pem
+              - secret:
+                  name: {{ $.Values.repositoryCredentials.preparedCustodySecretName | quote }}
+                  items:
+                    - {key: custody.key, path: custody.key}
+        {{- if $.Values.repositoryCredentials.preparedProviderCaConfigMapName }}
+        - name: prepared-repository-ca
+          configMap:
+            name: {{ $.Values.repositoryCredentials.preparedProviderCaConfigMapName | quote }}
+            items:
+              - {key: ca.crt, path: ca.crt}
+        {{- end }}
+        {{- end }}
+        {{- if $repositoryBroker }}
         - name: repository-private
           emptyDir:
             medium: Memory
@@ -135,6 +211,22 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- end }}
+        {{- end }}
+        {{- end }}
+        {{- if $.Values.preparedGitHub.custodySecretName }}
+        - name: prepared-github-custody
+          secret:
+            secretName: {{ $.Values.preparedGitHub.custodySecretName | quote }}
+            defaultMode: 288 # 0440, readable by the control-plane filesystem group
+            items:
+              - {key: custody.key, path: custody.key}
+        {{- if $.Values.preparedGitHub.issuerCaConfigMapName }}
+        - name: prepared-github-issuer-ca
+          configMap:
+            name: {{ $.Values.preparedGitHub.issuerCaConfigMapName | quote }}
+            items:
+              - {key: ca.crt, path: ca.crt}
         {{- end }}
         {{- end }}
         - name: installation-startup
@@ -232,14 +324,14 @@ spec:
             - name: api-extra-ca
               mountPath: /etc/openclaw/api-extra-ca
       {{- end }}
-      {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+      {{- if and (eq $component "worker") $repositoryBroker }}
       # The receipt server must remain available while the broker drains.
       initContainers:
       {{- else }}
       containers:
       {{- end }}
         - name: {{ $component }}
-          {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+          {{- if and (eq $component "worker") $repositoryBroker }}
           restartPolicy: Always
           {{- end }}
           image: {{ $.Values.images.controller | quote }}
@@ -260,6 +352,10 @@ spec:
           env:
             - name: NODE_ENV
               value: production
+            {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+            - name: OCC_CONSOLE_THEME_DIR
+              value: /etc/openclaw/console-theme
+            {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: OCC_METRICS_ENABLED
               value: "true"
@@ -272,6 +368,11 @@ spec:
             {{- end }}
             - name: OCC_CONFIG_PATH
               value: /etc/openclaw/installation/installation.yaml
+            {{- include "openclaw.listenerEnv" $ | trim | nindent 12 }}
+            {{- with $.Values.preprovisionedNamespace }}
+            - name: OCC_PREPROVISIONED_NAMESPACE
+              value: {{ . | toJson | quote }}
+            {{- end }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_DATABASE_URL" "secretName" $.Values.database.secretName "key" $.Values.database.appUrlKey) | nindent 12 }}
             {{- if $.Values.gatewayRouting.enabled }}
             - name: OCC_GATEWAY_API_KEY_PATH
@@ -392,9 +493,32 @@ spec:
               value: {{ include "openclaw.positiveSafeInteger" (dict "name" "worker.convergenceTimeoutMs" "value" $.Values.worker.convergenceTimeoutMs) | quote }}
             {{- end }}
           volumeMounts:
+            {{- if $.Values.backend.openshell.clientSecretName }}
+            - name: openshell-client
+              mountPath: /etc/openclaw/openshell
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $component "api") $.Values.egressAuthority.enabled }}
+            - name: egress-authority-tls
+              mountPath: /etc/openclaw/egress/tls
+              readOnly: true
+            - name: egress-authority-issuer
+              mountPath: /etc/openclaw/egress/issuer
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+            - name: openshell-git
+              mountPath: /etc/openclaw/openshell-git
+              readOnly: true
+            {{- end }}
             {{- if $oidcCa }}
             - name: api-extra-ca
               mountPath: /etc/openclaw/api-extra-ca
+              readOnly: true
+            {{- end }}
+            {{- if and (eq $component "api") $.Values.api.consoleTheme.configMapName }}
+            - name: console-theme
+              mountPath: /etc/openclaw/console-theme
               readOnly: true
             {{- end }}
             {{- if $.Values.executionCluster.enabled }}
@@ -402,19 +526,43 @@ spec:
               mountPath: /etc/openclaw/execution
               readOnly: true
             {{- end }}
-            {{- if $.Values.repositoryCredentials.enabled }}
+            {{- if $repositoryGit }}
             - name: repository-registry
               mountPath: /etc/openclaw/repository-registry
               readOnly: true
+            {{- if $repositoryBroker }}
             - name: repository-public-ca
               mountPath: /etc/openclaw/repository-ca
               readOnly: true
+            {{- end }}
             {{- if eq $component "worker" }}
             - name: worker-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
               readOnly: true
+            {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
+            - name: prepared-repository-owner
+              mountPath: /etc/openclaw/prepared-repository
+              readOnly: true
+            {{- if $.Values.repositoryCredentials.preparedProviderCaConfigMapName }}
+            - name: prepared-repository-ca
+              mountPath: /etc/openclaw/prepared-repository-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
+            {{- if $repositoryBroker }}
             - name: repository-control
               mountPath: /run/openclaw/repository-control
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if $.Values.preparedGitHub.custodySecretName }}
+            - name: prepared-github-custody
+              mountPath: /etc/openclaw/prepared-github
+              readOnly: true
+            {{- if $.Values.preparedGitHub.issuerCaConfigMapName }}
+            - name: prepared-github-issuer-ca
+              mountPath: /etc/openclaw/prepared-github-issuer
+              readOnly: true
             {{- end }}
             {{- end }}
             - name: installation-startup
@@ -445,8 +593,12 @@ spec:
             - name: worker-readiness
               mountPath: /run/openclaw-worker
             {{- end }}
-          {{- if or (eq $component "api") $.Values.metrics.enabled }}
+          {{- if or (eq $component "api") $.Values.metrics.enabled (and (eq $component "worker") $.Values.openshellGit.enabled) }}
           ports:
+            {{- if and (eq $component "worker") $.Values.openshellGit.enabled }}
+            - name: openshell-git
+              containerPort: {{ $.Values.openshellGit.port }}
+            {{- end }}
             {{- if $.Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ $.Values.metrics.port }}
@@ -454,6 +606,10 @@ spec:
             {{- if eq $component "api" }}
             - name: http
               containerPort: {{ $.Values.api.port }}
+            {{- if $.Values.egressAuthority.enabled }}
+            - name: egress-tls
+              containerPort: {{ $.Values.egressAuthority.port }}
+            {{- end }}
             {{- end }}
           {{- end }}
           {{- if eq $component "api" }}
@@ -483,7 +639,7 @@ spec:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker]
           {{- end }}
-        {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+        {{- if and (eq $component "worker") $repositoryBroker }}
       containers:
         - name: repository-credentials
           image: {{ $.Values.repositoryCredentials.image | quote }}
@@ -493,6 +649,10 @@ spec:
             - {{ include "openclaw.repositoryCredentials.origin" $ | quote }}
             - --backend-id
             - {{ $.Values.repositoryCredentials.backendId | quote }}
+            {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
+            - --authority
+            - prepared-git
+            {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" $ | nindent 12 }}
           resources:
@@ -508,6 +668,13 @@ spec:
             - name: repository-inputs
               mountPath: /etc/openclaw/repository-inputs
               readOnly: true
+            {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
+            {{- if $.Values.repositoryCredentials.preparedProviderCaConfigMapName }}
+            - name: prepared-repository-ca
+              mountPath: /etc/openclaw/prepared-repository-ca
+              readOnly: true
+            {{- end }}
+            {{- end }}
             - name: repository-private
               mountPath: /run/openclaw/repository-private
             - name: repository-control

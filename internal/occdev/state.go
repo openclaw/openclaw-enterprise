@@ -44,8 +44,12 @@ type developmentState struct {
 	KeyPath                     string `json:"keyPath"`
 	KeyOwned                    bool   `json:"keyOwned"`
 	SignIn                      string `json:"signIn,omitempty"`
+	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`
+	DatabaseName                string `json:"databaseName,omitempty"`
+	OpenShellHostGatewayIP      string `json:"openShellHostGatewayIP,omitempty"`
 	SandboxNetworkPolicies      []any  `json:"sandboxNetworkPolicies,omitempty"`
 	SandboxNetworkPolicyCeiling []any  `json:"sandboxNetworkPolicyCeiling,omitempty"`
+	egressKeyID                 string
 	directory                   string
 }
 

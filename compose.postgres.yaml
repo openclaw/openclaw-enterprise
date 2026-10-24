@@ -13,10 +13,16 @@ services:
       - occ_postgres_data:/var/lib/postgresql
       - ./migrations/init-local.sql:/docker-entrypoint-initdb.d/00-occ-roles.sql:ro,Z
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d openclaw_enterprise"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d openclaw_enterprise"]
       interval: 2s
       timeout: 3s
       retries: 20
+      # Failed probes during start_period do not count toward retries, so an init stalled
+      # by slow disk IO is not declared unhealthy. The first passing probe still marks the
+      # service healthy at once; start_interval (Docker's default is 5s) keeps `up --wait`
+      # returning as soon as the TCP server answers. Podman ignores start_interval.
+      start_period: 60s
+      start_interval: 1s
 
 volumes:
   occ_postgres_data:

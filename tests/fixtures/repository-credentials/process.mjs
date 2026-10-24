@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sharedRsaPrivateKeyPem } from "./shared-keys.mjs";
 
 // Fixture children start from this allowlist rather than the runner's environment,
 // and every Git they start inherits it. A commit, merge or receive-pack otherwise
@@ -127,13 +128,12 @@ export async function createTlsMaterial(t) {
   const directory = await temporaryDirectory(t, "repository-credentials-tls-");
   const keyFile = join(directory, "key.pem");
   const certFile = join(directory, "cert.pem");
+  // A fresh self-signed certificate on the process's shared fixture key (shared-keys.mjs).
+  await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
   await run("openssl", [
     "req",
     "-x509",
-    "-newkey",
-    "rsa:2048",
-    "-nodes",
-    "-keyout",
+    "-key",
     keyFile,
     "-out",
     certFile,
@@ -153,6 +153,9 @@ export async function createTlsMaterial(t) {
   };
 }
 
+// Like tests/helpers/listen.mjs (note: positional `port` before `host`, and it returns an
+// https URL), but self-contained: the isolation fixture mounts this directory alone into
+// its containers, where tests/helpers is absent.
 export async function listen(t, server, port = 0, host = "127.0.0.1") {
   const sockets = new Set();
   server.on("connection", (socket) => {

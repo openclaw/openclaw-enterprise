@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -298,6 +299,7 @@ test("console static routes expose only public assets and preserve API JSON fail
 
   for (const [path, mime] of [
     ["/console/oce-mascot.png", /image\/png/i],
+    ["/console/oce-mascot-inverse.png", /image\/png/i],
     ["/console/favicon.ico", /image\/vnd\.microsoft\.icon/i],
     ["/console/workspace-defaults.mjs", /javascript/i],
     ["/console/preset-variables.mjs", /javascript/i],
@@ -317,7 +319,12 @@ test("console static routes expose only public assets and preserve API JSON fail
     assert.equal(result.response.headers.get("x-content-type-options"), "nosniff");
   }
 
-  for (const path of ["/console/index.ts", "/console/%2e%2e/index.ts", "/console/missing.css"]) {
+  for (const path of [
+    "/console/dom.mts",
+    "/console/index.ts",
+    "/console/%2e%2e/index.ts",
+    "/console/missing.css",
+  ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 404, path);
     assert.doesNotMatch(result.text, /createFastifyApp|OCC_AUTH_SECRET|apiKeyPath/, path);
@@ -361,7 +368,9 @@ test("console scripts and styles are compressed when accepted; the shell and bin
       request.end();
     });
 
-  const script = await consoleFile("agents/detail.mjs");
+  const script = Buffer.from(
+    stripTypeScriptTypes((await consoleFile("agents/detail.mts")).toString("utf8")),
+  );
   const plain = await fetchRaw("/console/agents/detail.mjs");
   assert.equal(plain.statusCode, 200);
   assert.equal(plain.headers["content-encoding"], undefined);

@@ -1,0 +1,49 @@
+---
+title: "Proposed Credential Proxy responsibilities"
+config:
+  theme: base
+  htmlLabels: true
+  themeVariables:
+    fontFamily: "Arial, sans-serif"
+    fontSize: "16px"
+    primaryTextColor: "#25364A"
+    lineColor: "#748798"
+    edgeLabelBackground: "#FFFFFF"
+    clusterBkg: "#FAFBFC"
+    clusterBorder: "#D8DEE6"
+  flowchart:
+    useMaxWidth: false
+    curve: linear
+    nodeSpacing: 22
+    rankSpacing: 24
+    padding: 12
+    diagramPadding: 12
+    subGraphTitleMargin:
+      top: 10
+      bottom: 14
+---
+flowchart TB
+  %% Proposed responsibilities, not necessarily separate processes.
+  Agent["<b>Agent execution</b><br/>Processes share authority<br/>No provider credential"]
+  Sandbox["<b>SandboxDriver</b><br/>Apply wiring, bind execution<br/>and prevent bypass"]
+  Driver["<b>CredentialProxyDriver</b><br/>Configure and withdraw<br/>Management only"]
+  Sender["<b>Credential Proxy</b><br/>Bind request and reply<br/>Inject, send, protect"]
+  OCC["<b>RequestAuthorizer</b><br/>Current execution,<br/>installation and policy"]
+  Resolver["<b>CredentialResolver</b><br/>Admitted static key or<br/>prepared dynamic token"]
+  Provider["<b>Provider</b><br/>GitHub / inference"]
+  Agent -. request .-> Sandbox
+  Sandbox -. authenticated exchange .-> Sender
+  Driver -. authenticated ProxyWiring .-> Sandbox
+  Driver -. configuration .-> Sender
+  Sender -. two fresh checks .-> OCC
+  Sender -. resolve if needed .-> Resolver
+  Sender -. authorized send .-> Provider
+  class Agent,Provider external
+  class Sender action
+  class Sandbox gate
+  class Driver,OCC,Resolver api
+  classDef api fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
+  classDef action fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
+  classDef external fill:#F2EDF6,stroke:#A394AF,color:#40354B,stroke-width:1px
+  classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
+  linkStyle default stroke:#748798,stroke-width:1px

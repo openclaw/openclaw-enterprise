@@ -126,6 +126,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
           "expectedBinding",
           "deadlineWallMs",
           "recoverOnly",
+          "preparedOnly",
         ].includes(key),
     ) ||
     Object.keys(binding).some(
@@ -141,7 +142,9 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     !isString(binding.providerInstanceId) ||
     !isString(binding.repositoryId) ||
     !isString(binding.grantId) ||
-    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true)
+    (Object.hasOwn(value, "recoverOnly") && value.recoverOnly !== true) ||
+    (Object.hasOwn(value, "preparedOnly") && value.preparedOnly !== true) ||
+    (value.recoverOnly !== true && value.preparedOnly !== true)
   ) {
     throw new Error("invalid-arguments");
   }
@@ -157,6 +160,7 @@ async function readBoundRequest(path: string): Promise<RepositoryCredentialBound
     },
     deadlineWallMs: Number(value.deadlineWallMs),
     durableAdmission: true,
+    ...(value.preparedOnly === true ? { preparedOnly: true } : {}),
   };
   return Object.hasOwn(value, "recoverOnly") ? { ...request, recoverOnly: true } : request;
 }

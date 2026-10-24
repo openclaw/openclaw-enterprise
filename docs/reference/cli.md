@@ -21,7 +21,8 @@ its environment variable; `--namespace=` does so for Installation-scoped
 | `--version`, `-v`    | —                      | Prints the CLI version. Source builds report `dev`; published binaries report their OCE release version.                                   |
 
 The service-key JSON must contain a nonempty `data.key` with no line breaks.
-The client sends it as `x-api-key` and does not follow redirects. Use a trusted
+The client sends it as `x-api-key` and does not follow redirects.
+Host letter case does not change same-origin redirect advice. Use a trusted
 HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
@@ -79,7 +80,7 @@ input is not supported. The server validates document fields against the
 | `occ service-key revoke ID`                            | Revokes a service key.                                                                                                                                                                                                                                                                                                                                                                            |
 | `occ agent delete ID`                                  | Begins asynchronous Agent deletion, including its owned runtime state.                                                                                                                                                                                                                                                                                                                            |
 | `occ agent list`                                       | Lists authorized Agents in the selected Namespace.                                                                                                                                                                                                                                                                                                                                                |
-| `occ agent get ID`                                     | Reads an Agent's desired state and selected version.                                                                                                                                                                                                                                                                                                                                              |
+| `occ agent get ID`                                     | Reads an Agent's desired state, selected version and [Harness Sandbox status](drivers/sandbox.md#harness-sandbox-status).                                                                                                                                                                                                                                                                         |
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
 | `occ agent deploy ID`                                  | Requests deployment and creates an immutable version.                                                                                                                                                                                                                                                                                                                                             |
@@ -138,7 +139,7 @@ a candidate with Pods is read unless exact active metadata proves it older.
 Unreadable or invalid active metadata does not exclude that Pod candidate.
 A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
-both read the selected version, else the latest version. They print the Agent revision ID they
+both read the selected version, else the latest version. They print the revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
 notice names the other readable version to pass. Notices call any other version newer or
 older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
@@ -146,9 +147,9 @@ and needs Agent `operate` and `read` plus `read` on the Agent revision. Its tabl
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
 Agent `read_logs` (or `administer`) and `read`, which cover every version, and
-each view is audited. Default version selection lists only Agent revisions you can
-`read`: without Agent revision grants, `logs` reads the selected version without
-checking for a newer one, and an Agent with no selected version needs
+each view is audited. Default selection lists only revisions you can
+`read`: without Agent revision grants, `logs` reads the selected version and says it
+skipped the newer-version check; with none selected, its error names the grant and
 `--revision ID`.
 
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |

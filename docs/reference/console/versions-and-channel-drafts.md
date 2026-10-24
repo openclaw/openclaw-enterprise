@@ -25,12 +25,20 @@ requires caller and Agent ServicePrincipal Secret `operate`.
 **Access and credential setup** expands the Driver guidance and help links;
 the compact reminder stays visible. Search and pagination remain reachable
 while the catalog list and plugin details scroll within the picker.
-**Save plugin selections** updates the Agent; deployment snapshots them.
+**Save plugin selections** updates the Agent. Deployment snapshots the saved settings.
+The Console confirms a save only when the response identifies the same Agent,
+Namespace, and Configuration and matches the submitted selections and approvers.
+An incomplete or mismatched success response leaves the draft visible and blocks
+saving and deployment until you can [reload the saved settings](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
+
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment details** follows the newest readable deployment. Routine completion
-starts folded; pending work, warnings, and cleanup are expanded.
+starts folded; pending work, warnings, and cleanup are expanded. When the page shows
+before the first record arrives (a read slower than about 2 s), that record fills the
+folded row instead, and the summary above shows its outcome; cleanup and warnings still
+expand it, as does every later change.
 The viewed version retains its own result. Unreadable outcomes remain unknown.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 
@@ -48,10 +56,12 @@ history, repeat the startup model probe, or prove message delivery.
 
 **Save authentication source** stores the binding and confirms exact
 `secret:operate` access for the Agent principal on an API-key or Service Accounts
-Secret. Grant changes require Namespace IAM authority; issued ChatGPT accounts
-and operator-managed authentication skip the grant. A failed grant reports
-partial success and offers **Retry credential access** without repeating the
-Agent update. Partial saves survive navigation. Grants do not prove runtime or
+Secret. Grant changes require Installation `administer`; issued ChatGPT accounts
+and operator-managed authentication skip the grant. A member's save sends no
+grant, reports that access was not verified, and names the Installation
+administrator. Opening Credentials as an administrator reads Namespace IAM and blocks
+deployment while that grant is missing. A refused or failed grant request offers **Retry credential access**
+without repeating the Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
@@ -107,7 +117,8 @@ resubmission: the Secret may exist, so refresh and inspect metadata first.
 Selections stay staged until **Save configuration**; Cancel discards them.
 Saving patches Configuration, then grants Agent access through Namespace IAM;
 both require caller permission. A failed grant leaves Configuration saved and
-requires access recovery. Neither creation nor saving deploys a Secret.
+requires access recovery. A member's session sends no grant and reports that access
+was not verified until **Reload draft**. Neither creation nor saving deploys a Secret.
 
 Secret metadata links open new tabs, preserving edits. Save channel changes
 before editing credentials on the Credentials tab.

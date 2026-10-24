@@ -4,7 +4,7 @@ import {
   KubernetesComputeDriver,
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { KubernetesSecretDriver } from "../../apps/controller/src/drivers/secret/kubernetes/index.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
@@ -175,7 +175,7 @@ export async function createConsoleRepositoryLaunchFixture(
     ...controlNamespace,
     status: { phase: "Active" },
   });
-  const repo = new GitHubRepoDriver(
+  const repo = new GitHubRepositoryPolicy(
     {
       id: provider.id,
       client: new UnixRepositoryCredentialControlClient({
@@ -231,11 +231,20 @@ export async function createConsoleRepositoryLaunchFixture(
     "Demo model credential",
     "synthetic-model-credential",
   );
-  async function grantModelAccess(agent) {
-    const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
-      body: { name: "Model access", permissions: [{ action: "operate", resourceKind: "secret" }] },
-    });
-    assert.equal(role.status, 201);
+  // Grants the Agent operate on one Secret through the Namespace IAM API, as an Installation
+  // administrator's console does; the console's policy reads list these grants.
+  let secretRole;
+  async function grantSecretAccess(agent, secret) {
+    if (!secretRole) {
+      const role = await fixture.request("POST", `/namespaces/${namespace.id}/iam/roles`, {
+        body: {
+          name: "Agent Secret access",
+          permissions: [{ action: "operate", resourceKind: "secret" }],
+        },
+      });
+      assert.equal(role.status, 201);
+      secretRole = role.data;
+    }
     const binding = await fixture.request(
       "POST",
       `/namespaces/${namespace.id}/iam/access-bindings`,
@@ -243,13 +252,14 @@ export async function createConsoleRepositoryLaunchFixture(
         body: {
           subjectKind: "identity",
           subjectId: agent.servicePrincipalId,
-          roleId: role.data.id,
+          roleId: secretRole.id,
           resourceKind: "secret",
-          resourceId: modelSecret.id,
+          resourceId: secret.id,
         },
       },
     );
     assert.equal(binding.status, 201);
   }
-  return { fixture, namespace, modelSecret, grantModelAccess };
+  const grantModelAccess = (agent) => grantSecretAccess(agent, modelSecret);
+  return { fixture, namespace, modelSecret, grantModelAccess, grantSecretAccess };
 }

@@ -743,7 +743,13 @@ func (app *application) agentCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return app.printAgent(agent, false)
+			if err := app.printAgent(agent, false); err != nil {
+				return err
+			}
+			if app.output != "table" {
+				return nil
+			}
+			return app.printAgentHarness(client, namespace, args[0], agent)
 		},
 	}
 
@@ -844,6 +850,9 @@ func (app *application) agentCommand() *cobra.Command {
 			} else {
 				var number float64
 				if deploymentID, number, err = latestReadableRevision(client, namespace, args[0]); err != nil {
+					if errors.Is(err, errNoReadableRevisions) {
+						err = noReadableRevisionsError(client, namespace, args[0], fmt.Sprintf("agent %s has no revision you can read", args[0]), "")
+					}
 					return err
 				}
 				defaultDeploymentNotice(client, command.ErrOrStderr(), namespace, args[0], deploymentID, number)
