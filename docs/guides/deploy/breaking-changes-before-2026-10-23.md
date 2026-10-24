@@ -29,23 +29,24 @@ The migrator also refuses a database from an earlier Credential Proxy preview.
 (Installation `drivers.repo`, Helm `repositoryCredentials.enabled`).
 `drivers.conduit`, `broker-trial` and the preview database refusal affect only
 Credential Proxy preview builds. A preview install that gave Agents Git through
-the OpenShell request-phase route has no Git path on this release: the bundled
-OpenShell Driver refuses a `git-write` binding at deploy with
-`409 REPOSITORY_GIT_SENDER_UNQUALIFIED` (see
-[protected repository access with OpenShell](../../reference/repository-credentials/protected-openshell-git.md)),
-and startup refuses `repository.nativeSender` while a Sandbox Driver is selected.
+the OpenShell request-phase route loses that Git access on this release.
 
 **How to tell.** Helm render fails for `broker-trial` and the broker settings
 above. The upgrade check prints the startup refusals, for example
 `drivers.repo native admission is retired. ...`, but the `startup-error` and
 `worker.startup-error` logs show only `STARTUP_FAILED` or
 `WORKER_STARTUP_FAILED`. The migrator (`db:migrate --check`) names a preview
-history as unsupported.
+history as unsupported. With the bundled OpenShell Driver, deploying an Agent
+with a `git-write` binding answers `409 REPOSITORY_GIT_SENDER_UNQUALIFIED`, and
+startup refuses `repository.nativeSender` while a Sandbox Driver is selected.
 
 **Steps.** Before upgrading, drain accepted repository work on the original
 release, which alone can settle it, then follow the
 [Credential Proxy upgrade](credential-proxy-upgrade.md). Do not replay uncertain
-work.
+work. To keep Agent Git, install a qualified sender, or drop the OpenShell
+Sandbox Driver and use
+[native prepared Git](../../reference/repository-credentials/prepared-native-git.md);
+see [protected repository access with OpenShell](../../reference/repository-credentials/protected-openshell-git.md).
 
 ## 2026-10-16: stored model provider settings are checked at deploy
 
