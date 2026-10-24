@@ -1199,6 +1199,12 @@ test("Agent roster refusals name the setting and the fix", () => {
   const message = configurationRefusal({ agents: { entries: { [long]: false } } });
   assert.equal(Array.from(message).length, 256, message);
   assert.ok(message.endsWith("… must be an object."), message);
+  // A path that exactly fills the cap is kept whole.
+  const fits = "x".repeat(256 - "Configuration setting agents.entries. must be an object.".length);
+  assert.equal(
+    configurationRefusal({ agents: { entries: { [fits]: false } } }),
+    `Configuration setting agents.entries.${fits} must be an object.`,
+  );
 });
 
 test("model policy refusals name the Configuration setting", () => {

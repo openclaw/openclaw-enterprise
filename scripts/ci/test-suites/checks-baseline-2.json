@@ -92,6 +92,7 @@
     "tests/conformance/repository-material-store.test.mjs",
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
+    "tests/integration/ci-go-test.test.mjs",
     "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.mjs",
@@ -225,6 +226,9 @@
     },
     {
       "path": "tests/integration/ci-logging.test.mjs"
+    },
+    {
+      "path": "tests/integration/ci-go-test.test.mjs"
     },
     {
       "path": "tests/integration/container-release.test.mjs"

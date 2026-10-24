@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-19
-last_updated_session: authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9
+updated: 2026-10-24
+last_updated_session: authoring-run/f070add2-5557-42f3-a399-1af757d219cd
 ---
 
 # Agent Presets flow
@@ -148,11 +148,11 @@ path records mutations and denials without template or variable contents.
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
 lists readable summaries with Namespace read permission. Quick-start prefers
-`default-codex`, otherwise the first Preset by case-insensitive locale order
-and exact-name tie-breaking. The shortcut and accessible hint name custom starters.
-One exact-resource read applies variable-free templates immediately; otherwise chooser
-edits and shortcut origin persist. Empty lists and failed reads cannot apply
-templates. **Start without Preset** skips Preset reads, not creation authorization.
+`default-codex`, otherwise the first by case-insensitive locale order
+and exact-name tie-breaking. Shortcut and hint name custom starters.
+An exact-resource read applies variable-free templates; otherwise edits and
+shortcut origin persist. Empty lists or failed reads apply nothing.
+**Start without Preset** skips Preset reads, not creation authorization.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -182,8 +182,8 @@ and uses ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
-Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
-files, repositories and staged Secret references per user and Namespace. Explicit
+`loadPage` captures JSON, model controls, workspace files, repositories and staged
+Secret references per user/Namespace before resetting views. Explicit
 Preset, default-shortcut and bare forms all return from this copy with fresh
 capability and repository discovery. A confirmed **Cancel** removes creation and
 channel snapshots and the retained view; re-entry opens the chooser and preserves
@@ -193,11 +193,10 @@ page exit clears captures, not a failed `/namespaces` read. A known Create refus
 the capture and its saved resources, unless repository policy refused it or an Agent,
 provisioning job or credential registration exists.
 
-`agents/create.mts:updateModelConfiguration` retains ordered fallbacks and
-model metadata referenced by defaults or entries. Only an unreferenced replaced
-primary is retired. Temporary clearing retains fallback entries and transport.
-The saved Configuration goes through the existing configured-Harness resolver;
-model execution remains a later boundary.
+`agents/create.mts:updateModelConfiguration` synchronizes qualified shared primaries
+and existing local policies. Empty maps and inherited selections remain. Invalid
+rosters stay for admission validation. JSON edits update selection and clear pending
+state. Clearing/navigation retain policies, fallbacks and referenced metadata.
 
 ### 4. Save an independent draft
 
@@ -284,6 +283,8 @@ or an immutable saved version.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-24 14:11: Align Console roster model selections and local policies. (authoring-run/f070add2-5557-42f3-a399-1af757d219cd - de058b77e4f996c848520d8bee2e9c6122d3e2e1)
 
 - 2026-10-19 22:48: Add named quick-start from the first readable Preset when default-codex is unavailable, preserving exact-resource authorization and draft handling. (authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9 - a0e909fda01709486815fcc113db4229eba646bc)
 

@@ -31,6 +31,7 @@ import {
   createScopedController,
   deleteNamespaces,
 } from "../helpers/kubernetes-compute-real.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 test(
   "real Kubernetes Drivers safely use and preserve an externally managed tenant namespace",
@@ -822,8 +823,7 @@ test(
     assert.equal(credentials.status, 200, JSON.stringify(credentials.body));
     const workspaceName = harnessWorkspaceClaimName(legacy.data.id);
     const gatewayStateName = `gateway-state-${hash(legacy.data.id)}`;
-    const claimDirectory = await mkdtemp(join(tmpdir(), "openclaw-legacy-rwx-"));
-    context.after(() => rm(claimDirectory, { recursive: true, force: true }));
+    const claimDirectory = await temporaryDirectory(context, "openclaw-legacy-rwx-");
     for (const [name, namespace, accessMode, storage] of [
       [workspaceName, placement, "ReadWriteMany", "40Gi"],
       [gatewayStateName, gatewayPlacement, "ReadWriteOnce", "10Gi"],
