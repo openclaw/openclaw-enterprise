@@ -247,6 +247,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 63) {
     return "preProxyHarnessAuth";
   }
+  if (count === 64) {
+    return "preCredentialDeliveryTargetIndex";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

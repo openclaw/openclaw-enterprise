@@ -890,9 +890,12 @@ function databaseError(error: unknown): Error {
   ) {
     return new AuthorizationDeniedError("The assigning session is no longer current.");
   }
-  if (code === "23505") {
-    const constraint =
-      "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
+  const constraint =
+    "constraint" in error && typeof error.constraint === "string" ? error.constraint : undefined;
+  if (
+    code === "23505" ||
+    (code === "23P01" && constraint === "credential_deliveries_revision_id_target_key")
+  ) {
     const nameConflict =
       constraint !== undefined && Object.hasOwn(NAME_CONFLICTS, constraint)
         ? NAME_CONFLICTS[constraint]

@@ -1991,6 +1991,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preProxyHarnessAuth"],
+      [64, "preCredentialDeliveryTargetIndex"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2406,6 +2407,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preProxyHarnessAuth"],
+      [64, "preCredentialDeliveryTargetIndex"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2604,6 +2606,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [63, "preProxyHarnessAuth"],
+      [64, "preCredentialDeliveryTargetIndex"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2626,6 +2629,7 @@ test(
         // All pending receipts, schema changes and main-row annotations roll back.
         // 0064 replaces the Harness validator before issuing any grants.
         const rollbackTag = [
+          [64, "ALTER TABLE"],
           [63, "CREATE FUNCTION"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
@@ -2699,7 +2703,7 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 64);
+    assert.equal(manifest.entries.length, 65);
     assert.deepEqual(
       manifest.entries.slice(58).map(({ tag }) => tag),
       [
@@ -2709,6 +2713,7 @@ test(
         "0062_credential_delivery_custody",
         "0063_prepared_attempt_settlement",
         "0064_proxy_harness_auth",
+        "0065_credential_delivery_target_index",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });

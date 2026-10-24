@@ -2164,7 +2164,7 @@ export const credentialDeliveries = occSchema.table(
     }),
     primaryKey({ columns: [t.revisionId, t.bindingId] }),
     index("credential_deliveries_namespace").on(t.namespaceId),
-    unique("credential_deliveries_revision_id_target_key").on(t.revisionId, t.target),
+    // Migration 0065 owns the hash exclusion constraint on the revision and full JSONB target.
     check("credential_deliveries_binding_id_check", sql`${t.bindingId} <> ''`),
     check("credential_deliveries_target_check", sql`jsonb_typeof(${t.target}) = 'object'`),
     check("credential_deliveries_fence_check", sql`${t.fence} >= 1`),
