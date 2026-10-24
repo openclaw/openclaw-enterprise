@@ -20,6 +20,7 @@ import type {
   WorkloadLaunchContext,
 } from "@openclaw-enterprise/contracts";
 import { admittedLoggingLevel } from "@openclaw-enterprise/contracts";
+import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
   asRecord,
   immutableCopy,
@@ -31,7 +32,6 @@ import { requireHarnessAuthMethod, type HarnessAuthMethodRule } from "../harness
 import { failureAfterCleanup } from "../cleanup-failure.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import { currentComputeAbortSignal } from "../operation-context.ts";
-import { ConfigurationHarnessError, configurationSettingMessage } from "@openclaw-enterprise/occ";
 import {
   requireWorkspaceSetupMainEntry,
   WORKSPACE_SETUP_RUNTIME,
