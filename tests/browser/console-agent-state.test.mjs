@@ -93,9 +93,12 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await openFailureDetails(page);
   await expectDeploymentOutcome(page, "Failed", { folded: false });
   await expectVersionRecord(page, "Failed");
+  // The card above leads with this version's error, so the record points at it rather than
+  // repeating it (finding 2368).
   await record
-    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${authenticationFailure.message}`)
+    .getByText("The error and its next step are at the top of this page.", { exact: true })
     .waitFor();
+  assert.equal(await record.getByText(authenticationFailure.message, { exact: false }).count(), 0);
   assert.equal(await record.getByText("No persisted startup failure.").count(), 0);
 });
 
