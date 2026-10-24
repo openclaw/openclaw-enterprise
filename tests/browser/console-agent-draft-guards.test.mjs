@@ -1311,6 +1311,17 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
   await waitForEnabled(deploy);
   fixture.policy.restrictions.pop();
 
+  // Deploys against a routed 409 with `body` and waits for `text`, with Deploy enabled again.
+  async function routedConflict(body, text, exact) {
+    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
+      route.fulfill({ status: 409, contentType: "application/json", body }),
+    );
+    await deploy.click();
+    await page.getByText(text, { exact }).waitFor();
+    await waitForEnabled(deploy);
+    await page.unroute(`${fixture.origin}${path}/deploy`);
+  }
+
   // An untyped conflict, or a proxy reply with no error envelope, also names nothing to fix.
   for (const body of [
     JSON.stringify({
@@ -1321,32 +1332,18 @@ test("Agent deployment shows the API's typed 403 and 409 refusals", async (t) =>
     }),
     "",
   ]) {
-    await page.route(`${fixture.origin}${path}/deploy`, (route) =>
-      route.fulfill({ status: 409, contentType: "application/json", body }),
-    );
-    await deploy.click();
-    await page
-      .getByText("Deployment conflicts with the saved Agent state.", { exact: false })
-      .waitFor();
-    await waitForEnabled(deploy);
-    await page.unroute(`${fixture.origin}${path}/deploy`);
+    await routedConflict(body, "Deployment conflicts with the saved Agent state.", false);
   }
 
-  // A Namespace that is not ready says where to look, not the API's bare sentence: the
-  // Namespace, not this Agent's saved state, is what must change.
-  await page.route(`${fixture.origin}${path}/deploy`, (route) =>
-    route.fulfill({
-      status: 409,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
-      }),
+  // A Namespace that isn't ready gets the console's pointer to the Namespaces page, not the
+  // API's bare sentence.
+  await routedConflict(
+    JSON.stringify({
+      error: { code: "NAMESPACE_NOT_READY", message: "The requested Namespace is not ready." },
     }),
+    NAMESPACE_NOT_READY_MESSAGE,
+    true,
   );
-  await deploy.click();
-  await page.getByText(NAMESPACE_NOT_READY_MESSAGE, { exact: true }).waitFor();
-  await waitForEnabled(deploy);
-  await page.unroute(`${fixture.origin}${path}/deploy`);
 });
 
 for (const mutation of ["authentication", "channel Secrets"]) {
