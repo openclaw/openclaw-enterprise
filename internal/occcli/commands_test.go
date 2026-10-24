@@ -1118,7 +1118,7 @@ func TestAgentRevisionsNextPageHintOmitsAnUnsetLimit(t *testing.T) {
 	}
 	// The request leaves the page size to OCC too: OCC refuses limit=0.
 	if !slices.Contains(requested, "GET "+agentPath+"/revisions") {
-		t.Fatalf("an unset --limit must not reach OCC: %v", requested)
+		t.Fatalf("an unset --limit must send no limit (OCC refuses limit=0): %v", requested)
 	}
 	if next := nextPageCommand(t, notices); slices.Contains(next, "--limit") {
 		t.Fatalf("next-page command adds a --limit the caller did not pass: %q", next)

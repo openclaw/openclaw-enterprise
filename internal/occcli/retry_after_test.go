@@ -126,6 +126,8 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 					t.Fatalf("date wait=%v; want whole seconds", delay)
 				}
 				// The remaining time is rounded up, so the retry never comes before the date.
+				// A truncating client is caught unless less than the parse-to-sleep gap
+				// (microseconds) remained of the second.
 				if wakes[0].Before(serverDate) {
 					t.Fatalf("date wait=%v ends %v before the server date", delay, serverDate.Sub(wakes[0]))
 				}
@@ -137,11 +139,14 @@ func TestAgentLogFollowHonorsRetryAfterDateForms(t *testing.T) {
 	}
 }
 
-// Error renders at most 32 details, and only bounded ones: a path or message up to
-// 512 runes and a code up to 64 bytes.
+// Error renders at most 32 details, and only bounded ones: a path and a message of
+// up to 512 runes each, and a code of up to 64 bytes.
 func TestAPIErrorRendersOnlyBoundedDetails(t *testing.T) {
 	detail := func(path, code string) occclient.ConfigurationErrorDetail {
 		return occclient.ConfigurationErrorDetail{Path: path, Code: code, Message: "m"}
+	}
+	withMessage := func(code, message string) occclient.ConfigurationErrorDetail {
+		return occclient.ConfigurationErrorDetail{Path: "/m", Code: code, Message: message}
 	}
 	var details []occclient.ConfigurationErrorDetail
 	for index := range 33 {
@@ -151,11 +156,12 @@ func TestAPIErrorRendersOnlyBoundedDetails(t *testing.T) {
 	if !strings.Contains(got, `"/d31"`) || strings.Contains(got, `"/d32"`) {
 		t.Fatalf("message=%q; want the first 32 details only", got)
 	}
-	longPath, longCode := "/"+strings.Repeat("é", 511), strings.Repeat("C", 64)
+	longPath, longCode, longMessage := "/"+strings.Repeat("é", 511), strings.Repeat("C", 64), strings.Repeat("é", 512)
 	got = (&occclient.APIError{Status: http.StatusBadRequest, Details: []occclient.ConfigurationErrorDetail{
 		detail(longPath, "A"), detail(longPath+"é", "B"), detail("/c", longCode), detail("/d", longCode+"C"),
+		withMessage("E", longMessage), withMessage("F", longMessage+"é"),
 	}}).Error()
-	if lines := strings.Count(got, "\n  "); lines != 2 || !strings.Contains(got, `"code":"A"`) || !strings.Contains(got, `"`+longCode+`"`) {
+	if lines := strings.Count(got, "\n  "); lines != 3 || !strings.Contains(got, `"code":"A"`) || !strings.Contains(got, `"`+longCode+`"`) || !strings.Contains(got, `"code":"E"`) {
 		t.Fatalf("message=%q; want only the details within the path and code bounds", got)
 	}
 }

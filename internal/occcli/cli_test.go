@@ -1169,6 +1169,7 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
 		},
 		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+		// want is built in the subtest: it names the origin server's own host.
 		{name: "same host over https", schemeChange: true},
 		{name: "same origin host case", hostCase: true, want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
 	} {
