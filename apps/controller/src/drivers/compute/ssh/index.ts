@@ -3,6 +3,7 @@ import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import { posix } from "node:path";
 import type {
   AgentRevision,
   HarnessAuthSnapshot,
@@ -141,7 +142,11 @@ function path(value: unknown, description: string): void {
 // a Node or OpenClaw path there cannot start. The check is lexical; the controller cannot see a
 // host symlink into those directories.
 function privateTmpProblem(value: string): string | undefined {
-  const segments = value.split("/").filter((segment) => segment !== "");
+  // The host resolves "." and ".." segments, so /var/./tmp/x is in /var/tmp.
+  const segments = posix
+    .normalize(value)
+    .split("/")
+    .filter((segment) => segment !== "");
   return segments[0] === "tmp" || (segments[0] === "var" && segments[1] === "tmp")
     ? "Use a path outside /tmp and /var/tmp, such as /var/lib/openclaw-enterprise: the unit's PrivateTmp hides those."
     : undefined;

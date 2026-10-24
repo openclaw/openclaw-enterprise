@@ -477,6 +477,16 @@ test("SSH startup refuses a runtime.root and Node or OpenClaw paths the unit can
       "/hosts",
       "hosts.stable.openclawPath: ",
     ],
+    [
+      (candidate) => (candidate.runtime.openclawPath = "/var/./tmp/oc.js"),
+      "/runtime/openclawPath",
+      "",
+    ],
+    [
+      (candidate) => (candidate.hosts.stable.nodePath = "/usr/../tmp/node"),
+      "/hosts",
+      "hosts.stable.nodePath: ",
+    ],
   ]) {
     const candidate = options();
     edit(candidate);
