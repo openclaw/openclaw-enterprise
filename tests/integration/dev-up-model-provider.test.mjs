@@ -8,9 +8,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.mjs";
-import { readJsonLines } from "../helpers/json-lines.mjs";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 
 const execute = promisify(execFile);
 const revision = "a".repeat(40);
