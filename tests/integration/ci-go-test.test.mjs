@@ -13,7 +13,7 @@ import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 // the working directory picks the packages.
 const script = fileURLToPath(new URL("../../scripts/ci/go-test.mjs", import.meta.url));
 const execFileAsync = promisify(execFile);
-const module = "example.test/gotest";
+const modulePath = "example.test/gotest";
 
 const packages = {
   // A passing package with a nested package that has no test files.
@@ -82,7 +82,7 @@ func TestHangs(t *testing.T) {
 
 async function fixtureModule(t) {
   const root = await temporaryDirectory(t, "ci-go-test-");
-  await writeFile(join(root, "go.mod"), `module ${module}\n\ngo 1.21\n`);
+  await writeFile(join(root, "go.mod"), `module ${modulePath}\n\ngo 1.21\n`);
   for (const [name, files] of Object.entries(packages)) {
     for (const [file, source] of Object.entries(files)) {
       const path = join(root, name, file);
@@ -140,7 +140,7 @@ test("go-test fails on skips and package failures and passes clean packages", as
     assert.match(result.stdout, /fixture skip reason/);
     assert.match(
       result.stderr,
-      new RegExp(`^go-test: skipped test did not run: ${module}/skip\\.TestParent/child$`, "m"),
+      new RegExp(`^go-test: skipped test did not run: ${modulePath}/skip\\.TestParent/child$`, "m"),
     );
   });
 
@@ -163,10 +163,10 @@ test("go-test fails on skips and package failures and passes clean packages", as
   );
 
   await t.test("a test timeout exits 1 and prints the running test's output", async () => {
-    const result = await goTest(join(root, "timeout"), { args: ["-timeout=500ms"] });
+    const result = await goTest(join(root, "timeout"), { args: ["-timeout=2s"] });
     assert.equal(result.code, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /fixture hang log/);
-    assert.match(result.stdout, /panic: test timed out after 500ms/);
+    assert.match(result.stdout, /panic: test timed out after 2s/);
     assert.match(result.stdout, /^go-test: 0 passed, 1 failed, 0 skipped$/m);
   });
 
@@ -174,6 +174,7 @@ test("go-test fails on skips and package failures and passes clean packages", as
     const result = await goTest(join(root, "build"));
     assert.equal(result.code, 1, result.stdout + result.stderr);
     assert.match(result.stdout, /undefined: fixtureMissingIdentifier/);
+    assert.match(result.stdout, /^go-test: 0 passed, 0 failed, 0 skipped$/m);
   });
 
   await t.test("a go command killed by a signal exits 1", async () => {
