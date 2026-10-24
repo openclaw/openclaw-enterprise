@@ -8,6 +8,7 @@ This record preserves the dated changes to the Console Agent editing flow. See t
 
 ## Changelog
 
+- 2026-10-24 22:30: Say in the Secret value help that Windows (CRLF) line endings become LF, as browsers normalize textarea values. (fix-backlog-1024b)
 - 2026-10-24 23:40: Apply a newer Agent operate answer when parked Workspace files return, and keep unsaved text if operate is removed. (workspace-operate-restore)
 - 2026-10-24 19:00: Check inline Create Secret names and values with the API's rules, keeping multiline values exact. (fix-2339-2341)
 - 2026-10-22 13:00: Rebuild after a plugin save from the save response, so a Stop requested on the page stays shown. (bughunt-1022b)

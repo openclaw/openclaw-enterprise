@@ -547,7 +547,9 @@ export function createSecretReferenceField({
       label: "Value",
       control: value,
       help: `Stored as a Namespace Secret. The value is never read back. ${
-        multiline ? "Spaces and line breaks are preserved." : "Enter a single-line value."
+        multiline
+          ? "Spaces and line breaks are kept; Windows (CRLF) line endings become LF."
+          : "Enter a single-line value."
       }`,
       className: "form-field secret-value-field",
     });
