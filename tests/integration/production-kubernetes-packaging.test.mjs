@@ -5976,9 +5976,19 @@ test(
         "resources.limits.gpu names a resource Kubernetes does not accept",
       ],
       [
-        "logging.collector.resources.requests.kubernetes\\.io/x",
+        "logging.collector.resources.requests.requests\\.example\\.com/gpu",
         "1",
-        "kubernetes.io/x names a resource",
+        "requests.example.com/gpu names a resource",
+      ],
+      [
+        "slackProxy.resources.limits.hugepages-huge",
+        "4Mi",
+        "slackProxy.resources.limits.hugepages-huge names a resource",
+      ],
+      [
+        "resources.requests.cpu",
+        "1e400",
+        "resources.requests.cpu is outside the range this chart can check",
       ],
       [
         "resources.requests.memory",

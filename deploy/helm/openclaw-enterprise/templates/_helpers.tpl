@@ -934,7 +934,8 @@ capabilities:
 
 {{/* The value of a quantity openclaw.quantity accepted, as a float for sign and request-to-limit
      checks. ParseQuantity reads a missing numerator as zero. The API server compares exact
-     fixed-point values; a float differs only past about 15 significant digits. */}}
+     fixed-point values, rounded up to nano units; a float differs past about 15 significant
+     digits and below 1n. */}}
 {{- define "openclaw.quantityValue" -}}
 {{- $quantity := trim (toString .) -}}
 {{- $suffix := regexFind "([KMGTPE]i|[eE][+-]?[0-9]+|[numkMGTPE])$" $quantity -}}
@@ -951,10 +952,16 @@ capabilities:
 {{- end -}}
 {{- end -}}
 
-{{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit. */}}
+{{/* openclaw.quantity, and Kubernetes refuses a negative resource quantity or emptyDir sizeLimit.
+     sprig's float64 reads an exponent beyond float range as 0, so a nonzero numerator that reads
+     as 0 is refused rather than compared as 0. */}}
 {{- define "openclaw.nonNegativeQuantity" -}}
 {{- include "openclaw.quantity" . -}}
-{{- if lt (float64 (include "openclaw.quantityValue" .value)) 0.0 -}}
+{{- $value := float64 (include "openclaw.quantityValue" .value) -}}
+{{- if and (eq $value 0.0) (regexMatch "^[+-]?[0-9.]*[1-9]" (trim (toString .value))) -}}
+{{- fail (printf "%s is outside the range this chart can check" .name) -}}
+{{- end -}}
+{{- if lt $value 0.0 -}}
 {{- fail (printf "%s must not be negative" .name) -}}
 {{- end -}}
 {{- end -}}
@@ -970,8 +977,8 @@ capabilities:
 {{- with index $requirements $section -}}
 {{- range $key, $qty := . -}}
 {{- $field := printf "%s.%s.%s" $name $section $key -}}
-{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-.+)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (regexMatch "(^|\\.)kubernetes\\.io/" $key)))) -}}
-{{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed extended resource such as example.com/gpu" $field) -}}
+{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-[0-9]+([KMGTPE]i|[kMGTPE])?)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (hasPrefix "requests." $key)))) -}}
+{{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed resource such as example.com/gpu, not starting with requests." $field) -}}
 {{- end -}}
 {{- if not (kindIs "invalid" $qty) -}}
 {{- include "openclaw.nonNegativeQuantity" (dict "name" $field "value" $qty) -}}
