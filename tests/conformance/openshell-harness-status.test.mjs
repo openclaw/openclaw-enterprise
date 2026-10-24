@@ -17,6 +17,7 @@ import {
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
 import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { availablePort } from "../helpers/available-port.mjs";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
 // verifier and no Compute status port. When it holds a startup failure it serves
@@ -293,9 +294,7 @@ async function close(server) {
 const serviceUrl = "http://tenant--sandbox.openshell.localhost:8080/";
 
 test("the OpenShell client reads a held failure from the real Harness wrapper through the service host", async (t) => {
-  const probeServer = createServer();
-  const freePort = await listen(probeServer);
-  await close(probeServer);
+  const freePort = await availablePort();
   const { servers } = runCodexEntrypoint({
     env: providerEnv,
     probe: failedProbe("stream error: model unavailable"),
@@ -883,9 +882,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
   );
 
   await t.test("a raw request target over HTTP leaves the held wrapper serving", async (t) => {
-    const probeServer = createServer();
-    const freePort = await listen(probeServer);
-    await close(probeServer);
+    const freePort = await availablePort();
     const { servers } = runCodexEntrypoint({
       env: providerEnv,
       probe: failedProbe("stream error: model unavailable"),

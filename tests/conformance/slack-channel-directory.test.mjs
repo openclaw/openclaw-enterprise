@@ -6,6 +6,7 @@ import test from "node:test";
 import { SlackChannelDriver } from "../../apps/controller/src/drivers/channel/slack.ts";
 import { ChannelDirectoryError } from "../../packages/occ/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { listen } from "../helpers/listen.mjs";
 import {
   connectThroughProxy,
   requestThroughProxy,
@@ -26,8 +27,7 @@ test("Slack directory sends HTTPS requests through its selected CONNECT proxy", 
     assert.equal(request.headers.authorization, undefined);
     socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
   });
-  await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
-  t.after(() => proxy.close());
+  await listen(t, proxy);
   const address = proxy.address();
   assert.ok(address && typeof address !== "string");
   const driver = new SlackChannelDriver(globalThis.fetch, `http://127.0.0.1:${address.port}`);
@@ -80,8 +80,7 @@ test("bundled Slack proxy process restricts methods and CONNECT targets", async 
     socket.on("error", () => {});
     socket.write("fixture-upstream");
   });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
+  await listen(t, upstream);
   // A fixed proxy port, so the test proves the proxy honours OCC_SLACK_PROXY_PORT.
   const { port: proxyPort } = await startSlackProxy(t, {
     fixedPort: true,
@@ -113,8 +112,7 @@ test("bundled Slack proxy process exits on SIGTERM and closes open tunnels", asy
   const upstream = net.createServer((socket) => {
     socket.on("error", () => {});
   });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
+  await listen(t, upstream);
   const { child, port: proxyPort } = await startSlackProxy(t, {
     upstreamPort: upstream.address().port,
   });
@@ -388,13 +386,8 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
       });
       // A single real connection makes leaked response ownership observable without GC.
       const agent = new Agent({ connections: 1, pipelining: 1 });
-      t.after(async () => {
-        await agent.destroy();
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
-      });
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const origin = `http://127.0.0.1:${server.address().port}`;
+      t.after(() => agent.destroy());
+      const origin = `http://127.0.0.1:${await listen(t, server)}`;
       const driver = new SlackChannelDriver((url, options) =>
         undiciFetch(new URL(new URL(url).pathname, origin), { ...options, dispatcher: agent }),
       );
@@ -428,12 +421,7 @@ test("Slack credential checks refuse redirects instead of resending the bot toke
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({ ok: true, bot_id: "BBOT123", team_id: "TWORKSPACE" }));
       });
-      t.after(async () => {
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
-      });
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const origin = `http://127.0.0.1:${server.address().port}`;
+      const origin = `http://127.0.0.1:${await listen(t, server)}`;
       const driver = new SlackChannelDriver((url, options) =>
         globalThis.fetch(new URL(new URL(url).pathname, origin), options),
       );

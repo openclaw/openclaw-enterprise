@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { once } from "node:events";
 import { createServer } from "node:https";
 import { Duplex } from "node:stream";
 import test from "node:test";
@@ -8,6 +7,7 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { proxyNativeAdminWebSocket } from "../../apps/controller/src/gateway/native-admin-proxy.ts";
 import { selfSigned } from "../helpers/certificates.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Drives proxyNativeAdminWebSocket in this process against a loopback HTTPS gateway, with a
@@ -37,28 +37,17 @@ async function startGateway(t, reply) {
   setDefaultCACertificates([...previous, cert]);
   t.after(() => setDefaultCACertificates(previous));
 
-  const sockets = new Set();
   const server = createServer({ key, cert }, (_request, response) => {
     response.writeHead(404).end();
   });
   server.on("upgrade", (_request, socket) => {
-    sockets.add(socket);
     socket.on("error", () => {});
-    socket.once("close", () => sockets.delete(socket));
     socket.write(
       "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
     );
     socket.end(reply);
   });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    server.close();
-  });
-  return server.address().port;
+  return listen(t, server);
 }
 
 // A browser socket whose writes complete only when the test releases them, relayed to a gateway

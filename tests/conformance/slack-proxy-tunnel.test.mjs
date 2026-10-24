@@ -6,6 +6,7 @@ import test from "node:test";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createSlackProxyServer } from "../../apps/controller/src/slack-proxy.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import { listen } from "../helpers/listen.mjs";
 import { connectThroughProxy, startSlackProxy } from "../helpers/slack-proxy.mjs";
 
 // The bundled Slack proxy (apps/controller/src/slack-proxy.mjs) relays CONNECT tunnels only.
@@ -26,20 +27,9 @@ function bound(promise, what, ms = WAIT_MS) {
   ]).finally(() => clearTimeout(timer));
 }
 
-async function listen(t, onConnection, options = {}) {
+async function startUpstream(t, onConnection, options = {}) {
   const server = net.createServer(options, onConnection);
-  const sockets = new Set();
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => {
-    for (const socket of sockets) {
-      socket.destroy();
-    }
-    server.close();
-  });
+  await listen(t, server);
   return server;
 }
 
@@ -103,7 +93,7 @@ test("a CONNECT tunnel relays bytes both ways and both ends see EOF", testOption
   // upstream finishes, both by ending the pipe and on the upstream's close; the client sees
   // the same EOF either way, so this test does not tell those two paths apart.
   const upstreamSeen = [];
-  const upstream = await listen(
+  const upstream = await startUpstream(
     t,
     (socket) => {
       socket.on("error", () => {});
@@ -137,7 +127,7 @@ test(
   testOptions,
   async (t) => {
     const reply = randomBytes(8 * 1024 * 1024);
-    const upstream = await listen(t, (socket) => {
+    const upstream = await startUpstream(t, (socket) => {
       socket.on("error", () => {});
       socket.end(reply);
     });
@@ -212,7 +202,7 @@ test(
     // Smaller than the client's high-water mark, so the pipe never pauses the upstream: its EOF
     // and close reach the proxy while the reply still waits behind the first held write.
     const reply = randomBytes(1_024);
-    const upstream = await listen(t, (socket) => {
+    const upstream = await startUpstream(t, (socket) => {
       socket.on("error", () => {});
       socket.end(reply);
     });
@@ -248,7 +238,7 @@ test(
   testOptions,
   async (t) => {
     const reply = randomBytes(1_024);
-    const upstream = await listen(t, (socket) => {
+    const upstream = await startUpstream(t, (socket) => {
       socket.on("error", () => {});
       socket.end(reply);
     });
@@ -284,7 +274,7 @@ test(
   "a client that never reads its queued bytes is reset after the drain timeout",
   testOptions,
   async (t) => {
-    const upstream = await listen(t, (socket) => {
+    const upstream = await startUpstream(t, (socket) => {
       socket.on("error", () => {});
       socket.end("never-read");
     });
@@ -358,7 +348,7 @@ test(
   testOptions,
   async (t) => {
     let connections = 0;
-    const upstream = await listen(t, (socket) => {
+    const upstream = await startUpstream(t, (socket) => {
       connections += 1;
       socket.on("error", () => {});
       if (connections === 1) {
@@ -396,7 +386,7 @@ test(
 );
 
 test("the CONNECT allowlist matches whole Slack host names on port 443", testOptions, async (t) => {
-  const upstream = await listen(t, (socket) => {
+  const upstream = await startUpstream(t, (socket) => {
     socket.on("error", () => {});
     socket.end("fixture-upstream");
   });
