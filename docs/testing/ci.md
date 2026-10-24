@@ -330,7 +330,7 @@ These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 
 ### Results and cleanup
 
-Selected lanes reject missing/skipped/TODO cases, failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
+Selected lanes reject missing/skipped/TODO cases (skipped suites and Go tests too), failures, and cleanup errors. Results prove only selected coverage: inspect outcomes, source, cleanup and image digests. Retries have attempt-specific artifacts and replace the current result. Kubernetes preparation failures retain sanitized diagnostics when collection succeeds. Missing state or empty inventory does not prove cleanup.
 
 Prepare infrastructure on a disposable host. Keep the private state file until cleanup completes:
 
