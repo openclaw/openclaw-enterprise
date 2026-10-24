@@ -21,6 +21,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
+  withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 
@@ -408,6 +409,9 @@ test("a refused workspace file save names Agent operate", async (t) => {
   assert.equal(await editor.inputValue(), "after");
 });
 
+const OPERATE_REASON =
+  "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+
 // A member who can read the Agent but not operate it was offered an enabled Save on every
 // workspace file, and learned only from the refusal that saving needs Agent operate (finding
 // 521, D443). When the Agent permission answer denies operate, each Save is marked unavailable
@@ -445,9 +449,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
     member.credentials,
   );
-  const reason =
-    "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
-  await page.getByText(reason, { exact: true }).waitFor();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
     await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
     const editor = page.getByLabel(name, { exact: true });
@@ -459,7 +461,7 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
       await save.evaluate(
         (node) => document.getElementById(node.getAttribute("aria-describedby") ?? "")?.textContent,
       ),
-      reason,
+      OPERATE_REASON,
     );
     // Save stays a keyboard stop. Even with a changed file (set by script, past readOnly),
     // activating it sends no write.
@@ -476,6 +478,8 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
 });
 
 const DIAGNOSTICS_DENIED = "Your access does not include running diagnostics for this Agent.";
+const STOP_REFUSED =
+  "You do not have permission to stop this Agent. Ask an administrator for Agent operate access.";
 
 // The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
 // row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
@@ -491,23 +495,21 @@ async function expectOperateControls(page: Page, allowed: boolean) {
   await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
 }
 
-// The Workspace editor is kept while the reader visits Logs. Logs can observe a newer Agent
-// operate answer. Coming back must apply that answer and keep any unsaved text; Stop and Run
-// diagnostics follow it too, without a reload.
-test("restoring Workspace applies the operate answer the page already observed", async (t) => {
+// A reader without Agent operate on the Agent's Workspace tab. Runtime status answers 403, so
+// Logs remembers a status denial and every later Logs visit rereads the permission answer from
+// the real API and IAM policy; `operate` grants or removes Agent operate there.
+async function operateScenario(t: TestContext, name: string) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Workspace operate restore", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Workspace Operate Restore",
-    nativeValues("ws-restore"),
-  );
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agent = await fixture.createAgent(namespace.id, name, nativeValues("ws-operate"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const member = await createReader(fixture, namespace);
   const { page } = await newPage(t, fixture, { browser });
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const permissionsUrl = `${fixture.origin}${agentPath}/permissions`;
   await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${active.revision.id}/runtime`,
+    `${fixture.origin}${agentPath}/deployments/${active.revision.id}/runtime`,
     (route) =>
       route.fulfill({
         status: 403,
@@ -515,89 +517,162 @@ test("restoring Workspace applies the operate answer the page already observed",
         body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden." } }),
       }),
   );
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
-    (route) => {
-      const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)!);
-      if (route.request().method() !== "GET") {
-        return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
-      }
-      return route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: { name, content: `# ${name}\n` } }),
-      });
-    },
-  );
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
-    member.credentials,
-  );
-  const reason =
-    "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
-  const editor = page.getByLabel("AGENTS.md", { exact: true });
-  await page.getByText(reason, { exact: true }).waitFor();
-  for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
-    await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
-  }
-  assert.equal(await editor.isEditable(), false);
-  await expectOperateControls(page, false);
-
-  // The first Logs visit records the status denial without a fresh permission read.
-  await page.getByRole("tab", { name: "Logs", exact: true }).click();
-  await page.getByText(/Runtime status requires Agent operate/).waitFor();
-  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  await page.getByText(reason, { exact: true }).waitFor();
+  await page.route(`${fixture.origin}${agentPath}/workspace/files/*`, (route) => {
+    const file = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)!);
+    if (route.request().method() !== "GET") {
+      return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { name: file, content: `# ${file}\n` } }),
+    });
+  });
+  const binding = {
+    id: "binding-workspace-operate",
+    namespaceId: namespace.id,
+    subjectKind: "identity" as const,
+    subjectId: member.principal.id,
+    roleId: "role-workspace-operate",
+  };
   fixture.policy.roles.push({
-    id: "role-workspace-operate-restore",
+    id: binding.roleId,
     namespaceId: namespace.id,
     permissions: [{ action: "operate", resourceKind: "agent" }],
   });
-  fixture.policy.bindings.push({
-    id: "binding-workspace-operate-restore",
-    namespaceId: namespace.id,
-    subjectKind: "identity",
-    subjectId: member.principal.id,
-    roleId: "role-workspace-operate-restore",
-  });
-  const granted = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/agents/${agent.id}/permissions`) &&
-      response.request().method() === "GET" &&
-      response.status() === 200,
-  );
-  await page.getByRole("tab", { name: "Logs", exact: true }).click();
-  await granted;
-  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    permissionsUrl,
+    editor: page.getByLabel("AGENTS.md", { exact: true }),
+    // Opens the Workspace tab. By default it waits, as a reader without operate, for the reason
+    // and then every file; `answered: false` is for a page whose permission read fails.
+    open: async ({ answered = true } = {}) => {
+      await login(
+        page,
+        fixture,
+        detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+        member.credentials,
+      );
+      if (answered) {
+        await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
+        for (const file of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+          await page.getByText(`${file} loaded.`, { exact: true }).waitFor();
+        }
+      }
+    },
+    operate(allowed: boolean) {
+      const index = fixture.policy.bindings.findIndex((entry) => entry.id === binding.id);
+      if (allowed && index === -1) {
+        fixture.policy.bindings.push(binding);
+      } else if (!allowed && index !== -1) {
+        fixture.policy.bindings.splice(index, 1);
+      }
+    },
+    // The first Logs visit records the status denial without a fresh permission read.
+    async rememberStatusDenial() {
+      await page.getByRole("tab", { name: "Logs", exact: true }).click();
+      await page.getByText(/Runtime status requires Agent operate/).waitFor();
+      await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+    },
+    // A later Logs visit rereads the answer; Workspace is shown again once it has answered.
+    async rereadThroughLogs() {
+      const answered = page.waitForResponse(
+        (response) =>
+          response.url() === permissionsUrl &&
+          response.request().method() === "GET" &&
+          response.status() === 200,
+      );
+      await page.getByRole("tab", { name: "Logs", exact: true }).click();
+      await answered;
+      await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+    },
+  };
+}
+
+// The Workspace editor is kept while the reader visits Logs. Logs can observe a newer Agent
+// operate answer. Coming back must apply that answer and keep any unsaved text; Stop and Run
+// diagnostics follow it too, without a reload.
+test("restoring Workspace applies the operate answer the page already observed", async (t) => {
+  const scenario = await operateScenario(t, "Workspace operate restore");
+  const { page, editor } = scenario;
+  await scenario.open();
+  assert.equal(await editor.isEditable(), false);
+  await expectOperateControls(page, false);
+
+  await scenario.rememberStatusDenial();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
+  scenario.operate(true);
+  await scenario.rereadThroughLogs();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
-  assert.equal(await page.getByText(reason, { exact: true }).count(), 0);
+  assert.equal(await page.getByText(OPERATE_REASON, { exact: true }).count(), 0);
   assert.equal(await editor.isEditable(), true);
   await expectOperateControls(page, true);
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("kept across the revocation");
 
-  fixture.policy.bindings.splice(
-    fixture.policy.bindings.findIndex(
-      (binding) => binding.id === "binding-workspace-operate-restore",
-    ),
-    1,
-  );
-  const revoked = page.waitForResponse(
-    (response) =>
-      response.url().endsWith(`/agents/${agent.id}/permissions`) &&
-      response.request().method() === "GET" &&
-      response.status() === 200,
-  );
-  await page.getByRole("tab", { name: "Logs", exact: true }).click();
-  await revoked;
-  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
-  await page.getByText(reason, { exact: true }).waitFor();
+  scenario.operate(false);
+  await scenario.rereadThroughLogs();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
   assert.equal(await editor.isEditable(), false);
   assert.equal(await editor.inputValue(), "kept across the revocation");
   await expectOperateControls(page, false);
   assert.equal(await editor.inputValue(), "kept across the revocation");
+});
+
+// An answer that arrives after Workspace is shown again applies to the shown editor, not only to
+// parked ones, and to the page's other operate-gated controls (finding 2328).
+test("an operate answer that arrives while Workspace is shown applies to it", async (t) => {
+  const scenario = await operateScenario(t, "Workspace operate shown");
+  const { page, editor } = scenario;
+  await scenario.open();
+  await scenario.rememberStatusDenial();
+  scenario.operate(true);
+  const reread = await holdRequests(t, page, scenario.permissionsUrl, {
+    once: true,
+    method: "GET",
+    afterServer: true,
+  });
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await reread.requested;
+  // The restored Workspace is the retained one (every file loaded first): a rebuilt tab would
+  // take the held read itself and hide a regression in the mounted-tab apply.
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor();
+  reread.release();
+  await page.getByText(OPERATE_REASON, { exact: true }).waitFor({ state: "hidden" });
+  assert.equal(await editor.isEditable(), true);
+  await expectOperateControls(page, true);
+});
+
+// A Stop refused while the permission answer was unavailable names the missing grant. When a
+// later answer denies operate and a grant follows, the row returns without that refusal.
+test("a Stop refusal clears once a later answer grants Agent operate", async (t) => {
+  const scenario = await operateScenario(t, "Stop refusal grant");
+  const { page } = scenario;
+  await withholdPermissionSummary(page, scenario.fixture, scenario.namespace.id, scenario.agent.id);
+  await scenario.open({ answered: false });
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRow.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent", exact: true })
+    .click();
+  const refusal = page.getByText(STOP_REFUSED, { exact: true });
+  await refusal.waitFor();
+  await page.unroute(scenario.permissionsUrl);
+  await scenario.rememberStatusDenial();
+  // The row stays because this viewer used it; the denial disables Stop and adds its notice.
+  const notice = stopRow.getByText("Your access does not include stopping this Agent.");
+  await scenario.rereadThroughLogs();
+  await notice.waitFor();
+  scenario.operate(true);
+  await scenario.rereadThroughLogs();
+  await notice.waitFor({ state: "hidden" });
+  await waitForEnabled(stopRow.getByRole("button", { name: "Stop Agent", exact: true }));
+  assert.equal(await refusal.count(), 0);
 });
 
 for (const reply of ["an incomplete preview", "a save with different rules"] as const) {

@@ -480,16 +480,39 @@ test("Create Agent refuses what the API would refuse before any write", async (t
   // dropped a pasted value's line breaks.
   await t.test("the inline Create Secret dialog follows the API's Secret rules", async (t) => {
     const { page, invalidEvents, requests } = await createForm(t, "Secret dialog rules");
+    // The suggested Name carries the Agent name and arrives without an input event: the submit
+    // checks it too.
+    await page.getByLabel("Agent name", { exact: true }).fill("Support\tbot");
     await openCreateSecretDialog(page, "API key Secret");
     const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
     const name = dialog.getByLabel("Name", { exact: true });
     const value = dialog.getByLabel("Value", { exact: true });
     const submit = dialog.getByRole("button", { name: "Create Secret", exact: true });
-    await name.fill("model\tkey");
+    assert.equal(await name.inputValue(), "Support\tbot model credential");
     await value.fill("token");
     await submit.click();
     assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
     await assertShownError(name, NAME_RULE);
+    // An edited Name is checked too.
+    await name.fill("model\tkey");
+    await submit.click();
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    await assertShownError(name, NAME_RULE);
+    // Show value unmasks the value and says so; pressing it again masks it.
+    const reveal = dialog.getByRole("button", { name: "Show value", exact: true });
+    await reveal.click();
+    const hide = dialog.getByRole("button", { name: "Hide value", exact: true });
+    assert.equal(await hide.getAttribute("aria-pressed"), "true");
+    assert.equal(
+      await value.evaluate((node) => node.classList.contains("secret-value--masked")),
+      false,
+    );
+    await hide.click();
+    assert.equal(await reveal.getAttribute("aria-pressed"), "false");
+    assert.equal(
+      await value.evaluate((node) => node.classList.contains("secret-value--masked")),
+      true,
+    );
     await name.fill("Model key");
     for (const [content, rule] of [
       ["to\0ken", "Use valid UTF-8 without NUL characters."],
