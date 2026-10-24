@@ -7,7 +7,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createDevUpModelProvider } from "../helpers/dev-up-model-provider.mjs";
+import {
+  failureSecrets,
+  redactFailure,
+  redactFailureDetail,
+} from "../../scripts/ci/failure-redaction.mjs";
+import { createDevUpModelProvider, imageBuildFailure } from "../helpers/dev-up-model-provider.mjs";
 import { configureModelProviderDNS } from "../helpers/runtime-model-provider.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -28,6 +33,7 @@ async function scenario(
     signal,
     beforeCreate,
     beforeBuild,
+    extraEnvironment = {},
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "oce-provider-contract-"));
@@ -41,6 +47,7 @@ async function scenario(
   const environment = {
     OCC_DEVELOPMENT_CONTAINER_ENGINE: "docker",
     DOCKER_HOST: "unix:///owned.sock",
+    ...extraEnvironment,
   };
   const events = [{ event: "listening", at: 1 }];
   const faults = { inspectError: undefined };
@@ -387,6 +394,133 @@ test("provider retains ownership obligations when the engine cannot be inspected
   faults.inspectError = undefined;
   await fixture.cleanup();
   assert.equal(objects.size, 0);
+});
+
+// Buildx streams progress before its cause, and the runner keeps only a failure message's first
+// 16 KiB, so each failed build must name itself with the end of its stderr (finding 1847).
+test("failed checkout builds report each image's exit and redacted stderr tail", async (t) => {
+  const token = "build-secret-value-1847";
+  const keyBody = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC1847";
+  const buildFailure = (name, cause) =>
+    Object.assign(new Error(`Command failed: docker buildx build --tag ${name} .\nprogress`), {
+      code: 1,
+      killed: false,
+      signal: null,
+      stdout: "",
+      stderr: [
+        ...Array.from({ length: 2_000 }, (_, index) => `#${index} sha256:${"f".repeat(64)} 1.2MB`),
+        `#9 using ${token}`,
+        "-----BEGIN PRIVATE KEY-----",
+        keyBody,
+        "-----END PRIVATE KEY-----",
+        cause,
+      ].join("\n"),
+    });
+  for (const failing of [["runtime-base"], ["controller", "runtime-base"]]) {
+    const { fixture } = await scenario(t, {
+      extraEnvironment: { BUILD_TOKEN: token },
+      beforeBuild: async ({ name }) => {
+        const role = failing.find((candidate) => name.includes(`/${candidate}:`));
+        if (role) {
+          throw buildFailure(name, `ERROR: failed to solve: ${role} recipe exit code: 1`);
+        }
+      },
+    });
+    const error = await fixture.prepare().then(
+      () => assert.fail("a failed build must reject preparation"),
+      (rejection) => rejection,
+    );
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, failing.length);
+    assert.ok(error.message.length < 16_384, "each tail must fit the runner's message budget");
+    assert.equal(error.message.includes(token), false, "build output must be redacted");
+    assert.match(error.message, /\[env:BUILD_TOKEN\]/);
+    assert.equal(error.message.includes(keyBody), false, "a key's body lines must be masked");
+    for (const role of ["controller", "runtime-base"]) {
+      const shown = new RegExp(
+        `/${role}:a{40} \\(exit 1\\):\\n\\[earlier output omitted\\][^]*ERROR: failed to solve: ${role} recipe exit code: 1`,
+      );
+      if (failing.includes(role)) {
+        assert.match(error.message, shown);
+      } else {
+        assert.doesNotMatch(error.message, new RegExp(`/${role}:`));
+      }
+    }
+  }
+});
+
+// A credential pretty-printed across lines loses its key when the tail starts inside it, and the
+// reporter can no longer redact a nested value it cannot tie to that key. The tail must be cut
+// after redaction, whether the raw opener is inside or before the last 80 lines, without
+// weakening what the per-line redactor already hides.
+test("failed build tails redact multiline credential values before cutting", () => {
+  const value = "invented-session-value-1847";
+  const cause = "ERROR: failed to solve: runtime-base recipe exit code: 1";
+  const credentials = (padding) => [
+    '{ "credentials": {',
+    ...Array.from({ length: padding }, (_, index) => `    "field${index}": "filler",`),
+    `    "session": "${value}"`,
+    "  }",
+    "}",
+  ];
+  const cases = {
+    "opener inside the tail": credentials(0),
+    "opener before the tail": credentials(120),
+    "opener on a private key line": [
+      '{"credentials": {"private_key": "-----BEGIN PRIVATE KEY-----',
+      "InventedKeyBody1847",
+      '-----END PRIVATE KEY-----",',
+      `  "session": "${value}"`,
+      "}}",
+    ],
+    "auth scheme after a key": [
+      `token: Bearer ${value}`,
+      `secret=Basic ${value}`,
+      `token="Bearer invented-first-1847" session_id=${value}`,
+    ],
+    "key below an empty key": ["token:", "credentials: {", `  session: ${value}`, "}"],
+    "value on the line after its key": ["token:", `  ${value}`],
+    "next-line value below an empty key": ["token:", "password:", `  ${value}`],
+    "next-line object below an empty key": [
+      "token:",
+      "credentials:",
+      "{",
+      `  session: ${value}`,
+      "}",
+    ],
+    "private key before the tail": [
+      "-----BEGIN PRIVATE KEY-----",
+      ...Array.from({ length: 120 }, () => value),
+      "-----END PRIVATE KEY-----",
+    ],
+  };
+  for (const [name, lines] of Object.entries(cases)) {
+    const stderr = [
+      ...Array.from({ length: 200 }, (_, index) => `#${index} pulling layer ${index}`),
+      ...lines,
+      cause,
+    ].join("\n");
+    const error = imageBuildFailure(
+      [
+        {
+          image: "runtime-base",
+          reason: Object.assign(new Error("Command failed"), { code: 1, stderr }),
+        },
+      ],
+      {},
+    );
+    const detail = redactFailureDetail(error, failureSecrets([{}]), "");
+    const summary = redactFailure(error, failureSecrets([{}]), "");
+    for (const [copy, text] of [
+      ["message", error.message],
+      ["diagnostic", detail.message],
+      ["job log", summary.message],
+    ]) {
+      assert.equal(text.includes(value), false, `${name}: the ${copy} must not show the value`);
+    }
+    assert.ok(detail.message.endsWith(cause), `${name}: the diagnostic keeps the cause`);
+    assert.match(error.message, /runtime-base \(exit 1\):\n\[earlier output omitted\]\n/);
+  }
 });
 
 test("cleanup drains admitted image builds before reconciling their reservations", async (t) => {

@@ -11,7 +11,7 @@ import test, { before } from "node:test";
 import { promisify } from "node:util";
 import { devUpUnrelatedImage, prepareDevUpImage } from "../../scripts/ci/prepare.mjs";
 import { availablePort } from "../helpers/available-port.mjs";
-import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { outputTail, runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
 
 const { loadYaml } = createRequire(new URL("../../apps/controller/package.json", import.meta.url))(
   "@kubernetes/client-node",
@@ -180,12 +180,23 @@ process.exit(result.status ?? 1);
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
+        // A dev-up that stops early names its cause at the end of stderr (finding 1847); it
+        // comes first so the job log's short copy of the message starts with it.
+        const output = [
+          `dev-up stderr tail:\n${outputTail(error.stderr ?? error.message, environment, 8_000)}`,
+          `dev-up stdout tail:\n${outputTail(error.stdout, environment, 3_000)}`,
+        ].join("\n");
         assert.match(
           error.stdout,
           /Verifying Kubernetes network isolation before configuring gateway trust/,
+          output,
         );
-        assert.match(error.stderr, /Kubernetes NetworkPolicy enforcement could not be verified/);
-        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/);
+        assert.match(
+          error.stderr,
+          /Kubernetes NetworkPolicy enforcement could not be verified/,
+          output,
+        );
+        assert.doesNotMatch(error.stdout, /Installing OCE in Namespace/, output);
         return true;
       },
     );
