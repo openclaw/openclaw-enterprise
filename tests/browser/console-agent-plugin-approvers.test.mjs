@@ -17,6 +17,9 @@ import {
   newPage,
   pathRequests,
   selectSecret,
+  settledView,
+  statusTone,
+  waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
@@ -37,6 +40,9 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
       return released.promise;
     });
     await login(page, fixture, "/console");
+    // Sign-in reloads the page after its session check, and that reload closes every open
+    // dialog in the document: mount the component once the Agents page has settled.
+    await page.locator(settledView).waitFor();
     // Exercise the served Console component with a held synthetic catalog update.
     await page.evaluate(async () => {
       const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
@@ -87,6 +93,8 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await fixture.bootstrap();
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console");
+  // As above: the dialog opens only after sign-in's reload of the page.
+  await page.locator(settledView).waitFor();
   await page.evaluate(async () => {
     const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
     const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
@@ -147,6 +155,11 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2("["));
   await dialog.getByText(invalid, { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), [invalid]);
+  assert.deepEqual(await statusTone(dialog.getByText(invalid, { exact: true })), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
 });
@@ -494,6 +507,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace.")
     .waitFor();
+  assert.deepEqual(
+    await statusTone(
+      picker.getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace."),
+    ),
+    { className: "status", tone: "danger", role: "alert" },
+  );
   directoryAvailable = false;
   await people.fill("UTEST999");
   await picker.getByText("Slack directory lookup is unavailable.").waitFor();
@@ -627,7 +646,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
-  assert.equal(await deploy.isDisabled(), false);
+  await waitForEnabled(deploy);
 
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);

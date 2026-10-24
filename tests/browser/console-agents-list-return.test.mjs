@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -13,6 +15,9 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
+// One Chromium for the file; each test still gets its own context.
+const browser = fileBrowser();
+
 // Returning to the Agents list held the Agent page, inert, until the retained list had read
 // every row's /revisions and /deployments again: two reads per Agent, so the hold grew with the
 // Namespace (283-517 ms for 12 Agents on oce-dogfood-b, finding 1644). The list now reveals once
@@ -22,8 +27,6 @@ const READING = "Reading deployment…";
 const activeView = '.content [aria-live="polite"]:not([inert])';
 const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 const revisionsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/revisions`;
-const isFocused = (locator) =>
-  locator.evaluate((node) => node === globalThis.document.activeElement);
 const deploymentsRead = (namespace) => `**/namespaces/${namespace.id}/agents/*/deployments/*`;
 
 // A deployment record read; the list shows its status and, for a failure, its error.
@@ -56,7 +59,7 @@ async function openTeamList(t, name, { newer = [] } = {}) {
     }
     agents.push({ ...agent, name: label, revisionId: revision.id });
   }
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   // The fixture runs no worker, so each deployment record is served as it would read once its
   // deployment succeeded.
   await page.route(deploymentsRead(namespace), (route) =>
@@ -206,7 +209,7 @@ for (const how of ["Browser Back", "Agents navigation"]) {
     failed.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     const after = await deploymentCells(page);
-    assert.match(after[changed.name], /^v1 · failed/);
+    assert.match(after[changed.name], /^v1 · Failed/);
     assert.deepEqual(
       Object.fromEntries(Object.entries(after).filter(([name]) => name !== changed.name)),
       Object.fromEntries(Object.entries(before).filter(([name]) => name !== changed.name)),
@@ -320,7 +323,7 @@ for (const outcome of ["fills", "is refused"]) {
     // The pending cell's text is blank for its first 250 ms (finding 1656); its holder has focus.
     const loading = row.locator(".agent-deployment [data-return-focus-href]");
     assert.equal(await loading.textContent(), READING);
-    assert.equal(await isFocused(loading), true, "Back focused the pending deployment");
+    assert.equal(await hasFocus(loading), true, "Back focused the pending deployment");
     // Blank on screen, the focused holder's text still reaches a screen reader.
     assert.match(await loading.ariaSnapshot(), /Reading deployment…/);
     const listUrl = page.url();
@@ -337,13 +340,13 @@ for (const outcome of ["fills", "is refused"]) {
         "Deployment access denied",
       );
       assert.equal(
-        await isFocused(row.getByRole("link", { name: target.name, exact: true })),
+        await hasFocus(row.getByRole("link", { name: target.name, exact: true })),
         true,
         "focus moved to the row's Agent link",
       );
     } else {
-      assert.match(await deploymentLink.textContent(), /^v2 · succeeded/);
-      assert.equal(await isFocused(deploymentLink), true, "the fresh link kept focus");
+      assert.match(await deploymentLink.textContent(), /^v2 · Completed/);
+      assert.equal(await hasFocus(deploymentLink), true, "the fresh link kept focus");
     }
     assert.equal(await viewTag(page), "kept");
   });
@@ -400,7 +403,7 @@ for (const visit of ["a first visit", "a return"]) {
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
       agents.push({ ...agent, name: label });
     }
-    const { page } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture, { browser });
     await page.route(deploymentsRead(namespace), (route) =>
       route.fulfill(deploymentRecord(namespace, "succeeded")),
     );
@@ -445,7 +448,7 @@ for (const visit of ["a first visit", "a return"]) {
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · succeeded/);
+      assert.match(text, /^v1 · Completed/);
     }
   });
 }
@@ -461,7 +464,7 @@ async function returnWithHeldRows(t, name) {
     await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     agents.push({ ...agent, name: label });
   }
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await page.route(deploymentsRead(namespace), (route) =>
     route.fulfill(deploymentRecord(namespace, "succeeded")),
   );
@@ -575,7 +578,7 @@ for (const [shownAt, landsAt, fillsAt] of [
       await page.clock.runFor(1);
     }
     for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · succeeded/);
+      assert.match(text, /^v1 · Completed/);
     }
     assert.equal(await viewTag(page), "kept");
   });
@@ -670,14 +673,14 @@ test("A list left again during its rows' rereads is reused on the next return an
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
   for (const text of Object.values(await deploymentCells(page))) {
-    assert.match(text, /^v1 · succeeded/);
+    assert.match(text, /^v1 · Completed/);
   }
 });
 
 // On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
 // 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
 // a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
-// 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
+// 60-character names fit down to 320 px, every column name shows, IDs break only after a hyphen
 // or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
 // Two names are the longest allowed with no break in them (200 characters, one joined by no-break
 // spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
@@ -721,10 +724,18 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     agents.push({ ...agent, name });
   }
   assert.equal(agents[0].name.length, 60);
-  const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
-  for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
+  const columns = [
+    "Agent",
+    "Execution mode",
+    "Current version",
+    "Latest deployment",
+    "Created",
+    "Actions",
+  ];
+  for (const width of [390, 360, 320, 600, 760, 761, 1024, 1440]) {
     const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
+      browser,
       context: { viewport: { width, height: desktop ? 900 : 844 } },
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
@@ -806,9 +817,12 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           }),
           breaks,
           display: globalThis.getComputedStyle(row).display,
-          revision: (({ fontFamily, color }) => ({ fontFamily, color }))(
-            globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
-          ),
+          revision: {
+            text: cells[2].querySelector("a")?.textContent,
+            ...(({ fontFamily, color }) => ({ fontFamily, color }))(
+              globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+            ),
+          },
         };
       });
       // The table's width without the unbroken names' rows, which must not widen it.
@@ -817,18 +831,36 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       unbroken.forEach((row) => row.style.setProperty("display", "none"));
       const ordinaryWidth = scroll.scrollWidth;
       unbroken.forEach((row) => row.style.removeProperty("display"));
+      // An ID drawn on one line in a row's ID style: "ff" must take two characters' width. A
+      // monospace font with ligatures (Nimbus Mono PS) drew it as one glyph, so an ID with two
+      // "ff" pairs was 14.4 px narrower and fit one line at 360 px (finding 2114).
+      const idWidth = (text) => {
+        const probe = document.createElement("span");
+        probe.className = "resource-id";
+        probe.style.setProperty("display", "inline");
+        probe.style.setProperty("white-space", "nowrap");
+        probe.textContent = text;
+        node.tBodies[0].rows[0].cells[0].append(probe);
+        const box = probe.getBoundingClientRect();
+        probe.remove();
+        return box.width;
+      };
       return {
         width,
         ordinaryWidth,
+        idWidths: [
+          idWidth("agt_ffffffff-ffff-4fff-bfff-ffffffffffff"),
+          idWidth("agt_00000000-0000-4000-8000-000000000000"),
+        ],
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
-        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
+        linkColor: globalThis.getComputedStyle(node.querySelector("tbody a")).color,
         rows,
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    // At 761 and 1024 px these rows' five columns still scroll inside their card (finding 1907),
+    // At 761 and 1024 px these rows' six columns still scroll inside their card (finding 1907),
     // but the unbroken name makes the table no wider than its other rows do.
     if (width !== 761 && width !== 1024) {
       assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
@@ -836,6 +868,10 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     assert.ok(
       layout.width <= layout.ordinaryWidth + 2,
       `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
+    );
+    assert.ok(
+      Math.abs(layout.idWidths[0] - layout.idWidths[1]) < 0.5,
+      `${width}: an ID with "ff" is ${layout.idWidths[0]} px, one without ${layout.idWidths[1]} px`,
     );
     assert.equal(layout.rows.length, AGENTS);
     assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
@@ -881,13 +917,19 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       for (const character of row.breaks) {
         assert.match(character, /[-_]/, `${width}: row ${index} ID breaks inside a segment`);
       }
-      if (width === 360) {
+      // A whole ID can fit at 360 px. At 320 px it must wrap, exercising the break check above.
+      if (width === 320) {
         assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
       }
-      // A current version's revision ID reads as an ID: mono, in the text colour.
+      // The current version is a link like the Agent name, labelled by version rather than revision ID.
       if (index % 2 === 1) {
-        assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
-        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
+        assert.equal(row.revision.text, "v1", `${width}: row ${index} revision`);
+        assert.doesNotMatch(row.revision.fontFamily, /monospace/, `${width}: row ${index} font`);
+        assert.equal(
+          row.revision.color,
+          layout.linkColor,
+          `${width}: row ${index} revision colour`,
+        );
       }
       assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
     }
@@ -906,9 +948,9 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
 // A name the browser cannot wrap sets the desktop table's width unless it is marked to break
 // anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
 // and the test measures it again: each name is marked exactly when the longest run the browser
-// keeps on one line (spaces aside) has 21 or more characters. A hyphen between digits is a break
-// ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is not, nor
-// is a hyphen before a digit or a dash that starts a word. A run of em dashes breaks only at its
+// keeps on one line (spaces aside) has 21 or more characters. A hyphen-minus between ASCII digits is
+// a break ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is
+// not, nor is a hyphen-minus before most other digits or a dash that starts a word. A run of em dashes breaks only at its
 // ends (finding 1971).
 const groups = (part, separator, count = 6) =>
   Array.from({ length: count }, () => part).join(separator);
@@ -957,6 +999,101 @@ const unbrokenNameCases = [
   // A word joiner or zero-width joiner holds the ideograph or emoji before it.
   { name: "\u4e2d\u2060".repeat(100), unbroken: true },
   { name: "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}".repeat(8), unbroken: false },
+  // A combining mark before a joiner shares its letter's place too (finding 1999).
+  { name: "e\u0301\u2060".repeat(10), unbroken: false },
+  { name: `${"e\u0301\u2060".repeat(10)}a`, unbroken: true },
+  // Emoji whose line-break class is AL hold like letters (finding 2001); others still break.
+  {
+    name: "\u23e9\u23ec\u25fd\u25fe\u2648\u2653\u2693\u26a1\u26aa\u26ab\u26ce\u2705\u2728\u274c\u274e\u2753\u2755\u2757\u2795\u2797\u27b0",
+    unbroken: true,
+  },
+  {
+    name: "\u27bf\u2b1b\u2b1c\u2b50\u2b55\u{1f18e}\u{1f191}\u{1f19a}\u{1f3b5}\u{1f3b6}\u{1f3bc}\u{1f4a0}\u{1f4a2}\u{1f4a4}\u{1f4af}\u{1f4b1}\u{1f4b2}\u{1f500}\u{1f506}\u{1f517}\u{1f524}",
+    unbroken: true,
+  },
+  { name: `${"a".repeat(18)}\u{1f532}\u{1f53d}b`, unbroken: true },
+  { name: "build\u26a1deploy\u26a1monitor\u26a1agent", unbroken: true },
+  // Opening quotes, separators and closing punctuation stay after a hyphen, soft hyphen, dash or
+  // wide space (finding 2001).
+  { name: "a-\u00aba-\u037ea-\u0589a-\u060ca-\u2018a-\u201ca-\u2039", unbroken: true },
+  { name: "a-\u203aa-\u2044a-\ufeffa-$aaaaaaaaa", unbroken: true },
+  { name: `${"a".repeat(19)}-\u2012`, unbroken: true },
+  { name: `${"a".repeat(19)}-\u2013`, unbroken: true },
+  { name: `${"a".repeat(19)}-\u2010`, unbroken: true },
+  {
+    name: "a\u00ad\u00aba\u00ad\u037ea\u00ad\u0589a\u00ad\u060ca\u00ad\u2018a\u00ad\u201ca\u00ad\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a\u2009\u203aa\u2009\u2044a\u2009\ufeffa\u2009\u00aba\u2009\u2018a\u2009\u201ca\u2009\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a-\u0301\u00aba-\u0301\u037ea-\u0301\u0589a-\u0301\u060ca-\u0301\u2018a-\u0301\u201ca-\u0301\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a\u00ad\u0301]a\u00ad\u0301}a\u00ad\u0301\u00bba\u00ad\u0301\u2019a\u00ad\u0301\u201da\u00ad\u0301\u2060a\u00ad\u0301\u200d",
+    unbroken: true,
+  },
+  { name: "aaaaa\u00ad\"aaaaa\u00ad'aaaaa\u00ad|", unbroken: true },
+  { name: "a-!a-)a-,a-.a-/a-:a-;", unbroken: true },
+  { name: "a-]a-}a-\u00bba-\u2019a-\u201da-\u2060a-\u200d", unbroken: true },
+  // A hyphen-minus before a digit breaks only between an ASCII letter or digit and an ASCII digit,
+  // or before a fullwidth digit. After Cyrillic letters, and before Devanagari or Arabic-Indic
+  // digits, it holds, and so does one with a mark on it (finding 2000).
+  {
+    name: "\u0435\u0436\u0435\u043a\u0432\u0430\u0440\u0442\u0430\u043b\u044c\u043d\u044b\u0439\u043e\u0442\u0447\u0451\u0442-2026",
+    unbroken: true,
+  },
+  {
+    name: "\u0930\u093f\u0932\u0940\u091c\u093c\u0915\u093e\u092e\u0938\u094c\u0926\u093e-\u0968\u0966\u0968\u096c-\u0967\u0966-\u0967\u096f-\u0966\u096f-\u0969\u0966",
+    unbroken: true,
+  },
+  { name: `${"x".repeat(18)}A-1`, unbroken: false },
+  { name: `${"x".repeat(18)}a-1`, unbroken: false },
+  { name: `${"x".repeat(18)}A-\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}a-\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}0-\u0967`, unbroken: true },
+  { name: `${"x".repeat(18)}\u00e9-\u0301\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}a-\u03011`, unbroken: true },
+  { name: `${"x".repeat(18)}\u00e9-\u0301\uff11`, unbroken: false },
+  { name: `${"x".repeat(18)}a-\u0301\uff11`, unbroken: false },
+  { name: `x -\uff11y${"a".repeat(18)}`, unbroken: false },
+  // Dashes held before other dashes, and a dash that starts a word after a no-break space.
+  { name: `${"a".repeat(19)}\u2010-`, unbroken: true },
+  { name: `${"a".repeat(19)}\u2010\u2010`, unbroken: true },
+  { name: `${"a".repeat(19)}\u2010\u2012`, unbroken: true },
+  { name: `x\u00a0\u2012${"a".repeat(20)}`, unbroken: true },
+  { name: `x\u2007\u2010${"b".repeat(20)}`, unbroken: true },
+  { name: `x\u2011\u2010${"a".repeat(20)}`, unbroken: true },
+  { name: `x\u202f\u2010${"c".repeat(20)}`, unbroken: true },
+  { name: `x\u200b\u2013${"a".repeat(20)}`, unbroken: true },
+  { name: `x \u2010(${"a".repeat(19)}`, unbroken: false },
+  // Each of these ends a run: ten letters either side of it are not marked.
+  {
+    name: Array.from(
+      "\u1680\u2000\u2008\u205f\u3000\u200b\u00ad\u2010\u2012\u2013\u2014\u3041\u30a1\uac00\u4e2d\u{1f680}",
+      (separator) => `aaaaaaaaaa${separator}`,
+    )
+      .join("")
+      .concat("aaaaaaaaaa"),
+    unbroken: false,
+  },
+  // A wide space, dash or hyphen a line breaks after stays on it.
+  { name: `${"a".repeat(20)}\u1680b`, unbroken: true },
+  { name: `${"a".repeat(20)}\u00adb`, unbroken: true },
+  // Thresholds: an em-dash run of 21 is marked, 20 is not; marks share their letter's place.
+  { name: "\u2014".repeat(21), unbroken: true },
+  { name: "\u2014".repeat(20), unbroken: false },
+  { name: "e\u0301".repeat(21), unbroken: true },
+  { name: `${"\u30a2\u0301\u200d".repeat(10)}a`, unbroken: true },
+  // No-break characters and underscores keep a run (finding 2002).
+  { name: groups("abcdefgh", "_"), unbroken: true },
+  { name: groups("abcdefgh", "\u2011"), unbroken: true },
+  { name: groups("abcdefgh", "\u202f"), unbroken: true },
+  { name: groups("ijklmnop", "\u2007"), unbroken: true },
+  { name: groups("qrstuvwx", "\ufeff"), unbroken: true },
 ];
 
 test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
@@ -970,47 +1107,55 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     });
   }
   for (const width of [1024, 1440]) {
-    const { page } = await newPage(t, fixture, { context: { viewport: { width, height: 900 } } });
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width, height: 900 } },
+    });
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
     await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
-    for (const entry of cases) {
-      const shown = await table
-        .getByRole("link", { name: entry.name, exact: true })
-        .evaluate((node) => {
-          // The longest run the browser keeps on one line, set in the link's font in a box too
-          // narrow for any word. Combining marks share their letter's place, and a space hangs at
-          // the end of its line, so neither counts.
-          const box = globalThis.document.createElement("div");
-          const style = globalThis.getComputedStyle(node);
-          box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
-          box.textContent = node.textContent;
-          node.closest("table").after(box);
-          const range = globalThis.document.createRange();
-          let longest = 0;
-          let run = 0;
-          let top = null;
-          let offset = 0;
-          for (const character of Array.from(node.textContent)) {
-            range.setStart(box.firstChild, offset);
-            range.setEnd(box.firstChild, offset + character.length);
-            offset += character.length;
-            const rect = range.getClientRects()[0];
-            if (!rect || /[\p{M} ]/u.test(character)) {
-              continue;
-            }
-            run = Math.round(rect.top) === top ? run + 1 : 1;
-            top = Math.round(rect.top);
-            longest = Math.max(longest, run);
+    // Every listed name, measured in one pass: whether it is marked, its width, and the longest
+    // run the browser keeps on one line, set in the link's font in a box too narrow for any word.
+    // Combining marks share their letter's place, and a space hangs at the end of its line, so
+    // neither counts.
+    const measured = await table.getByRole("link").evaluateAll((links) =>
+      links.map((link) => {
+        const box = globalThis.document.createElement("div");
+        const style = globalThis.getComputedStyle(link);
+        box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
+        box.textContent = link.textContent;
+        link.closest("table").after(box);
+        const range = globalThis.document.createRange();
+        let longest = 0;
+        let run = 0;
+        let top = null;
+        let offset = 0;
+        for (const character of Array.from(link.textContent)) {
+          range.setStart(box.firstChild, offset);
+          range.setEnd(box.firstChild, offset + character.length);
+          offset += character.length;
+          const rect = range.getClientRects()[0];
+          if (!rect || /[\p{M} ]/u.test(character)) {
+            continue;
           }
-          box.remove();
-          return {
-            marked: node.classList.contains("agent-name-unbroken"),
-            width: node.getBoundingClientRect().width,
-            longest,
-          };
-        });
+          run = Math.round(rect.top) === top ? run + 1 : 1;
+          top = Math.round(rect.top);
+          longest = Math.max(longest, run);
+        }
+        box.remove();
+        return {
+          name: link.textContent,
+          marked: link.classList.contains("agent-name-unbroken"),
+          width: link.getBoundingClientRect().width,
+          longest,
+        };
+      }),
+    );
+    for (const entry of cases) {
       const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
+      const matches = measured.filter((link) => link.name === entry.name);
+      assert.equal(matches.length, 1, `${label} is listed once as a link`);
+      const [shown] = matches;
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
       if (entry.unbroken) {
@@ -1025,4 +1170,140 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
       assert.equal(fits, true, `${width}: the table scrolls sideways`);
     }
   }
+});
+
+// A name of word-joiner or zero-width-joiner runs made the long-name check backtrack
+// exponentially: seconds per name, so the list froze on load and on each search keystroke that
+// kept such an Agent listed (finding 1999). Each name here is several runs of 20 that just fail
+// to be marked, the worst case. A keystroke re-renders the rows it keeps synchronously, so the
+// page times that work itself.
+test("Agents list search stays responsive with joiner-run names", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Joiner Agent names");
+  const names = [
+    `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    `Joiners ${`a${"\u200d".repeat(19)} `.repeat(9)}`.trimEnd(),
+  ];
+  for (const [index, name] of names.entries()) {
+    const secret = await fixture.createSecret(namespace.id, `Joiner name ${index}`, "test-key");
+    await fixture.createAgent(namespace.id, name, nativeValues(`joiners-${index}`), {
+      harnessAuth: { method: "api_key", source: secret.ref },
+    });
+  }
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+  await table.getByRole("link", { name: names[1], exact: true }).waitFor();
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  for (const text of ["J", "Jo", "Joi", "Joiners"]) {
+    const elapsed = await search.evaluate((node, value) => {
+      const started = globalThis.performance.now();
+      node.value = value;
+      node.dispatchEvent(new globalThis.Event("input", { bubbles: true }));
+      return globalThis.performance.now() - started;
+    }, text);
+    assert.ok(elapsed < 250, `typing ${JSON.stringify(text)} blocked the page for ${elapsed} ms`);
+  }
+  for (const name of names) {
+    const link = table.getByRole("link", { name, exact: true });
+    await link.waitFor();
+    assert.equal(
+      await link.evaluate((node) => node.classList.contains("agent-name-unbroken")),
+      false,
+    );
+  }
+});
+
+// The Agents list showed the current version as a raw revision ID beside "v122 · succeeded", and
+// the Agent page called the same outcome "Completed" (finding 2093). The list now names the
+// current version by number, read with the row's versions, and shares the page's outcome words.
+test("Agents list names the current version by number in the page's outcome words", async (t) => {
+  const { fixture, namespace, agents, page } = await openTeamList(t, "Version numbers", {
+    newer: [0],
+  });
+  const row = (agent) => page.locator(activeView).getByRole("row").filter({ hasText: agent.name });
+  const cells = (agent) =>
+    row(agent).evaluate((node) => ({
+      current: node.querySelector('[data-label="Current version"]').textContent,
+      href: new URL(node.querySelector('[data-label="Current version"] a').href).searchParams.get(
+        "revision",
+      ),
+      deployment: node.querySelector(".agent-deployment a").textContent,
+    }));
+  const active = (agent) =>
+    fixture
+      .request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)
+      .then((body) => body.data);
+  const [newer, plain] = [agents[0], agents[1]];
+  // A second version deployed after the current one: v1 is current, v2 is the latest.
+  assert.deepEqual(await cells(newer), {
+    current: "v1",
+    href: (await active(newer)).activeRevisionId,
+    deployment: "v2 · Completed",
+  });
+  assert.deepEqual(await cells(plain), {
+    current: "v1",
+    href: (await active(plain)).activeRevisionId,
+    deployment: "v1 · Completed",
+  });
+  assert.equal(await page.locator(".agent-table").getByText(/rev_/).count(), 0);
+
+  // A current version older than the first page of versions is read on its own.
+  const { page: paged } = await newPage(t, fixture, { browser });
+  await paged.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data = body.data.filter((revision) => revision.revision !== 1);
+    await route.fulfill({ response, json: body });
+  });
+  await paged.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  const activeId = (await active(newer)).activeRevisionId;
+  const direct = paged.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith(`/agents/${newer.id}/revisions/${activeId}`),
+  );
+  await login(paged, fixture, `/console/agents?namespace=${namespace.id}`);
+  await direct;
+  const pagedRow = paged.locator(settledView).getByRole("row").filter({ hasText: newer.name });
+  await pagedRow.getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
+  await pagedRow.getByRole("link", { name: "v1", exact: true }).waitFor();
+
+  // A current version the reader cannot read keeps its ID, and its audited 403 is asked once per
+  // tab, not on every list view.
+  const { page: denied } = await newPage(t, fixture, { browser });
+  await denied.route(
+    `**/namespaces/${namespace.id}/agents/${newer.id}/revisions`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.filter((revision) => revision.revision !== 1);
+      await route.fulfill({ response, json: body });
+    },
+  );
+  let deniedReads = 0;
+  await denied.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {
+    deniedReads += 1;
+    return route.fulfill({
+      status: 403,
+      json: {
+        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+        meta: {},
+      },
+    });
+  });
+  await denied.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  await login(denied, fixture, `/console/agents?namespace=${namespace.id}`);
+  const deniedRow = () =>
+    denied.locator(settledView).getByRole("row").filter({ hasText: newer.name });
+  const idLink = `${activeId.slice(0, 12)}…${activeId.slice(-6)}`;
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  await denied.reload();
+  await deniedRow().getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  assert.equal(deniedReads, 1);
 });

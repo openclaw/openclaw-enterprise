@@ -11,8 +11,19 @@ simulated data.
    shadow and backdrop. Cancel is on the left and the confirming action on the
    right. Focus starts inside the dialog (Cancel for Stop and Delete, Name for
    Create Secret).
+   In Delete, read what stays in the Namespace, then open **View separate cleanup
+   commands**. Each command includes the Namespace ID. Copying it keeps the
+   confirmation open and runs nothing.
+   In **Backdrop at the desktop scrollbar**, choose **Open preview in its own tab**
+   to check the window’s scrollbar gutter, rather than the surrounding frame.
+   An empty gutter blends into the backdrop; a classic scrollbar remains visible.
+   Press Escape: the page keeps its position and original colours.
 2. Open **Plugins (wide)**. The same chrome holds the plugin workspace, 72 rem
-   wide.
+   wide. Wider than 1100 px the catalog and the selected plugin's detail sit
+   side by side.
+   Open **Plugins (tablet)** (a 1024 px frame). Up to 1100 px the workspace
+   stacks: the catalog shows alone, choosing Calendar replaces it with
+   Calendar's detail, and **Back to plugins** returns to the catalog.
 3. Open **Slack editor (drawer)**. The drawer floats 16 px from the right, top
    and bottom edges with the same corners, and slides in from the right.
 4. Press Escape in each dialog. It closes and focus returns to the button that

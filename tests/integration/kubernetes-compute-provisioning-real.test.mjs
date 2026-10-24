@@ -409,6 +409,16 @@ test(
     }
     const originalOperatorConfigMap = await resource("configmap", "operator-sentinel", cleanupName);
     const originalOperatorSecret = await resource("secret", "operator-sentinel", cleanupName);
+    // A Configuration whose OCC transaction failed after its ConfigMap create applied (finding
+    // 1400): the Driver's own ownership metadata, no record, and teardown removes it.
+    const orphanedConfiguration = {
+      ...configuration,
+      id: `cfg_${randomUUID()}`,
+      namespaceId: cleanupOwner.id,
+    };
+    await configurationDriver.create(orphanedConfiguration);
+    const orphanedConfigMap = kubernetesConfigurationName(orphanedConfiguration.id);
+    await resource("configmap", orphanedConfigMap, cleanupName);
 
     // Valid deletion removes fixed OCC infrastructure without touching the operator's namespace.
     const deletingOwner = { ...cleanupOwner, status: "deleting" };
@@ -423,6 +433,7 @@ test(
     for (const kind of ["networkpolicies", "resourcequotas", "limitranges"]) {
       assert.deepEqual(await resources(kind, cleanupName), []);
     }
+    assert.equal(await missing("configmap", orphanedConfigMap, cleanupName), true);
     const preservedNamespace = await resource("namespace", cleanupName);
     assert.equal(preservedNamespace.metadata.uid, originalCleanupNamespace.metadata.uid);
     assert.deepEqual(preservedNamespace.metadata.labels, originalCleanupNamespace.metadata.labels);

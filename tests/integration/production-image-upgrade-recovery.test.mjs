@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
+import {
+  appendFileSync,
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
 import { tmpdir } from "node:os";
@@ -9,6 +20,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { kubernetesGatewayNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { bashString, commandShim, startCommandServer } from "../helpers/fixture-command-server.mjs";
 
 const execute = promisify(execFile);
 const repository = fileURLToPath(new URL("../..", import.meta.url));
@@ -20,223 +32,13 @@ const newController = `registry.example.invalid/controller@sha256:${"e".repeat(6
 const newBroker = `registry.example.invalid/broker@sha256:${"f".repeat(64)}`;
 const oldRuntime = `registry.example.invalid/runtime@sha256:${"c".repeat(64)}`;
 
-// This fixture substitutes the external command protocols, not the upgrade
-// script. It records accepted writes independently of the client response.
-// getBuiltinModule, not require: each stand-in loads as ESM when TMPDIR is inside this repo.
-const executable = `#!/usr/bin/env node
-const fs = process.getBuiltinModule('fs');
-const path = process.getBuiltinModule('path');
-const { execFileSync, spawnSync } = process.getBuiltinModule('child_process');
-const root = process.env.UPGRADE_FIXTURE;
-const tool = path.basename(process.argv[1]);
-const args = process.argv.slice(2);
-const stateFile = path.join(root, 'state.json');
-const state = JSON.parse(fs.readFileSync(stateFile));
-const save = () => fs.writeFileSync(stateFile, JSON.stringify(state));
-const log = (value) => fs.appendFileSync(path.join(root, 'events'), value + '\\n');
-const take = (name) => { const p = path.join(root, name); if (!fs.existsSync(p)) return false; fs.unlinkSync(p); return true; };
-const out = (value) => process.stdout.write(typeof value === 'string' ? value : JSON.stringify(value));
-const fileArg = (name) => args[args.indexOf(name) + 1];
-const yq = (expression, file) => execFileSync('yq', ['-p=yaml', '-r', expression, file], {encoding: 'utf8'}).trim();
-// Unless a case selects the real chart, a stand-in renders only what the startup
-// preflight reads: each controller container's image and Installation mount.
-const standInChart = (values) => {
-  const secretName = yq('.installation.secretName // "occ-installation-startup"', values);
-  const key = yq('.installation.key // "installation.yaml"', values);
-  const deployment = (component, placement) => ({kind: 'Deployment', metadata: {name: 'openclaw-enterprise-' + component}, spec: {template: {spec: {serviceAccountName: 'openclaw-enterprise-' + component, volumes: [{name: 'installation-startup', secret: {secretName, items: [{key, path: 'installation.yaml'}]}}], [placement]: [{name: component, image: yq('.images.controller', values), env: [{name: 'OCC_CONFIG_PATH', value: '/etc/openclaw/installation/installation.yaml'}], volumeMounts: [{name: 'installation-startup', mountPath: '/etc/openclaw/installation', readOnly: true}]}]}}}});
-  const repository = yq('.repositoryCredentials.enabled // false', values) === 'true';
-  return [deployment('api', 'containers'), deployment('worker', repository ? 'initContainers' : 'containers')].map((document) => '---\\n' + JSON.stringify(document) + '\\n').join('');
-};
-// Starts the preflight Pod's container once with its Secret volumes and literal
-// environment. Other cluster inputs (Secret-backed env, CA and token volumes) are
-// not provided; chart cases point Compute at the test's Kubernetes API through an
-// explicit kubeconfig instead of the Pod's service account. The container runs in
-// OCC_TEST_PRODUCTION_IMAGE when set, otherwise as this checkout's source with
-// /app mapped to it. Stand-in cases only record it.
-const runPreflight = (pod) => {
-  const scripted = state.preflightResults?.[pod.spec.containers[0].name];
-  if (scripted) return scripted;
-  if (!state.startupCheck) return {phase: 'Succeeded', log: 'installation-startup-ready\\n'};
-  const container = pod.spec.containers[0];
-  const work = fs.mkdtempSync(path.join(root, 'preflight-'));
-  fs.chmodSync(work, 0o755);
-  const mounts = [];
-  for (const mount of container.volumeMounts ?? []) {
-    const volume = pod.spec.volumes.find((item) => item.name === mount.name);
-    const secret = volume?.secret && state.preflight.secrets[volume.secret.secretName];
-    if (!secret) continue;
-    const directory = path.join(work, mount.name);
-    // The helper's umask is 077; the image's unprivileged user must still read the mount.
-    fs.mkdirSync(directory);
-    fs.chmodSync(directory, 0o755);
-    for (const item of volume.secret.items) {
-      fs.writeFileSync(path.join(directory, item.path), Buffer.from(secret.data[item.key], 'base64'));
-      fs.chmodSync(path.join(directory, item.path), 0o644);
-    }
-    mounts.push([directory, mount.mountPath]);
-  }
-  // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
-  const expanded = {};
-  const env = (container.env ?? []).filter((item) => typeof item.value === 'string').map((item) => {
-    const value = item.value.replace(/\\$\\$|\\$\\(([A-Za-z_][A-Za-z0-9_]*)\\)/g, (match, name) => match === '$$' ? '$' : expanded[name] ?? match);
-    expanded[item.name] = value;
-    return {name: item.name, value};
-  });
-  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
-  const result = image
-    // Host networking reaches the test's loopback Kubernetes API only with rootful Docker.
-    ? spawnSync('docker', ['run', '--rm', ...(state.kubeconfig ? ['--network', 'host', '--mount', 'type=bind,src=' + state.kubeconfig + ',dst=' + state.kubeconfig + ',readonly'] : ['--network', 'none']), ...mounts.flatMap(([source, target]) => ['--mount', 'type=bind,src=' + source + ',dst=' + target + ',readonly']), ...env.flatMap((item) => ['--env', item.name + '=' + item.value]), '--entrypoint', container.command[0], image, ...container.args], {encoding: 'utf8'})
-    : (() => {
-      const local = (value) => mounts.reduce((current, [source, target]) => current.split(target).join(source), value).split('/app/apps/').join(process.cwd() + '/apps/').split('/app/packages/').join(process.cwd() + '/packages/');
-      return spawnSync(process.execPath, container.args.map(local), {encoding: 'utf8', env: Object.fromEntries(env.map((item) => [item.name, local(item.value)]))});
-    })();
-  return {phase: result.status === 0 ? 'Succeeded' : 'Failed', log: (result.stdout ?? '') + (result.stderr ?? '')};
-};
-if (tool === 'helm') {
-  if (args[0] === 'status') {
-    out(args.includes('json') ? {version: state.version, info: {status: state.helmStatus}} : state.helmStatus);
-  } else if (args[0] === 'get') {
-    out(fs.readFileSync(path.join(root, 'live-values'), 'utf8'));
-  } else if (args[0] === 'template') {
-    out(state.realChart ? execFileSync(process.env.REAL_HELM, args, {encoding: 'utf8'}) : standInChart(fileArg('--values')));
-  } else if (args[0] === 'upgrade' && !args.includes('--dry-run=server')) {
-    if (state.api !== 0 || state.worker !== 0) { console.error('old writers were not stopped'); process.exit(2); }
-    log('migration');
-    state.version += 1;
-    fs.copyFileSync(fileArg('--values'), path.join(root, 'live-values'));
-    if (take('fail-migration')) { state.helmStatus = 'failed'; save(); process.exit(9); }
-    state.helmStatus = 'deployed';
-    state.controller = execFileSync('yq', ['-p=yaml', '-r', '.images.controller', fileArg('--values')], {encoding: 'utf8'}).trim();
-    state.checksum = execFileSync('yq', ['-p=yaml', '-r', '.controlPlane.installationChecksum', fileArg('--values')], {encoding: 'utf8'}).trim();
-    state.api = 1;
-    state.worker = 1;
-    save();
-    if (take('lost-helm-response')) process.exit(9);
-  }
-} else if (tool === 'kubectl') {
-  state.preflight ??= {secrets: {}, pods: {}, networkpolicies: {}, deleted: []};
-  const resource = args.find((a) => /^(pod|secret|networkpolicy\\.networking\\.k8s\\.io)\\//.test(a));
-  const collection = {pod: 'pods', secret: 'secrets', 'networkpolicy.networking.k8s.io': 'networkpolicies'};
-  if (args.includes('create') && args.includes('--filename')) {
-    const source = fileArg('--filename');
-    const object = JSON.parse(fs.readFileSync(source === '-' ? 0 : source, 'utf8'));
-    if (object.kind === 'Secret') state.preflight.secrets[object.metadata.name] = object;
-    else if (object.kind === 'NetworkPolicy') state.preflight.networkpolicies[object.metadata.name] = object;
-    else state.preflight.pods[object.metadata.name] = {...runPreflight(object), spec: object.spec};
-    save();
-  } else if (resource && args.includes('delete')) {
-    const [kind, name] = resource.split('/');
-    delete state.preflight[collection[kind]][name];
-    state.preflight.deleted.push(resource);
-    save();
-  } else if (resource && (args.includes('get') || args.includes('logs'))) {
-    const pod = state.preflight.pods[resource.slice('pod/'.length)];
-    if (!pod) { console.error(resource + ' not found'); process.exit(1); }
-    if (args.includes('logs') && pod.log === undefined) { console.error('container is waiting to start'); process.exit(1); }
-    out(args.includes('logs') ? pod.log : {status: pod.status ?? {phase: pod.phase}});
-  } else if (args.includes('--raw=/readyz')) out('ok');
-  else if (args.includes('create') && args.includes('secret')) {
-    const file = args.find((a) => a.startsWith('--from-file=')).slice('--from-file='.length).split('=');
-    out({metadata: {name: 'occ-installation-startup'}, data: {[file[0]]: fs.readFileSync(file[1]).toString('base64')}});
-  } else if (args.includes('apply')) {
-    const secret = JSON.parse(execFileSync('yq', ['-o=json', '.', '-'], {input: fs.readFileSync(0)}));
-    state.secret.data = {...state.secret.data, ...secret.data}; save(); log('secret-replaced');
-    if (take('lost-secret-response')) process.exit(9);
-  }
-  else if (args.includes('scale')) {
-    const component = args.find((a) => a.startsWith('deployment/')).split('-').at(-1);
-    if (component === 'worker' && take('fail-scale-worker')) process.exit(9);
-    state[component] = 0; save(); log('scale-' + component);
-  } else if (args.includes('replace')) {
-    const secret = JSON.parse(fs.readFileSync(0, 'utf8'));
-    if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) process.exit(11);
-    secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
-    state.secret = secret; save(); log('secret-replaced');
-    if (take('lost-secret-response')) process.exit(9);
-  } else if (args.includes('get') && args.includes('secret')) {
-    const name = args[args.indexOf('secret') + 1];
-    if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
-      if (!state.collectorSecret) { console.error('secrets "' + name + '" not found'); process.exit(1); }
-      out(state.collectorSecret);
-    } else out(state.secret);
-  }
-  else if (args.includes('get') && args.includes('nodes')) {
-    const architecture = process.arch === 'x64' ? 'amd64' : 'arm64';
-    if (fs.existsSync(path.join(root, 'change-node'))) { state.nodeReads = (state.nodeReads ?? 0) + 1; save(); }
-    const uid = state.nodeReads > 1 ? 'replacement-node-uid' : 'node-uid';
-    out({items: [{metadata: {name: 'node-a', uid, labels: {'kubernetes.io/os': 'linux', 'kubernetes.io/arch': architecture}}, status: {nodeInfo: {operatingSystem: 'linux', architecture}}}]});
-  }
-  else if (args.includes('get') && args.includes('deployment') && args.includes('openclaw-enterprise-worker')) {
-    out({metadata: {labels: {'app.kubernetes.io/instance': 'oce'}}, spec: {template: {spec: {containers: [{name: 'repository-credentials', args: ['--public-origin', 'https://git.system.svc.cluster.local']}]}}}});
-  }
-  else if (args.some((a) => a.startsWith('deployment/')) && args.includes('get')) {
-    const component = args.find((a) => a.startsWith('deployment/')).split('-').at(-1);
-    const image = component === 'worker' ? (state.workerObservedImage ?? state.controller) : state.controller;
-    const container = {name: component, image};
-    const podSpec = {containers: [container]};
-    if (component === 'worker' && state.workerPlacement !== 'container') {
-      podSpec.containers = state.workerPlacement === 'ambiguous' ? [container] : [{name: 'repository-credentials', image: 'broker'}];
-      if (state.workerPlacement !== 'missing') {
-        podSpec.initContainers = [{...container, ...(state.workerPlacement === 'nonrestartable' ? {} : {restartPolicy: 'Always'})}];
-      }
-    }
-    if (args.some((a) => a.startsWith('jsonpath='))) {
-      out(podSpec.containers.filter((item) => item.name === component).map((item) => item.image).join(' '));
-    } else {
-      out({metadata: {name: 'openclaw-enterprise-' + component, uid: component + '-deployment-uid', generation: 1, labels: {'app.kubernetes.io/instance': 'oce', 'app.kubernetes.io/component': component}}, spec: {replicas: state[component], template: {metadata: {annotations: {'openclaw.dev/installation-checksum': state.checksum}}, spec: podSpec}}, status: {observedGeneration: 1, replicas: 1, updatedReplicas: 1, availableReplicas: 1}});
-    }
-  } else if (args.includes('get') && args.includes('jobs')) {
-    out({items: state.initJobActive ? [{status: {active: 0, conditions: []}}] : []});
-  } else if (args.includes('get') && args.includes('replicasets')) {
-    const selector = fileArg('--selector');
-    const component = selector.endsWith('component=worker') ? 'worker' : 'api';
-    out({items: [{metadata: {name: component + '-rs', uid: component + '-rs-uid', ownerReferences: [{kind: 'Deployment', name: 'openclaw-enterprise-' + component, uid: component + '-deployment-uid', controller: true}]}}]});
-  } else if (args.includes('get') && args.includes('pods')) {
-    const initialization = args.some((a) => a.includes('component=initialization'));
-    const revision = args.some((a) => a.includes('openclaw.dev/revision=rev_new'));
-    const pairComponent = args.some((a) => a.includes('app.kubernetes.io/component=worker')) ? 'worker' : args.some((a) => a.includes('app.kubernetes.io/component=api')) ? 'api' : null;
-    if (pairComponent && state.simulatePair) {
-      const proof = JSON.parse(fs.readFileSync(path.join(root, 'evidence', 'pair-proof.json')));
-      const status = (name, image) => ({name, imageID: 'containerd://' + image.rootDigest, containerID: 'containerd://' + name, restartCount: 0, ready: true, state: {running: {}}});
-      const worker = {name: pairComponent, image: proof.controller.image};
-      const restartable = pairComponent === 'worker' && state.workerPlacement === 'restartable';
-      const podSpec = {nodeName: 'node-a', containers: restartable ? [] : [worker]};
-      const podStatus = {phase: 'Running', conditions: [{type: 'Ready', status: 'True'}], containerStatuses: restartable ? [] : [status(pairComponent, proof.controller)]};
-      if (restartable) { podSpec.initContainers = [{...worker, restartPolicy: 'Always'}]; podStatus.initContainerStatuses = [status('worker', proof.controller)]; }
-      if (pairComponent === 'worker') {
-        podSpec.containers.push({name: 'repository-credentials', image: proof.broker.image});
-        const brokerStatus = status('repository-credentials', proof.broker);
-        if (fs.existsSync(path.join(root, 'wrong-broker-identity'))) brokerStatus.imageID = 'containerd://sha256:' + '0'.repeat(64);
-        podStatus.containerStatuses.push(brokerStatus);
-      }
-      out({items: [{metadata: {name: pairComponent + '-pod', uid: pairComponent + '-pod-uid', ownerReferences: [{kind: 'ReplicaSet', name: pairComponent + '-rs', uid: pairComponent + '-rs-uid', controller: true}]}, spec: podSpec, status: podStatus}]});
-    } else out({items: initialization && state.initActive ? [{status: {phase: 'Running'}}] : revision ? [{metadata: {namespace: 'tenant', name: 'gateway'}, spec: {containers: [{name: 'gateway', image: '${runtime}'}]}, status: {phase: 'Running', conditions: [{type: 'Ready', status: 'True'}]}}] : []});
-  } else if (args.includes('get')) out({items: []});
-  else if (args.includes('exec')) {
-    if (args.includes('worker') && state.simulatePair && take('fail-capability')) process.exit(9);
-    out(args.includes('worker') && state.simulatePair ? 'repository-admission-ready\\n' : '{}');
-  }
-} else if (tool === 'occ') {
-  if (args.includes('deployment-inventory')) {
-    out({installationId: 'ins_test', namespaces: state.inventoryNamespaces ?? [{id: 'ns_test', status: 'ready', agents: state.agent ? [{id: 'agt_test', status: 'active', desiredRuntimeState: 'running', executionMode: 'embedded', activeRevisionId: 'rev_old', deploymentInProgress: false}] : []}]});
-  } else if (state.names && args.includes('get') && (args.includes('agent') || args.includes('namespace'))) {
-    // Reads a scripted resource name; an unlisted ID stands for a denied read, and so does an
-    // Agent read outside its own Namespace. Like a CLI that can take input, it drains stdin.
-    fs.readFileSync(0);
-    log('read ' + args.at(-1));
-    const home = (state.inventoryNamespaces ?? []).find((ns) => ns.agents.some((a) => a.id === args.at(-1)));
-    const name = args.includes('agent') && (!args.includes('--namespace') || fileArg('--namespace') !== home?.id) ? undefined : state.names[args.at(-1)];
-    if (name === undefined) { process.stderr.write('permission denied\\n'); process.exit(1); }
-    out({id: args.at(-1), name});
-  } else if (args.includes('deploy')) {
-    state.dispatches += 1; state.activeRevision = 'rev_new'; save(); log('agent-deploy');
-    if (take('lost-agent-response')) process.exit(9);
-    out({id: 'rev_new'});
-  } else if (args.includes('agent') && args.includes('get')) out({id: 'agt_test', activeRevisionId: state.activeRevision ?? 'rev_old'});
-  else if (args.includes('deployment-status')) out({status: 'succeeded'});
-  else out({id: 'ins_test', name: state.installationName});
-}
-`;
+// This fixture substitutes the external command protocols, not the upgrade script. It
+// records accepted writes independently of the client response. helm, kubectl and occ
+// (and node in pair cases) on the script's PATH are bash scripts answered by the
+// fixture's command server (tests/helpers/fixture-command-server.mjs), so their logic
+// below runs in the test process: a command costs a bash start instead of a node start.
+// The script still starts every command as a real process, and the fixture state stays
+// in state.json, which a command reads when it starts and cases edit between runs.
 
 // The fixture tools exit 9 only for a fault armed with failNext, so an interrupted
 // run must stop at that fault and not at an earlier refusal.
@@ -246,6 +48,594 @@ const injectedFault = { code: 9 };
 const realHelm = (
   await execute("bash", ["-c", "command -v helm"]).catch(() => ({ stdout: "" }))
 ).stdout.trim();
+const commandPath = async (name, fallback) =>
+  (
+    await execute("bash", ["-c", `command -v ${name}`]).catch(() => ({ stdout: "" }))
+  ).stdout.trim() || fallback;
+const shimTools = {
+  bash: "/bin/bash",
+  sleep: await commandPath("sleep", "/bin/sleep"),
+  setsid: await commandPath("setsid", "/usr/bin/setsid"),
+};
+
+// A started process's status and output, like spawnSync's, without blocking the other
+// fixtures' commands while it runs.
+function spawnResult(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+    child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+    child.on("error", (error) => resolve({ status: null, stdout, stderr: stderr + error.message }));
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+// A YAML file as yq reads it; `yq -r` prints a missing or null field as "null".
+async function yamlFile(file) {
+  return JSON.parse((await execute("yq", ["-p=yaml", "-o=json", ".", file])).stdout);
+}
+const yqRaw = (value) => (value === undefined || value === null ? "null" : String(value).trim());
+// yq's `//`: the alternative replaces a missing, null or false value.
+const yqOr = (value, alternative) =>
+  value === undefined || value === null || value === false ? alternative : value;
+
+// Unless a case selects the real chart, a stand-in renders only what the startup
+// preflight reads: each controller container's image and Installation mount.
+async function standInChart(file) {
+  const values = await yamlFile(file);
+  const secretName = yqRaw(yqOr(values?.installation?.secretName, "occ-installation-startup"));
+  const key = yqRaw(yqOr(values?.installation?.key, "installation.yaml"));
+  const image = yqRaw(values?.images?.controller);
+  const deployment = (component, placement) => ({
+    kind: "Deployment",
+    metadata: { name: "openclaw-enterprise-" + component },
+    spec: {
+      template: {
+        spec: {
+          serviceAccountName: "openclaw-enterprise-" + component,
+          volumes: [
+            {
+              name: "installation-startup",
+              secret: { secretName, items: [{ key, path: "installation.yaml" }] },
+            },
+          ],
+          [placement]: [
+            {
+              name: component,
+              image,
+              env: [
+                { name: "OCC_CONFIG_PATH", value: "/etc/openclaw/installation/installation.yaml" },
+              ],
+              volumeMounts: [
+                {
+                  name: "installation-startup",
+                  mountPath: "/etc/openclaw/installation",
+                  readOnly: true,
+                },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  });
+  const repository = yqRaw(yqOr(values?.repositoryCredentials?.enabled, false)) === "true";
+  return [
+    deployment("api", "containers"),
+    deployment("worker", repository ? "initContainers" : "containers"),
+  ]
+    .map((document) => "---\n" + JSON.stringify(document) + "\n")
+    .join("");
+}
+
+// Starts the preflight Pod's container once with its Secret volumes and literal
+// environment. Other cluster inputs (Secret-backed env, CA and token volumes) are
+// not provided; chart cases point Compute at the test's Kubernetes API through an
+// explicit kubeconfig instead of the Pod's service account. The container runs in
+// OCC_TEST_PRODUCTION_IMAGE when set, otherwise as this checkout's source (the
+// command's working directory) with /app mapped to it. Stand-in cases only record it.
+async function runPreflight(root, cwd, state, pod) {
+  const scripted = state.preflightResults?.[pod.spec.containers[0].name];
+  if (scripted) {
+    return scripted;
+  }
+  if (!state.startupCheck) {
+    return { phase: "Succeeded", log: "installation-startup-ready\n" };
+  }
+  const container = pod.spec.containers[0];
+  const work = mkdtempSync(join(root, "preflight-"));
+  chmodSync(work, 0o755);
+  const mounts = [];
+  for (const mount of container.volumeMounts ?? []) {
+    const volume = pod.spec.volumes.find((item) => item.name === mount.name);
+    const secret = volume?.secret && state.preflight.secrets[volume.secret.secretName];
+    if (!secret) {
+      continue;
+    }
+    const directory = join(work, mount.name);
+    // The script runs under umask 077; the image's unprivileged user must still read the mount.
+    mkdirSync(directory);
+    chmodSync(directory, 0o755);
+    for (const item of volume.secret.items) {
+      writeFileSync(join(directory, item.path), Buffer.from(secret.data[item.key], "base64"));
+      chmodSync(join(directory, item.path), 0o644);
+    }
+    mounts.push([directory, mount.mountPath]);
+  }
+  // Kubernetes expands $(VAR) in literal values from earlier variables and turns $$ into $.
+  const expanded = {};
+  const env = (container.env ?? [])
+    .filter((item) => typeof item.value === "string")
+    .map((item) => {
+      const value = item.value.replace(/\$\$|\$\(([A-Za-z_][A-Za-z0-9_]*)\)/g, (match, name) =>
+        match === "$$" ? "$" : (expanded[name] ?? match),
+      );
+      expanded[item.name] = value;
+      return { name: item.name, value };
+    });
+  const image = process.env.OCC_TEST_PRODUCTION_IMAGE;
+  const local = (value) =>
+    mounts
+      .reduce((current, [source, target]) => current.split(target).join(source), value)
+      .split("/app/apps/")
+      .join(cwd + "/apps/")
+      .split("/app/packages/")
+      .join(cwd + "/packages/");
+  const result = image
+    ? // Host networking reaches the test's loopback Kubernetes API only with rootful Docker.
+      await spawnResult(
+        "docker",
+        [
+          "run",
+          "--rm",
+          ...(state.kubeconfig
+            ? [
+                "--network",
+                "host",
+                "--mount",
+                `type=bind,src=${state.kubeconfig},dst=${state.kubeconfig},readonly`,
+              ]
+            : ["--network", "none"]),
+          ...mounts.flatMap(([source, target]) => [
+            "--mount",
+            `type=bind,src=${source},dst=${target},readonly`,
+          ]),
+          ...env.flatMap((item) => ["--env", item.name + "=" + item.value]),
+          "--entrypoint",
+          container.command[0],
+          image,
+          ...container.args,
+        ],
+        { cwd },
+      )
+    : await spawnResult(process.execPath, container.args.map(local), {
+        cwd,
+        env: Object.fromEntries(env.map((item) => [item.name, local(item.value)])),
+      });
+  return {
+    phase: result.status === 0 ? "Succeeded" : "Failed",
+    log: (result.stdout ?? "") + (result.stderr ?? ""),
+  };
+}
+
+// One command of one fixture. `io` (fixture-command-server.mjs) writes its output and
+// ends it; returning without an exit ends it with status 0.
+async function fakeCommand(root, { command: tool, args, cwd }, io) {
+  const stateFile = join(root, "state.json");
+  const state = JSON.parse(readFileSync(stateFile, "utf8"));
+  const save = () => writeFileSync(stateFile, JSON.stringify(state));
+  const log = (value) => appendFileSync(join(root, "events"), value + "\n");
+  const take = (name) => {
+    const path = join(root, name);
+    if (!existsSync(path)) {
+      return false;
+    }
+    unlinkSync(path);
+    return true;
+  };
+  const out = (value) => io.stdout(typeof value === "string" ? value : JSON.stringify(value));
+  const fail = (code, message) => {
+    if (message !== undefined) {
+      io.stderr(message + "\n");
+    }
+    io.exit(code);
+  };
+  const fileArg = (name) => args[args.indexOf(name) + 1];
+  if (tool === "node") {
+    // Pair cases exercise upgrade orchestration after a successful qualification. The
+    // separately selected real-image test verifies compatibility itself.
+    if (args[0] === "scripts/upgrade-repository-image-probe.mjs") {
+      const identity = (image) => ({
+        image,
+        platform: args[3],
+        rootDigest: image.split("@").at(-1),
+        manifestDigest: image.split("@").at(-1),
+        configDigest: image.split("@").at(-1),
+      });
+      out(JSON.stringify({ controller: identity(args[1]), broker: identity(args[2]) }) + "\n");
+    } else {
+      // Every other script runs in this Node, on the command's own pipes.
+      io.script(`exec ${bashString(process.execPath)} "$@"`);
+      return;
+    }
+  } else if (tool === "helm") {
+    if (args[0] === "status") {
+      out(
+        args.includes("json")
+          ? { version: state.version, info: { status: state.helmStatus } }
+          : state.helmStatus,
+      );
+    } else if (args[0] === "get") {
+      out(readFileSync(join(root, "live-values"), "utf8"));
+    } else if (args[0] === "template" && state.realChart) {
+      // Like the real binary, a failed render shows helm's own stderr and status.
+      const rendered = await spawnResult(realHelm, args, { cwd });
+      io.stderr(rendered.stderr);
+      if (rendered.status !== 0) {
+        return fail(rendered.status ?? 1);
+      }
+      out(rendered.stdout);
+    } else if (args[0] === "template") {
+      out(await standInChart(fileArg("--values")));
+    } else if (args[0] === "upgrade" && !args.includes("--dry-run=server")) {
+      if (state.api !== 0 || state.worker !== 0) {
+        return fail(2, "old writers were not stopped");
+      }
+      log("migration");
+      state.version += 1;
+      copyFileSync(fileArg("--values"), join(root, "live-values"));
+      if (take("fail-migration")) {
+        state.helmStatus = "failed";
+        save();
+        return fail(9);
+      }
+      state.helmStatus = "deployed";
+      const values = await yamlFile(fileArg("--values"));
+      state.controller = yqRaw(values?.images?.controller);
+      state.checksum = yqRaw(values?.controlPlane?.installationChecksum);
+      state.api = 1;
+      state.worker = 1;
+      save();
+      if (take("lost-helm-response")) {
+        return fail(9);
+      }
+    }
+  } else if (tool === "kubectl") {
+    state.preflight ??= { secrets: {}, pods: {}, networkpolicies: {}, deleted: [] };
+    const resource = args.find((a) => /^(pod|secret|networkpolicy\.networking\.k8s\.io)\//.test(a));
+    const collection = {
+      pod: "pods",
+      secret: "secrets",
+      "networkpolicy.networking.k8s.io": "networkpolicies",
+    };
+    if (args.includes("create") && args.includes("--filename")) {
+      const source = fileArg("--filename");
+      const object = JSON.parse(
+        source === "-" ? await io.readInput() : readFileSync(source, "utf8"),
+      );
+      if (object.kind === "Secret") {
+        state.preflight.secrets[object.metadata.name] = object;
+      } else if (object.kind === "NetworkPolicy") {
+        state.preflight.networkpolicies[object.metadata.name] = object;
+      } else {
+        state.preflight.pods[object.metadata.name] = {
+          ...(await runPreflight(root, cwd, state, object)),
+          spec: object.spec,
+        };
+      }
+      save();
+    } else if (resource && args.includes("delete")) {
+      const [kind, name] = resource.split("/");
+      delete state.preflight[collection[kind]][name];
+      state.preflight.deleted.push(resource);
+      save();
+    } else if (resource && (args.includes("get") || args.includes("logs"))) {
+      const pod = state.preflight.pods[resource.slice("pod/".length)];
+      if (!pod) {
+        return fail(1, resource + " not found");
+      }
+      if (args.includes("logs") && pod.log === undefined) {
+        return fail(1, "container is waiting to start");
+      }
+      out(args.includes("logs") ? pod.log : { status: pod.status ?? { phase: pod.phase } });
+    } else if (args.includes("--raw=/readyz")) {
+      out("ok");
+    } else if (args.includes("scale")) {
+      const component = args
+        .find((a) => a.startsWith("deployment/"))
+        .split("-")
+        .at(-1);
+      if (component === "worker" && take("fail-scale-worker")) {
+        return fail(9);
+      }
+      state[component] = 0;
+      save();
+      log("scale-" + component);
+    } else if (args.includes("replace")) {
+      const secret = JSON.parse(await io.readInput());
+      if (secret.metadata.resourceVersion !== state.secret.metadata.resourceVersion) {
+        return fail(11);
+      }
+      secret.metadata.resourceVersion = String(Number(secret.metadata.resourceVersion) + 1);
+      state.secret = secret;
+      save();
+      log("secret-replaced");
+      if (take("lost-secret-response")) {
+        return fail(9);
+      }
+    } else if (args.includes("get") && args.includes("secret")) {
+      const name = args[args.indexOf("secret") + 1];
+      if (name !== state.secret.metadata.name && name === state.collectorSecretName) {
+        if (!state.collectorSecret) {
+          return fail(1, 'secrets "' + name + '" not found');
+        }
+        out(state.collectorSecret);
+      } else {
+        out(state.secret);
+      }
+    } else if (args.includes("get") && args.includes("nodes")) {
+      const architecture = process.arch === "x64" ? "amd64" : "arm64";
+      if (existsSync(join(root, "change-node"))) {
+        state.nodeReads = (state.nodeReads ?? 0) + 1;
+        save();
+      }
+      const uid = state.nodeReads > 1 ? "replacement-node-uid" : "node-uid";
+      out({
+        items: [
+          {
+            metadata: {
+              name: "node-a",
+              uid,
+              labels: { "kubernetes.io/os": "linux", "kubernetes.io/arch": architecture },
+            },
+            status: { nodeInfo: { operatingSystem: "linux", architecture } },
+          },
+        ],
+      });
+    } else if (
+      args.includes("get") &&
+      args.includes("deployment") &&
+      args.includes("openclaw-enterprise-worker")
+    ) {
+      out({
+        metadata: { labels: { "app.kubernetes.io/instance": "oce" } },
+        spec: {
+          template: {
+            spec: {
+              containers: [
+                {
+                  name: "repository-credentials",
+                  args: ["--public-origin", "https://git.system.svc.cluster.local"],
+                },
+              ],
+            },
+          },
+        },
+      });
+    } else if (args.some((a) => a.startsWith("deployment/")) && args.includes("get")) {
+      const component = args
+        .find((a) => a.startsWith("deployment/"))
+        .split("-")
+        .at(-1);
+      const image =
+        component === "worker" ? (state.workerObservedImage ?? state.controller) : state.controller;
+      const container = { name: component, image };
+      const podSpec = { containers: [container] };
+      if (component === "worker" && state.workerPlacement !== "container") {
+        podSpec.containers =
+          state.workerPlacement === "ambiguous"
+            ? [container]
+            : [{ name: "repository-credentials", image: "broker" }];
+        if (state.workerPlacement !== "missing") {
+          podSpec.initContainers = [
+            {
+              ...container,
+              ...(state.workerPlacement === "nonrestartable" ? {} : { restartPolicy: "Always" }),
+            },
+          ];
+        }
+      }
+      if (args.some((a) => a.startsWith("jsonpath="))) {
+        out(
+          podSpec.containers
+            .filter((item) => item.name === component)
+            .map((item) => item.image)
+            .join(" "),
+        );
+      } else {
+        out({
+          metadata: {
+            name: "openclaw-enterprise-" + component,
+            uid: component + "-deployment-uid",
+            generation: 1,
+            labels: {
+              "app.kubernetes.io/instance": "oce",
+              "app.kubernetes.io/component": component,
+            },
+          },
+          spec: {
+            replicas: state[component],
+            template: {
+              metadata: { annotations: { "openclaw.dev/installation-checksum": state.checksum } },
+              spec: podSpec,
+            },
+          },
+          status: { observedGeneration: 1, replicas: 1, updatedReplicas: 1, availableReplicas: 1 },
+        });
+      }
+    } else if (args.includes("get") && args.includes("jobs")) {
+      out({ items: state.initJobActive ? [{ status: { active: 0, conditions: [] } }] : [] });
+    } else if (args.includes("get") && args.includes("replicasets")) {
+      const selector = fileArg("--selector");
+      const component = selector.endsWith("component=worker") ? "worker" : "api";
+      out({
+        items: [
+          {
+            metadata: {
+              name: component + "-rs",
+              uid: component + "-rs-uid",
+              ownerReferences: [
+                {
+                  kind: "Deployment",
+                  name: "openclaw-enterprise-" + component,
+                  uid: component + "-deployment-uid",
+                  controller: true,
+                },
+              ],
+            },
+          },
+        ],
+      });
+    } else if (args.includes("get") && args.includes("pods")) {
+      const initialization = args.some((a) => a.includes("component=initialization"));
+      const revision = args.some((a) => a.includes("openclaw.dev/revision=rev_new"));
+      const pairComponent = args.some((a) => a.includes("app.kubernetes.io/component=worker"))
+        ? "worker"
+        : args.some((a) => a.includes("app.kubernetes.io/component=api"))
+          ? "api"
+          : null;
+      if (pairComponent && state.simulatePair) {
+        const proof = JSON.parse(readFileSync(join(root, "evidence", "pair-proof.json"), "utf8"));
+        const status = (name, image) => ({
+          name,
+          imageID: "containerd://" + image.rootDigest,
+          containerID: "containerd://" + name,
+          restartCount: 0,
+          ready: true,
+          state: { running: {} },
+        });
+        const worker = { name: pairComponent, image: proof.controller.image };
+        const restartable = pairComponent === "worker" && state.workerPlacement === "restartable";
+        const podSpec = { nodeName: "node-a", containers: restartable ? [] : [worker] };
+        const podStatus = {
+          phase: "Running",
+          conditions: [{ type: "Ready", status: "True" }],
+          containerStatuses: restartable ? [] : [status(pairComponent, proof.controller)],
+        };
+        if (restartable) {
+          podSpec.initContainers = [{ ...worker, restartPolicy: "Always" }];
+          podStatus.initContainerStatuses = [status("worker", proof.controller)];
+        }
+        if (pairComponent === "worker") {
+          podSpec.containers.push({ name: "repository-credentials", image: proof.broker.image });
+          const brokerStatus = status("repository-credentials", proof.broker);
+          if (existsSync(join(root, "wrong-broker-identity"))) {
+            brokerStatus.imageID = "containerd://sha256:" + "0".repeat(64);
+          }
+          podStatus.containerStatuses.push(brokerStatus);
+        }
+        out({
+          items: [
+            {
+              metadata: {
+                name: pairComponent + "-pod",
+                uid: pairComponent + "-pod-uid",
+                ownerReferences: [
+                  {
+                    kind: "ReplicaSet",
+                    name: pairComponent + "-rs",
+                    uid: pairComponent + "-rs-uid",
+                    controller: true,
+                  },
+                ],
+              },
+              spec: podSpec,
+              status: podStatus,
+            },
+          ],
+        });
+      } else {
+        out({
+          items:
+            initialization && state.initActive
+              ? [{ status: { phase: "Running" } }]
+              : revision
+                ? [
+                    {
+                      metadata: { namespace: "tenant", name: "gateway" },
+                      spec: { containers: [{ name: "gateway", image: runtime }] },
+                      status: {
+                        phase: "Running",
+                        conditions: [{ type: "Ready", status: "True" }],
+                      },
+                    },
+                  ]
+                : [],
+        });
+      }
+    } else if (args.includes("get")) {
+      out({ items: [] });
+    } else if (args.includes("exec")) {
+      if (args.includes("worker") && state.simulatePair && take("fail-capability")) {
+        return fail(9);
+      }
+      out(args.includes("worker") && state.simulatePair ? "repository-admission-ready\n" : "{}");
+    }
+  } else if (tool === "occ") {
+    if (args.includes("deployment-inventory")) {
+      out({
+        installationId: "ins_test",
+        namespaces: state.inventoryNamespaces ?? [
+          {
+            id: "ns_test",
+            status: "ready",
+            agents: state.agent
+              ? [
+                  {
+                    id: "agt_test",
+                    status: "active",
+                    desiredRuntimeState: "running",
+                    executionMode: "embedded",
+                    activeRevisionId: "rev_old",
+                    deploymentInProgress: false,
+                  },
+                ]
+              : [],
+          },
+        ],
+      });
+    } else if (
+      state.names &&
+      args.includes("get") &&
+      (args.includes("agent") || args.includes("namespace"))
+    ) {
+      // Reads a scripted resource name; an unlisted ID stands for a denied read, and so does an
+      // Agent read outside its own Namespace. Like a CLI that can take input, it drains stdin.
+      await io.readInput();
+      log("read " + args.at(-1));
+      const home = (state.inventoryNamespaces ?? []).find((ns) =>
+        ns.agents.some((a) => a.id === args.at(-1)),
+      );
+      const name =
+        args.includes("agent") &&
+        (!args.includes("--namespace") || fileArg("--namespace") !== home?.id)
+          ? undefined
+          : state.names[args.at(-1)];
+      if (name === undefined) {
+        return fail(1, "permission denied");
+      }
+      out({ id: args.at(-1), name });
+    } else if (args.includes("deploy")) {
+      state.dispatches += 1;
+      state.activeRevision = "rev_new";
+      save();
+      log("agent-deploy");
+      if (take("lost-agent-response")) {
+        return fail(9);
+      }
+      out({ id: "rev_new" });
+    } else if (args.includes("agent") && args.includes("get")) {
+      out({ id: "agt_test", activeRevisionId: state.activeRevision ?? "rev_old" });
+    } else if (args.includes("deployment-status")) {
+      out({ status: "succeeded" });
+    } else {
+      out({ id: "ins_test", name: state.installationName });
+    }
+  }
+  io.exit(0);
+}
 
 const shippedCollectorConfig = (key) => readFile(join(repository, "deploy/logging", key));
 
@@ -428,31 +818,23 @@ async function fixture(
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = join(directory, "bin");
   await mkdir(bin);
-  for (const name of ["helm", "kubectl", "occ"]) {
-    const path = join(bin, name);
-    await writeFile(path, executable);
-    await chmod(path, 0o755);
-  }
-  if (simulatePair) {
-    // These cases exercise upgrade orchestration after a successful qualification.
-    // The separately selected real-image test verifies compatibility itself.
-    const wrapper = `#!${process.execPath}
-const {spawnSync} = process.getBuiltinModule('child_process');
-const args = process.argv.slice(2);
-if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
-  const identity = (image) => ({image, platform: args[3], rootDigest: image.split('@').at(-1), manifestDigest: image.split('@').at(-1), configDigest: image.split('@').at(-1)});
-  process.stdout.write(JSON.stringify({controller: identity(args[1]), broker: identity(args[2])}) + '\\n');
-} else {
-  const child = spawnSync(${JSON.stringify(process.execPath)}, args, {stdio: 'inherit'});
-  process.exit(child.status ?? 1);
-}
-`;
-    const path = join(bin, "node");
-    await writeFile(path, wrapper);
-    await chmod(path, 0o755);
+  const server = await startCommandServer({
+    forwardedEnv: [],
+    handle: ({ command, args, cwd, io }) => fakeCommand(directory, { command, args, cwd }, io),
+  });
+  t.after(() => server.close());
+  // Hooks run in order: stop answering commands before the directory goes.
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // Pair cases also answer node, to stand in for the image-pair probe.
+  for (const command of ["helm", "kubectl", "occ", ...(simulatePair ? ["node"] : [])]) {
+    const { port, clientToken, serverToken } = server;
+    await writeFile(
+      join(bin, command),
+      commandShim({ ...shimTools, port, clientToken, serverToken, command, forwardedEnv: [] }),
+      { mode: 0o700 },
+    );
   }
   const collectorSecretName = "occ-demo-collector-config";
   let values = JSON.stringify({
@@ -484,21 +866,21 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
               drivers: { repo: "repository-credentials" },
             },
           ],
+          repository: {
+            id: "repository-credentials",
+            configuration: { sessionDurationSeconds: 86400 },
+            nativeSender: {
+              controlSocket: "/run/openclaw/repository-control/private/control.sock",
+              publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
+            },
+            preparedGitHub: {
+              custodyKeyPath: "/etc/openclaw/prepared-repository/custody.key",
+              privateKeyPath: "/etc/openclaw/prepared-repository/private-key.pem",
+            },
+          },
         }
       : {}),
     drivers: {
-      ...(repositoryCredentials
-        ? {
-            repo: {
-              id: "repository-credentials",
-              configuration: {
-                controlSocket: "/run/openclaw/repository-control/private/control.sock",
-                sessionDurationSeconds: 86400,
-                publicCaPath: "/etc/openclaw/repository-ca/ca.crt",
-              },
-            },
-          }
-        : {}),
       compute: {
         id: "compute-kubernetes",
         configuration: {
@@ -675,8 +1057,6 @@ if (args[0] === 'scripts/upgrade-repository-image-probe.mjs') {
   const env = {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
-    UPGRADE_FIXTURE: directory,
-    REAL_HELM: realHelm,
     OCC_URL: "https://occ.example.invalid",
     OCC_SERVICE_KEY_FILE: join(directory, "key"),
   };
@@ -832,7 +1212,7 @@ test("reviewed settings survive an interrupted controller upgrade without losing
     "/etc/openclaw/repository-registry/registry.json",
   );
   assert.equal(
-    liveInstallation.drivers.repo.configuration.publicCaPath,
+    liveInstallation.repository.nativeSender.publicCaPath,
     "/etc/openclaw/repository-ca/ca.crt",
   );
   assert.equal(
@@ -968,9 +1348,9 @@ test(
           if (change === "registry") {
             candidate.backend[0].configuration.registryPath = "/etc/other/registry.json";
           } else if (change === "driver") {
-            candidate.drivers.repo.configuration.publicCaPath = "/etc/other/ca.crt";
+            candidate.repository.nativeSender.publicCaPath = "/etc/other/ca.crt";
           } else if (change === "duration") {
-            candidate.drivers.repo.configuration.sessionDurationSeconds = 3600;
+            candidate.repository.configuration.sessionDurationSeconds = 3600;
           } else if (change === "peer") {
             candidate.drivers.compute.configuration.network.repositoryCredentials.podLabels[
               "app.kubernetes.io/component"
@@ -982,10 +1362,10 @@ test(
               context: "other",
             };
           } else if (change === "remove") {
-            delete candidate.drivers.repo;
+            delete candidate.repository;
             delete candidate.backend;
           } else {
-            candidate.drivers.repo = { id: "repository-credentials", configuration: {} };
+            candidate.repository = { id: "repository-credentials", configuration: {} };
             candidate.backend = [
               {
                 id: "github-primary",
@@ -1407,22 +1787,61 @@ test("an Installation the selected controller image cannot load stops before any
   ]);
 });
 
+test("a Driver refusal preserves field diagnostics before upgrade quiescence", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: {
+      installation: (installation) => {
+        installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+        return installation;
+      },
+    },
+  });
+  await assert.rejects(f.run(), (error) => {
+    assert.match(
+      error.stderr,
+      /cannot start the api with the candidate Installation: .*DRIVER_CONFIGURATION_INVALID.*No OCC writer was stopped/s,
+    );
+    assert.doesNotMatch(error.stderr, /Bad_Class/);
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+  for (const component of ["api", "worker"]) {
+    const log = await readFile(join(f.evidence, `preflight-${component}.log`), "utf8");
+    const line = log.split("\n").find((line) => line.startsWith("DRIVER_CONFIGURATION_INVALID: "));
+    assert.ok(line, log);
+    assert.deepEqual(JSON.parse(line.slice("DRIVER_CONFIGURATION_INVALID: ".length)), [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+  }
+});
+
 // The API and worker read the stored Installation name from the database and refuse
 // one that breaks the Name rule (INSTALLATION_NAME_INVALID). The preflight Pods check
 // the name OCC returns with the selected image's rule, so the refusal comes before any
 // writer stops instead of after (dogfood D525). The Pod carries the stored name as JSON,
 // so a trailing no-break space survives and a line break (a control character) gets the
 // same refusal rather than a parse failure. Each case reads a different component's Pod.
-for (const [name, installationName, component] of [
+for (const [name, installationName, component, ...flags] of [
   [
     "a stored Installation name that breaks the Name rule stops before any writer stops",
     "Production\u00a0",
     "api",
   ],
   [
-    "a stored Installation name with a line break gets the Name rule refusal",
+    "preflight-only refuses a stored Installation name with a line break",
     "Production\n",
     "worker",
+    "--preflight-only",
   ],
 ]) {
   test(name, async (t) => {
@@ -1435,7 +1854,7 @@ for (const [name, installationName, component] of [
       installationName,
       chart: { installation: (installation) => installation },
     });
-    await assert.rejects(f.run(), (error) => {
+    await assert.rejects(f.run(...flags), (error) => {
       for (const stopped of ["api", "worker"]) {
         assert.match(
           error.stderr,
@@ -1894,4 +2313,25 @@ test("an Installation the selected controller image loads passes the preflight a
   assert.ok(
     state.preflight.deleted.includes(`networkpolicy.networking.k8s.io/${policy.metadata.name}`),
   );
+});
+
+test("preflight-only checks the candidate without preparing or deploying it", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    agent: true,
+    chart: { installation: (installation) => installation },
+  });
+  await assert.rejects(f.run("--resume", "--preflight-only"), /cannot be combined/);
+  assert.equal(existsSync(f.evidence), false);
+  assert.match((await f.run("--preflight-only")).stdout, /Preflight passed/);
+  assert.match(
+    await readFile(join(f.evidence, "preflight-worker.log"), "utf8"),
+    /^installation-startup-ready$/m,
+  );
+  assert.equal(existsSync(join(f.evidence, "prepared")), false);
+  await assert.rejects(f.run("--resume"), /not a prepared deployment/);
+  await assertStoppedBeforeWriters(f);
 });

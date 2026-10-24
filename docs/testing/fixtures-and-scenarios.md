@@ -15,7 +15,7 @@ an external protocol but must not replace the authorization or lifecycle behavio
 under test.
 
 Captured state must be keyless. The [released Gateway fixture](../../tests/fixtures/runtime-state/released-gateway-state.tar.gz)
-has device identity and config revision keys removed; regenerate it the same
+has device identity and config version keys removed; regenerate it the same
 way using the image identified in its test.
 
 ## Make cases easy to add and diagnose
@@ -40,9 +40,18 @@ Preserve source-versus-built selection and real process or container boundaries
 in packaging tests. See the [credential fixtures](../../tests/fixtures/repository-credentials)
 and [credential testing guide](repository-credentials.md) for examples.
 
+## Hash fixture passwords cheaply
+
+Build controllers in tests through the constructors in
+[`tests/helpers/password-hasher.mjs`](../../tests/helpers/password-hasher.mjs). They inject a
+salted SHA-256 hasher in place of the controller's scrypt, which costs about 0.1 CPU-second
+per hash or sign-in. It still verifies scrypt hashes that production entry points wrote, such
+as the bootstrap administrator's. Pass `scryptPasswordHasher` where hashing cost, timing or the
+stored format is under test. Deployments cannot select another hasher: only code passes one.
+
 ## Add properties where they improve coverage
 
-Use constrained inputs, independent properties, bounded execution, reproducible
+Use constrained inputs, independent properties, execution with a time limit, reproducible
 counterexamples, and fresh state. Use an established library for generation and
 shrinking. Keep heavyweight Git and container workflows as selected integration
 scenarios.

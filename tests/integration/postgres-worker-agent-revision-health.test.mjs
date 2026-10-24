@@ -1,8 +1,8 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import test, { after } from "node:test";
@@ -11,6 +11,7 @@ import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { repositoryAttempts } from "../helpers/postgres-worker-revision-support.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 // Worker health, readiness, leases and outages. Deployment and dispatch cases are in
 // postgres-worker-agent-revision.test.mjs, credential-source withdrawals in its
@@ -118,8 +119,7 @@ test(
 // needing no PostgreSQL, and returns its output once its process exits with `status`, or fails
 // after 30 s naming the file as still running.
 async function runFixtureFile(t, body, { fixtureOptions, status: expectedStatus = 0 } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), "revision-fixture-exit-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  const directory = await temporaryDirectory(t, "revision-fixture-exit-");
   const file = join(directory, "abandoned.test.mjs");
   const helper = new URL("../helpers/postgres-worker-revision-fixture.mjs", import.meta.url);
   await writeFile(
@@ -171,6 +171,11 @@ ${body}`,
   return output;
 }
 
+// The fixture's 2 s exit grace and 60 s backstop leave a real file's runner time to report. The
+// one-test files below take a shorter grace (and backstop) so their own waits stay short; each
+// wait they race stays longer than the grace, as the defaults are.
+const exitGraceMs = 500;
+
 // Finding 1223: a teardown step left running past its limit can hold its process open (a pool's
 // socket, a child), so the file sat idle after its last test until the runner's file timeout
 // killed it. A file that abandoned a step now exits once its own teardown is done. Runs the
@@ -180,7 +185,7 @@ test("an abandoned teardown step that holds its process open does not keep the f
     t,
     `// A root after hook registered after cleanup, slower than the exit grace, still finishes.
 after(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  await new Promise((resolve) => setTimeout(resolve, ${exitGraceMs * 2}));
   console.log("later after hook finished");
 });
 test("a stuck step is abandoned at its limit", async () => {
@@ -188,6 +193,7 @@ test("a stuck step is abandoned at its limit", async () => {
   await abandonStep();
 });
 `,
+    { fixtureOptions: { exitGraceMs } },
   );
   // Finding 1246: the exit grace starts once every root after hook has run, not at cleanup.
   assert.match(output, /later after hook finished/);
@@ -200,6 +206,7 @@ test("a teardown step abandoned by a later root after hook does not keep the fil
     `after(abandonStep);
 test("nothing is abandoned during the tests", () => {});
 `,
+    { fixtureOptions: { exitGraceMs } },
   );
 });
 
@@ -214,7 +221,7 @@ test("a later root after hook that fails after an abandoned step does not keep t
 });
 test("a stuck step is abandoned at its limit", abandonStep);
 `,
-    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+    { fixtureOptions: { exitGraceMs, exitBackstopMs: exitGraceMs * 2 }, status: 1 },
   );
   assert.match(output, /later after hook failed/);
 });
@@ -229,7 +236,7 @@ test("a later root after hook that abandons a step and fails does not keep the f
 });
 test("nothing is abandoned during the tests", () => {});
 `,
-    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+    { fixtureOptions: { exitGraceMs, exitBackstopMs: exitGraceMs * 2 }, status: 1 },
   );
   assert.match(output, /later after hook failed/);
 });
@@ -504,7 +511,7 @@ test(
       },
     });
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
       { startRepositoryReceiptServer },
@@ -512,7 +519,7 @@ test(
       { createResourceScope },
       { dirname },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
@@ -534,15 +541,17 @@ test(
     });
     // Simulate the old broker's 404 while all other traffic still reaches the real service.
     relay.setCapabilitiesHidden(true);
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-        drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
+    const repositoryBackend = {
+      id: credentials.backendId,
+      client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
+      drivers: { repo: "repository-credentials" },
+    };
+    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+      publicCa: credentials.tls.ca,
+    });
+    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+      sessionDurationSeconds: 60,
+    });
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
       controlSocket: credentials.config.gateway.controlSocket,
@@ -553,7 +562,7 @@ test(
     context.after(() => receiptServer.close());
     const resolution = driver.resolve({
       namespaceId: fixture.namespace.id,
-      bindings: [{ repositoryRef: "repo-a", profile: "git-read" }],
+      bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
     });
     const owner = await fixture.agent("repository-capability");
     const selection = {
@@ -569,7 +578,11 @@ test(
       },
       {
         pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+        transformDrivers: (drivers) => ({
+          ...drivers,
+          repositoryPolicy: driver,
+          nativeRepositorySender: sender,
+        }),
       },
     );
     // Four jittered retry delays can total nearly 15 seconds before the fifth claim.
@@ -582,9 +595,9 @@ test(
     await waitFor("worker readiness after compatible broker selection", async () =>
       healthy > 0 ? true : undefined,
     );
-    const open = driver.open.bind(driver);
+    const open = sender.open.bind(sender);
     let lostSessionId;
-    driver.open = async (input, signal) => {
+    sender.open = async (input, signal) => {
       const result = await open(input, signal);
       if (lostSessionId === undefined && result.kind === "created") {
         lostSessionId = result.session.sessionId;

@@ -42,7 +42,7 @@ installations fail explicitly; there is no runtime-owned OAuth fallback.
 The old `oauth` binding and persistent refresh bundle are unsupported. Existing
 development Agents using that shape need recreation with a new source. The
 platform does not read old runtime credential files back into the service.
-Account metadata changes require a new revision. Native checks that depend on
+Account metadata changes require a new deployment version. Native checks that depend on
 real access-token claims remain unqualified with an opaque placeholder.
 
 Connection recovery and refresh are the external token service's responsibility.

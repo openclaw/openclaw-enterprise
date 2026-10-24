@@ -36,14 +36,16 @@
     "plugin-model": "./test-suites/plugin-model.json",
     "repository-credentials-container": "./test-suites/repository-credentials-container.json",
     "repository-credentials-live": "./test-suites/repository-credentials-live.json",
-    "repository-credentials-platform": "./test-suites/repository-credentials-platform.json",
     "repository-credentials-installed": "./test-suites/repository-credentials-installed.json",
     "k3d-two-cluster": "./test-suites/k3d-two-cluster.json",
     "k3d-observability": "./test-suites/k3d-observability.json",
     "k3d-observability-demo": "./test-suites/k3d-observability-demo.json",
     "runtime-image-fixture": "./test-suites/runtime-image-fixture.json",
     "qa-matrix": "./test-suites/qa-matrix.json",
-    "keycloak-oidc": "./test-suites/keycloak-oidc.json"
+    "keycloak-oidc": "./test-suites/keycloak-oidc.json",
+    "egress-connected": "./test-suites/egress-connected.json",
+    "skipper-prepared-git-installed": "./test-suites/skipper-prepared-git-installed.json",
+    "egress-custody-installed": "./test-suites/egress-custody-installed.json"
   },
   "groups": {
     "ci": [
@@ -66,7 +68,6 @@
       "k3d-fixture-plugins",
       "logging-collector",
       "repository-credentials-container",
-      "repository-credentials-platform",
       "k3d-observability",
       "keycloak-oidc"
     ],
@@ -99,12 +100,12 @@
       "logging-collector",
       "k3d-otel",
       "repository-credentials-container",
-      "repository-credentials-platform",
       "k3d-observability",
       "k3d-observability-demo",
       "keycloak-oidc",
       "qa-matrix",
-      "dev-up-k3d"
+      "dev-up-k3d",
+      "skipper-prepared-git-installed"
     ]
   }
 }

@@ -45,7 +45,7 @@ test("kubectl asset selection supports the pinned OpenShell CI host platforms", 
   assert.throws(() => selectKubectlAsset("darwin", "x64"), /no pinned kubectl/);
 });
 
-test("OpenShell Helm chart image values use the v0.1.4 registry and digest contract", () => {
+test("OpenShell Helm chart image values use the v0.1.5 registry and digest contract", () => {
   const digest = "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
   assert.deepEqual(
@@ -119,6 +119,32 @@ test("OpenShell outage proof rereads a deployment the worker claimed again betwe
     })();
     assert.deepEqual(ended, { work: queued(1), status });
   }
+});
+
+// Finding 2040: a pass that waited on the stopped gateway gives its attempt back, so the work is
+// queued with no attempt counted; only its last attempt's code shows that the pass ran.
+test("OpenShell outage proof counts a pass that waited on the gateway without an attempt", async () => {
+  const waited = {
+    state: "queued",
+    reason_code: null,
+    attempt_count: 0,
+    last_attempt_code: "SANDBOX_GATEWAY_UNAVAILABLE",
+  };
+  let statusReads = 0;
+  const read = (work) =>
+    outageAttemptRead({
+      readWork: async () => work,
+      readStatus: async () => {
+        statusReads += 1;
+        return "queued";
+      },
+    })();
+  // Not claimed yet, or a pass that waited on something else: no proof, and no status read.
+  assert.equal(await read({ ...waited, last_attempt_code: null }), undefined);
+  assert.equal(await read({ ...waited, last_attempt_code: "REVISION_INCOMPLETE" }), undefined);
+  assert.equal(statusReads, 0);
+  assert.deepEqual(await read(waited), { work: waited, status: "queued" });
+  assert.equal(statusReads, 1);
 });
 
 test("OpenShell host probes retain the exposed hostname while connecting to loopback", async (t) => {
@@ -834,7 +860,7 @@ test("OpenShell fixture networking admits the supervisor callback without granti
   const matches = (selector, labels) =>
     selector.matchLabels !== undefined &&
     Object.entries(selector.matchLabels).every(([key, value]) => labels[key] === value);
-  // OpenShell v0.1.4 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
+  // OpenShell v0.1.5 supervisor Pod labels (sandbox_runtime.rs; internal/occdev/kubernetes.go).
   const supervisor = {
     "openshell.ai/managed-by": "openshell",
     "openshell.ai/boundary-role": "supervisor",

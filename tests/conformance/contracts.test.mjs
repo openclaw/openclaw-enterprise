@@ -26,6 +26,8 @@ import {
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
 import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  validateConfiguration,
+  requireConfiguration,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -42,7 +44,83 @@ import {
   isSandboxFacet,
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
+  ConfigurationValidationError,
+  sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
+
+test("network delegation covers every requested host label and port without broadening executables", () => {
+  const grant = {
+    id: "python",
+    binary: "/usr/bin/python3.11",
+    host: "api.example.org",
+    ports: [{ from: 443, to: 445 }],
+  };
+  const ceiling = [
+    { ...grant, id: "first", host: "*.example.org", ports: [{ from: 443, to: 444 }] },
+    { ...grant, id: "second", host: "*.example.org", ports: [{ from: 445, to: 445 }] },
+  ];
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], ceiling), true);
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, host: "*.example.org" }], ceiling),
+    true,
+  );
+  // A wildcard covers exactly one label; sampling a subdomain cannot authorize the apex or deeper names.
+  for (const host of [
+    "example.org",
+    "deep.api.example.org",
+    "*.api.example.org",
+    "api.example.net",
+  ]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, host }], ceiling), false, host);
+  }
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, binary: "/usr/bin/python3" }], ceiling),
+    false,
+  );
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling(
+      [grant],
+      [ceiling[0], { ...ceiling[1], ports: [{ from: 446, to: 446 }] }],
+    ),
+    false,
+  );
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
+  // Coverage needs a port: an empty or reversed range never proves containment.
+  for (const ports of [[], [{ from: 445, to: 443 }], [{ from: 65535, to: 1 }]]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, ports }], ceiling), false);
+  }
+  for (const [invalid, path, code, message] of [
+    [
+      [{ ...grant, binary: "/usr/bin/../python3.11" }],
+      "/additions/0/binary",
+      "INVALID_VALUE",
+      "Use a normalized absolute executable path.",
+    ],
+    [
+      [{ ...grant, host: "api..example.org" }],
+      "/additions/0/host",
+      "INVALID_VALUE",
+      "Use a valid DNS host or single-label wildcard.",
+    ],
+    [
+      [{ ...grant, ports: [{ from: 445, to: 443 }] }],
+      "/additions/0/ports/0/to",
+      "INVALID_RANGE",
+      "The end port must be at least the start port.",
+    ],
+    [[grant, grant], "/additions/1/id", "INVALID_VALUE", "Grant IDs must be unique."],
+  ]) {
+    assert.throws(
+      () => validateSandboxNetworkGrants(invalid),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
+        return true;
+      },
+    );
+  }
+});
 
 test("the Driver contract exposes the supported platform capabilities", () => {
   assert.deepEqual(DRIVER_CAPABILITIES, [
@@ -57,6 +135,7 @@ test("the Driver contract exposes the supported platform capabilities", () => {
     "repo",
     "credential_gateway",
     "credential_refresh",
+    "credential_proxy",
   ]);
   assert.equal(Object.isFrozen(DRIVER_CAPABILITIES), true);
 
@@ -197,6 +276,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
     "agent",
     "agent_revision",
     "credential_source",
+    "sandbox_policy",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
@@ -776,5 +856,80 @@ test("runtime diagnostics outside that vocabulary are returned as UNRECOGNIZED",
       { component: "agent", check: "runtime-status", state: "unknown", checkedAt: null },
       known,
     ],
+  );
+});
+
+// A duplicate false-subschema error must not hide useful field diagnostics, and
+// removing that duplicate must not admit independently forbidden values.
+test("configuration diagnostics collapse extra-field noise without accepting false schemas", () => {
+  assert.deepEqual(
+    validateConfiguration({ type: "object", additionalProperties: false }, { extra: 1 }),
+    {
+      success: false,
+      error: {
+        details: [
+          {
+            path: "",
+            code: "UNKNOWN_FIELD",
+            message: "Configuration does not satisfy additionalProperties.",
+          },
+        ],
+      },
+    },
+  );
+  for (const [schema, input] of [
+    [false, 1],
+    [{ type: "array", items: false }, [1]],
+    [{ type: "object", properties: { additionalProperties: false } }, { additionalProperties: 1 }],
+  ]) {
+    const result = validateConfiguration(schema, input);
+    assert.equal(result.success, false);
+    assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
+  }
+});
+
+test("configuration admission retains original values while isolating semantic callback references", () => {
+  const input = { endpoint: { port: 443 } };
+  let retained;
+  const definition = {
+    configurationSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint: {
+          type: "object",
+          additionalProperties: false,
+          properties: { port: { type: "integer" } },
+        },
+      },
+    },
+    validateConfiguration(value) {
+      retained = value;
+      return [];
+    },
+  };
+  assert.equal(requireConfiguration(definition, input), input);
+  // A Driver retaining its argument cannot change data already admitted for another caller.
+  assert.throws(() => {
+    retained.endpoint.port = 80;
+  }, TypeError);
+  assert.deepEqual(input, { endpoint: { port: 443 } });
+  const accessor = {
+    get endpoint() {
+      throw new Error("input getter must not run");
+    },
+  };
+  assert.throws(
+    () => requireConfiguration(definition, accessor),
+    (error) => {
+      assert.deepEqual(error.error.details, [
+        {
+          path: "",
+          code: "INVALID_TYPE",
+          message: "Configuration must contain only plain JSON values.",
+        },
+      ]);
+      return true;
+    },
   );
 });

@@ -214,7 +214,7 @@ pnpm_config_verify_deps_before_run=false node scripts/ci/prepare.mjs --lane "$OB
 
 Inspect results and clean up as above. The model lane checks embedded and
 dedicated turns and attributed logs in a production topology fixture; it does
-not prove Helm-installed model coverage or revision cutover. See
+not prove Helm-installed model coverage or version cutover. See
 [Kubernetes image requirements](kubernetes.md#kubernetes-model-turns-and-secrets).
 
 On macOS, Podman needs a compatible rootful engine with cpuset delegation. Select

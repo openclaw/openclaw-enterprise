@@ -44,11 +44,11 @@ graph TD
     U --> V["Initialize through Compute or selected Sandbox"]
     V --> W{"Setup complete?"}
     W -->|no| X["Block execution; retain pending input"]
-    W -->|yes| Y["Start runtime; activate revision"]
+    W -->|yes| Y["Start runtime; activate Agent revision"]
     Y --> Z["Clear staged bytes; retain completion metadata"]
   end
   A["GET or PUT Agent workspace file"] --> B["OCC authenticates and validates request"]
-  B --> C["Authorize exact Agent and select active revision"]
+  B --> C["Authorize exact Agent and resolve selected version"]
   C --> D["Compute derives private Agent URL"]
   D --> E["OCC reads service key and opens WSS"]
   E --> F{"Envoy authenticates OCC?"}
@@ -68,28 +68,26 @@ graph TD
 
 ### 1. Creation validates and privately stages the inputs
 
-`apps/controller/src/console/agents/create.mjs` fills four textareas from
+`apps/controller/src/console/agents/create.mts` fills four textareas from
 `workspace-defaults.mjs` and submits their values with `WORKSPACE_DEFAULTS_ID`.
 `apps/controller/src/index.ts:createFastifyApp` rejects a stale defaults identity;
 `packages/contracts/src/workspace-setup.ts:normalizeInitialWorkspaceFiles`
 rejects unknown names, invalid Unicode, NUL, and values above 16 KiB UTF-8.
-An absent or empty map creates no setup state and follows ordinary startup; see
+An absent or empty map follows ordinary startup without setup state; see
 the [create body limit](../reference/agents.md#initial-contents-at-creation).
 
 `packages/occ/src/index.ts:createAgent` checks Namespace-scoped Agent creation,
 exact Configuration read, and existing binding permissions. Its transaction
 creates a stopped Agent and, when keys were supplied, a private `workspaceSetups`
 record keyed by exact Namespace/Agent. No AgentRevision is created. Inputs do
-not enter the Agent, Configuration, revision snapshot, public response, or
-metadata-only create audit. The original API strings are preserved; Console
-textarea values use LF newlines.
+not enter the Agent, Configuration, Agent revision snapshot, public response, or
+metadata-only create audit. API strings are preserved; Console textareas use LF newlines.
 
 ### 2. Deployment initializes storage before execution
 
 `apps/controller/src/worker.ts` reads private setup state into
 `ComputeRevisionContext`. A Driver without `supportsWorkspaceSetup` returns
-`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes
-`workspaceSetup` to Compute.
+`WORKSPACE_SETUP_UNSUPPORTED`. The worker serializes Agent startup and passes `workspaceSetup` to Compute.
 
 Bundled Drivers use
 `apps/controller/src/drivers/compute/workspace-setup-runtime.ts:WORKSPACE_SETUP_RUNTIME`.
@@ -134,7 +132,7 @@ failures (`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation
 ### 3. Activation clears staged contents and keeps completion metadata
 
 `apps/controller/src/worker.ts` completes setup in the activation-completion
-transaction only after checking the exact active revision and work claim.
+transaction only after checking the selected Agent revision ID and work claim.
 `workspaceSetups.complete` removes document bytes and retains identity and
 completion metadata. Drivers remove or replace private delivery bytes with
 metadata; subsequent startup verifies the durable workspace marker.
@@ -148,7 +146,7 @@ update the setup record.
 
 ### 4. Composition configures private access
 
-`apps/controller/src/server.mjs:start` validates the optional absolute
+`apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
 `createWorkspaceFilesAccess`. The worker uses the same mounted service key
@@ -168,7 +166,7 @@ without endpoint support cannot serve workspace files.
 session or scoped service API key. Native Agent credentials cannot invoke this
 administration surface. `GET` needs Agent `read`; `PUT` needs Agent `operate`
 and, for session callers, passes the browser CSRF boundary. OCC resolves the
-active AgentRevision before Compute endpoint resolution.
+selected AgentRevision before Compute endpoint resolution.
 
 Names, the `PUT` body, and content and body limits follow the
 [live file contract](../reference/agents.md#live-file-access). The deadline and
@@ -202,7 +200,7 @@ Other Harnesses are replaced, restarting their Gateway.
   commands before pairing, preserving explicit denies.
 - `addNodeEnrollmentState` mounts Agent-scoped identity at `/home/node/.openclaw-node`
   from the existing Harness PVC volume (`0700`, nonroot initializer), preserving it
-  across revisions until Agent deletion.
+  across versions until Agent deletion.
 - `AGENT_WITH_NODE_ENTRYPOINT` runs native `setup --baseline` before supervising
   Codex and the node under `tini`. It passes admitted bootstrap options, preserves
   existing edits, and stops on setup failure. Codex starts at once with the
@@ -243,7 +241,7 @@ Other Harnesses are replaced, restarting their Gateway.
   `codexDynamicToolsExclude`, a non-object Codex plugin `config`, `cron`,
   `cron.triggers`, `models`, `models.providers`, or a non-object on the
   `agents.defaults.compaction.memoryFlush` path. The deploy fails with
-  `400 INVALID_REQUEST` naming the setting path, and no revision is created.
+  `400 INVALID_REQUEST` naming the setting path, and no Agent revision is created.
   OCC's model check refuses earlier, with the same error, a provider row that is
   not an object or whose `models` is not a catalog list for the Agent's models.
 - Default reads cover the enrolled Agent's Harness workspace and managed skill
@@ -259,15 +257,17 @@ The chart supplies worker credentials/public trust and Compute installs node
 access to Envoy. Memory uses node duplex with existing native file workers;
 index and embedding configuration stay on Gateway. Skills uses remote discovery,
 reads and policy-checked dependency installation. Each host initializes its own
-image assets; Gateway-provided Skills stay local. See the
+image assets. Gateway-provided Skill sources stay local; native worker turns can
+receive temporary resource copies. See the
 [ownership table](../../specs/plans/30-storage-split-integration.md#where-data-lives).
 Remote channel menus remain deferred to [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
-Only Harness mounts dedicated workspace, generated-image and Codex rollout
-storage. The rollouts let the Gateway resume its bound Codex thread after
-stop/start or Pod replacement; the rest of `CODEX_HOME` stays Pod-local. External OAuth authentication
-uses an ephemeral placeholder and metadata, with refresh owned by the token service. Codex's remote-media reader transfers reply
-artifacts before cleanup. Embedded storage is unchanged.
+Only Harness mounts the dedicated workspace, generated images and Codex rollouts.
+Rollouts retain execution history, not a guarantee of restart recovery; see
+[restart limits](../reference/harness-execution.md#isolation-and-activation).
+The rest of `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
+and metadata; the token service owns refresh. Codex's remote-media reader retrieves
+reply artifacts before cleanup. Embedded storage is unchanged.
 `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX claims without
 mutating them. The worker stops predecessors and suppresses their maintenance
 before dedicated preparation. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
@@ -302,16 +302,17 @@ Envoy to the native gateway; the CIDR is not an independent authentication
 boundary. Native
 hello grants `operator.admin`; reads also accept `operator.read`.
 
-### 8. Native file access returns a bounded result
+<span id="8-native-file-access-returns-a-bounded-result" class="anchor-alias"></span>
+
+### 8. Native file access limits reads to 16 KiB
 
 `apps/controller/src/gateway/workspace-files-client.ts:requestNativeWorkspaceFile` uses Hello's
 `sessionDefaults.defaultAgentId` when embedded OpenClaw composition opts in and native ownership
 is `sole` with `selectionRequired: false`. Other rosters retain the explicit
-`main` target; other callers retain their explicit targets. Dedicated Codex
+`main` target; other callers retain their targets. Dedicated Codex
 binds only `main` to its workspace node, so deployment refuses a roster without
 it (`requireDedicatedMainAgentDefault`). No roster RPC or
-additional scope is required. The same client invokes `agents.files.get` or
-`agents.files.set`. Reads enforce the response content limit and return
+additional scope is required. The client invokes `agents.files.get` or `agents.files.set`. Reads enforce the response content limit and return
 `{ name, content }`; writes return `{ name, size }`. There is no list, delete,
 compare-and-swap, generic RPC, chat bridge, or PostgreSQL file copy.
 
@@ -322,17 +323,17 @@ OCC restart. Root-CA replacement follows the
 Writes audit only the Agent resource, authorization action, outcome, reason
 when present, and file name. If a dispatched write has an unknown outcome,
 OCC returns `503 UNKNOWN_OUTCOME`, attempts the corresponding audit, and never
-replays it. The native client closes in the operation's cleanup path.
+replays it. Cleanup closes the native client.
 
 ## Debugging and Verification
 
-- For setup failure, check revision/work status, the selected Driver's
+- For setup failure, check Agent revision and work status, the selected Driver's
   support, native release, defaults identity and durable workspace placement.
   Do not delete a completion marker to force a replay; missing initialized
   storage needs operator recovery, not the creation payload.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
-  reload the Console create form and resubmit. A create response alone
-  does not prove runtime initialization; verify active revision and live content.
+  reload the Console create form and resubmit. Creation
+  does not prove runtime initialization; verify the selected version and live content.
 - First use, retry, and redeploy require
   [real-workflow proof](../../specs/plans/34-agent-workspace-files-setup.md#verification).
 - For `503 DEPENDENCY_UNAVAILABLE`, check the Compute routing settings and key

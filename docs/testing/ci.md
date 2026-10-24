@@ -8,14 +8,14 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 
 ## Tests
 
-| Check                             | When it runs                            | Blocks merge               | GitHub Actions                                                                                                     |
-| --------------------------------- | --------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                                | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#special-cases)              | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [`main`; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
-| Full Integration                  | Manual                                  | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#special-cases)              | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                                  | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Check                             | When it runs                                       | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                                           | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases)                         | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [`main`; every 6 h; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                                             | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#special-cases)                         | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                                             | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
@@ -26,8 +26,9 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
   a maintainer can [request full QA on a trusted pull request](#qa-matrix).
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
-Docs-only PRs run static checks in CI; recognized test-only PRs select affected
-lanes. Other changes run all ordinary lanes. `CI Required` currently blocks
+Docs-only PRs run static checks in CI. Recognized test-only PRs select affected
+lanes, including Checks and Conformance 2 to type-check TypeScript tests.
+Other changes run all ordinary lanes. `CI Required` currently blocks
 merge on `main`. These workflows do not gate each Agent/platform deployment.
 
 <a id="ci-configuration"></a>
@@ -109,12 +110,13 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
-These process environment variables are optional. Keep the same directory for
-First Agent `images` and `run`; changing it does not isolate fixed-name containers.
+These process environment variables are optional. Keep the same directory and
+slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
 | Setting                                     | Default                                                       | Purpose                                                                            |
 | ------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `OCC_FIRST_AGENT_SMOKE_DIRECTORY`           | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`                | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
 | `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                                     | Per-file test deadline; hosted lane/job deadlines still apply.                     |
 | `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                                      | Per-file cleanup allowance.                                                        |
 | `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs                           | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
@@ -126,7 +128,7 @@ First Agent `images` and `run`; changing it does not isolate fixed-name containe
 | `OPENCLAW_CI_BROWSER_FAILURE_TRACE`         | Unset                                                         | Set `1` to include Playwright traces.                                              |
 
 Cleanup timeout/grace overrides that are not positive numbers use defaults.
-Deadlines include pipe drain; bounded waiting does not prove deletion. Preparation
+Deadlines include pipe drain; a wait timeout does not prove deletion. Preparation
 verifies imported image references on every node and fails on import timeout.
 
 <a id="github-actions"></a>
@@ -153,12 +155,12 @@ verified, CI runs every ordinary lane.
 | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Checks and Conformance 1, 2                                                                                       | [API, Drivers, authorization, CLI and tooling](local.md)                                                                     | [1](../../scripts/ci/test-suites/checks-baseline-1.json), [2](../../scripts/ci/test-suites/checks-baseline-2.json)                                                                                                                                                                                                                        |
 | Console Browser, Console Browser 2                                                                                | [Console forms, Agent editing and permissions](local.md#console-browser-checks)                                              | [1](../../scripts/ci/test-suites/checks-browser.json), [2](../../scripts/ci/test-suites/checks-browser-2.json)                                                                                                                                                                                                                            |
-| PostgreSQL Migrations, Application, Authentication, Platform                                                      | [Migrations, revision workers, sign-in and persistence](postgresql.md)                                                       | [Migrations](../../scripts/ci/test-suites/postgres.json), [Application](../../scripts/ci/test-suites/postgres-application.json), [Authentication](../../scripts/ci/test-suites/postgres-auth.json), [Platform](../../scripts/ci/test-suites/postgres-platform.json)                                                                       |
+| PostgreSQL Migrations, Application, Authentication, Platform                                                      | [Migrations, version workers, sign-in and persistence](postgresql.md)                                                        | [Migrations](../../scripts/ci/test-suites/postgres.json), [Application](../../scripts/ci/test-suites/postgres-application.json), [Authentication](../../scripts/ci/test-suites/postgres-auth.json), [Platform](../../scripts/ci/test-suites/postgres-platform.json)                                                                       |
 | Images and Packaging; Image Model Probes; Image Runtime Startup, Image Runtime Startup 2, Image Runtime Startup 3 | [Packaging, readiness, shutdown and workspace state](docker.md)                                                              | [Packaging](../../scripts/ci/test-suites/images-packaging.json), [Probes](../../scripts/ci/test-suites/images-model-probes.json), [Startup 1](../../scripts/ci/test-suites/images-runtime-startup.json), [2](../../scripts/ci/test-suites/images-runtime-startup-2.json), [3](../../scripts/ci/test-suites/images-runtime-startup-3.json) |
 | Runtime Image Fixture                                                                                             | [Runtime fixture images](fixtures-and-scenarios.md)                                                                          | [Fixture](../../scripts/ci/test-suites/runtime-image-fixture.json)                                                                                                                                                                                                                                                                        |
 | k3d Fixture and Configuration; k3d State and Lifecycle; k3d Plugin Status                                         | [Kubernetes configuration, isolation, state and plugins](kubernetes.md#kubernetes-http-fixture)                              | [Configuration](../../scripts/ci/test-suites/k3d-fixture-configuration.json), [State](../../scripts/ci/test-suites/k3d-fixture-state.json), [Plugins](../../scripts/ci/test-suites/k3d-fixture-plugins.json)                                                                                                                              |
 | Production Observability; Logging Collector                                                                       | [Fixture metrics, OTLP and collector recovery](local.md#metrics-and-observability-tests)                                     | [Observability](../../scripts/ci/test-suites/k3d-observability.json), [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                                                                                                                                                                    |
-| Repository Credentials; Repository Credentials Platform                                                           | [Controlled Git/gh, credential isolation, expiry and recovery](repository-credentials.md)                                    | [Container](../../scripts/ci/test-suites/repository-credentials-container.json), [Platform](../../scripts/ci/test-suites/repository-credentials-platform.json)                                                                                                                                                                            |
+| Repository Credentials                                                                                            | [Controlled Git/gh, credential isolation, expiry and recovery](repository-credentials.md)                                    | [Container](../../scripts/ci/test-suites/repository-credentials-container.json)                                                                                                                                                                                                                                                           |
 | Keycloak OIDC                                                                                                     | [Sign-in, rotation, denied users and sign-out](kubernetes.md#keycloak-oidc-tests)                                            | [Keycloak](../../scripts/ci/test-suites/keycloak-oidc.json)                                                                                                                                                                                                                                                                               |
 | First Agent Smoke                                                                                                 | Local installation, chat, stop/restart and public-reader retirement/isolation with a simulated model; no real-provider proof | No manifest: [smoke script](../../scripts/ci/first-agent-smoke.mjs)                                                                                                                                                                                                                                                                       |
 
@@ -172,10 +174,19 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 
 ### QA matrix
 
+The explicit `sandbox-policy` selector exercises shared configuration discovery,
+preview, and the real OpenShell network-policy lifecycle. It requires a prepared
+OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
+The OpenShell advisory job covers the same workflow automatically.
+
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
+
+The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
+and checks its branding through sign-in and the Agent workflow. Other scenarios
+do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
@@ -185,9 +196,10 @@ use the failed run's commit and retained results. These jobs do not block merge 
 For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
 can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
 label once before enabling this workflow. Adding it starts those three jobs on GitHub's PR merge
-commit, plus the hosted local installation rehearsal. A manual dispatch on `main` also includes
-that rehearsal. Check the run's commit and results before merging; skipped jobs provide no live QA
-result. As long as the label remains, pushing a new revision replaces the previous run. Removing
+commit, plus the hosted local installation rehearsal. A manual dispatch on `main` and the
+schedule (every 6 hours, at minute 17) also run the whole matrix with that rehearsal. Check
+the run's commit and results before merging; skipped jobs provide no live QA result.
+As long as the label remains, pushing a new commit replaces the previous run. Removing
 it stops selection on future pushes; cancel an active run separately. Forks and Dependabot PRs are
 ineligible. This is trusted code with real credentials, under the [existing environment policy](#environments).
 
@@ -202,13 +214,14 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario   | In advisory | Presets         | Checks                                                            |
-| ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
-| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
-| `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
-| `git-read` | No          | Codex           | Reject read-only push and dispose credentials.                    |
-| `calendar` | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.        |
-| `slack`    | No          | Codex           | Threaded reply and new root message.                              |
+| Scenario          | In advisory | Presets         | Checks                                                                                                      |
+| ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
+| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
+| `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
+| `git-write`       | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                 |
+| `git-push-denied` | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                  |
+| `calendar`        | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.                                                  |
+| `slack`           | No          | Codex           | Threaded reply and new root message.                                                                        |
 
 `OCC_TEST_QA_INSTALLATION` accepts `all` (default), `compose`, `kubernetes`;
 `OCC_TEST_QA_PRESET` accepts `all` (default), `OpenClaw`, `Codex`.
@@ -242,8 +255,10 @@ post/history/reply access. Reserve the Socket Mode app for this run.
 
 Git's private input directory contains `registry.json`, `private-key.pem`, and
 `upstream-cidrs.json`. Follow [fixture setup](../guides/deploy/local-repository-credentials.md):
-exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, `git-read`/`git-full`
-profiles, approved IPv4 `/32` endpoints, and run-branch push permissions.
+exactly one authorized repository, `${OCC_INITIAL_NAMESPACE_ID}`, approved IPv4 `/32`
+endpoints, and run-branch push permissions. The run grants `git-write` with `git-only`
+transport on one branch, `oce-qa-<run>`, and opens no PR. The run generates the
+worker's custody key.
 `OCC_TEST_QA_GITHUB_OBSERVER_APP_INPUT_DIRECTORY` instead supplies an isolated
 observer App's `registry.json` and `private-key.pem`. Observer credentials stay outside Agents and clean
 only verified run-owned refs.
@@ -288,7 +303,7 @@ itself remains manual.
 | Jobs                                    | What they test / suite guide                                                                                                                               | Exact manifests                                                                                                       | Runs on PRs                      |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) and [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                               |
-| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI revision cutover](kubernetes.md#production-tui-tests)                                | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                               |
+| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI version cutover](kubernetes.md#production-tui-tests)                                 | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                               |
 | Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                       | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                               |
 | OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                  | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`                   |
 | Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                   | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                   |
@@ -306,6 +321,8 @@ and [exact manifest](../../scripts/ci/test-suites/k3d-observability-demo.json).
 
 These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 
+- [`egress-connected`](static-egress.md#select-the-prepared-connected-lane): select explicitly after preparing the protected controller, database, authenticated OpenShell stack, and synthetic HTTPS origin. CI runs the request preflight in `checks-baseline-2`; the generic `openshell` lane does not run this qualification.
+- [`egress-custody-installed`](protected-repository-custody.md): qualify repository dispatch and response custody on a separately prepared controller and OpenShell pair, with an independent dispatch observer.
 - `repository-credentials-live`: requires an authorized disposable repository and cleanup. See [repository credentials](repository-credentials.md).
 - `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
