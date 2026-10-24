@@ -6030,6 +6030,14 @@ test(
       "logging.collector.resources.requests.memory": "384e6",
       "logging.collector.state.sizeLimit": "0",
     });
+    // Kubernetes saturates both values to the int64 maximum, and reads page sizes as quantities.
+    await render({
+      ...values,
+      "resources.requests.memory": "9Ei",
+      "resources.limits.memory": "8Ei",
+      "slackProxy.resources.requests.hugepages-1\\.5Gi": "3Gi",
+      "slackProxy.resources.limits.hugepages-1\\.5Gi": "3Gi",
+    });
   },
 );
 

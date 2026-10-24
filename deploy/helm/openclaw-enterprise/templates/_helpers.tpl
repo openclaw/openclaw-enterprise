@@ -977,7 +977,7 @@ capabilities:
 {{- with index $requirements $section -}}
 {{- range $key, $qty := . -}}
 {{- $field := printf "%s.%s.%s" $name $section $key -}}
-{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-[0-9]+([KMGTPE]i|[kMGTPE])?)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (hasPrefix "requests." $key)))) -}}
+{{- if not (or (regexMatch "^(cpu|memory|ephemeral-storage|hugepages-[0-9]+(\\.[0-9]+)?([KMGTPE]i|[kMGTPE]|[eE][0-9]+)?)$" $key) (and (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$" $key) (not (hasPrefix "requests." $key)))) -}}
 {{- fail (printf "%s names a resource Kubernetes does not accept: use cpu, memory, ephemeral-storage, hugepages-<size> or a domain-prefixed resource such as example.com/gpu, not starting with requests." $field) -}}
 {{- end -}}
 {{- if not (kindIs "invalid" $qty) -}}
@@ -990,7 +990,8 @@ capabilities:
 {{- range $key, $request := index $requirements "requests" | default dict -}}
 {{- $limit := index $limits $key -}}
 {{- if and (not (kindIs "invalid" $request)) (not (kindIs "invalid" $limit)) -}}
-{{- if gt (float64 (include "openclaw.quantityValue" $request)) (float64 (include "openclaw.quantityValue" $limit)) -}}
+{{- /* Kubernetes saturates larger values to the int64 maximum, which reads as 2^63 here. */ -}}
+{{- if gt (minf 9223372036854775807.0 (include "openclaw.quantityValue" $request)) (minf 9223372036854775807.0 (include "openclaw.quantityValue" $limit)) -}}
 {{- fail (printf "%s.requests.%s (%v) must not exceed %s.limits.%s (%v)" $name $key $request $name $key $limit) -}}
 {{- end -}}
 {{- end -}}
