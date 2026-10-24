@@ -124,12 +124,12 @@ export async function temporaryDirectory(t, prefix = "repository-credentials-") 
   return directory;
 }
 
-export async function createTlsMaterial(t) {
-  const directory = await temporaryDirectory(t, "repository-credentials-tls-");
-  const keyFile = join(directory, "key.pem");
-  const certFile = join(directory, "cert.pem");
-  // A fresh self-signed certificate on the process's shared fixture key (shared-keys.mjs).
-  await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
+// One self-signed certificate per process on the shared fixture key (shared-keys.mjs), minted by
+// the first call. Every certificate minted from that key and subject would verify the others
+// anyway, so later calls lose nothing by reusing it; each still gets its own key and cert files.
+let fixtureCertificate;
+
+async function mintFixtureCertificate(keyFile, certFile) {
   await run("openssl", [
     "req",
     "-x509",
@@ -144,10 +144,26 @@ export async function createTlsMaterial(t) {
     "-addext",
     "subjectAltName=DNS:credentials.example.test,DNS:localhost,IP:127.0.0.1",
   ]);
+  return readFile(certFile);
+}
+
+export async function createTlsMaterial(t) {
+  const directory = await temporaryDirectory(t, "repository-credentials-tls-");
+  const keyFile = join(directory, "key.pem");
+  const certFile = join(directory, "cert.pem");
+  await writeFile(keyFile, sharedRsaPrivateKeyPem("repository-credentials-tls"), { mode: 0o600 });
+  if (fixtureCertificate === undefined) {
+    fixtureCertificate = mintFixtureCertificate(keyFile, certFile);
+    fixtureCertificate.catch(() => {
+      fixtureCertificate = undefined;
+    });
+  }
+  const cert = await fixtureCertificate;
+  await writeFile(certFile, cert);
   return {
     key: await readFile(keyFile),
-    cert: await readFile(certFile),
-    ca: await readFile(certFile),
+    cert: Buffer.from(cert),
+    ca: Buffer.from(cert),
     keyFile,
     certFile,
   };
