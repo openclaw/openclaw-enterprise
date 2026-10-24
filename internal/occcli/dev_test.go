@@ -33,6 +33,17 @@ func TestDevUpRejectsSandboxPolicyFlagsBeforeDockerStartup(t *testing.T) {
 		if !strings.Contains(text, "Sandbox policy input requires Kubernetes Compute and a Sandbox Driver") || strings.Contains(text, "unknown option") {
 			t.Fatalf("%v:\n%s", args, text)
 		}
+		// Finding 2323: the usage printed after the refusal must not offer the refused flags.
+		if !strings.Contains(text, "usage: scripts/dev-up") || strings.Contains(text, "--sandbox-network-policy") {
+			t.Fatalf("%v: usage offers Kubernetes-only flags:\n%s", args, text)
+		}
+	}
+	help := exec.Command("bash", "scripts/dev-up", "--help")
+	help.Dir = repository
+	help.Env = append(os.Environ(), "OCC_DEVELOPMENT_COMPUTE_DRIVER=docker")
+	output, err := help.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "usage: scripts/dev-up") || strings.Contains(string(output), "--sandbox-network-policy") {
+		t.Fatalf("--help: err = %v\n%s", err, output)
 	}
 }
 
