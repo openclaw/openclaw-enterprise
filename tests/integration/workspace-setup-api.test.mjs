@@ -314,7 +314,11 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
     // OpenShell's own rewrite: the workspace moves to the Sandbox data mount.
     configureAgent(configuration, harness) {
       return OpenShellSandboxDriver.prototype.configureAgent.call(
-        { options: { kubernetes: { sandboxDataMount: { mountPath: "/sandbox/data" } } } },
+        {
+          options: {
+            kubernetes: { userNamespaces: false, sandboxDataMount: { mountPath: "/sandbox/data" } },
+          },
+        },
         configuration,
         harness,
       );
@@ -374,6 +378,8 @@ test("Agent create admits private workspace files through the OpenShell initiali
       gateway: { workspaceMode: "operator" },
       kubernetes: {
         runtimeClassName: "openshell-sandbox",
+        // Native OpenClaw workspace preparation requires it.
+        userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",

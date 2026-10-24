@@ -17,6 +17,24 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: OpenShell refuses OpenClaw Agents without user namespaces off
+
+**What breaks.** With the OpenShell Sandbox Driver, Agent save and deployment
+refuse a dedicated OpenClaw Agent with a 400 unless the Driver sets
+`kubernetes.userNamespaces: false`. Earlier builds saved and admitted it, then
+failed every new revision in workspace preparation, after its predecessors had
+stopped.
+
+**Who is affected.** OpenShell Installations that leave
+`kubernetes.userNamespaces` unset or `true` and run OpenClaw Agents; none of
+those Agents could deploy. Codex Agents are unaffected.
+
+**How to tell.** The refusal says that dedicated OpenClaw needs
+`kubernetes.userNamespaces: false`.
+
+**Steps.** Set `kubernetes.userNamespaces: false` in the OpenShell Sandbox
+Driver configuration and restart the controller, or switch the Agent to Codex.
+
 ## 2026-10-24: OpenShell readiness poll interval is capped at 2147483647 ms
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox
