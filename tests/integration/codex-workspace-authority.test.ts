@@ -1041,7 +1041,8 @@ constructor = "${escaped(value)}"`,
     internal_chat_message_metadata_passthrough: { content_item_kinds: [kind], ...metadata },
   });
   const developer = message("developer", "model.base_instructions");
-  const managedDeveloper = message("developer", "generic.developer_instructions");
+  const genericDeveloper = message("developer", "generic.developer_instructions");
+  const managedDeveloper = message("developer", "managed_config.developer_instructions");
   const user = message("user", "user.text", stamp);
   const assistant = message("assistant", "unknown", { turn_id: stamp.turn_id }, "output_text");
   const request = (input: unknown) => ({
@@ -1083,11 +1084,13 @@ constructor = "${escaped(value)}"`,
   // The native annotation describes text already allowed by the same model grant.
   const plainDeveloper = { role: "developer", content: managedDeveloper.content };
   assert.deepEqual(provider.classify(route, request([plainDeveloper, user])), expected);
-  assert.deepEqual(provider.classify(route, request([managedDeveloper, user])), expected);
-  assert.equal(
-    openAiStaticProvider.classify(platformRoute, request([managedDeveloper, user])),
-    undefined,
+  assert.deepEqual(
+    provider.classify(route, request([genericDeveloper, managedDeveloper, user])),
+    expected,
   );
+  for (const annotated of [genericDeveloper, managedDeveloper]) {
+    assert.equal(openAiStaticProvider.classify(platformRoute, request([annotated])), undefined);
+  }
   const nativeMetadata = {
     mcp_attribution: JSON.stringify({ status: "none" }),
     "x-codex-turn-metadata": JSON.stringify({ reasoning_effort: "medium" }),
@@ -1158,7 +1161,8 @@ constructor = "${escaped(value)}"`,
     ),
     message("developer", "generic.developer_instructions", {}, "output_text"),
     message("developer", "generic.developer_instructions", { authority: "workspace" }),
-    message("developer", "managed_config.developer_instructions"),
+    message("user", "managed_config.developer_instructions", stamp),
+    message("developer", "managed_config.unknown"),
     { ...managedDeveloper, id: undefined },
     { ...managedDeveloper, content: [...managedDeveloper.content, ...managedDeveloper.content] },
     message("developer", "user.text"),

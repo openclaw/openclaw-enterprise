@@ -183,6 +183,7 @@ const inputItems = array(inputItem);
 
 const developerTextKind = oneOf(
   "generic.developer_instructions",
+  "managed_config.developer_instructions",
   "model.base_instructions",
   "host_skills.instructions",
   "permissions.instructions",
