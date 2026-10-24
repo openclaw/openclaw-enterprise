@@ -14,7 +14,8 @@
     "OCC_TEST_HARNESS_K3D_REAL": "1",
     "OCC_TEST_LOCAL_FIRST_AGENT_REAL": "1",
     "OCC_TEST_SLACK_LIVE": "0",
-    "OCC_TEST_GATEWAY_ROUTING_REAL": "0"
+    "OCC_TEST_GATEWAY_ROUTING_REAL": "0",
+    "OCC_TEST_GATEWAY_OUTBOUND_K3D": "1"
   },
   "prepare": {
     "postgres": true,
@@ -33,6 +34,7 @@
     {
       "path": "tests/integration/harness-topology-k3d-real.test.mjs",
       "expectedTests": [
+        "production dedicated Gateway outbound enforces native plugin routing and withdraws active authority",
         "production dedicated Skill source uploads honor default and denied node-write policy",
         "production dedicated Codex preserves gateway conversations and retained images across Pod replacement",
         "production Secret binding powers embedded OpenClaw and preserves conversations across Pod replacement",

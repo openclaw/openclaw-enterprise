@@ -459,14 +459,14 @@ spec:
               value: {{ include "openclaw.trustedProxy.header" $ | quote }}
             {{- end }}
             {{- end }}
-            {{- if $.Values.slackProxy.enabled }}
-            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
-              value: {{ include "openclaw.slackProxy.url" $ | quote }}
-            - name: OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST
-              value: {{ printf "%s.%s.svc" (include "openclaw.slackProxy.serviceName" $) $.Release.Namespace | quote }}
-            {{- else if $.Values.api.channelDirectoryProxyUrl }}
-            - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
-              value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
+            {{- if $.Values.outboundProxy.enabled }}
+            - name: OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL
+              value: {{ include "openclaw.outboundProxy.url" $ | quote }}
+            - name: OCC_CONTROL_PLANE_OUTBOUND_PROXY_MANAGED_HOST
+              value: {{ printf "%s.%s.svc" (include "openclaw.outboundProxy.serviceName" $) $.Release.Namespace | quote }}
+            {{- else if $.Values.api.controlPlaneOutboundProxyUrl }}
+            - name: OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL
+              value: {{ $.Values.api.controlPlaneOutboundProxyUrl | quote }}
             {{- end }}
             - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
               value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}

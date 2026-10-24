@@ -47,38 +47,56 @@ path. App-token prefixes do not prove validity, scopes, or app/bot pairing.
 Validation checks the current values; credentials can change before runtime
 startup, which remains a separate connectivity check.
 
+## Network requirements
+
+The trusted Slack Driver declares two separate requirements:
+
+- `controlPlaneNetworkRequirements()` permits the exact `slack.com` host for
+  credential validation and directory requests.
+- `gatewayNetworkRequirements(configuration)` permits `slack.com`,
+  `slack-edge.com`, and `slack-msgs.com`, including subdomains, when at least one
+  native Slack account is enabled. Disabled accounts add no requirement.
+
+OCC combines the Gateway requirements with the Agent's
+[Gateway outbound selection](../gateway-outbound.md) during deployment. Enabling
+Slack supplies these destinations automatically; operators do not maintain a
+second Slack host list. Gateway networking remains available only for supported
+dedicated execution, and channel enablement does not grant general public HTTPS.
+
 ## Enable lookup in production
 
-The production API selects the Slack Driver. With default-deny egress, Slack
-lookup and credential validation need a proxy. With the recommended Helm setting
-`slackProxy.enabled: true`, the chart:
+Production composition selects the Slack Driver. With default-deny egress,
+lookup and credential validation need an approved route. Configure Helm
+`outboundProxy.enabled: true` and supply `outboundProxy.denyCidrs` with the actual
+Installation infrastructure addresses, including public addresses. The chart:
 
-- creates a private `openclaw-enterprise-slack-proxy` Service;
-- points `OCC_CHANNEL_DIRECTORY_PROXY_URL` at that Service DNS name;
-- allows API Pod egress only to the proxy Pod selector; and
-- allows the proxy public IPv4 egress on TCP 443, excluding private and
-  reserved ranges.
+- creates the private `openclaw-enterprise-outbound-proxy` Service;
+- sets `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` and the exact matching
+  `OCC_CONTROL_PLANE_OUTBOUND_PROXY_MANAGED_HOST` on the API;
+- admits only the release's API Pods and grants them egress to that proxy;
+- grants the proxy public IPv4 TCP 443 egress, excluding private, reserved,
+  and configured infrastructure ranges.
 
-The bundled proxy accepts HTTP `CONNECT` only for Slack hostnames on port 443.
-The API accepts a DNS proxy URL only when Helm also sets the matching
-`OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST`; it rejects any other DNS proxy URL.
+The control-plane entrypoint derives permitted destinations from the trusted
+bundled ChannelDriver. It uses the same generic CONNECT implementation as Gateway
+proxies, with a separate restricted policy. For Slack management it permits
+`CONNECT slack.com:443`, without a subdomain grant. It needs no Agent deployment
+and receives no Slack token. Gateway Pods use their own revision-owned proxies
+and cannot reach this API-only service.
 
-Operators can instead set Helm `api.channelDirectoryProxyUrl` to an approved
-external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the
-example IP and port replaced. The value must contain one literal IPv4 address
-other than `0.0.0.0` and an explicit port, without credentials or a path. The
-chart passes it to the API as `OCC_CHANNEL_DIRECTORY_PROXY_URL` and allows API
-Pod egress only to that IP and port. The proxy must permit `CONNECT slack.com:443`; restrict its other
-destinations at the proxy. The chart does not grant the worker or Agent Pods this
-egress.
+Operators can instead set Helm `api.controlPlaneOutboundProxyUrl` to an approved
+external HTTP or HTTPS proxy, such as `http://198.51.100.25:3128` with the example
+IP and port replaced. Use one literal IPv4 address other than `0.0.0.0` and an
+explicit port, without credentials or a path. Helm grants the API egress to that
+exact IP and port. The external proxy must enforce the Driver's management
+requirements and infrastructure restrictions.
 
-The Driver sends Slack API requests through the selected tunnel and verifies
-Slack's TLS certificate. Keep the selected bot token in the same-Namespace
-Secret; Helm values need no token or other credential for the proxy.
-Without a reachable Slack route, lookup and credential validation return
-unavailable. Exact-ID entry does not bypass credential validation. See the
-[production controller settings](../settings/production.md) for the environment
-contract.
+The Driver verifies Slack's TLS certificate inside the tunnel. Keep the selected
+bot token in its same-Namespace Secret; no proxy credential is needed in Helm
+values. Without a reachable route, lookup and credential validation return
+unavailable. Exact-ID entry does not bypass credential validation. See
+[production controller settings](../settings/production.md#control-plane-outbound-proxy)
+for proxy process settings.
 
 See the [ChannelDriver contract](channel.md) for OCC authorization and
 [Slack Configuration](../configuration/secrets.md#native-channel-configuration)

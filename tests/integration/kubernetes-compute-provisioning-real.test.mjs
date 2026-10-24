@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { kubernetesConfigurationName } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -503,6 +504,37 @@ test(
     const nodeEnrollment = createGatewayNodeEnrollment(
       async () => "fixture-node-enrollment-api-key",
     );
+    const controllerImage = process.env.OCC_TEST_PRODUCTION_CONTROLLER_IMAGE;
+    assert.match(
+      controllerImage ?? "",
+      /^\S+@sha256:[a-f0-9]{64}$/i,
+      "provisioning requires the actual imported controller image for its Gateway proxy",
+    );
+    const kubernetesService = JSON.parse(
+      await kubectl("get", "service", "kubernetes", "--namespace", "default", "-o", "json"),
+    );
+    const kubernetesEndpoints = JSON.parse(
+      await kubectl("get", "endpoints", "kubernetes", "--namespace", "default", "-o", "json"),
+    );
+    const infrastructureAddresses = [
+      ...(kubernetesService.spec.clusterIPs ?? [kubernetesService.spec.clusterIP]),
+      ...(kubernetesEndpoints.subsets ?? []).flatMap(({ addresses = [] }) =>
+        addresses.map(({ ip }) => ip),
+      ),
+    ];
+    const denyCidrs = [
+      ...new Set(
+        infrastructureAddresses.map((address) => {
+          const family = isIP(address);
+          assert.notEqual(
+            family,
+            0,
+            "the selected cluster must report literal infrastructure addresses",
+          );
+          return `${address}/${family === 4 ? 32 : 128}`;
+        }),
+      ),
+    ];
     const { driver, kubernetesNamespaceName } = await createDriver(
       {
         authentication: controller.authentication,
@@ -515,8 +547,13 @@ test(
         runtime: {
           transportSecretPrefix: "transport",
           gatewayStorageClassName: "local-path",
-          // The provisioned Agent enables Slack, which needs the Installation's channel runtime.
-          channels: { proxyUrl: "http://10.42.0.15:3128" },
+          // The real proxy serves the admitted Slack requirements; fixture credentials
+          // and the fixture runtime establish projection, not a Slack connection.
+          gatewayOutbound: {
+            enabled: true,
+            image: controllerImage,
+            denyCidrs,
+          },
           gatewayNodeSelector: {
             "kubernetes.io/hostname": JSON.parse(await kubectl("get", "nodes", "-o", "json"))
               .items[0].metadata.name,
@@ -587,6 +624,15 @@ test(
       },
     );
     assert.equal(slackBotSecret.status, 201, JSON.stringify(slackBotSecret.body));
+    const slackAppSecret = await fixture.request(
+      "POST",
+      `/namespaces/${namespaceOwner.id}/secrets`,
+      {
+        name: `Provisioning Slack app token ${randomUUID().slice(0, 8)}`,
+        value: `xapp-${randomUUID()}`,
+      },
+    );
+    assert.equal(slackAppSecret.status, 201, JSON.stringify(slackAppSecret.body));
 
     // Before creating the Agent, use the actual Kubernetes-backed PAT through the
     // real discovery Driver; only the external provider responses are controlled.
@@ -675,6 +721,17 @@ test(
       slackBotSecretRef: slackBotSecret.data.ref,
       authMethod: "codex_pat",
     });
+    // Socket Mode needs both saved roles; provider auth.test remains the explicit external fixture.
+    body.configuration.values.channels.slack.mode = "socket";
+    body.configuration.values.channels.slack.appToken = {
+      source: "env",
+      provider: "default",
+      id: "SLACK_APP_TOKEN",
+    };
+    body.configuration.secretBindings.SLACK_APP_TOKEN = {
+      source: slackAppSecret.data.ref,
+      delivery: { type: "env" },
+    };
     assert.equal(
       JSON.stringify(body).includes(rotatedPat),
       false,
@@ -732,6 +789,23 @@ test(
     assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
     assert.equal(exactRevision.data.compute.id, driver.id);
     assert.equal(exactRevision.data.compute.implementation, driver.implementation);
+    assert.deepEqual(
+      exactRevision.data.gatewayOutbound,
+      {
+        selection: { mode: "channelsOnly" },
+        requirements: [
+          {
+            source: "slack",
+            destinations: ["slack.com", "slack-edge.com", "slack-msgs.com"].map((host) => ({
+              host,
+              includeSubdomains: true,
+            })),
+          },
+        ],
+        denyCidrs,
+      },
+      "the worker must freeze automatic Slack requirements without an extra Agent policy setting",
+    );
 
     const configuration = await resource(
       "configmap",
@@ -752,7 +826,7 @@ test(
     );
     assert.equal(
       provisionedSecrets.length,
-      2,
+      3,
       "Console-saved Secrets must be stored through the real Kubernetes Secret Driver",
     );
     const transportName = `transport-${hash(provisioned.agentId)}`;
@@ -777,6 +851,50 @@ test(
     for (const name of canonicalNames) {
       await resource("secret", name, placement);
     }
+
+    // This is the actual managed proxy process; the fixture Gateway makes no Slack connection.
+    const proxyName = `gateway-outbound-${hash(provisioned.agentId)}-${hash(provisioned.revisionId)}`;
+    await fixture.startWorker();
+    const proxyPod = await waitFor(
+      "the provisioned revision's managed proxy to become ready",
+      async () =>
+        (await resources("pods", gatewayPlacement)).find(
+          ({ metadata, status }) =>
+            metadata.labels?.["openclaw.dev/agent"] === provisioned.agentId &&
+            metadata.labels?.["openclaw.dev/revision"] === provisioned.revisionId &&
+            metadata.labels?.["openclaw.dev/workload-role"] === "gateway-outbound" &&
+            status.conditions?.some(({ type, status }) => type === "Ready" && status === "True"),
+        ),
+    );
+    await fixture.stopWorker();
+    const proxyDeployment = await resource("deployment", proxyName, gatewayPlacement);
+    const proxyService = await resource("service", proxyName, gatewayPlacement);
+    const proxyConfiguration = await resource("configmap", proxyName, gatewayPlacement);
+    assert.equal(proxyDeployment.spec.template.spec.containers[0].image, controllerImage);
+    assert.ok(
+      proxyDeployment.spec.template.spec.volumes.some(
+        ({ configMap }) => configMap?.name === proxyConfiguration.metadata.name,
+      ),
+      "the owning proxy Deployment must consume its revision policy ConfigMap",
+    );
+    assert.ok(
+      Object.entries(proxyService.spec.selector).every(
+        ([key, value]) => proxyPod.metadata.labels[key] === value,
+      ),
+      "the owning Service must select the real ready proxy Pod",
+    );
+    const proxyPolicy = JSON.parse(proxyConfiguration.data["policy.json"]);
+    assert.equal(proxyPolicy.mode, "restricted");
+    assert.equal(proxyPolicy.agentId, provisioned.agentId);
+    assert.equal(proxyPolicy.revisionId, provisioned.revisionId);
+    assert.deepEqual(
+      new Set(proxyPolicy.destinations),
+      new Set([
+        { host: "slack-edge.com", includeSubdomains: true },
+        { host: "slack-msgs.com", includeSubdomains: true },
+        { host: "slack.com", includeSubdomains: true },
+      ]),
+    );
 
     // Seed an owned pre-upgrade RWX workspace without altering any supported Agent.
     // No RWX provisioner is needed: rejection must happen before mounting the claim.

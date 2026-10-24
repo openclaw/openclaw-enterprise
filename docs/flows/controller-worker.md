@@ -8,11 +8,9 @@ last_updated_session: fix-1692
 
 ## Overview
 
-The worker claims accepted PostgreSQL work, rechecks authorization, calls
-Compute, and saves results under its claim for Namespace, Agent
-stop/deletion, and Agent revision work. The
-[controller reference](../reference/controller.md) owns the contract and the
-[deployment guide](../guides/deploy.md) owns process setup.
+The worker claims PostgreSQL work, rechecks authorization, invokes Compute, and
+saves Namespace, Agent lifecycle, and revision results under its claim. See the
+[contract](../reference/controller.md) and [setup](../guides/deploy.md).
 
 ## Entry Points
 
@@ -38,7 +36,7 @@ graph TD
         D --> E["Reload exact resources and current IAM state"]
         E --> F{"Authorized and valid?"}
         F -->|yes| G["Invoke Compute while renewing the claim lease"]
-        F -->|no| H["Persist permanent failure under the live claim"]
+        F -->|no| H["Persist failure after required cleanup"]
         G --> I{"Observed result"}
         G -->|rejected| R["Emit validated Driver diagnostic"]
     end
@@ -353,6 +351,8 @@ Incomplete observations, Compute bindings, and dependency retries or expired cla
 exhausting attempts close the item and schedule another while the version stays
 selected and running within its credential deadline; outages never retire it. Each
 claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+[Gateway/reader withdrawal](gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance)
+precedes terminal maintenance.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
 A Namespace pass that observes the same pending state this worker last audited,
@@ -404,14 +404,14 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 
 ## Related docs
 
-- [Agent repository session preparation and durable cleanup](agent-repository-credentials.md)
+- [Repository sessions and cleanup](agent-repository-credentials.md)
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Controller reference](../reference/controller.md)
-- [Deployment guide: development and production](../guides/deploy.md)
+- [Deployment](../guides/deploy.md)
 - [Controller settings](../reference/settings.md)
 - [IAM authorization](../reference/authorization.md)
 - [Production startup flow](production-startup.md)
-- [Docker Compose development flow](docker-compose-development.md)
+- [Compose development](docker-compose-development.md)
 - [Harness execution topology](harness-execution-topology.md)
 - [Compute Driver contract](../reference/drivers/compute.md)
 - [Sandbox Driver contract](../reference/drivers/sandbox.md)
@@ -421,6 +421,10 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 13:09: Compose Gateway/reader withdrawal. (authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53 - 792afad4f9e8bd4323fc197a102ebde7961484c9)
+
+- 2026-10-14 17:45: Persist removal-only Gateway withdrawal before terminal maintenance (authoring-run/068ea9ef-c548-4e2e-86e6-a75b33ec5ae3 - 27562ebf56a8315a663583731a303ca362cbfc5d)
 
 - 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 

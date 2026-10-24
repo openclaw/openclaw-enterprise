@@ -13,8 +13,9 @@ export function createTestKubernetesComputeDriver(
   id,
   {
     repositoryCredentials = false,
-    // An Installation with runtime.channels: isolated channel credentials and a reviewed proxy.
+    // Explicitly enable the managed Gateway route used by channel requirements.
     channelRuntime = false,
+    gatewayOutbound,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
     sandboxDriver,
@@ -52,12 +53,20 @@ export function createTestKubernetesComputeDriver(
           : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
-      ...(repositoryCredentials || channelRuntime
+      ...(repositoryCredentials || channelRuntime || gatewayOutbound !== undefined
         ? {
             runtime: {
               transportSecretPrefix: "transport",
               gatewayStorageClassName: "local-path",
-              ...(channelRuntime ? { channels: { proxyUrl: "http://10.42.0.15:3128" } } : {}),
+              ...(channelRuntime || gatewayOutbound !== undefined
+                ? {
+                    gatewayOutbound: gatewayOutbound ?? {
+                      enabled: true,
+                      image: "controller:local",
+                      denyCidrs: ["10.0.0.0/8"],
+                    },
+                  }
+                : {}),
             },
           }
         : {}),

@@ -537,17 +537,21 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "api.consoleTheme.checksum must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string" -}}
 {{- end -}}
 {{- end -}}
-{{- if .Values.slackProxy.enabled -}}
-{{- $proxy := .Values.slackProxy -}}
-{{- if .Values.api.channelDirectoryProxyUrl -}}{{- fail "api.channelDirectoryProxyUrl must be empty when slackProxy.enabled uses the chart-managed Service" -}}{{- end -}}
-{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "slackProxy.enabled must be a boolean" -}}{{- end -}}
+{{- if .Values.outboundProxy.enabled -}}
+{{- $proxy := .Values.outboundProxy -}}
+{{- if .Values.api.controlPlaneOutboundProxyUrl -}}{{- fail "api.controlPlaneOutboundProxyUrl must be empty when outboundProxy.enabled uses the chart-managed Service" -}}{{- end -}}
+{{- if not (kindIs "bool" $proxy.enabled) -}}{{- fail "outboundProxy.enabled must be a boolean" -}}{{- end -}}
 {{- if or (gt (len $proxy.serviceName) 63) (not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $proxy.serviceName)) -}}
-{{- fail "slackProxy.serviceName must be a DNS-1035 Service name" -}}
+{{- fail "outboundProxy.serviceName must be a DNS-1035 Service name" -}}
 {{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
-{{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
+{{- fail "outboundProxy.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
-{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "outboundProxy.resources" "requirements" $proxy.resources) -}}
+{{- if or (not (kindIs "slice" $proxy.denyCidrs)) (not $proxy.denyCidrs) -}}{{- fail "outboundProxy.denyCidrs must name the Installation infrastructure CIDRs when enabled" -}}{{- end -}}
+{{- range $cidr := $proxy.denyCidrs -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "outboundProxy.denyCidrs" "cidr" $cidr) -}}
+{{- end -}}
 {{- end -}}
 {{- if $repositoryGit -}}
 {{- if .Values.openshellGit.enabled -}}
@@ -850,12 +854,12 @@ capabilities:
       key: {{ .key | quote }}
 {{- end -}}
 
-{{- define "openclaw.slackProxy.serviceName" -}}
-{{- .Values.slackProxy.serviceName -}}
+{{- define "openclaw.outboundProxy.serviceName" -}}
+{{- .Values.outboundProxy.serviceName -}}
 {{- end -}}
 
-{{- define "openclaw.slackProxy.url" -}}
-{{- printf "http://%s.%s.svc:%v" (include "openclaw.slackProxy.serviceName" .) .Release.Namespace (int .Values.slackProxy.port) -}}
+{{- define "openclaw.outboundProxy.url" -}}
+{{- printf "http://%s.%s.svc:%v" (include "openclaw.outboundProxy.serviceName" .) .Release.Namespace (int .Values.outboundProxy.port) -}}
 {{- end -}}
 
 {{- define "openclaw.gatewayRouting.gatewayName" -}}

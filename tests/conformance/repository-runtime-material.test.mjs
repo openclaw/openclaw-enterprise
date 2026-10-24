@@ -1638,8 +1638,11 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
     desiredRuntimeState: "running",
   };
   const view = {
-    namespaces: { findNamespace: () => ({ id: namespaceId, status: "ready" }) },
-    agents: { findAgent: () => agent },
+    namespaces: {
+      findNamespace: () => ({ id: namespaceId, status: "ready" }),
+      lockNamespace: () => ({ id: namespaceId, status: "ready" }),
+    },
+    agents: { findAgent: () => agent, lockAgent: () => agent },
     revisions: {
       findRevision: () => structuredClone(revision),
       listRevisionMetadata: () => [revision],
@@ -1665,13 +1668,19 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
     ],
   });
   worker.state.read = (read) => read(view);
-  worker.queue.findWorkAttempt = () => undefined;
+  // Store the worker's actual decision for its next pass; this fixture does not prove
+  // database durability or locking. PostgreSQL withdrawal tests cover those guarantees.
+  const attempts = new Map();
+  worker.queue.findWorkAttempt = (workKey, code) => attempts.get(`${workKey}:${code}`);
   const queueWrites = [];
   let ageMs = 100;
   worker.queue.heartbeat = () => ({ ageMs });
   const queue = {
-    heartbeat: () => claim,
-    defer: (_claim, result) => queueWrites.push(["defer", result.code]),
+    heartbeat: (...args) => worker.queue.heartbeat(...args),
+    defer: (deferred, result) => {
+      attempts.set(`${deferred.idempotencyKey}:${result.code}`, structuredClone(result));
+      queueWrites.push(["defer", result.code]);
+    },
     fail: (_claim, result) => queueWrites.push(["fail", result.code]),
   };
   worker.state.transactWithQueue = (update) => update(view, queue);
@@ -1693,6 +1702,15 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
   assert.deepEqual(f.apiCalls, []);
   assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
   worker.queue.heartbeat = heartbeat;
+
+  // The removal-only decision must precede every effect. The next pass reads that
+  // committed intent instead of re-entering preparation or execution admission.
+  queueWrites.length = 0;
+  await worker.process(claim);
+  assert.deepEqual(queueWrites, [["defer", "REVISION_ACCESS_WITHDRAWAL_PENDING"]]);
+  assert.deepEqual(f.apiCalls, []);
+  assert.equal(publicReaderPolicies(f)[0].metadata.uid, policy.metadata.uid);
+  assert.equal(f.consumer().metadata.uid, deployment.metadata.uid);
 
   // The cutoff is not a convergence failure. Force a real incomplete Pod observation after
   // closing the policy and UID-bound foreground deletion; even past the convergence deadline the live claim must defer.
@@ -1720,7 +1738,7 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
     return { items: pods, metadata: { continue: "incomplete-observation" } };
   };
   await worker.process(claim);
-  assert.deepEqual(queueWrites, [["defer", "EXECUTION_ADMISSION_WITHDRAWAL_PENDING"]]);
+  assert.deepEqual(queueWrites, [["defer", "REVISION_ACCESS_WITHDRAWAL_PENDING"]]);
   assert.ok(deleted && podsExamined);
 
   // A mere return of the peer confers no release. Reobserve the selected Pod gone, then fail the
@@ -1737,7 +1755,7 @@ test("the owning active reconcile withdraws its admitted reader across the Crede
   queueWrites.length = 0;
   await worker.process(claim);
   assert.ok(terminationExamined);
-  assert.deepEqual(queueWrites, [["fail", "EXECUTION_ADMISSION_WITHDRAWN"]]);
+  assert.deepEqual(queueWrites, [["fail", "REVISION_ACCESS_WITHDRAWN"]]);
   assert.equal(publicReaderPolicies(f).length, 0);
   assert.equal(f.consumer(), undefined);
   assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);

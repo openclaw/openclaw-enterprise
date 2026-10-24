@@ -113,6 +113,7 @@ import {
   validateServiceAccountBackendBinding,
 } from "@openclaw-enterprise/occ";
 import type { InstallationRuntimeDrivers } from "./composition/installation-config.ts";
+import { createBundledChannelCapabilities } from "./composition/channel.ts";
 import { resolveApprovedHarness } from "./composition/production-harness.ts";
 import { ComputeCleanupFailedError } from "./drivers/compute/cleanup-failure.ts";
 import {
@@ -191,6 +192,8 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
+const REVISION_ACCESS_WITHDRAWAL_PENDING = "REVISION_ACCESS_WITHDRAWAL_PENDING";
+const REVISION_ACCESS_WITHDRAWAL_RECHECK_MS = 1000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -525,7 +528,16 @@ interface DispatchResult {
   readonly authorization?: AuthorizationRequest;
 }
 
+interface RevisionAccessWithdrawal {
+  readonly code: typeof REVISION_ACCESS_WITHDRAWAL_PENDING;
+  readonly refusal: string;
+  readonly refusalData?: Readonly<Record<string, unknown>>;
+  readonly cleanupFailedPreparation?: true;
+}
+
 interface RevisionDispatchResult extends DispatchResult {
+  /** Removal-only maintenance already confirmed that this revision's admitted revocable access is gone. */
+  readonly revisionAccessWithdrawn?: true;
   /** Terminal preparation requires durable retirement of this exact revision. */
   readonly cleanupFailedPreparation?: true;
   /** A transient dependency failure, retried until the convergence deadline. */
@@ -1389,6 +1401,7 @@ export class ControllerWorker {
       driverConfigurations: this.driverConfigurations,
       backends: this.backends,
       recordOperations: true,
+      channelNetworkRequirements: createBundledChannelCapabilities().channelNetworkRequirements,
       ...(this.configuredServiceAccountDriverId === undefined
         ? {}
         : { configuredServiceAccountDriverId: this.configuredServiceAccountDriverId }),
@@ -4175,6 +4188,7 @@ export class ControllerWorker {
     let result: RevisionDispatchResult;
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
+    let outboundWaitRead = false;
     let claimAgent: Readonly<Agent> | undefined;
     let supervisedRevision: Readonly<AgentRevision> | undefined;
     try {
@@ -4187,6 +4201,21 @@ export class ControllerWorker {
         await this.finalizeRevision(claim, { outcome: "permanent", code: "INVALID_TARGET" });
         return;
       }
+      // This committed decision precedes all removal effects. Once it exists, restored
+      // actor authority cannot turn a retry or recovered lease into workload repair.
+      const outboundWait = await this.queue.findWorkAttempt(
+        claim.idempotencyKey,
+        REVISION_ACCESS_WITHDRAWAL_PENDING,
+      );
+      if (outboundWait?.refusal !== undefined) {
+        await this.finishRevisionAccessWithdrawal(claim, {
+          ...outboundWait,
+          code: REVISION_ACCESS_WITHDRAWAL_PENDING,
+          refusal: outboundWait.refusal,
+        });
+        return;
+      }
+      outboundWaitRead = true;
       const resources = await this.state.read(async (view) => {
         const namespace = await view.namespaces.findNamespace(claim.namespaceId);
         const agent = await view.agents.findAgent(claim.namespaceId, claim.agentId!);
@@ -4294,6 +4323,18 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, backend);
           return;
         }
+      }
+      // Installation approval is checked before Compute can bind, prepare, activate or delete.
+      // Persist the removal-only decision first, so restart cannot repair a withdrawn revision.
+      if (
+        agent.desiredRuntimeState === "running" &&
+        this.revisionAccessStatus(revision) === "withdrawn"
+      ) {
+        await this.finalizeRevision(claim, {
+          outcome: "permanent",
+          code: "REVISION_ACCESS_WITHDRAWN",
+        });
+        return;
       }
       // Reconciliation authorization and the backend are decided again above on every pass. Once a stored
       // refusal of theirs no longer stands (for example `deploy` granted again), the deployment
@@ -4473,6 +4514,10 @@ export class ControllerWorker {
       const secretContext = await this.resolveRevisionSecretContext(revision);
       if ("result" in secretContext) {
         if (agent.activeRevisionId === revision.id) {
+          if (this.revisionAccessStatus(revision) !== "none") {
+            await this.finalizeRevision(claim, secretContext.result);
+            return;
+          }
           if (
             secretContext.result.code === "EXECUTION_ADMISSION_UNAVAILABLE" &&
             (await this.withdrawRejectedActiveExecution(claim, revision))
@@ -4547,11 +4592,15 @@ export class ControllerWorker {
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
           // A yielded predecessor stop ends the pass pending below, like a candidate's.
+          // Sandbox refusals with admitted access use the terminal withdrawal path;
+          // ordinary active runtimes retain their recovery policy below.
           if (
             error instanceof WorkClaimLostError ||
             error instanceof RepositoryCredentialAuthorityError ||
             error instanceof ComputeStopYieldedError ||
-            error instanceof ComputePreparationFailedError
+            error instanceof ComputePreparationFailedError ||
+            (error instanceof SandboxGatewayUnauthorizedError &&
+              this.revisionAccessStatus(revision) !== "none")
           ) {
             throw error;
           }
@@ -4633,6 +4682,11 @@ export class ControllerWorker {
       );
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      if (!outboundWaitRead) {
+        // An unavailable decision read or unfinished removal pass cannot become
+        // a repair retry. Leave this claim to its removal-aware lease recovery.
         throw error;
       }
       if (
@@ -5828,6 +5882,14 @@ export class ControllerWorker {
     ) {
       return;
     }
+    if (
+      resolved.revisionAccessWithdrawn !== true &&
+      (resolved.outcome === "permanent" ||
+        (resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts)) &&
+      (await this.beginRevisionAccessWithdrawal(claim, resolved))
+    ) {
+      return;
+    }
     // OCC refused this candidate (its authority, credentials or configuration), so its runtime
     // must not keep serving. A runtime that failed by itself (a held startup failure, the
     // convergence deadline, exhausted retries) stays for diagnosis on its version's Logs tab.
@@ -6153,6 +6215,151 @@ export class ControllerWorker {
         throw error;
       }
       return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
+    }
+  }
+
+  private revisionAccessStatus(
+    revision: Readonly<AgentRevision>,
+  ): "none" | "current" | "withdrawn" {
+    const status = this.compute.revisionAccessStatus?.(revision) ?? "none";
+    if (!["none", "current", "withdrawn"].includes(status)) {
+      throw new ScopeViolationError("The Compute Driver returned invalid revision access status.");
+    }
+    return status;
+  }
+
+  private async beginRevisionAccessWithdrawal(
+    claim: ClaimedWork,
+    result: RevisionDispatchResult,
+  ): Promise<boolean> {
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      (claim.idempotencyKey !== `agent_revision:${claim.revisionId}:reconcile` &&
+        !new RegExp(`^agent_revision:${claim.revisionId}:maintenance:(0|[1-9][0-9]*)$`).test(
+          claim.idempotencyKey,
+        ))
+    ) {
+      return false;
+    }
+    const pending: RevisionAccessWithdrawal = {
+      code: REVISION_ACCESS_WITHDRAWAL_PENDING,
+      refusal: result.code,
+      ...(result.data === undefined ? {} : { refusalData: result.data }),
+      ...(result.cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
+    };
+    let recorded = false;
+    await this.state.transactWithQueue(async (unit, queue) => {
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const agent = await this.lockClaimAgent(unit, claim);
+      const revision = await unit.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      );
+      if (
+        agent === undefined ||
+        agent.activeRevisionId !== revision?.id ||
+        revision === undefined ||
+        this.revisionAccessStatus(revision) === "none" ||
+        revision.namespaceId !== claim.namespaceId ||
+        revision.agentId !== agent.id ||
+        revision.servicePrincipalId !== agent.servicePrincipalId
+      ) {
+        return;
+      }
+      if (result.decision !== undefined) {
+        await this.appendRevisionDenial(unit, claim, result);
+      }
+      // Commit the irreversible removal decision before attempting deletion. Deferral
+      // refunds the claim's attempt; withdrawal has neither a deployment deadline nor
+      // an attempt limit while its old authority may still be live.
+      await queue.defer(claim, pending, {
+        delayMs: REVISION_ACCESS_WITHDRAWAL_RECHECK_MS,
+        repeatEvidence: true,
+      });
+      recorded = true;
+    }, this.queueOptions);
+    if (recorded) {
+      this.emitRevisionAccessWithdrawalWait(claim, result.code);
+    }
+    return recorded;
+  }
+
+  private emitRevisionAccessWithdrawalWait(
+    claim: ClaimedWork,
+    refusal: string,
+    failureLogFields?: Readonly<Record<string, string | number>>,
+  ): void {
+    this.passOutcome = "pending";
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      outcome: "pending",
+      result: "pending",
+      code: REVISION_ACCESS_WITHDRAWAL_PENDING,
+      refusal,
+      ...failureLogFields,
+    });
+  }
+
+  private async finishRevisionAccessWithdrawal(
+    claim: ClaimedWork,
+    pending: RevisionAccessWithdrawal,
+  ): Promise<void> {
+    const { refusal, refusalData, cleanupFailedPreparation } = pending;
+    try {
+      const { namespace, agent, revision } = await this.state.read(async (view) => ({
+        namespace: await view.namespaces.findNamespace(claim.namespaceId),
+        agent: await view.agents.findAgent(claim.namespaceId, claim.agentId!),
+        revision: await view.revisions.findRevision(
+          claim.namespaceId,
+          claim.agentId!,
+          claim.revisionId!,
+        ),
+      }));
+      if (
+        namespace === undefined ||
+        agent === undefined ||
+        revision === undefined ||
+        revision.namespaceId !== namespace.id ||
+        revision.agentId !== agent.id ||
+        revision.servicePrincipalId !== agent.servicePrincipalId ||
+        revision.compute.id !== this.compute.id ||
+        revision.compute.implementation !== this.compute.implementation ||
+        this.revisionAccessStatus(revision) === "none" ||
+        this.compute.withdrawRevisionAccess === undefined
+      ) {
+        throw new ScopeViolationError(
+          "The pending revision access withdrawal owner is unavailable.",
+        );
+      }
+      await this.withClaimHeartbeat(claim, () => this.compute.withdrawRevisionAccess!(revision));
+      await this.finalizeRevision(claim, {
+        outcome: "permanent",
+        code: refusal,
+        ...(refusalData === undefined ? {} : { data: refusalData }),
+        ...(cleanupFailedPreparation === true ? { cleanupFailedPreparation: true } : {}),
+        revisionAccessWithdrawn: true,
+      });
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      await this.state.transactWithQueue(async (_unit, queue) => {
+        if ((await queue.heartbeat(claim)) === undefined) {
+          throw new WorkClaimLostError();
+        }
+        await queue.defer(claim, pending, {
+          delayMs: REVISION_ACCESS_WITHDRAWAL_RECHECK_MS,
+          repeatEvidence: true,
+        });
+      }, this.queueOptions);
+      this.emitRevisionAccessWithdrawalWait(claim, refusal, revisionFailureLogFields(error));
     }
   }
 

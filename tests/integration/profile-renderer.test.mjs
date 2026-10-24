@@ -87,9 +87,8 @@ function baseInput(overrides = {}) {
       gatewayNodeSelector: { "oce-role": "control" },
       transportSecretPrefix: "openclaw-agent-transport",
     },
-    channels: {
-      managedSlackProxy: true,
-    },
+    gatewayOutbound: { enabled: true, denyCidrs: ["192.0.2.12/32"] },
+    controlPlaneOutbound: { managedProxy: true, denyCidrs: ["192.0.2.12/32"] },
     ...overrides,
   };
 }
@@ -365,16 +364,16 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   assert.doesNotMatch(openclaw.installation, /id: codex-plugin/);
   assert.match(openclaw.values, /agentNativeAdmin:\n {2}enabled: true/);
   assert.match(openclaw.values, /repositoryCredentials:\n {2}enabled: false/);
-  assert.match(openclaw.values, /slackProxy:\n {2}enabled: true/);
-  assert.match(
-    openclaw.installation,
-    /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
+  assert.equal(loadYaml(openclaw.values).outboundProxy.enabled, true);
+  const outbound = loadYaml(openclaw.installation).drivers.compute.configuration.runtime
+    .gatewayOutbound;
+  assert.equal(outbound.image, loadYaml(openclaw.values).images.controller);
+  assert.equal(outbound.enabled, true);
+  assert.equal(outbound.allowPublicHttps, false);
+  assert.deepEqual(
+    new Set(outbound.denyCidrs),
+    new Set(["192.0.2.10/32", "192.0.2.11/32", "192.0.2.12/32"]),
   );
-  assert.match(
-    openclaw.installation,
-    /managedProxy:\n\s+hostname: openclaw-enterprise-slack-proxy\.openclaw-system\.svc/,
-  );
-  assert.match(openclaw.installation, /app\.kubernetes\.io\/component: slack-proxy/);
 
   const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
@@ -382,12 +381,12 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   assert.match(codex.installation, /id: codex-plugin/);
   assert.match(codex.installation, /catalogSource: hosted/);
   assert.doesNotMatch(codex.installation, /service_account: chatgpt-service-accounts/);
-  assert.match(codex.values, /slackProxy:\n {2}enabled: true/);
-  assert.match(
-    codex.installation,
-    /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
+  assert.equal(loadYaml(codex.values).outboundProxy.enabled, true);
+  assert.equal(
+    loadYaml(codex.installation).drivers.compute.configuration.runtime.gatewayOutbound.enabled,
+    true,
   );
-  assert.match(codex.preflight.prerequisites.join("\n"), /Slack consumers remain inactive/);
+  assert.match(codex.preflight.prerequisites.join("\n"), /enabled supported channels contribute/);
   assert.match(codex.preflight.warnings.join("\n"), /existing codex_pat token/);
 });
 
@@ -600,16 +599,15 @@ test(
       assert.match(manifests, /repository-credentials/);
       assert.match(manifests, /cidr: "140\.82\.112\.0\/20"/);
       assert.match(manifests, /cidr: "192\.30\.252\.0\/22"/);
-      const slackPolicy = manifests
+      const outboundPolicy = manifests
         .split(/\n---\n/)
         .find(
           (document) =>
             document.includes("kind: NetworkPolicy") &&
-            document.includes("name: openclaw-enterprise-slack-proxy"),
+            document.includes("name: openclaw-enterprise-outbound-proxy"),
         );
-      assert.ok(slackPolicy);
-      assert.match(slackPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
-      assert.doesNotMatch(output.values, /slackProxyUpstreamCidrs/);
+      assert.ok(outboundPolicy);
+      assert.match(outboundPolicy, /cidr: 0\.0\.0\.0\/0\s+except:/);
       assert.deepEqual(
         loadYaml(output.values).api.modelDiscoveryCidrs,
         profile === "codex" ? ["192.0.2.20/32"] : [],
@@ -2396,172 +2394,68 @@ test("preflight refuses source CIDRs that cover every address and warns about wi
   assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
 });
 
-test("preflight rejects channel proxy URLs with an invalid octet or port", async () => {
+test("preflight rejects invalid control-plane outbound proxy endpoints", async () => {
   const message = /must be an HTTP\(S\) literal IPv4 endpoint with an explicit port/;
-  await assertPreflightFailure(
-    "openclaw",
-    baseInput({ channels: { directoryProxyUrl: "http://192.0.2.999:8080" } }),
-    message,
-  );
-  await assertPreflightFailure(
-    "openclaw",
-    baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
-    message,
-  );
-  // Compute and the API's Slack directory refuse an unspecified proxy host, which names no proxy.
-  for (const field of ["runtimeProxyUrl", "directoryProxyUrl"]) {
+  for (const proxyUrl of ["http://192.0.2.999:8080", "http://192.0.2.10:99999"]) {
     await assertPreflightFailure(
       "openclaw",
-      baseInput({ channels: { [field]: "http://0.0.0.0:3128" } }),
-      new RegExp(
-        `channels\\.${field} must not use host 0\\.0\\.0\\.0, which names no proxy address\\.`,
-      ),
+      baseInput({ controlPlaneOutbound: { proxyUrl } }),
+      message,
     );
   }
+  await assertPreflightFailure(
+    "openclaw",
+    baseInput({ controlPlaneOutbound: { proxyUrl: "http://0.0.0.0:3128" } }),
+    /controlPlaneOutbound\.proxyUrl must not use host 0\.0\.0\.0/,
+  );
   const accepted = await render(
     "openclaw",
-    baseInput({
-      channels: {
-        directoryProxyUrl: "http://192.0.2.10:8080",
-        runtimeProxyUrl: "http://192.0.2.10:8080",
-      },
-    }),
+    baseInput({ controlPlaneOutbound: { proxyUrl: "http://192.0.2.10:8080" } }),
   );
-  assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
-  assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
-  requireConfiguration(
-    KubernetesComputeDriver,
-    loadYaml(accepted.installation).drivers.compute.configuration,
+  assert.equal(
+    loadYaml(accepted.values).api.controlPlaneOutboundProxyUrl,
+    "http://192.0.2.10:8080",
+  );
+  assert.equal(
+    loadYaml(accepted.installation).drivers.compute.configuration.runtime.channels,
+    undefined,
+  );
+});
+
+test("profile refuses legacy channel routes and requires explicit infrastructure exclusions", async () => {
+  await assertPreflightFailure(
+    "openclaw",
+    baseInput({ channels: { managedSlackProxy: true } }),
+    /channels/,
+  );
+  await assertPreflightFailure(
+    "openclaw",
+    baseInput({ gatewayOutbound: { enabled: true } }),
+    /gatewayOutbound\.denyCidrs/,
+  );
+  await assertPreflightFailure(
+    "openclaw",
+    baseInput({ controlPlaneOutbound: { managedProxy: true } }),
+    /controlPlaneOutbound\.denyCidrs/,
   );
 });
 
 for (const profile of ["openclaw", "codex"]) {
   for (const proxyUrl of ["http://192.0.2.10:80", "https://192.0.2.10:443"]) {
-    test(`${profile} preserves explicit default channel proxy port in ${proxyUrl}`, async (t) => {
+    test(`${profile} preserves explicit default control-plane proxy port in ${proxyUrl}`, async (t) => {
       const input = profile === "codex" ? codexInput() : baseInput();
-      input.channels = { directoryProxyUrl: proxyUrl, runtimeProxyUrl: proxyUrl };
+      input.controlPlaneOutbound = { proxyUrl };
       const output = await render(profile, input);
       t.after(() => rmSync(output.directory, { recursive: true, force: true }));
       assert.equal(output.preflight.ok, true);
-      assert.equal(loadYaml(output.values).api.channelDirectoryProxyUrl, proxyUrl);
+      assert.equal(loadYaml(output.values).api.controlPlaneOutboundProxyUrl, proxyUrl);
       const compute = loadYaml(output.installation).drivers.compute.configuration;
-      assert.equal(compute.runtime.channels.proxyUrl, proxyUrl);
+      assert.equal(compute.runtime.channels, undefined);
       // Installation validation runs even before an Agent enables a channel.
       assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute));
     });
   }
 }
-
-test("channel proxy validation preserves explicit ports and exact managed peers", async (t) => {
-  const output = await render("openclaw", baseInput());
-  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
-  const compute = loadYaml(output.installation).drivers.compute.configuration;
-  const managed = structuredClone(compute.runtime.channels);
-  assert.equal(managed.managedProxy.port, 3128);
-  requireConfiguration(KubernetesComputeDriver, compute);
-
-  // IPv6 is supported by Compute directly; profile input intentionally remains IPv4-only.
-  for (const proxyUrl of [
-    " http://192.0.2.10:8080 ",
-    "http://[2001:db8::10]:80",
-    "https://[2001:db8::10]:443/",
-    "http://192.0.2.10:443",
-    "https://192.0.2.10:80/",
-  ]) {
-    compute.runtime.channels = { proxyUrl };
-    assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute), proxyUrl);
-  }
-  for (const [scheme, port] of [
-    ["http", 80],
-    ["https", 443],
-  ]) {
-    compute.runtime.channels = {
-      ...managed,
-      proxyUrl: `${scheme}://${managed.managedProxy.hostname}:${port}/`,
-      managedProxy: { ...managed.managedProxy, port },
-    };
-    assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute));
-  }
-
-  for (const proxyUrl of [
-    "http://192.0.2.10",
-    "https://[2001:db8::10]",
-    "http://192.0.2.10:0",
-    "http://192.0.2.10:65536",
-    syntheticCredentialUrl({
-      protocol: "http",
-      username: "proxy-user",
-      password: "synthetic-password",
-      host: "192.0.2.10",
-      port: 80,
-    }),
-    "http://192.0.2.10:80/path",
-    "http://192.0.2.10:80?query=1",
-    "https://192.0.2.10:443#fragment",
-    "ftp://192.0.2.10:80",
-    "http://proxy.example.invalid:80",
-  ]) {
-    compute.runtime.channels = { proxyUrl };
-    assert.throws(
-      () => requireConfiguration(KubernetesComputeDriver, compute),
-      SharedConfigurationValidationError,
-    );
-  }
-  // A valid peer grant never authorizes a different Service, port, or URL credentials.
-  for (const proxyUrl of [
-    "http://other.openclaw-system.svc:80",
-    `http://${managed.managedProxy.hostname}:443`,
-    `http://${managed.managedProxy.hostname}`,
-    syntheticCredentialUrl({
-      protocol: "http",
-      username: "proxy-user",
-      password: "synthetic-password",
-      host: managed.managedProxy.hostname,
-      port: 80,
-    }),
-  ]) {
-    compute.runtime.channels = {
-      ...managed,
-      proxyUrl,
-      managedProxy: { ...managed.managedProxy, port: 80 },
-    };
-    assert.throws(
-      () => requireConfiguration(KubernetesComputeDriver, compute),
-      SharedConfigurationValidationError,
-    );
-  }
-});
-
-test("channel proxy validation preserves omitted-port endpoint diagnostics", async (t) => {
-  const output = await render("openclaw", baseInput());
-  t.after(() => rmSync(output.directory, { recursive: true, force: true }));
-  const compute = loadYaml(output.installation).drivers.compute.configuration;
-  const managed = structuredClone(compute.runtime.channels);
-
-  for (const proxyUrl of [
-    "http://192.0.2.10",
-    "https://[2001:db8::10]",
-    "http://proxy.example.invalid:8080",
-    "http://192.0.2.10:8080/path",
-  ]) {
-    compute.runtime.channels = { proxyUrl };
-    assert.throws(
-      () => requireConfiguration(KubernetesComputeDriver, compute),
-      SharedConfigurationValidationError,
-    );
-  }
-  for (const proxyUrl of [
-    `http://${managed.managedProxy.hostname}`,
-    `http://${managed.managedProxy.hostname}:8080`,
-    "http://other.openclaw-system.svc:3128",
-  ]) {
-    compute.runtime.channels = { ...managed, proxyUrl };
-    assert.throws(
-      () => requireConfiguration(KubernetesComputeDriver, compute),
-      SharedConfigurationValidationError,
-    );
-  }
-});
 
 test("profiles refuse database CA keys the chart refuses", async () => {
   const withCa = (key) =>

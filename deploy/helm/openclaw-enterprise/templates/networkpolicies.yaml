@@ -97,33 +97,33 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
-{{- $directoryProxyUrl := .Values.api.channelDirectoryProxyUrl }}
-{{- if not (kindIs "string" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- $outboundProxyUrl := .Values.api.controlPlaneOutboundProxyUrl }}
+{{- if not (kindIs "string" $outboundProxyUrl) }}
+{{- fail "api.controlPlaneOutboundProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
 {{- end }}
-{{- if $directoryProxyUrl }}
-{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $directoryProxyUrl) }}
-{{- fail "api.channelDirectoryProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
+{{- if $outboundProxyUrl }}
+{{- if not (regexMatch "^https?://(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}:[1-9][0-9]{0,4}$" $outboundProxyUrl) }}
+{{- fail "api.controlPlaneOutboundProxyUrl must be an HTTP(S) literal IPv4 endpoint with an explicit port" }}
 {{- end }}
-{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $directoryProxyUrl "") }}
+{{- $proxyParts := splitList ":" (regexReplaceAll "^https?://" $outboundProxyUrl "") }}
 {{- $proxyAddress := index $proxyParts 0 }}
 {{- $proxyPort := int (index $proxyParts 1) }}
 {{- range $octet := splitList "." $proxyAddress }}
 {{- if gt (int $octet) 255 }}
-{{- fail "api.channelDirectoryProxyUrl must contain valid IPv4 octets" }}
+{{- fail "api.controlPlaneOutboundProxyUrl must contain valid IPv4 octets" }}
 {{- end }}
 {{- end }}
 {{- if gt $proxyPort 65535 }}
-{{- fail "api.channelDirectoryProxyUrl must contain a TCP port from 1 to 65535" }}
+{{- fail "api.controlPlaneOutboundProxyUrl must contain a TCP port from 1 to 65535" }}
 {{- end }}
 {{- if eq $proxyAddress "0.0.0.0" }}
-{{- fail "api.channelDirectoryProxyUrl must not use host 0.0.0.0, which names no proxy address" }}
+{{- fail "api.controlPlaneOutboundProxyUrl must not use host 0.0.0.0, which names no proxy address" }}
 {{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-api-channel-directory-egress
+  name: openclaw-enterprise-api-outbound-proxy-egress
 spec:
   podSelector:
     matchLabels:
@@ -139,12 +139,12 @@ spec:
         - protocol: TCP
           port: {{ $proxyPort }}
 {{- end }}
-{{- if .Values.slackProxy.enabled }}
+{{- if .Values.outboundProxy.enabled }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-api-managed-slack-proxy-egress
+  name: openclaw-enterprise-api-managed-outbound-proxy-egress
 spec:
   podSelector:
     matchLabels:
@@ -161,10 +161,10 @@ spec:
             matchLabels:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/instance: {{ .Release.Name | quote }}
-              app.kubernetes.io/component: slack-proxy
+              app.kubernetes.io/component: outbound-proxy
       ports:
         - protocol: TCP
-          port: {{ .Values.slackProxy.port }}
+          port: {{ .Values.outboundProxy.port }}
 {{- end }}
 {{- if .Values.backend.chatgpt.enabled }}
 {{- $providerCidr := .Values.backend.chatgpt.providerCidr }}

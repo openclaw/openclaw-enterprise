@@ -11428,6 +11428,15 @@
                               "required": ["types"],
                               "type": "object"
                             },
+                            "gatewayOutbound": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "publicHttps": { "type": "boolean" },
+                                "restricted": { "type": "boolean" }
+                              },
+                              "required": ["restricted", "publicHttps"],
+                              "type": "object"
+                            },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -11777,6 +11786,15 @@
                                 }
                               },
                               "required": ["types"],
+                              "type": "object"
+                            },
+                            "gatewayOutbound": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "publicHttps": { "type": "boolean" },
+                                "restricted": { "type": "boolean" }
+                              },
+                              "required": ["restricted", "publicHttps"],
                               "type": "object"
                             },
                             "nativeWorkers": {
@@ -12902,7 +12920,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources.",
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, credentialSources, and gatewayOutbound.",
                       "items": {
                         "anyOf": [
                           {
@@ -12959,6 +12977,45 @@
                                 "anyOf": [
                                   { "const": "embedded", "type": "string" },
                                   { "const": "dedicated", "type": "string" }
+                                ]
+                              },
+                              "gatewayOutbound": {
+                                "anyOf": [
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "channelsOnly", "type": "string" }
+                                    },
+                                    "required": ["mode"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "hosts": {
+                                        "items": {
+                                          "maxLength": 253,
+                                          "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                          "type": "string"
+                                        },
+                                        "maxItems": 64,
+                                        "minItems": 1,
+                                        "type": "array",
+                                        "uniqueItems": true
+                                      },
+                                      "mode": { "const": "restricted", "type": "string" }
+                                    },
+                                    "required": ["mode", "hosts"],
+                                    "type": "object"
+                                  },
+                                  {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "mode": { "const": "publicHttps", "type": "string" }
+                                    },
+                                    "required": ["mode"],
+                                    "type": "object"
+                                  }
                                 ]
                               },
                               "harnessAuth": {
@@ -13202,6 +13259,7 @@
                                   },
                                   "field": {
                                     "anyOf": [
+                                      { "const": "gatewayOutbound", "type": "string" },
                                       { "const": "plugins", "type": "string" },
                                       { "const": "pluginApprovers", "type": "string" },
                                       { "const": "repositoryBindings", "type": "string" },
@@ -13277,7 +13335,7 @@
                             "type": "object"
                           }
                         ],
-                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                        "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, credentialSources, and gatewayOutbound."
                       },
                       "type": "array"
                     },
@@ -13664,6 +13722,45 @@
                           "anyOf": [
                             { "const": "embedded", "type": "string" },
                             { "const": "dedicated", "type": "string" }
+                          ]
+                        },
+                        "gatewayOutbound": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "channelsOnly", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hosts": {
+                                  "items": {
+                                    "maxLength": 253,
+                                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "maxItems": 64,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "mode": { "const": "restricted", "type": "string" }
+                              },
+                              "required": ["mode", "hosts"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "publicHttps", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            }
                           ]
                         },
                         "harnessAuth": {
@@ -16466,6 +16563,45 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayOutbound": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "channelsOnly", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hosts": {
+                                  "items": {
+                                    "maxLength": 253,
+                                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "maxItems": 64,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "mode": { "const": "restricted", "type": "string" }
+                              },
+                              "required": ["mode", "hosts"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "publicHttps", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            }
+                          ]
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -16829,6 +16965,45 @@
                                 { "const": "dedicated", "type": "string" }
                               ]
                             },
+                            "gatewayOutbound": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "mode": { "const": "channelsOnly", "type": "string" }
+                                  },
+                                  "required": ["mode"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "hosts": {
+                                      "items": {
+                                        "maxLength": 253,
+                                        "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "mode": { "const": "restricted", "type": "string" }
+                                  },
+                                  "required": ["mode", "hosts"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "mode": { "const": "publicHttps", "type": "string" }
+                                  },
+                                  "required": ["mode"],
+                                  "type": "object"
+                                }
+                              ]
+                            },
                             "harnessAuth": {
                               "anyOf": [
                                 {
@@ -17070,6 +17245,7 @@
                                 },
                                 "field": {
                                   "anyOf": [
+                                    { "const": "gatewayOutbound", "type": "string" },
                                     { "const": "plugins", "type": "string" },
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
@@ -17145,7 +17321,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, and credentialSources."
+                      "description": "An Agent with readable saved settings, or Agent metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits plugins, pluginApprovers, repositoryBindings, repositoryAccess, harnessAuth, credentialSources, and gatewayOutbound."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -17274,6 +17450,41 @@
                     "anyOf": [
                       { "const": "embedded", "type": "string" },
                       { "const": "dedicated", "type": "string" }
+                    ]
+                  },
+                  "gatewayOutbound": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": { "mode": { "const": "channelsOnly", "type": "string" } },
+                        "required": ["mode"],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "hosts": {
+                            "items": {
+                              "maxLength": 253,
+                              "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                              "type": "string"
+                            },
+                            "maxItems": 64,
+                            "minItems": 1,
+                            "type": "array",
+                            "uniqueItems": true
+                          },
+                          "mode": { "const": "restricted", "type": "string" }
+                        },
+                        "required": ["mode", "hosts"],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": { "mode": { "const": "publicHttps", "type": "string" } },
+                        "required": ["mode"],
+                        "type": "object"
+                      }
                     ]
                   },
                   "harnessAuth": {
@@ -17564,6 +17775,45 @@
                           "anyOf": [
                             { "const": "embedded", "type": "string" },
                             { "const": "dedicated", "type": "string" }
+                          ]
+                        },
+                        "gatewayOutbound": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "channelsOnly", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hosts": {
+                                  "items": {
+                                    "maxLength": 253,
+                                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "maxItems": 64,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "mode": { "const": "restricted", "type": "string" }
+                              },
+                              "required": ["mode", "hosts"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "publicHttps", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            }
                           ]
                         },
                         "harnessAuth": {
@@ -18296,6 +18546,82 @@
                           "maxItems": 8,
                           "type": "array",
                           "uniqueItems": true
+                        },
+                        "gatewayOutbound": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "denyCidrs": {
+                              "items": { "maxLength": 128, "minLength": 1, "type": "string" },
+                              "maxItems": 64,
+                              "type": "array"
+                            },
+                            "requirements": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "destinations": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "host": { "maxLength": 253, "type": "string" },
+                                        "includeSubdomains": { "type": "boolean" }
+                                      },
+                                      "required": ["host", "includeSubdomains"],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 64,
+                                    "type": "array"
+                                  },
+                                  "source": { "maxLength": 128, "type": "string" }
+                                },
+                                "required": ["source", "destinations"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
+                            "selection": {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "mode": { "const": "channelsOnly", "type": "string" }
+                                  },
+                                  "required": ["mode"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "hosts": {
+                                      "items": {
+                                        "maxLength": 253,
+                                        "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                        "type": "string"
+                                      },
+                                      "maxItems": 64,
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "uniqueItems": true
+                                    },
+                                    "mode": { "const": "restricted", "type": "string" }
+                                  },
+                                  "required": ["mode", "hosts"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "mode": { "const": "publicHttps", "type": "string" }
+                                  },
+                                  "required": ["mode"],
+                                  "type": "object"
+                                }
+                              ]
+                            }
+                          },
+                          "required": ["selection", "denyCidrs", "requirements"],
+                          "type": "object"
                         },
                         "harness": {
                           "additionalProperties": false,
@@ -21132,6 +21458,133 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/gateway-outbound/capabilities": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "getAgentGatewayOutboundCapabilities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "canConfigure": { "type": "boolean" },
+                        "publicHttps": { "type": "boolean" },
+                        "requirements": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "destinations": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "host": { "type": "string" },
+                                    "includeSubdomains": { "type": "boolean" }
+                                  },
+                                  "required": ["host", "includeSubdomains"],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "source": { "type": "string" }
+                            },
+                            "required": ["source", "destinations"],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "restricted": { "type": "boolean" }
+                      },
+                      "required": ["restricted", "publicHttps", "canConfigure"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read Gateway outbound availability and whether the caller may configure this exact Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/harness-status": {
       "get": {
         "description": "Requires read permission on the requested Agent.",
@@ -22908,6 +23361,82 @@
                               "type": "array",
                               "uniqueItems": true
                             },
+                            "gatewayOutbound": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "denyCidrs": {
+                                  "items": { "maxLength": 128, "minLength": 1, "type": "string" },
+                                  "maxItems": 64,
+                                  "type": "array"
+                                },
+                                "requirements": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "destinations": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "host": { "maxLength": 253, "type": "string" },
+                                            "includeSubdomains": { "type": "boolean" }
+                                          },
+                                          "required": ["host", "includeSubdomains"],
+                                          "type": "object"
+                                        },
+                                        "maxItems": 64,
+                                        "type": "array"
+                                      },
+                                      "source": { "maxLength": 128, "type": "string" }
+                                    },
+                                    "required": ["source", "destinations"],
+                                    "type": "object"
+                                  },
+                                  "maxItems": 32,
+                                  "type": "array"
+                                },
+                                "selection": {
+                                  "anyOf": [
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "mode": { "const": "channelsOnly", "type": "string" }
+                                      },
+                                      "required": ["mode"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "hosts": {
+                                          "items": {
+                                            "maxLength": 253,
+                                            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                            "type": "string"
+                                          },
+                                          "maxItems": 64,
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "uniqueItems": true
+                                        },
+                                        "mode": { "const": "restricted", "type": "string" }
+                                      },
+                                      "required": ["mode", "hosts"],
+                                      "type": "object"
+                                    },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "mode": { "const": "publicHttps", "type": "string" }
+                                      },
+                                      "required": ["mode"],
+                                      "type": "object"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": ["selection", "denyCidrs", "requirements"],
+                              "type": "object"
+                            },
                             "harness": {
                               "additionalProperties": false,
                               "properties": {
@@ -23167,6 +23696,7 @@
                                 },
                                 "field": {
                                   "anyOf": [
+                                    { "const": "gatewayOutbound", "type": "string" },
                                     { "const": "plugins", "type": "string" },
                                     { "const": "pluginApprovers", "type": "string" },
                                     { "const": "repositoryBindings", "type": "string" },
@@ -25035,6 +25565,45 @@
                             { "const": "dedicated", "type": "string" }
                           ]
                         },
+                        "gatewayOutbound": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "channelsOnly", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hosts": {
+                                  "items": {
+                                    "maxLength": 253,
+                                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "maxItems": 64,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "mode": { "const": "restricted", "type": "string" }
+                              },
+                              "required": ["mode", "hosts"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "publicHttps", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            }
+                          ]
+                        },
                         "harnessAuth": {
                           "anyOf": [
                             {
@@ -25608,6 +26177,45 @@
                           "anyOf": [
                             { "const": "embedded", "type": "string" },
                             { "const": "dedicated", "type": "string" }
+                          ]
+                        },
+                        "gatewayOutbound": {
+                          "anyOf": [
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "channelsOnly", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "hosts": {
+                                  "items": {
+                                    "maxLength": 253,
+                                    "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "maxItems": 64,
+                                  "minItems": 1,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "mode": { "const": "restricted", "type": "string" }
+                              },
+                              "required": ["mode", "hosts"],
+                              "type": "object"
+                            },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "mode": { "const": "publicHttps", "type": "string" }
+                              },
+                              "required": ["mode"],
+                              "type": "object"
+                            }
                           ]
                         },
                         "harnessAuth": {

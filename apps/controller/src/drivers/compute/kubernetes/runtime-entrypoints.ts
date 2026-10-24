@@ -2847,6 +2847,12 @@ let gatewayGeneration = 0;
 // externally managed: say so, so OpenClaw skips that backup instead of logging
 // EROFS on every start.
 function gatewayEnvironment() {
+  if (process.env.NODE_USE_ENV_PROXY === "1") {
+    const [major, minor] = process.versions.node.split(".").map(Number);
+    if (!(major > 24 || (major === 24 && minor >= 5))) {
+      throw new Error("Managed Gateway outbound requires Node.js 24.5 or newer for global fetch proxy transport.");
+    }
+  }
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (configPath === undefined) return process.env;
   try {

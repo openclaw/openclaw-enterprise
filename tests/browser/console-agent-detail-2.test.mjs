@@ -1878,6 +1878,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Configuration",
     "Plugins",
     "Channels",
+    "Network",
     "Repositories",
     "Credentials",
     "Workspace files",
@@ -1919,6 +1920,8 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Right moves focus only",
   );
   for (const [key, focused] of [
+    ["ArrowRight", "Network"],
+    ["ArrowLeft", "Channels"],
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
     ["ArrowLeft", "Access"],
@@ -2027,13 +2030,37 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
   );
   assert.deepEqual(await edges(), { before: true, after: false, masked: true });
-  // Include enough desktop width for the additional policy tab to fit without scrolling.
-  await page.setViewportSize({ width: 1800, height: 900 });
+  // Nine tabs can overflow even on desktop because the content column has a maximum width.
+  // Resize the strip itself to prove the no-overflow state independently of that page layout.
+  await page.setViewportSize({ width: 1920, height: 900 });
+  await strip.evaluate((node) => {
+    const first = node.firstElementChild.getBoundingClientRect();
+    const last = node.lastElementChild.getBoundingClientRect();
+    node.style.maxWidth = "none";
+    node.style.width = `${Math.ceil(last.right - first.left) + 2}px`;
+  });
   await page.waitForFunction(() => {
     const node = globalThis.document.querySelector(".agent-tabs");
     return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
   });
   assert.equal((await edges()).masked, false, "a strip that fits does not fade");
+  // Chromium rounds scrollWidth/clientWidth to integers. A one-pixel remainder can scroll
+  // left even when every tab fits within that rounding tolerance; neither edge should fade.
+  await strip.evaluate((node) => {
+    node.style.width = "1px";
+    node.style.width = `${node.scrollWidth - 1}px`;
+    node.scrollLeft = node.scrollWidth;
+  });
+  await frames();
+  assert.deepEqual(
+    await strip.evaluate((node) => ({
+      overflow: node.scrollWidth - node.clientWidth,
+      left: node.scrollLeft,
+    })),
+    { overflow: 1, left: 1 },
+    "exercise real browser rounding at the scrollable end",
+  );
+  assert.deepEqual(await edges(), { before: false, after: false, masked: false });
 });
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
@@ -4512,3 +4539,105 @@ async function holdNextStatusResponse(page, url) {
   );
   return { status: held.promise, release: release.resolve };
 }
+
+// Network saves and explicit reloads use the shared editor refresh path. A full page
+// navigation loses the reader's scroll and focus even though the setting was saved.
+test("Network save and reload keep the editor in view with the saved Agent selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    channelRuntime: true,
+    gatewayOutbound: {
+      enabled: true,
+      allowPublicHttps: true,
+      image: "controller:local",
+      denyCidrs: ["10.0.0.0/8"],
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Network editor refresh", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Network editor",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "network"));
+  const mode = page.getByLabel("Additional Gateway access", { exact: true });
+  const hosts = page.getByLabel("Additional HTTPS hosts", { exact: true });
+  await page.getByRole("tab", { name: "Network", exact: true }).waitFor();
+  const savedStep = page.locator(".agent-draft-actions .checklist > li").first();
+  assert.equal(await savedStep.getAttribute("data-state"), "done");
+  await mode.selectOption("restricted");
+  await hosts.fill("api.example.com");
+  assert.equal(await savedStep.getAttribute("data-state"), "pending");
+  assert.match(await savedStep.textContent(), /Unsaved changes/);
+  await page.getByRole("button", { name: "Save network access", exact: true }).click();
+  await page
+    .getByText("Saved draft: Required channels and selected hosts", { exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () => !globalThis.document.querySelector("#gateway-outbound-mode").disabled,
+  );
+  assert.equal(await hosts.inputValue(), "api.example.com");
+  assert.equal(await savedStep.getAttribute("data-state"), "done");
+  assert.ok(
+    await page.evaluate(() => globalThis.scrollY > 100),
+    "saving must keep the Network editor in view",
+  );
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement.textContent),
+    "Reload Agent",
+  );
+  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.deepEqual(saved.data.gatewayOutbound, { mode: "restricted", hosts: ["api.example.com"] });
+
+  // Explicit reload discards only the unsaved host edit, without leaving the tab.
+  await hosts.fill("discard.example.com");
+  await page.getByRole("button", { name: "Reload Agent", exact: true }).click();
+  await waitForInputValue(hosts, "api.example.com");
+  await page.waitForFunction(
+    () => !globalThis.document.querySelector("#gateway-outbound-mode").disabled,
+  );
+  assert.ok(
+    await page.evaluate(() => globalThis.scrollY > 100),
+    "reloading must keep the Network editor in view",
+  );
+  assert.equal(new URL(page.url()).searchParams.get("tab"), "network");
+
+  // Hold a real successful PATCH response: leaving now would lose its save result.
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    { once: true, method: "PATCH", afterServer: true },
+  );
+  await hosts.fill("pending.example.com");
+  await page.getByRole("button", { name: "Save network access", exact: true }).click();
+  await held.requested;
+  assert.equal(await savedStep.getAttribute("data-state"), "pending");
+  assert.match(await savedStep.textContent(), /Saving…/);
+  const currentUrl = page.url();
+  try {
+    await page
+      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("link", { name: "Agents", exact: true })
+      .click();
+    await settlePageRequests(page);
+    assert.equal(
+      page.url(),
+      currentUrl,
+      "sidebar navigation must wait for the Network save result",
+    );
+  } finally {
+    held.release();
+  }
+  await waitForInputValue(hosts, "pending.example.com");
+  await page.getByText("Network access saved.", { exact: true }).waitFor();
+  assert.equal(await savedStep.getAttribute("data-state"), "done");
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Agents", exact: true })
+    .click();
+  await page.waitForURL((url) => url.pathname === "/console/agents");
+});

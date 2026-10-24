@@ -419,7 +419,10 @@ export function resolveConfiguredHarnessId(
         agentEntryMessage(key, (path) => `Configuration setting ${path}.models ${selectableRule}`),
       );
     }
-    selections.push({ models: selection, entry });
+    // An inherited selection without an entry policy was already added with the defaults.
+    if (entry.model !== undefined || entry.models !== undefined) {
+      selections.push({ models: selection, entry });
+    }
   }
 
   if (defaults?.models !== undefined && !matchingSelectableModels(defaultModels, primary)) {

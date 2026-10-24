@@ -848,6 +848,9 @@ export function createApi(origin, key) {
       const cause = error.cause ? `: ${error.cause.code ?? ""} ${error.cause.message}` : "";
       throw new Error(`${method} ${path}: ${error.message}${cause}`, { cause: error });
     }
+    if (response.status === 204) {
+      return undefined;
+    }
     const text = await response.text();
     let envelope;
     try {
@@ -1505,13 +1508,14 @@ async function createCodexAgent(stack, reader, label, modelCredential) {
     name: `Smoke ${label} Secret operate`,
     permissions: [{ action: "operate", resourceKind: "secret" }],
   });
-  await stack.api("POST", `${base}/iam/access-bindings`, {
+  const secretAccess = {
     subjectKind: "identity",
     subjectId: created.servicePrincipalId,
     roleId: role.id,
     resourceKind: "secret",
     resourceId: secret.id,
-  });
+  };
+  const secretBinding = await stack.api("POST", `${base}/iam/access-bindings`, secretAccess);
   const credentials = await stack.api("GET", `${base}/agents/${created.id}/runtime-credentials`);
   if (!credentials.transportConfigured) {
     await stack.api("POST", `${base}/agents/${created.id}/runtime-credentials`, {});
@@ -1519,7 +1523,13 @@ async function createCodexAgent(stack, reader, label, modelCredential) {
   const agent = { label, id: created.id };
   stack.agents.push(agent);
   const revisionId = await deployAgent(stack, agent);
-  return { agent, revisionId, configurationId: configuration.id, values };
+  return {
+    agent,
+    revisionId,
+    configurationId: configuration.id,
+    values,
+    secretAccess: { id: secretBinding.id, input: secretAccess },
+  };
 }
 
 async function readerEvents(stack) {
@@ -1562,9 +1572,8 @@ async function gatewaySkillStatus(stack, gateway) {
   return JSON.parse(stdout);
 }
 
-// Inspect the persisted admission, or invoke the exact Compute withdrawal boundary.
-// An Installation change alone does not schedule this observation.
-async function observeReaderPeer(stack, selected, action) {
+// Observe admission or the real worker's durable withdrawal without a second Compute writer.
+async function observeReaderPeer(stack, selected, action = "inspect") {
   const input = {
     namespaceId: stack.namespaceId,
     agentId: selected.agent.id,
@@ -1572,6 +1581,7 @@ async function observeReaderPeer(stack, selected, action) {
   };
   const script = `
 import assert from "node:assert/strict";
+import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresPool, PostgresPlatformState } from "/app/packages/occ/src/index.ts";
 import { loadStartupConfigurationSnapshot, loadInstallationConfiguration } from "/app/apps/controller/src/composition/installation-config.ts";
 const input = ${JSON.stringify(input)};
@@ -1583,15 +1593,33 @@ try {
   const startup = await loadStartupConfigurationSnapshot({ mode: "production" });
   const selected = await loadInstallationConfiguration({ mode: "production", startupConfiguration: startup });
   assert.ok(revision.compute.admission && selected.computeDriver.admitRevision(revision) === revision.compute.admission, "revision did not select the installed reader");
-  if (${JSON.stringify(action)} === "withdraw") {
-    const configuration = structuredClone(startup.configuration);
-    delete configuration.drivers.compute.configuration.network.publicGithubRead;
-    const withdrawn = await loadInstallationConfiguration({ mode: "production", startupConfiguration: { ...startup, configuration } });
-    await assert.rejects(withdrawn.computeDriver.prepareRevision(revision), (error) => {
-      assert.equal(error.message, "Public GitHub reader peer was withdrawn; deploy a new AgentRevision.");
-      assert.equal(withdrawn.computeDriver.describePrepareRevisionFailure(error).code, "KUBERNETES_CONFIGURATION_INVALID");
-      return true;
-    });
+  if (${JSON.stringify(action)} === "withdrawn") {
+    const deadline = Date.now() + 180_000;
+    let withdrawn = false;
+    while (Date.now() < deadline) {
+      const { rows } = await pool.query(
+        \`SELECT work.idempotency_key
+           FROM occ.controller_work work
+          WHERE work.namespace_id = $1 AND work.agent_id = $2 AND work.revision_id = $3
+            AND work.state = 'failed_permanent' AND work.reason_code = 'AUTHORIZATION_DENIED'
+            AND EXISTS (
+              SELECT 1 FROM occ.audit_events audit
+               WHERE audit.namespace_id = work.namespace_id AND audit.actor_id = work.actor_id
+                 AND audit.resource_kind = 'agent_revision' AND audit.resource_id = work.revision_id
+                 AND audit.kind = 'mutation' AND audit.action = 'reconcile'
+                 AND audit.details->>'workId' = work.idempotency_key
+                 AND audit.details->>'reasonCode' = 'REVISION_ACCESS_WITHDRAWAL_PENDING'
+                 AND audit.details->>'refusal' = 'AUTHORIZATION_DENIED'
+            ) LIMIT 1\`,
+        [input.namespaceId, input.agentId, input.revisionId],
+      );
+      if (rows.length === 1) {
+        withdrawn = true;
+        break;
+      }
+      await delay(1_000);
+    }
+    assert.ok(withdrawn, "worker did not finish the durably recorded reader authority withdrawal");
   }
   console.log("reader-peer-observed");
 } finally { await pool.end(); }
@@ -1617,7 +1645,7 @@ try {
 }
 
 async function assertSelectedReaderProjection(stack, selected, gateway) {
-  await observeReaderPeer(stack, selected, "inspect");
+  await observeReaderPeer(stack, selected);
   log("public reader admission: confirmed");
   const harness = await revisionHarness(stack, selected.agent, selected.revisionId);
   const skillPath = "/home/node/.openclaw/skills/public-github-read/SKILL.md";
@@ -1818,8 +1846,14 @@ async function proveRetirement(stack, selected, control, reader) {
       controlRequests.filter((event) => event.connection === controlConnection).length >= 2,
       "control Harness did not complete two requests on its held socket",
     );
-    await retirementWait("observeReaderPeer withdraw", () =>
-      observeReaderPeer(stack, selected, "withdraw"),
+    // Revoke only this Agent's exact model-Secret grant. The real worker must
+    // durably withdraw its admitted reader access while the control keeps serving.
+    await stack.api(
+      "DELETE",
+      `/namespaces/${stack.namespaceId}/iam/access-bindings/${selected.secretAccess.id}`,
+    );
+    await retirementWait("worker reader authority withdrawal", () =>
+      observeReaderPeer(stack, selected, "withdrawn"),
     );
     const deployment = `agent-${idHash(selected.agent.id)}-rev-${idHash(selected.revisionId)}`;
     const { stdout: oldDeployment } = await kubectl(stack, [
@@ -1896,6 +1930,12 @@ async function proveRetirement(stack, selected, control, reader) {
       ),
     );
     assert.ok(!stillSelected.closed(), "selected control stopped during withdrawal");
+    // Authority restoration permits a new revision only after the old access is gone.
+    await stack.api(
+      "POST",
+      `/namespaces/${stack.namespaceId}/iam/access-bindings`,
+      selected.secretAccess.input,
+    );
     const unselected = structuredClone(selected.values);
     unselected.plugins.entries.codex.config.appServer.networkProxy.domains = {};
     await stack.api(
@@ -2006,7 +2046,7 @@ req.on('error', error => { clearTimeout(timer); process.exit(error.message === '
     );
     const proof =
       `revision=${selected.revisionId} environment=local-setup-k3d skips=0 ` +
-      "selected=ok peer-withdrawal=confirmed held-socket=closed old-deployment-pod-policy=gone retired-reader-delta=0 retired-provider-delta=0 unselected-reader=0 unselected-provider=0 selected-control=ok controlled-model-provider";
+      "selected=ok per-agent-authority-withdrawal=confirmed held-socket=closed old-deployment-pod-policy=gone retired-reader-delta=0 retired-provider-delta=0 unselected-reader=0 unselected-provider=0 selected-control=ok controlled-model-provider";
     proofResults.push(proof);
     log(`public reader: ${proof}`);
     return successor;

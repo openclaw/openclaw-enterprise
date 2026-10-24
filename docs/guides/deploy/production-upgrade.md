@@ -128,7 +128,8 @@ chmod 600 /secure/occ/candidate-values.yaml /secure/occ/candidate-installation.y
 ```
 
 These copies may change the
-[Slack directory proxy](../integrations/slack.md#configure-both-slack-proxies)
+[control-plane outbound proxy](../../reference/gateway-outbound.md)
+(`api.controlPlaneOutboundProxyUrl`)
 and select the [curated Codex PluginDriver](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
 Other configuration changes are not supported by this upgrade command.
 Review compatibility with the selected images, Agent drafts and credentials

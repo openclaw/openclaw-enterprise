@@ -81,6 +81,7 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 | `withdrawHarnessExposure(revision, signal)`                                                         | Withdraws a native worker's provider exposure outside a pass. The worker calls it at start for selected Agent revisions and failed candidates, with at most five logged attempts per Agent revision and worker start. |
 | `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                                                            |
 | `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the saved Agent revision, that opts into [exclusive replacement](#production-revision-stages).                                                                           |
+| Gateway access                                                                                      | [Admission](../gateway-outbound.md) and [withdrawal](../../flows/gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance).                                                                               |
 
 ### Optional startup preflight
 

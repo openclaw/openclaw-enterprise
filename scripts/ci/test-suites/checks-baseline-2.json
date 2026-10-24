@@ -1,6 +1,7 @@
 {
   "env": {
-    "NODE_OPTIONS": "--max-old-space-size=4096"
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "OCC_TEST_GATEWAY_OUTBOUND_PUBLIC": "1"
   },
   "fileConcurrency": 8,
   "parallelFiles": [
@@ -52,7 +53,7 @@
     "tests/integration/repository-credentials-projected-inputs.test.mjs",
     "tests/integration/ci-image-pull.test.mjs",
     "tests/integration/ci-download-pinned.test.mjs",
-    "tests/conformance/slack-proxy-tunnel.test.mjs",
+    "tests/integration/gateway-outbound-proxy.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
     "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/qa-repository-installation.test.ts",
@@ -93,7 +94,6 @@
     "tests/conformance/plugin-runtime-templates.test.mjs",
     "tests/integration/ci-logging.test.mjs",
     "tests/integration/ci-go-test.test.mjs",
-    "tests/conformance/slack-proxy-reset.test.mjs",
     "tests/conformance/native-admin-upgrade-reset.test.mjs",
     "tests/conformance/repository-credentials-custody.test.mjs",
     "tests/conformance/repository-credentials-receive-pack.test.mjs",
@@ -276,13 +276,10 @@
       "path": "tests/conformance/bounded-response-reads.test.mjs"
     },
     {
-      "path": "tests/conformance/slack-proxy-reset.test.mjs"
-    },
-    {
       "path": "tests/conformance/native-admin-upgrade-reset.test.mjs"
     },
     {
-      "path": "tests/conformance/slack-proxy-tunnel.test.mjs"
+      "path": "tests/integration/gateway-outbound-proxy.test.mjs"
     },
     {
       "path": "tests/conformance/native-admin-websocket-relay.test.mjs"

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   arrangeProductionTopology,
   assertActualModelTurn,
+  assertManagedGatewayOutbound,
   assertInvalidHarnessAuthStaysUnready,
   assertDedicatedAgentsInstructionsInFreshSession,
   assertDedicatedNativeChildRelay,
@@ -39,6 +40,25 @@ import { boundedTeardown } from "../helpers/kubernetes-real.mjs";
 // Run them newest-first, each bounded and all attempted (finding 1711).
 const topologyTeardown = (testContext) =>
   boundedTeardown(testContext, { label: "production topology teardown" });
+
+test(
+  "production dedicated Gateway outbound enforces native plugin routing and withdraws active authority",
+  {
+    skip: process.env.OCC_TEST_GATEWAY_OUTBOUND_K3D !== "1",
+    timeout: 1_200_000,
+  },
+  async (context) => {
+    assert.ok(
+      process.env.OCC_TEST_OPENAI_MODEL?.trim(),
+      "the native outbound proof must explicitly select its authorized provider model",
+    );
+    const topology = await arrangeProductionTopology(context, "dedicated", undefined, {
+      gatewayOutbound: { mode: "restricted", hosts: ["example.com"] },
+      publicGithubRead: true,
+    });
+    await assertManagedGatewayOutbound(context, topology);
+  },
+);
 
 test(
   "production dedicated Skill source uploads honor default and denied node-write policy",

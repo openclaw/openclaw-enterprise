@@ -23,38 +23,31 @@ state for `occ dev down`. See [hosted execution](README.md#run-the-hosted-local-
 
 ## Kubernetes HTTP fixture
 
-Install Docker, k3d and `kubectl`, and prepare the dedicated migrated database
-in [PostgreSQL](postgresql.md#other-postgresql-suites). Use Kubernetes 1.35 or
-later. Choose a new cluster name if `oce` exists. These commands do not change
-the default kubeconfig or context.
+Install Docker, k3d and `kubectl`. Use Kubernetes 1.35 or later. The CI preparer
+creates an owned cluster with enforcing NetworkPolicies, fixture/controller images
+and migrated limited-role PostgreSQL databases. It preserves the default kubeconfig and unrelated resources.
+Run these fixture lanes: `k3d-fixture-configuration`,
+`k3d-fixture-state` and `k3d-fixture-plugins`.
 
 ```sh
-mkdir -m 700 -p /tmp/oce-k3d
-k3d cluster create oce \
-  --image +v1.35 \
-  --api-port 127.0.0.1:6443 \
-  --kubeconfig-update-default=false \
-  --kubeconfig-switch-context=false
-k3d kubeconfig get oce > /tmp/oce-k3d/kubeconfig
-chmod 600 /tmp/oce-k3d/kubeconfig
-
-docker build --pull=false -t oce-fixture:local tests/fixtures/kubernetes
-k3d image import oce-fixture:local -c oce
-
-OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
-OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
-OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
-  node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
-    tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs
+(
+  set -eu
+  K8S_FIXTURE_LANE=k3d-fixture-state
+  K8S_FIXTURE_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/oce-k3d-fixture.XXXXXX")"
+  trap 'node scripts/ci/cleanup.mjs --state "$K8S_FIXTURE_RUN_DIR/state.json"' EXIT
+  node scripts/ci/prepare.mjs --lane "$K8S_FIXTURE_LANE" \
+    --state "$K8S_FIXTURE_RUN_DIR/state.json"
+  node scripts/ci/run-tests.mjs run "$K8S_FIXTURE_LANE" \
+    --state "$K8S_FIXTURE_RUN_DIR/state.json" \
+    --results "$K8S_FIXTURE_RUN_DIR/results.json"
+)
 ```
 
-All fixture cases must pass without skips. Missing all cluster selectors skips;
-partial selectors fail. A missing database skips database cases. Run files
-sequentially: they share a database. The suite checks API, worker, Driver, RBAC,
-storage, lifecycle and network isolation, not live OAuth/models, cloud volume
-detach or node fencing.
+Selected cases must pass without skips. Lanes check API/worker lifecycle,
+RBAC, storage, revision replacement and enforced network isolation. Enabled Slack
+provisioning uses the actual controller proxy with simulated provider/runtime
+responses; it proves policy and Secret delivery, not native Slack connectivity.
+See [CI image preparation](ci.md#setting-overrides).
 
 External OAuth credentials use OpenShell rather than Kubernetes bootstrap Jobs or a
 native OAuth store. The [OpenShell OAuth proof](openshell-oauth.md) exercises real
@@ -63,27 +56,19 @@ The credentialed [OpenShell runtime lane](openshell.md) covers provider delivery
 Codex exposure, model execution, and withdrawal. Neither lane runs in ordinary
 credential-free CI; a green fixture result does not prove live OAuth refresh.
 
-When finished, delete only the cluster you created:
-
-```sh
-k3d cluster delete oce
-```
+An imported immutable `OCC_TEST_KUBERNETES_RUNTIME_IMAGE` extends the API/worker
+case through runtime Secret and private-state deletion without a model turn.
+Replacement retains the Harness PVC UID and files written before a failed
+candidate. Local storage checks do not qualify cloud CSI detach or node fencing.
 
 ### Production workload network access
 
-With the fixture cluster and image above, install Helm and `yq`, then run:
-
-```sh
-OCC_TEST_KUBERNETES_KUBECONFIG=/tmp/oce-k3d/kubeconfig \
-OCC_TEST_KUBERNETES_CONTEXT=k3d-oce \
-OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
-  node --test tests/integration/production-network-access.test.mjs
-```
-
-This needs no database or model credential. It checks the chart's actual
-NetworkPolicies with reachable controls. It does not prove controller startup,
-database authentication, provider behavior, or a production Helm installation.
-Policies for other releases are outside the chart's selectors.
+Run `k3d-fixture-configuration` with the procedure above; install Helm and `yq`
+for its `production-network-access.test.mjs` case. It checks the chart's actual
+NetworkPolicies with reachable controls. No model credential is required.
+It does not prove controller startup, database authentication, provider behavior
+or a production Helm installation. Policies for other releases are outside the
+chart's selectors.
 
 ## Kubernetes model turns and Secrets
 

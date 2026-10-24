@@ -8,7 +8,8 @@ Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
 [Deploy your first Agent](../guides/first-agent.md), choose
 [Compute](../guides/topics/agent-compute.md), manage
-[versions](../guides/topics/agent-revisions.md), or
+[versions](../guides/topics/agent-revisions.md), approve
+[Gateway outbound](gateway-outbound.md), or
 [troubleshoot deployment](../guides/topics/agent-troubleshoot.md).
 
 Creation saves identity and exact Namespace-owned Configuration with `active`
@@ -439,6 +440,6 @@ The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes 
 
 - 2026-09-23: Removed top-level `Agent.serviceAccountId` checks; use `harnessAuth`. (NOT_IN_SPEC)
 
-- 2026-09-01 08:47: Document nullable providerId selection, immutable version association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
+- 2026-09-01 08:47: Document nullable providerId selection, immutable revision association, and managed binding admission. (01a05d97-f2b0-71d0-bfc3-01ee7d6d58f9 - b079c4b755ef336a9c65bb4eb737e3aedbfdaa7d)
 
 - [2026-08-28 17:55]: Recast as the current Agent and AgentRevision feature reference; separate procedures and correct Harness and SandboxDriver boundaries. (01a036f4-cf1d-7cc1-bbc1-000879038ac8 - 4270aa29b7015562049f46c6027962fd85b584a9)

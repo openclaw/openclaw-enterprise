@@ -140,7 +140,14 @@ For repositories, use the [standalone credential service](../repository-credenti
 
 Kubernetes consumers still require the [exact repository-service peer](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#networking). Expose the Compose broker through a namespace-scoped Service and a TCP relay Pod in `oce-system`. The relay forwards encrypted bytes to the exact broker container IP and port; it receives no keys or bearer material. Use the Service DNS name in the broker certificate and `publicOrigin`. Apply default-deny policies, permit only the selected Agent namespaces to the relay port, and permit the relay only to the broker's `/32` and HTTPS port. Configure `network.repositoryCredentials` with that exact namespace and relay Pod selector. Register the repository Backend and Agent binding through the [normal repository workflow](../repository-credentials.md#create-and-deploy-an-agent).
 
-For Slack, run the bundled `apps/controller/src/slack-proxy.mjs` in a private container on the same owned Docker network, with no host-published port. Set both `runtime.channels.proxyUrl` in the Installation and `OCC_CHANNEL_DIRECTORY_PROXY_URL` on the Compose API to its exact literal IPv4 endpoint. Restart `controller` and `worker-kubernetes`, then deploy the Slack Agent. Follow [both proxy checks](../integrations/slack.md#configure-both-slack-proxies). Embedded OpenClaw does not support external channel credentials in this topology; use dedicated Codex for this supported Slack path.
+For Slack, enable Compute's `runtime.gatewayOutbound` with its approved controller
+image and actual infrastructure exclusions. Compute creates the Gateway route at
+deployment. Run the generic control-plane proxy in a private container on the owned
+Compose network, with no host-published port; configure its restricted exclusions
+and point `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` at that container's exact IPv4
+endpoint. Restart API and worker after changing Installation configuration. Follow
+[Slack setup](../integrations/slack.md#configure-both-slack-proxies) for its two
+consumers. Embedded channel credentials remain unsupported.
 
 ## Verify and recover
 

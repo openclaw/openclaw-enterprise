@@ -1,4 +1,22 @@
 import type {
+  GatewayOutboundSelection,
+  GatewayOutboundSnapshot,
+  GatewayOutboundRequirement,
+} from "./gateway-outbound.ts";
+
+export type {
+  GatewayOutboundSelection,
+  GatewayOutboundSnapshot,
+  GatewayOutboundRequirement,
+  GatewayOutboundDestination,
+} from "./gateway-outbound.ts";
+export {
+  validGatewayOutboundSelection,
+  validGatewayOutboundSnapshot,
+  GATEWAY_OUTBOUND_HOST_PATTERN,
+} from "./gateway-outbound.ts";
+
+import type {
   CredentialPolicyWithdrawalOptions,
   ExecutionAdmission,
   ProtectedEgressSource,
@@ -335,6 +353,7 @@ export interface BackendSummary {
 }
 
 export interface InstallationCapabilities {
+  readonly gatewayOutbound?: { readonly restricted: boolean; readonly publicHttps: boolean };
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   /** A selected Credential Gateway requires source-backed model authentication. */
   readonly credentialSources?: { readonly types: readonly CredentialSourceType[] };
@@ -944,6 +963,7 @@ export interface Agent extends Scope {
   readonly harnessAuth: HarnessAuthBinding | null;
   readonly credentialSources?: readonly AgentCredentialSourceBinding[];
   readonly executionMode: HarnessExecutionMode;
+  readonly gatewayOutbound?: GatewayOutboundSelection;
   readonly plugins?: PluginDesiredState;
   readonly pluginApprovers?: PluginApprovers;
   readonly repositoryBindings?: readonly RepositoryBindingSelection[];
@@ -957,6 +977,7 @@ export interface Agent extends Scope {
 export interface ConfigurationReadError {
   readonly code: "SAVED_CONFIGURATION_UNREADABLE";
   readonly field:
+    | "gatewayOutbound"
     | "plugins"
     | "pluginApprovers"
     | "repositoryBindings"
@@ -970,6 +991,7 @@ export interface ConfigurationReadError {
 
 export type AgentMetadata = Omit<
   Agent,
+  | "gatewayOutbound"
   | "plugins"
   | "pluginApprovers"
   | "repositoryBindings"
@@ -1022,6 +1044,7 @@ export interface AgentRevision extends Scope {
   readonly configurationKind: ConfigurationKind;
   readonly configurationGeneration: number;
   readonly configuration: OpenClawConfigurationDocument;
+  readonly gatewayOutbound?: GatewayOutboundSnapshot;
   readonly harness: RevisionHarnessDescriptor;
   readonly compute: {
     readonly id: string;
@@ -1073,6 +1096,9 @@ export function freezeAgentRevision(revision: AgentRevision): Readonly<AgentRevi
       ? {}
       : { egressPlan: immutableCopy(revision.egressPlan) }),
     configuration: immutableCopy(revision.configuration),
+    ...(revision.gatewayOutbound === undefined
+      ? {}
+      : { gatewayOutbound: immutableCopy(revision.gatewayOutbound) }),
     ...(revision.secretBindings === undefined
       ? {}
       : { secretBindings: immutableCopy(revision.secretBindings) }),
@@ -2035,6 +2061,12 @@ export type ChannelCredentialReader = (
 ) => Promise<void>;
 
 export interface ChannelDriver extends Driver {
+  /** Side-effect-free requirements of supported enabled native channels. */
+  gatewayNetworkRequirements?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): readonly GatewayOutboundRequirement[];
+  /** Installation-local provider management transport; independent of Agent revisions. */
+  controlPlaneNetworkRequirements?(): readonly GatewayOutboundRequirement[];
   readonly capability: "channel";
   validateCredentials?(
     values: Readonly<Record<string, unknown>>,
@@ -2229,6 +2261,30 @@ export interface ConfigurationValidationOptions {
 }
 
 export interface ComputeDriver extends Driver {
+  readonly gatewayOutboundCapabilities?: {
+    readonly restricted: boolean;
+    readonly publicHttps: boolean;
+  };
+  validateGatewayOutbound?(
+    selection: GatewayOutboundSelection,
+    executionMode: HarnessExecutionMode,
+  ): void;
+  admitGatewayOutbound?(input: {
+    readonly selection: GatewayOutboundSelection;
+    readonly executionMode: HarnessExecutionMode;
+    readonly requirements: readonly GatewayOutboundRequirement[];
+  }): GatewayOutboundSnapshot | undefined;
+  /**
+   * Pure status of immutable access admission against current Installation approval.
+   * `withdrawn` must be observed before effects; restored approval cannot cancel recorded cleanup.
+   */
+  revisionAccessStatus?(revision: Readonly<AgentRevision>): "none" | "current" | "withdrawn";
+  /**
+   * Withdraw the access identified by revisionAccessStatus, attempting independent closures
+   * even when another fails. Return only after required backing workloads and connections end.
+   * Use immutable ownership, never current approval to omit cleanup; do not start or repair.
+   */
+  withdrawRevisionAccess?(revision: Readonly<AgentRevision>): Promise<void>;
   /**
    * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
    * repair, release or authorize an execution. Missing support provides no assurance.

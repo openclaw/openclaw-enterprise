@@ -52,12 +52,22 @@ console uses the current origin and has no separate environment settings.
 - `OCC_AGENT_NATIVE_ADMIN_DOMAIN` — Agent hostname suffix; required when the pilot is enabled.
 - `OCC_AUTH_COOKIE_DOMAIN` — Shared parent domain for console and Agent cookies; required when the pilot is enabled.
 - `OCC_GATEWAY_API_KEY_PATH` — API/worker absolute path to the private gateway service-key file for operator RPCs and dedicated node enrollment.
-- `OCC_CHANNEL_DIRECTORY_PROXY_URL` — Optional API-only HTTP(S) proxy endpoint for production Slack directory lookup and credential validation; set by Helm `slackProxy.enabled` or `api.channelDirectoryProxyUrl`.
-- `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` — Exact Kubernetes Service host accepted as a managed Slack directory proxy; set only by Helm `slackProxy.enabled`.
+- `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` — Optional API-only CONNECT endpoint for trusted ChannelDriver management requests; set by Helm `outboundProxy.enabled` or `api.controlPlaneOutboundProxyUrl`.
+- `OCC_CONTROL_PLANE_OUTBOUND_PROXY_MANAGED_HOST` — Exact managed proxy Service host accepted by the bundled Driver; set by Helm `outboundProxy.enabled`.
 - `NODE_EXTRA_CA_CERTS` — Additional process-wide Node.js PEM trust, read at startup. The chart combines API roots ([OIDC CA settings](../settings/oidc.md)); Compute combines public [Sandbox endpoint](../drivers/sandbox.md#interface) and execution-cluster roots for the dedicated Gateway.
 - `OCC_GATEWAY_CA_PATH` — API-only path to the Gateway-only CA bundle that dedicated Harness nodes trust; empty means none. Unset, node enrollment uses `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.
 - `OCC_EGRESS_AUTHORITY_PORT`, `OCC_OPENSHELL_GIT_PORT` — Chart-set port of its `egressAuthority` and `openshellGit` listeners, or `disabled`. API and worker startup and the upgrade check refuse `CHART_LISTENER_MISMATCH` when the Installation authority uses another port, a host other than `0.0.0.0` or `::`, a disabled listener, or TLS or issuer file paths other than the chart's mounts. Not operator inputs.
 - `OCC_CA_SOURCES`, `OCC_DATABASE_CA_SOURCE` — Chart-set labels (value, Secret and key) that the OIDC CA startup checks print in their errors instead of mount paths. Helm sets them with OIDC CA values; not operator inputs.
+
+## Outbound proxy processes
+
+See [production proxy settings](../settings/production.md#control-plane-outbound-proxy)
+and [Gateway outbound access](../gateway-outbound.md).
+
+- `OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH` — Absolute JSON config path for the control-plane wrapper; Helm supplies infrastructure exclusions, and the trusted Driver supplies destinations.
+- `OCC_OUTBOUND_PROXY_POLICY_PATH` — JSON policy path required by the generic standalone Gateway proxy entrypoint.
+- `OCC_OUTBOUND_PROXY_HOST` — Proxy listener bind address; default: `0.0.0.0`.
+- `OCC_OUTBOUND_PROXY_PORT` — Proxy listener port; default: `3128`.
 
 ## PostgreSQL and migrations
 

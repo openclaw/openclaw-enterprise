@@ -69,6 +69,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/workspace.mts",
       "agents/access.mts",
       "agents/detail.mts",
+      "agents/gateway-outbound.mts",
       "agents/deployment-evidence.mts",
       "agents/deployment-diagnostics.mts",
       "agents/deployment-recovery.mts",

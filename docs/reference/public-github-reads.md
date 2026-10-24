@@ -40,16 +40,21 @@ domain glob. It leaves the native proxy policy intact. The egress policy selects
 only the version that opted in. Preparing or activating a successor preserves
 the serving version's choice; stopping or retiring a version removes its own policy.
 Reader selection is frozen at admission. A version created before the reader was
-enabled stays unselected even if its proxy already allowed that address. Disabling
-or changing the configured reader peer does not itself trigger reconciliation of
-a selected version. To avoid interruption, deploy an unselected successor and
-retire the old version before changing the peer; stopping the Agent also terminates
-its Harness. If a selected version is prepared or activated after its peer is
-removed or changed, Compute first removes that version's grant to narrow new
-connections, then stops its Harness and waits for its Pods to terminate before
-reporting a configuration failure. Removing a NetworkPolicy does not guarantee
-that an existing connection closes. A GET admitted before withdrawal completes
-may drain; the stopped Harness cannot start a new one afterward. Deploy a new version
+enabled stays unselected even if its proxy already allowed that address.
+Compute maintenance normally rechecks reader configuration every 30 seconds; the
+next pass observes a removed or changed peer. Queue delay and Pod shutdown also
+count, so that interval is not a withdrawal deadline. To avoid interruption,
+deploy an unselected successor and retire the old revision before changing the
+peer; stopping the Agent also terminates its Harness.
+
+When the admitted peer is refused, Compute removes the revision's grant to narrow
+new connections and terminates its exact admitted Harness before reporting failure.
+Terminal active-version refusal also withdraws the reader, even if its peer remains
+unchanged or authority returns while removal retries. A revision with
+[Gateway outbound access](gateway-outbound.md) must close both routes before its
+terminal result is recorded. Removing a NetworkPolicy alone does not guarantee
+existing connections close. An admitted GET may drain before Harness termination;
+that Harness cannot start new requests afterward. Deploy a new version
 to select a replacement peer. If the installation selects protected Credential Proxy while this
 revision is active, its authorized reconciliation closes the admitted reader access and
 observes the Harness stopped before reporting the old release failed. Incomplete observations

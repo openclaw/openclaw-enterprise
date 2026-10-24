@@ -1,7 +1,7 @@
 ---
 created: "2026-10-15"
-updated: "2026-10-15"
-last_updated_session: authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72
+updated: 2026-10-16
+last_updated_session: authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53
 ---
 
 # Public GitHub read flow
@@ -32,6 +32,7 @@ graph TD
   Github --> Result["Data within response size limits, opaque 404, or explicit failure"]
   Revision -->|Agent revision stopped or retired| Retire["Remove only its policy and skill snapshot"]
   Revision -->|peer changed and Agent revision reobserved| Narrow["Remove Agent revision policy"]
+  Revision -->|terminal active refusal| Narrow
   Narrow --> Stop["Stop exact Harness and wait for Pods"]
   Stop --> Withdraw["Verify withdrawal and fail preparation"]
 ```
@@ -84,18 +85,30 @@ provider cursor. An unsafe or out-of-range next link reports an incomplete listi
 `apps/controller/src/drivers/compute/kubernetes/index.ts:deleteRetiredRevisionArtifacts`
 removes the Agent revision's reader policy and skill snapshot after its Pods have
 terminated. Preparing or activating a successor does not change that grant.
-If preparation or activation observes that the operator disabled or changed the
-admitted peer, `revokeUnavailablePublicGithubRead` removes the Agent revision policy to
-narrow new connections. The immutable reader admission identifies a Compute-owned
+Before preparation, activation or periodic maintenance, pure `revisionAccessStatus`
+compares the admitted peer with current configuration. `withdrawn` becomes a
+persisted `REVISION_ACCESS_WITHDRAWN` refusal before `withdrawRevisionAccess`
+invokes `withdrawPublicGithubRead` to remove the policy and narrow new connections. The immutable reader admission identifies a Compute-owned
 Harness even if its pinned Sandbox is now unavailable or has changed. Compute
 checks the exact Deployment ownership and ordinary workload profile, then
 foreground-deletes it with its UID, waits for the Deployment and its Pods to terminate, and verifies that
-the policy and Deployment have not reappeared before failing with a configuration
-error. An incomplete observation leaves withdrawal unfinished. Policy deletion
+the policy and Deployment have not reappeared before terminal refusal is published.
+An incomplete observation leaves withdrawal unfinished. Policy deletion
 alone does not guarantee existing connections close; an in-flight GET may drain
-before Pod termination completes. Reconfiguring the peer
-alone does not schedule a reconciliation; the operator can stop the Agent or deploy
-an unselected successor and retire the old version. Stop and retirement fence
+before Pod termination completes.
+
+Compute observes peer changes on its next scheduled maintenance pass, normally
+within a 30-second interval. Queue delay and Pod shutdown also affect withdrawal
+time. The operator can stop the Agent or deploy an unselected successor and
+retire the old revision before changing the peer.
+
+`ControllerWorker.beginRevisionAccessWithdrawal` also persists withdrawal for a
+terminal active-version refusal, even when the reader peer remains unchanged.
+Its removal-only retries cannot reactivate the old revision after authority returns.
+Compute attempts Gateway proxy and admitted reader closures independently, and the
+worker waits for both before publishing failure or handing off required retirement.
+
+Stop and retirement fence
 the admitted Compute-owned Harness before resolving the current Sandbox; an
 unavailable or changed Sandbox still leaves ancillary cleanup unfinished and
 reports an error. A new Agent revision is needed to select a replacement peer.
@@ -128,6 +141,8 @@ this same path instead of leaving them unreadable.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-16 13:09: Compose admitted Gateway and reader withdrawal against refreshed upstream. (authoring-run/523fa03e-fd48-4e90-a757-e4c83a1e2b53 - 792afad4f9e8bd4323fc197a102ebde7961484c9)
 
 - 2026-10-15 11:05: Project the managed reader skill to Gateway and Harness (authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72 - 87e12a1169a997a99fec7de261b43a0ea2255f54)
 

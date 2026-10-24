@@ -87,6 +87,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
+    gatewayOutbound: { mode: "channelsOnly" },
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
@@ -921,6 +922,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     backendId: null,
     executionMode: "dedicated",
+    gatewayOutbound: { mode: "channelsOnly" },
     sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: {
@@ -1811,6 +1813,7 @@ async function verifyDeletedResourceAccessBindingContract(store, revision) {
       source: { kind: "secret", namespaceId: namespace.id, id: agentSecret.id },
     },
     executionMode: "embedded",
+    gatewayOutbound: { mode: "channelsOnly" },
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
     status: "active",
@@ -2035,6 +2038,7 @@ async function verifyCredentialSourceContract(
     // The list holds every bound source; harnessAuth names the listed Harness source.
     credentialSources: [{ sourceId: source.id }],
     executionMode: "embedded",
+    gatewayOutbound: { mode: "channelsOnly" },
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
     status: "active",

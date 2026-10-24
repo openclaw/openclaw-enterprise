@@ -33,6 +33,7 @@ import {
   harnessAuthDescription,
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
+import { renderGatewayOutbound } from "./gateway-outbound.mjs";
 import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
@@ -569,6 +570,7 @@ export async function renderAgentDetail(
     ["configuration", "Configuration"],
     ["plugins", "Plugins"],
     ["channels", "Channels"],
+    ["network", "Network"],
   ];
   if (selected === "draft") {
     tabLabels.push(["repositories", "Repositories"], ["credentials", "Credentials"]);
@@ -1095,7 +1097,9 @@ export async function renderAgentDetail(
         refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
-        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+        (["configuration", "plugins", "repositories", "channels", "network"].includes(
+          selectedTab,
+        ) &&
           draftEditorNavigationBlock))
     );
   }
@@ -1109,7 +1113,9 @@ export async function renderAgentDetail(
         (rereads && refreshingDraft) ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
-        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+        (["configuration", "plugins", "repositories", "channels", "network"].includes(
+          selectedTab,
+        ) &&
           draftEditorSaving))
     );
   }
@@ -1210,7 +1216,8 @@ export async function renderAgentDetail(
   });
   // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
   const fadeTabEdges = () => {
-    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 0);
+    // Both edges tolerate the same one-pixel rounding in scrollWidth/clientWidth.
+    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 1);
     tabs.toggleAttribute(
       "data-more-after",
       tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1,
@@ -2392,12 +2399,19 @@ export async function renderAgentDetail(
     );
     // Authentication edits staged in Credentials but not yet saved.
     let authenticationUnsaved = false;
+    const retainedNetwork = context.drafts.get("gatewayOutbound") as
+      Partial<EditorState> | undefined;
     const retainedEditor = context.drafts.get("configuration") as ConfigurationDraft | undefined;
     const draftEditorState = {
-      dirty: Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
+      dirty:
+        selectedTab === "network"
+          ? Boolean(retainedNetwork?.dirty)
+          : Boolean(retainedEditor && retainedEditor.text !== retainedEditor.initialText),
       saving: false,
-      outcomeUnknown: retainedEditor?.outcomeUnknown ?? false,
-      reloadRequired: retainedEditor?.reloadRequired ?? false,
+      outcomeUnknown:
+        (selectedTab === "network" ? retainedNetwork : retainedEditor)?.outcomeUnknown ?? false,
+      reloadRequired:
+        (selectedTab === "network" ? retainedNetwork : retainedEditor)?.reloadRequired ?? false,
     };
     const retainedPlugins = context.drafts.get("plugins") as Partial<EditorState> | undefined;
     const pluginEditorState = {
@@ -2491,6 +2505,9 @@ export async function renderAgentDetail(
       );
     }
     function editedSubject() {
+      if (selectedTab === "network") {
+        return "Gateway network access";
+      }
       if (selectedTab === "repositories") {
         return "repository access";
       }
@@ -2506,6 +2523,11 @@ export async function renderAgentDetail(
         reloadRequired: Boolean(retained?.outcomeUnknown || retained?.reloadRequired),
       };
     }
+    function retainedNetworkState() {
+      return selectedTab === "network"
+        ? null
+        : (context.drafts.get("gatewayOutbound") as Partial<EditorState> | undefined);
+    }
     const setupCredentials = !runtimeAuth
       ? button("Set up credentials", () => change("draft", "credentials"))
       : null;
@@ -2519,6 +2541,11 @@ export async function renderAgentDetail(
         authenticationPending ||
         harnessGrantMissing ||
         authenticationUnsaved ||
+        Boolean(
+          retainedNetworkState()?.dirty ||
+          retainedNetworkState()?.outcomeUnknown ||
+          retainedNetworkState()?.reloadRequired,
+        ) ||
         retainedConfiguration.dirty ||
         retainedConfiguration.reloadRequired ||
         draftEditorState.dirty ||
@@ -2570,6 +2597,14 @@ export async function renderAgentDetail(
           deployStatus.textContent = "Reload the Configuration draft before deploying.";
         } else if (retainedConfiguration.dirty) {
           deployStatus.textContent = "Save or cancel Configuration edits before deploying.";
+        } else if (
+          retainedNetworkState()?.outcomeUnknown ||
+          retainedNetworkState()?.reloadRequired
+        ) {
+          deployStatus.textContent = "Reload Gateway network access before deploying.";
+        } else if (retainedNetworkState()?.dirty) {
+          deployStatus.textContent =
+            "Save or cancel Gateway network access edits before deploying.";
         } else if (draftEditorState.outcomeUnknown) {
           deployStatus.textContent = `Reload this draft before deploying because the last ${editedSubject()} save outcome is unknown.`;
         } else if (draftEditorState.reloadRequired) {
@@ -2630,7 +2665,7 @@ export async function renderAgentDetail(
     // The next step's checklist (UX spec 3.7): each step is done or still open, with one muted
     // detail line. A credential the last deployment had rejected keeps its step open.
     const checklistSteps = [
-      "Edit and save Configuration, plugins, or Channels",
+      "Edit and save Configuration, plugins, Channels, or Network",
       "Check authentication and credentials",
       "Deploy the saved draft",
     ].map((text) => {
@@ -2667,6 +2702,7 @@ export async function renderAgentDetail(
     }
     function updateChecklist() {
       const retainedConfiguration = retainedConfigurationState();
+      const retainedNetwork = retainedNetworkState();
       const saving = draftEditorState.saving || pluginEditorState.saving;
       const reload =
         draftEditorState.outcomeUnknown ||
@@ -2674,9 +2710,14 @@ export async function renderAgentDetail(
         pluginEditorState.outcomeUnknown ||
         pluginEditorState.reloadRequired ||
         retainedConfiguration.reloadRequired ||
+        retainedNetwork?.outcomeUnknown ||
+        retainedNetwork?.reloadRequired ||
         Boolean(deployReloadMessage);
       const unsaved =
-        draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
+        draftEditorState.dirty ||
+        pluginEditorState.dirty ||
+        retainedConfiguration.dirty ||
+        retainedNetwork?.dirty;
       setStep(
         checklistSteps[0],
         !saving && !reload && !unsaved,
@@ -2753,6 +2794,8 @@ export async function renderAgentDetail(
           if (
             freshAgent.executionMode !== agent.executionMode ||
             freshAgent.backendId !== agent.backendId ||
+            JSON.stringify(freshAgent.gatewayOutbound ?? { mode: "channelsOnly" }) !==
+              JSON.stringify(agent.gatewayOutbound ?? { mode: "channelsOnly" }) ||
             JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(agent.plugins ?? {})
           ) {
             deployReloadMessage = "Agent settings changed. Reload this draft before deploying.";
@@ -2889,7 +2932,7 @@ export async function renderAgentDetail(
             ? "Reload this draft before leaving the editor."
             : draftEditorState.saving
               ? `Wait for ${editedSubject()} save to finish before leaving the editor.`
-              : draftEditorState.dirty && selectedTab === "repositories"
+              : draftEditorState.dirty && ["repositories", "network"].includes(selectedTab)
                 ? `Save or cancel ${editedSubject()} edits before leaving this tab.`
                 : null;
         updateNavigationControls();
@@ -3359,6 +3402,30 @@ export async function renderAgentDetail(
     );
     if (selectedTab === "repositories" && draft) {
       content.append(renderRepositoryEditor(context, data));
+    } else if (selectedTab === "network") {
+      content.append(
+        renderGatewayOutbound(context, {
+          agent,
+          snapshot,
+          draft,
+          executionMode,
+          path,
+          onState: data.draft ? data.setDraftEditorState : undefined,
+          savedNotice,
+          onSaved: () =>
+            reloadDraftInPlace(context, {
+              saved: "Network access saved.",
+              focus: "Reload Agent",
+            }),
+          onReload: () => {
+            context.drafts.forget("gatewayOutbound");
+            return reloadDraftInPlace(context, {
+              saved: "Draft reloaded.",
+              focus: "Reload Agent",
+            });
+          },
+        }),
+      );
     } else if (selectedTab === "plugins") {
       const plugins = renderAgentPlugins(context, {
         agent: { ...agent, harnessAuth: agent.harnessAuth ?? null },

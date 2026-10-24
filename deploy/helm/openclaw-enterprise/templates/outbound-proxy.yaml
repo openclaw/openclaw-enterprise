@@ -1,28 +1,38 @@
-{{- if .Values.slackProxy.enabled }}
+{{- if .Values.outboundProxy.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openclaw-enterprise-outbound-proxy
+  labels:
+    {{- include "openclaw.labels" (dict "root" . "component" "outbound-proxy") | nindent 4 }}
+data:
+  config.json: {{ dict "denyCidrs" .Values.outboundProxy.denyCidrs | toJson | quote }}
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: openclaw-enterprise-slack-proxy
+  name: openclaw-enterprise-outbound-proxy
   labels:
-    {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 4 }}
+    {{- include "openclaw.labels" (dict "root" . "component" "outbound-proxy") | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: slack-proxy
+      app.kubernetes.io/component: outbound-proxy
   template:
     metadata:
       labels:
-        {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 8 }}
-      {{- with .Values.controlPlane.installationChecksum }}
+        {{- include "openclaw.labels" (dict "root" . "component" "outbound-proxy") | nindent 8 }}
       annotations:
+        openclaw.dev/outbound-proxy-checksum: {{ .Values.outboundProxy.denyCidrs | toJson | sha256sum | quote }}
+        {{- with .Values.controlPlane.installationChecksum }}
         openclaw.dev/installation-checksum: {{ . | quote }}
-      {{- end }}
+        {{- end }}
     spec:
-      serviceAccountName: openclaw-enterprise-slack-proxy
+      serviceAccountName: openclaw-enterprise-outbound-proxy
       automountServiceAccountToken: false
       enableServiceLinks: false
       securityContext:
@@ -32,54 +42,65 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: slack-proxy
+        - name: outbound-proxy
           image: {{ .Values.images.controller | quote }}
           args:
-            - apps/controller/src/slack-proxy.mjs
+            - apps/controller/src/gateway/control-plane-outbound-proxy.mjs
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:
-            {{- toYaml .Values.slackProxy.resources | nindent 12 }}
+            {{- toYaml .Values.outboundProxy.resources | nindent 12 }}
           env:
             - name: NODE_ENV
               value: production
-            - name: OCC_SLACK_PROXY_PORT
-              value: {{ .Values.slackProxy.port | quote }}
+            - name: OCC_OUTBOUND_PROXY_PORT
+              value: {{ .Values.outboundProxy.port | quote }}
+            - name: OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH
+              value: /etc/openclaw/outbound-proxy/config.json
+          volumeMounts:
+            - name: configuration
+              mountPath: /etc/openclaw/outbound-proxy
+              readOnly: true
           ports:
             - name: proxy
-              containerPort: {{ .Values.slackProxy.port }}
+              containerPort: {{ .Values.outboundProxy.port }}
           readinessProbe:
-            tcpSocket:
+            httpGet:
+              path: /readyz
               port: proxy
             periodSeconds: 2
+      volumes:
+        - name: configuration
+          configMap:
+            name: openclaw-enterprise-outbound-proxy
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "openclaw.slackProxy.serviceName" . | quote }}
+  name: {{ include "openclaw.outboundProxy.serviceName" . | quote }}
   labels:
-    {{- include "openclaw.labels" (dict "root" . "component" "slack-proxy") | nindent 4 }}
+    {{- include "openclaw.labels" (dict "root" . "component" "outbound-proxy") | nindent 4 }}
 spec:
   type: ClusterIP
   selector:
     app.kubernetes.io/name: openclaw-enterprise
     app.kubernetes.io/instance: {{ .Release.Name | quote }}
-    app.kubernetes.io/component: slack-proxy
+    app.kubernetes.io/component: outbound-proxy
   ports:
     - name: proxy
-      port: {{ .Values.slackProxy.port }}
+      port: {{ .Values.outboundProxy.port }}
       targetPort: proxy
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: openclaw-enterprise-slack-proxy
+  name: openclaw-enterprise-outbound-proxy
 spec:
   podSelector:
     matchLabels:
       app.kubernetes.io/name: openclaw-enterprise
       app.kubernetes.io/instance: {{ .Release.Name | quote }}
-      app.kubernetes.io/component: slack-proxy
+      app.kubernetes.io/component: outbound-proxy
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
@@ -91,28 +112,13 @@ spec:
               app.kubernetes.io/name: openclaw-enterprise
               app.kubernetes.io/instance: {{ .Release.Name | quote }}
               app.kubernetes.io/component: api
-        {{- if .Values.gatewayRouting.enabled }}
-        - namespaceSelector:
-            matchLabels:
-              openclaw-enterprise.io/gateway: {{ include "openclaw.gatewayRouting.routeNamespaceLabel" . | quote }}
-            matchExpressions:
-              - key: openclaw.dev/gateway-namespace
-                operator: Exists
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/managed-by: openclaw-enterprise
-              openclaw.dev/workload-role: gateway
-            matchExpressions:
-              - key: openclaw.dev/agent
-                operator: Exists
-        {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.slackProxy.port }}
+          port: {{ .Values.outboundProxy.port }}
   egress:
     {{- include "openclaw.networkPolicy.dnsEgress" . | nindent 4 }}
     - to:
-        # Slack rotates public endpoints; hostname authorization stays in the proxy.
+        # Driver-owned hostname checks and destination-IP checks run in the proxy.
         - ipBlock:
             cidr: 0.0.0.0/0
             except:
@@ -130,6 +136,9 @@ spec:
               - 203.0.113.0/24
               - 224.0.0.0/4
               - 240.0.0.0/4
+              {{- range .Values.outboundProxy.denyCidrs }}
+              - {{ . | quote }}
+              {{- end }}
       ports:
         - protocol: TCP
           port: 443

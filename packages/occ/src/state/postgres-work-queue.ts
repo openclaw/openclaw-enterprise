@@ -482,6 +482,7 @@ const RECOVERING_ACTIVATIONS_SQL = `
       JOIN continuing_maintenance AS continuing
         ON continuing.idempotency_key = work.idempotency_key
       WHERE work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
+        AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)
         AND NOT EXISTS (
           SELECT 1 FROM occ.audit_events AS prior
           WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
@@ -528,6 +529,36 @@ const RECOVERING_REFUSED_STOPS_SQL = `
           WHERE agent.namespace_id = work.namespace_id AND agent.id = work.agent_id
             AND agent.active_revision_id = work.revision_id
         )
+    ),`;
+
+// A committed revision access withdrawal is irreversible for this work item. Lease recovery
+// preserves its removal-only phase even after IAM restoration or an attempt-limit change.
+const RECOVERING_REVISION_ACCESS_SQL = `
+    recovering_revision_access AS MATERIALIZED (
+      SELECT work.idempotency_key,
+        (SELECT jsonb_object_agg(key, value) FROM jsonb_each(latest.details)
+         WHERE key IN ('refusal', 'refusalData', 'cleanupFailedPreparation')) AS evidence
+      FROM occ.controller_work AS work
+      JOIN candidates AS candidate ON candidate.idempotency_key = work.idempotency_key
+      CROSS JOIN LATERAL (
+        SELECT prior.details
+        FROM occ.audit_events AS prior
+        WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
+          AND prior.resource_kind = 'agent_revision'
+          AND prior.resource_id = work.revision_id
+          AND prior.details->>'workId' = work.idempotency_key
+          AND prior.details->>'reasonCode' = 'REVISION_ACCESS_WITHDRAWAL_PENDING'
+          AND prior.namespace_id = work.namespace_id AND prior.actor_id = work.actor_id
+          AND prior.occurred_at >= work.created_at
+        ORDER BY prior.occurred_at DESC, prior.id DESC
+        LIMIT 1
+      ) AS latest
+      WHERE work.namespace_target IS NULL AND work.agent_target IS NULL
+        AND work.agent_id IS NOT NULL AND work.revision_id IS NOT NULL
+        AND (work.idempotency_key = 'agent_revision:' || work.revision_id || ':reconcile'
+          OR work.idempotency_key ~
+            ('^agent_revision:' || work.revision_id || ':maintenance:(0|[1-9][0-9]*)$'))
+        AND latest.details->>'refusal' IS NOT NULL
     ),`;
 
 // Work bound evidence of `work` with reason `code` (the lookup matches
@@ -764,7 +795,9 @@ const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
       ))`,
   "$4::text",
   `CASE WHEN $10::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusal', $10::text) END
-     || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END`,
+     || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END
+     || CASE WHEN $13::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusalData', $13::jsonb) END
+     || CASE WHEN $14::boolean THEN jsonb_build_object('cleanupFailedPreparation', true) ELSE '{}'::jsonb END`,
 )}
   SELECT transitioned.* FROM transitioned`;
 const SETTLE_PROVISIONING_FAILURE_SQL = `
@@ -1223,7 +1256,8 @@ export class PostgresWorkQueue {
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
       `SELECT event.occurred_at, event.details->>'reasonCode' AS reason_code,
-         event.details->>'refusal' AS refusal
+         event.details->>'refusal' AS refusal, event.details->'refusalData' AS refusal_data,
+         event.details->'cleanupFailedPreparation' AS cleanup_failed_preparation
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
          ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
@@ -1237,14 +1271,33 @@ export class PostgresWorkQueue {
       [nonempty(idempotencyKey, "Controller work idempotency key"), codes],
     );
     const row = found.rows[0] as
-      { occurred_at: Date | string; reason_code: string; refusal: string | null } | undefined;
-    return row === undefined
-      ? undefined
-      : Object.freeze({
-          at: asDate(row.occurred_at),
-          code: row.reason_code,
-          ...(row.refusal === null ? {} : { refusal: row.refusal }),
-        });
+      | {
+          occurred_at: Date | string;
+          reason_code: string;
+          refusal: string | null;
+          refusal_data: unknown;
+          cleanup_failed_preparation: unknown;
+        }
+      | undefined;
+    if (row === undefined) {
+      return undefined;
+    }
+    if (row.cleanup_failed_preparation != null && row.cleanup_failed_preparation !== true) {
+      throw new ScopeViolationError("Deferred preparation cleanup evidence is invalid.");
+    }
+    const refusalData =
+      row.refusal_data == null
+        ? undefined
+        : validateFailureData(row.refusal ?? row.reason_code, row.refusal_data);
+    return Object.freeze({
+      at: asDate(row.occurred_at),
+      code: row.reason_code,
+      ...(row.refusal === null ? {} : { refusal: row.refusal }),
+      ...(refusalData === undefined ? {} : { refusalData }),
+      ...(row.cleanup_failed_preparation === true
+        ? { cleanupFailedPreparation: true as const }
+        : {}),
+    });
   }
 
   /**
@@ -1367,6 +1420,19 @@ export class PostgresWorkQueue {
     ) {
       throw new ScopeViolationError("The deferred Work evidence option is invalid.");
     }
+    if (pending.refusalData !== undefined && pending.refusal === undefined) {
+      throw new ScopeViolationError("Deferred terminal failure evidence requires its refusal.");
+    }
+    if (
+      pending.cleanupFailedPreparation !== undefined &&
+      (pending.cleanupFailedPreparation !== true || pending.refusal === undefined)
+    ) {
+      throw new ScopeViolationError("Deferred preparation cleanup requires its terminal refusal.");
+    }
+    const refusalData =
+      pending.refusalData === undefined
+        ? undefined
+        : validateFailureData(safeFailureCode(pending.refusal!), pending.refusalData);
     const deferred = await this.client.query(
       `WITH transitioned AS (
          UPDATE occ.controller_work
@@ -1396,6 +1462,8 @@ export class PostgresWorkQueue {
         pending.refusal === undefined ? null : safeFailureCode(pending.refusal),
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
+        refusalData === undefined ? null : JSON.stringify(refusalData),
+        pending.cleanupFailedPreparation === true,
       ],
     );
     if (deferred.rows.length === 0) {
@@ -1559,7 +1627,9 @@ export class PostgresWorkQueue {
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_refused_stops)";
     const predecessorStop =
       "work.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)";
-    const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop} AND NOT ${predecessorStop})`;
+    const outboundWithdrawal =
+      "work.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)";
+    const exhaustedClaim = `(work.attempt_count >= $2::integer AND NOT ${repositoryCleanupSql("work")} AND NOT ${recovering} AND NOT ${refusedStop} AND NOT ${predecessorStop} AND NOT ${outboundWithdrawal})`;
     const stale = await this.client.query(
       `WITH candidates AS (
          SELECT idempotency_key
@@ -1570,11 +1640,12 @@ export class PostgresWorkQueue {
          ORDER BY lease_expires_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_ACTIVATIONS_SQL}
+       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_REVISION_ACCESS_SQL} ${RECOVERING_ACTIVATIONS_SQL}
        ${RECOVERING_REFUSED_STOPS_SQL} ${recoveringPredecessorStopsSql(
          "candidates",
          `work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_activations)
-          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)`,
+          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_refused_stops)
+          AND work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)`,
        )} transitioned AS (
          UPDATE occ.controller_work AS work
          SET state = CASE
@@ -1582,7 +1653,7 @@ export class PostgresWorkQueue {
                ELSE 'queued'
              END,
              attempt_count = CASE
-               WHEN ${recovering} OR ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
+               WHEN ${recovering} OR ${predecessorStop} OR ${outboundWithdrawal} THEN GREATEST($2::integer - 1, 0)
                WHEN ${refusedStop} THEN GREATEST(work.attempt_count - 1, 0)
                ELSE work.attempt_count
              END,
@@ -1617,9 +1688,13 @@ export class PostgresWorkQueue {
          "",
          `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_activations)
             THEN '${ACTIVE_REVISION_RECOVERY}'
+            WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)
+            THEN 'REVISION_ACCESS_WITHDRAWAL_PENDING'
             WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_predecessor_stops)
             THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
-         `COALESCE((SELECT jsonb_build_object('refusal', stop.refusal)
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_revision_access AS withdrawal
+            WHERE withdrawal.idempotency_key = transitioned.idempotency_key),
+           (SELECT jsonb_build_object('refusal', stop.refusal)
             FROM recovering_refused_stops AS stop
             WHERE stop.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
        )}
@@ -1646,19 +1721,19 @@ export class PostgresWorkQueue {
          ORDER BY available_at, created_at, idempotency_key
          FOR UPDATE SKIP LOCKED
          LIMIT $1::integer
-       ), ${continuingMaintenanceSql("candidates")} ${recoveringPredecessorStopsSql(
+       ), ${continuingMaintenanceSql("candidates")} ${RECOVERING_REVISION_ACCESS_SQL} ${recoveringPredecessorStopsSql(
          "candidates",
-         "true",
+         "work.idempotency_key NOT IN (SELECT idempotency_key FROM recovering_revision_access)",
        )} transitioned AS (
          -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
-         SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
+         SET state = CASE WHEN ${predecessorStop} OR ${outboundWithdrawal} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE
-               WHEN ${predecessorStop} THEN GREATEST($2::integer - 1, 0)
+               WHEN ${predecessorStop} OR ${outboundWithdrawal} THEN GREATEST($2::integer - 1, 0)
                ELSE work.attempt_count
              END,
-             completed_at = CASE WHEN ${predecessorStop} THEN NULL ELSE clock_timestamp() END,
-             reason_code = CASE WHEN ${predecessorStop} THEN NULL ELSE $4::text END,
+             completed_at = CASE WHEN ${predecessorStop} OR ${outboundWithdrawal} THEN NULL ELSE clock_timestamp() END,
+             reason_code = CASE WHEN ${predecessorStop} OR ${outboundWithdrawal} THEN NULL ELSE $4::text END,
              result_data = NULL,
              updated_at = clock_timestamp()
          FROM candidates
@@ -1669,7 +1744,11 @@ export class PostgresWorkQueue {
        ${SETTLE_PROVISIONING_FAILURE_SQL}
        ${insertEvidenceCteSql(
          "",
-         `CASE WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+         `CASE WHEN transitioned.idempotency_key IN (SELECT idempotency_key FROM recovering_revision_access)
+            THEN 'REVISION_ACCESS_WITHDRAWAL_PENDING'
+            WHEN transitioned.state = 'queued' THEN '${PREDECESSOR_STOP_RECOVERY}' ELSE $4::text END`,
+         `COALESCE((SELECT withdrawal.evidence FROM recovering_revision_access AS withdrawal
+            WHERE withdrawal.idempotency_key = transitioned.idempotency_key), '{}'::jsonb)`,
        )}
        SELECT transitioned.* FROM transitioned`,
       [requestedLimit, this.maxAttempts, "failure", "MAX_ATTEMPTS_EXHAUSTED", MAX_BACKOFF_MS],

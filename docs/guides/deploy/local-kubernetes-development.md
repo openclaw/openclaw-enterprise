@@ -188,76 +188,19 @@ requests 1792 MiB with a 3 GiB limit, and each dedicated Codex Harness requests
 the local engine VM for OCC plus the Agents you run
 ([measurements](installation-profiles.md)). Keep each stack's resources under the helper's lifecycle until cleanup.
 
-## Require both proxies before enabling Slack
+<a id="require-both-proxies-before-enabling-slack"></a>
 
-For a Slack-enabled local installation, complete [both Slack proxy paths](../integrations/slack.md#configure-both-slack-proxies)
-before creating or deploying the Agent. The launcher neither provisions these
-proxies nor configures their URLs.
+## Configure outbound access before enabling Slack
 
-Provision the reviewed proxy on the owned k3d container network (no
-host-published listener needed) or at another private address reachable from the
-API and dedicated gateway Pods. Do not use host loopback: `127.0.0.1` inside a
-Pod is that Pod. Restrict its source access to this cluster's actual traffic,
-accounting for node source NAT.
+Enable `drivers.compute.configuration.runtime.gatewayOutbound` with the approved
+controller image and actual infrastructure exclusions. Compute creates each
+Gateway's route when its supported channel requires it. Separately enable Helm
+`outboundProxy` for API credential validation and directory lookup, with its own
+exclusions, or supply an approved `api.controlPlaneOutboundProxyUrl`.
 
-Back up both generated files in the private state directory, then update them:
-
-- `installation.yaml`: set `drivers.compute.configuration.runtime.channels.proxyUrl`
-  for gateway Slack messaging.
-- `helm-values.json`: set `api.channelDirectoryProxyUrl` for Console user and
-  channel lookup. Kubernetes-only mode runs the production API, where lookup
-  stays disabled without this setting.
-
-Apply the edits to the existing release as shown below. Use the chart
-source matching the installed controller, retain its image references and other
-protected inputs, and plan a maintenance window if Agents are running. Confirm
-the release and namespace; the values below are launcher defaults. The checksum
-rolls the API and worker even when only the Installation document changed. After
-an [in-place image upgrade](local-k3d-image-upgrade.md#apply-installation-changes),
-`helm-values.json` still names the bring-up images: make both edits in that
-page's recovered `INSTALLATION` and `VALUES` and apply them with
-[apply other Installation changes](production-upgrade.md#apply-other-installation-changes) instead.
-
-```bash
-set -euo pipefail
-umask 077
-export OCC_SLACK_STATE='<existing private state directory>'
-export OCC_SLACK_CONTEXT='<context printed by scripts/dev-up>'
-export OCC_SLACK_NAMESPACE='oce-system'
-export OCC_SLACK_RELEASE='openclaw-enterprise'
-
-node --input-type=module <<'NODE'
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const root = process.env.OCC_SLACK_STATE;
-const path = join(root, 'helm-values.json');
-const values = JSON.parse(readFileSync(path, 'utf8'));
-values.controlPlane ??= {};
-values.controlPlane.installationChecksum = createHash('sha256')
-  .update(readFileSync(join(root, 'installation.yaml'))).digest('hex');
-writeFileSync(path, JSON.stringify(values, null, 2) + '\n');
-const document = readFileSync(join(root, 'installation.yaml')).toString('base64');
-writeFileSync(join(root, 'installation-secret-patch.json'),
-  JSON.stringify({ data: { 'installation.yaml': document } }));
-NODE
-
-kubectl --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --context "$OCC_SLACK_CONTEXT" \
-  -n "$OCC_SLACK_NAMESPACE" patch secret occ-installation-startup \
-  --type merge --patch-file "$OCC_SLACK_STATE/installation-secret-patch.json"
-rm "$OCC_SLACK_STATE/installation-secret-patch.json"
-
-helm upgrade "$OCC_SLACK_RELEASE" deploy/helm/openclaw-enterprise \
-  --kubeconfig "$OCC_SLACK_STATE/kubeconfig" --kube-context "$OCC_SLACK_CONTEXT" \
-  --namespace "$OCC_SLACK_NAMESPACE" -f "$OCC_SLACK_STATE/helm-values.json" \
-  --wait --timeout 5m
-```
-
-Do not rerun `dev-up`, recreate bootstrap storage, or delete the cluster to apply
-this configuration. After OCC recovers, deploy a new version for each affected
-running Slack Agent so its gateway receives the new proxy and network policy.
-Verify directory search and gateway Socket Mode using the
-[Slack checks](../integrations/slack.md#configure-both-slack-proxies).
+These are independent consumers. Follow [Slack setup](../integrations/slack.md#configure-both-slack-proxies)
+and [Gateway outbound](../../reference/gateway-outbound.md) before deploying a
+Slack-enabled dedicated Agent. No additional Agent host entry is needed for Slack.
 
 ## Verify the local boundary
 

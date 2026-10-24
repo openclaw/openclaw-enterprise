@@ -15,7 +15,7 @@ NetworkPolicies. Do not expose the listener through a `NodePort`,
 The Helm charts allow DNS egress on UDP/TCP ports `53` and `5353` to their
 configured `dns.namespace` and `dns.podLabels` peers. Port `5353` supports
 OpenShift DNS backends after Service address translation. These grants cover
-API, worker, initialization, collector, Slack proxy, Envoy, and observability
+API, worker, initialization, collector, outbound proxy, Envoy, and observability
 demo workloads.
 
 The trusted-operator native admin pilot is the only documented public-ingress
@@ -24,27 +24,23 @@ procedure in [Deploy native admin UI access](../../guides/deploy/native-admin.md
 Envoy and Agent gateway Services remain private, and OCC strips the shared OCE
 session cookie before forwarding to the native gateway.
 
-| Variable                                   | Required value or format                                                                                           | Behavior                                                                                                                     |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                                 | Exactly `production`.                                                                                              | Enables durable production controller composition.                                                                           |
-| `OCC_HOST`                                 | One explicit Pod interface IP address.                                                                             | Wildcard addresses and implicit hostnames are rejected.                                                                      |
-| `OCC_PORT`                                 | Decimal integer from `1` through `65535`.                                                                          | Selects the internal listener port exposed by the operator's Service.                                                        |
-| `OCC_DATABASE_URL`                         | Explicit PostgreSQL application-role URL.                                                                          | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
-| `OCC_CONFIG_PATH`                          | Absolute path to trusted Installation startup YAML.                                                                | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
-| `OCC_AUTH_SECRET`                          | Mounted high-entropy Better Auth secret.                                                                           | Signs and verifies session material without logging it.                                                                      |
-| `OCC_AUTH_BASE_URL`                        | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros.          | Defines the Better Auth base URL and cookie origin.                                                                          |
-| `OCC_GATEWAY_API_KEY_PATH`                 | Optional absolute path to the private gateway service-key file.                                                    | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
-| `OCC_CHANNEL_DIRECTORY_PROXY_URL`          | Optional HTTP(S) proxy URL with one literal IPv4 address and explicit port, or the exact Helm-managed Service URL. | API only; routes Slack lookup and credential validation through an HTTP CONNECT tunnel. Invalid values fail startup.         |
-| `OCC_CHANNEL_DIRECTORY_MANAGED_PROXY_HOST` | Optional exact Helm-managed proxy Service host.                                                                    | API only; the one DNS host the Slack directory Driver accepts in the proxy URL instead of an IPv4 address.                   |
-| `NODE_EXTRA_CA_CERTS`                      | Optional PEM bundle for private Gateway or IdP CAs.                                                                | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
-| `OCC_GATEWAY_CA_PATH`                      | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                           | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
+| Variable                                        | Required value or format                                                                                  | Behavior                                                                                                                     |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                                      | Exactly `production`.                                                                                     | Enables durable production controller composition.                                                                           |
+| `OCC_HOST`                                      | One explicit Pod interface IP address.                                                                    | Wildcard addresses and implicit hostnames are rejected.                                                                      |
+| `OCC_PORT`                                      | Decimal integer from `1` through `65535`.                                                                 | Selects the internal listener port exposed by the operator's Service.                                                        |
+| `OCC_DATABASE_URL`                              | Explicit PostgreSQL application-role URL.                                                                 | Must connect to the already migrated controller database. With TLS verification, an IP host must match an IP subjectAltName. |
+| `OCC_CONFIG_PATH`                               | Absolute path to trusted Installation startup YAML.                                                       | Selects Configuration, IAM, Compute, and optional account Drivers.                                                           |
+| `OCC_AUTH_SECRET`                               | Mounted high-entropy Better Auth secret.                                                                  | Signs and verifies session material without logging it.                                                                      |
+| `OCC_AUTH_BASE_URL`                             | HTTP(S) origin without path, query, fragment or user info; IPv4 as four decimal octets, no leading zeros. | Defines the Better Auth base URL and cookie origin.                                                                          |
+| `OCC_GATEWAY_API_KEY_PATH`                      | Optional absolute path to the private gateway service-key file.                                           | API only; validates at startup and reads each operation for rotation. Requires Compute endpoint resolution.                  |
+| `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL`          | Optional HTTP(S) endpoint: literal IPv4 and explicit port, or the exact managed Service URL.              | API ChannelDriver CONNECT route; invalid values fail startup.                                                                |
+| `OCC_CONTROL_PLANE_OUTBOUND_PROXY_MANAGED_HOST` | Optional exact managed Service host.                                                                      | Allows that exact DNS proxy endpoint on the API.                                                                             |
+| `NODE_EXTRA_CA_CERTS`                           | Optional PEM bundle for private Gateway or IdP CAs.                                                       | Node reads it at process startup. Normal leaf renewal under that CA does not require a restart; root-bundle changes do.      |
+| `OCC_GATEWAY_CA_PATH`                           | Optional absolute path to the Gateway-only CA bundle; empty means no private Gateway CA.                  | API only; Harness node enrollment reads it instead of `NODE_EXTRA_CA_CERTS`. Helm sets it with OIDC CA values.               |
 
-For Helm, prefer `slackProxy.enabled` over an external
-`api.channelDirectoryProxyUrl`; the
-[Slack Channel Driver](../drivers/slack-channel.md#enable-lookup-in-production)
-owns both options' API-only proxy egress and the proxy's `slack.com:443`
-requirement. With neither, the chart renders no proxy egress rule, and Slack
-lookup and credential validation require another approved network route.
+See [control-plane outbound proxy settings](#control-plane-outbound-proxy) for
+managed and external API routes.
 
 `OCC_AGENT_RUNTIME_LOGS_ENABLED` (`true` or `false`, default `true`) switches the
 [Agent logs](../../guides/topics/agent-logs.md) routes; `false` makes them answer
@@ -239,6 +235,26 @@ key filename must be a simple basename distinct from `bootstrap.password.fileNam
 253 characters total, the same rule `prepare-bootstrap-volume` applies to
 `--claim`. Both use that existing PVC. Reruns do not inspect,
 replace, or regenerate output; see [recovery](../../guides/deploy/service-keys.md#recover-an-incomplete-bootstrap).
+
+## Control-plane outbound proxy
+
+Helm `outboundProxy.enabled` defaults to `false`. Enabling it runs
+`control-plane-outbound-proxy.mjs` separately from OCC. Trusted ChannelDrivers determine management destinations;
+the proxy reads no credentials. The API-only Service requires nonempty IPv4
+`outboundProxy.denyCidrs` covering infrastructure, including public
+addresses. See the [Slack Driver](../drivers/slack-channel.md#enable-lookup-in-production)
+for caller restrictions and external `api.controlPlaneOutboundProxyUrl` setup.
+
+| Proxy variable                                 | Value and behavior                                                                                                                                  |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OCC_CONTROL_PLANE_OUTBOUND_PROXY_CONFIG_PATH` | Required absolute JSON file containing only nonempty `denyCidrs`; Helm mounts its ConfigMap here. Limit: 1 MiB.                                     |
+| `OCC_OUTBOUND_PROXY_HOST`                      | IPv4 bind address; default `0.0.0.0`. NetworkPolicy controls callers.                                                                               |
+| `OCC_OUTBOUND_PROXY_PORT`                      | Decimal integer `0`–`65535`; default `3128`. Helm requires a nonzero Service port.                                                                  |
+| `OCC_OUTBOUND_PROXY_POLICY_PATH`               | Required JSON policy path for the generic standalone [Gateway proxy](../gateway-outbound.md). The control-plane wrapper derives its policy instead. |
+
+`GET /readyz` returns `200` after policy and listener startup. Invalid
+configuration emits `control_plane_outbound_proxy.startup_failed` without file
+content and fails startup.
 
 ## Production operational logging collection
 

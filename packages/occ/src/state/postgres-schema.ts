@@ -18,6 +18,7 @@ import type {
   SecretBindings,
   ServiceAccountCredential,
 } from "@openclaw-enterprise/contracts";
+import type { GatewayOutboundSelection } from "@openclaw-enterprise/contracts";
 import { sql } from "drizzle-orm";
 import {
   bigint,
@@ -266,6 +267,10 @@ export const agents = occSchema.table(
     configurationId: text("configuration_id").notNull(),
     backendId: text("backend_id"),
     executionMode: text("execution_mode").$type<HarnessExecutionMode>().notNull(),
+    gatewayOutbound: jsonb("gateway_outbound")
+      .$type<GatewayOutboundSelection>()
+      .notNull()
+      .default({ mode: "channelsOnly" }),
     sandboxPolicyEditing: boolean("sandbox_policy_editing").notNull().default(false),
     plugins: jsonb("plugins").$type<PluginDesiredState>(),
     pluginApprovers: jsonb("plugin_approvers").$type<PluginApprovers>(),
@@ -301,6 +306,14 @@ export const agents = occSchema.table(
     ),
     check("agents_id_format", sql`${table.id} ~ ${identifierPatterns.agent}`),
     check("agents_name_length", sql`char_length(${table.name}) BETWEEN 1 AND 200`),
+    check(
+      "agents_gateway_outbound_valid",
+      sql`occ.gateway_outbound_selection_valid(${table.gatewayOutbound})`,
+    ),
+    check(
+      "agents_gateway_outbound_topology",
+      sql`${table.gatewayOutbound}->>'mode' = 'channelsOnly' OR ${table.executionMode} = 'dedicated'`,
+    ),
     check("agents_execution_mode_valid", sql`${table.executionMode} IN ('embedded', 'dedicated')`),
     check(
       "agents_desired_runtime_state_valid",
@@ -741,7 +754,7 @@ export const agentRevisions = occSchema.table(
           - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
           - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
           - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins'
-          - 'plugin_approvers' - 'repository_credentials' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
+          - 'plugin_approvers' - 'repository_credentials' - 'gateway_outbound' - 'egress_plan' - 'execution_admission') = '{}'::jsonb
         AND jsonb_typeof(${table.admittedSpec}->'configuration_id') = 'string'
         AND (${table.admittedSpec}->>'configuration_id') ~ ${identifierPatterns.configuration}
         AND jsonb_typeof(${table.admittedSpec}->'configuration_kind') = 'string'
@@ -791,6 +804,7 @@ export const agentRevisions = occSchema.table(
           NOT (${table.admittedSpec} ? 'secret_bindings')
           OR occ.secret_bindings_are_valid(${table.admittedSpec}->'secret_bindings', ${table.namespaceId})
         )
+        AND (NOT (${table.admittedSpec} ? 'gateway_outbound') OR (occ.gateway_outbound_snapshot_valid(${table.admittedSpec}->'gateway_outbound') AND ${table.admittedSpec} #>> '{harness,mode}' = 'dedicated'))
         AND CASE WHEN jsonb_typeof(${table.admittedSpec}->'harness_auth') = 'object' THEN
           occ.harness_auth_is_valid((${table.admittedSpec}->'harness_auth') - 'protectedExecutionVersion', ${table.namespaceId}, true)
         ELSE false END
