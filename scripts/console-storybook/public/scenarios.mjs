@@ -2472,6 +2472,47 @@ export const scenarios = {
     description:
       "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
   },
+  createSecretFieldsRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret fields the API would refuse",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
+      { selector: "#create-provider-credential-secret-name", value: "model\tkey" },
+      { selector: "#create-provider-credential-secret-value", value: "to\u0000ken" },
+      click("Create Secret"),
+    ],
+    description:
+      "Create Secret with a tab in the name and a NUL in the value: each field names the API's rule under the control before any request; Name takes focus. A multiline value is kept exactly.",
+  },
+  createAgentNameRefused: {
+    group: "Pages/Create Agent",
+    name: "Agent name the API would refuse",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#agent-name", value: "Research\u2028assistant" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with a line separator in the name: Agent name shows the API's Name rule and takes focus before anything is saved.",
+  },
+  createWorkspaceFileRefused: {
+    group: "Pages/Create Agent",
+    name: "Initial workspace file the API would refuse",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: ".launch-advanced summary", click: true },
+      { selector: "#workspace-AGENTS-md", value: "a".repeat(16_385) },
+      { selector: ".launch-advanced summary", click: true },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with an AGENTS.md over 16 KiB: the check opens Advanced settings and AGENTS.md names itself and the rule under the field, with focus, before anything is saved.",
+  },
   createModelSecretRequired: {
     group: "Pages/Create Agent",
     name: "Model credential Secret required",

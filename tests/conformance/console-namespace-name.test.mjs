@@ -106,7 +106,11 @@ test("the console refuses exactly the Secret values the API refuses", () => {
     "\u00e9".repeat(32_768),
     "\u00e9".repeat(32_769),
   ]) {
-    assert.equal(secretValueProblem(value) === "", apiAccepts(value), JSON.stringify(value.slice(0, 20)));
+    assert.equal(
+      secretValueProblem(value) === "",
+      apiAccepts(value),
+      JSON.stringify(value.slice(0, 20)),
+    );
   }
   assert.equal(secretValueProblem("nul\0inside"), "Use valid UTF-8 without NUL characters.");
   assert.equal(secretValueProblem("v".repeat(65_537)), "Use at most 65,536 UTF-8 bytes.");

@@ -188,10 +188,10 @@ restores the binding. Typing stages nothing; selection stages a reference,
 Cancel discards it. Creation remains available.
 
 `apps/controller/src/console/agents/secret-picker.mjs:openCreateSecretDialog` shows
-an editable Agent-prefixed Name, password input, and optional fixed Slack key.
-POST stores the Secret immediately and stages returned metadata; cancellation
-never deletes it. Conflicts retain inputs without overwriting Secrets.
-Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear passwords;
+an editable Agent-prefixed Name, the Secrets page's `secretValueControl` (multiline kept exact),
+and optional fixed Slack key. Both meet the API's rules before POST, which stores the Secret
+and stages returned metadata; cancellation never deletes it. Conflicts retain inputs.
+Readiness errors differ from name/backend conflicts. Success, cancellation, and uncertain outcomes clear values;
 uncertain outcomes block retries until refresh. The
 [Secret storage flow](../secret-storage-and-delivery.md) owns persistence and
 recovery. Metadata and Credentials links open new tabs, preserving edits.

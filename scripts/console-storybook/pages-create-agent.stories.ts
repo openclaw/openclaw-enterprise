@@ -55,6 +55,9 @@ export const CreateSecretRequiredFields = {
   name: "Create Secret required fields",
 };
 export const CreateSecretRefused = story("createSecretRefused");
+export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
+export const CreateAgentNameRefused = story("createAgentNameRefused");
+export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),

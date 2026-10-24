@@ -175,7 +175,8 @@ test("the workspace file editor shows an oversized file's error under the file",
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("a".repeat(16_385));
   const save = page.getByRole("button", { name: "Save AGENTS.md", exact: true });
-  const error = "Use valid Unicode without NUL characters in AGENTS.md, within 16 KiB of UTF-8 content.";
+  const error =
+    "Use valid Unicode without NUL characters in AGENTS.md, within 16 KiB of UTF-8 content.";
   // A second Save without an edit is checked the same way, not by the browser.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await save.click();
