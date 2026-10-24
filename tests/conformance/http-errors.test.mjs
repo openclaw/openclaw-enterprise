@@ -49,6 +49,7 @@ import {
   PostgresCommitOutcomeUnknownError,
   ProtectedExecutionNetworkPolicyError,
   ProvisioningSecretDriverError,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   ResourceConflictError,
@@ -229,7 +230,7 @@ const cases = [
       status: 409,
       code: "REPOSITORY_GIT_SENDER_UNQUALIFIED",
       message:
-        "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Use native prepared Git or a qualified installed sender, or remove the binding, then deploy again.",
+        "The selected Credential Proxy cannot enforce the Agent's git-write repository binding: no OpenShell release is qualified for it. Remove the binding, select a qualified installed sender, or use native prepared Git without a Sandbox, then deploy again.",
     },
   ],
   [
@@ -368,6 +369,16 @@ const cases = [
       status: 400,
       code: "INVALID_REQUEST",
       message: "The Harness credential source must be listed in the Agent's credentialSources.",
+    },
+  ],
+  [
+    "Installation-wide repository access next to another binding",
+    new RepositoryBindingSelectionError(),
+    {
+      status: 400,
+      code: "INVALID_REQUEST",
+      message:
+        "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
     },
   ],
   [
