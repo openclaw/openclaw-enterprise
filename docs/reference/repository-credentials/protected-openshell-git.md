@@ -166,8 +166,8 @@ for membership and permissions, and the
 for policy fields. Keep repository scope when it is sufficient. To expose an
 installation scope, set a distinct `installationAccess.repositoryRef`, allow the
 Namespace with `accessMode: installation`, and select that reference with
-`profile: github-installation` in the Agent's `repositoryBindings`.
-No default profile or wildcard selects this scope. The installed sender must
+`profile: github-installation` in the Agent's `repositoryBindings`, as its only
+binding (Agent save refuses it next to another). No default profile or wildcard selects this scope. The installed sender must
 positively confirm `github_installation` support.
 
 OCE does not add a ref allowlist to installation scope. GitHub's membership,

@@ -166,8 +166,14 @@ function sshCompute() {
   });
 }
 
-function registryFor(namespaceId, extraRepositories = []) {
+function registryFor(namespaceId, extraRepositories = [], installationAccess = false) {
   return {
+    ...(installationAccess && {
+      installationAccess: {
+        repositoryRef: "installation",
+        namespaces: [{ namespaceId, accessMode: "installation" }],
+      },
+    }),
     version: 1,
     backendId,
     providerInstanceId: "github-admission",
@@ -221,6 +227,7 @@ async function fixture(
     configurationDriver = createTestConfigurationDriver(),
     controllerOptions = {},
     extraRepositories = [],
+    installationAccess = false,
   } = {},
 ) {
   const installation = {
@@ -305,7 +312,7 @@ async function fixture(
   );
   assert.equal(configurationResponse.status, 201, JSON.stringify(configurationResponse));
   const configuration = configurationResponse.data;
-  const registry = registryFor(namespace.id, extraRepositories);
+  const registry = registryFor(namespace.id, extraRepositories, installationAccess);
   const composed = repositories ? await compose(registry) : initial;
   const collection = `/namespaces/${namespace.id}/agents`;
 
@@ -689,6 +696,54 @@ test("Repository policy rejects invalid create and PATCH before changing stored 
       assert.deepEqual((await f.request("GET", f.collection)).data, before);
     });
   }
+});
+
+test("Installation-wide repository access refuses other bindings at save, as deploy does", async (t) => {
+  // Finding 2316: create and PATCH accepted github-installation next to another binding, and
+  // only deploy refused it (hidden as a 404). Save and deploy now share the rule and name it.
+  const f = await fixture(t, { installationAccess: true });
+  const installation = { repositoryRef: "installation", profile: "github-installation" };
+  const sole = await f.createAgent({ repositoryBindings: [installation] });
+  assert.deepEqual(sole.repositoryBindings, [installation]);
+  const agent = await f.createAgent({ repositoryBindings: selection });
+  const path = `${f.collection}/${agent.id}`;
+  const before = (await f.request("GET", f.collection)).data;
+  const message =
+    "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.";
+  const mixed = [installation, ...selection];
+  for (const [method, target, fields] of [
+    ["POST", f.collection, { name: "Refused Agent" }],
+    ["PATCH", path, {}],
+  ]) {
+    const response = await f.request(method, target, {
+      configurationId: f.configuration.id,
+      repositoryBindings: mixed,
+      ...fields,
+    });
+    assert.equal(response.status, 400, JSON.stringify(response));
+    assert.equal(response.error.code, "INVALID_REQUEST");
+    assert.equal(response.error.message, message);
+  }
+  assert.deepEqual((await f.request("GET", f.collection)).data, before);
+  // An Agent saved with both before this check still gets the same answer at deploy.
+  await f.prepareDeployment(agent);
+  const stored = await f.state.transact((unit) =>
+    unit.agents.updateConfiguration(
+      f.namespace.id,
+      agent.id,
+      f.configuration.id,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mixed,
+    ),
+  );
+  assert.deepEqual(stored.repositoryBindings, mixed);
+  const deployed = await f.request("POST", `${path}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed));
+  assert.equal(deployed.error.message, message);
+  assert.deepEqual((await f.request("GET", `${path}/revisions`)).data, []);
 });
 
 test("Agent repository access preserves inheritance intent and admits only resolved approved profiles", async (t) => {

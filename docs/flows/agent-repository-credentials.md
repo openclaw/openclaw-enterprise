@@ -116,7 +116,8 @@ outcomes require stored Agent and Configuration reads.
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
 uses `resolveRepositoryBindings` after authorization. Inputs contain distinct opaque
 references and optional profiles, never provider tokens or caller-selected grant identities;
-selections keep request order. The
+selections keep request order. A `github-installation` selection must be the only one:
+`RepositoryBindingSelectionError` answers `400` at create, update and deploy alike. The
 `apps/controller/src/drivers/repo/github/policy.ts:GitHubRepositoryPolicy.resolve`
 uses local registry policy, defaults omitted legacy profiles to `git-write`, and
 makes no control-socket or GitHub calls.

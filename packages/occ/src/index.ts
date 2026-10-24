@@ -286,6 +286,7 @@ import {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
   SandboxRepositoryRecipientUnverifiedError,
@@ -444,6 +445,7 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   quotedSettingKey,
+  RepositoryBindingSelectionError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
@@ -13543,6 +13545,13 @@ export class OpenClawController {
         "The repository credential resolution does not match the selected authority.",
       );
     }
+    // Agent save and deploy admission both resolve here, so they refuse the same selections.
+    if (
+      resolution.bindings.length !== 1 &&
+      resolution.bindings.some((binding) => isInstallationRepositoryProfile(binding.profile))
+    ) {
+      throw new RepositoryBindingSelectionError();
+    }
     return { driver, resolution: immutableCopy(resolution) };
   }
 
@@ -13573,16 +13582,6 @@ export class OpenClawController {
     const resolved = this.resolveRepositoryBindings(agent.namespaceId, agent.repositoryBindings);
     if (resolved === undefined) {
       return undefined;
-    }
-    if (
-      resolved.resolution.bindings.some((binding) =>
-        isInstallationRepositoryProfile(binding.profile),
-      ) &&
-      resolved.resolution.bindings.length !== 1
-    ) {
-      throw new ScopeViolationError(
-        "Installation-wide repository access requires a single explicit binding.",
-      );
     }
     validateRepositoryTopology(compute, harness, sandboxDriverId);
     const snapshot: RepositoryRevisionState = {

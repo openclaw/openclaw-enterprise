@@ -308,6 +308,21 @@ export class AgentCredentialSourceBindingError extends ScopeViolationError {
 }
 
 /**
+ * An Agent's repository bindings combine Installation-wide access with another binding.
+ * Raised only after the Repository Driver approved every requested binding, and the rule
+ * depends only on the request, so HTTP reports it as an invalid request instead of hiding
+ * it as a scope miss. Agent save and deploy admission share it (finding 2316).
+ */
+export class RepositoryBindingSelectionError extends ScopeViolationError {
+  constructor() {
+    super(
+      "Installation-wide repository access (profile github-installation) must be the Agent's only repository selection. Remove the other entries from repositoryBindings or repositoryAccess.repositories, or select each repository with its own profile instead.",
+    );
+    this.name = "RepositoryBindingSelectionError";
+  }
+}
+
+/**
  * A request names an invalid Secret binding: Agent provisioning or a Configuration write
  * with a reserved or invalid environment destination or an unsupported binding shape
  * (including missing, runtime or credential-source Harness authentication in Agent
