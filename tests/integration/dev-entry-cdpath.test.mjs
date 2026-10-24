@@ -114,3 +114,36 @@ test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
     assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
   }
 });
+
+// Exact, major and minor cache requests must enforce the same security floor
+// as wildcard requests; otherwise an explicitly cached affected runtime wins.
+test("CI cached Node requests reject affected patch releases", () => {
+  const helper = join(repository, ".github/actions/setup-pnpm-store-cache/ensure-node.sh");
+  for (const [version, accepted] of [
+    ["24.22.0", false],
+    ["24.22.1", true],
+    ["26.12.0", false],
+    ["26.12.1", true],
+  ]) {
+    const [major, minor] = version.split(".");
+    for (const request of [version, `${major}.${minor}`, major, `${major}.x`, ""]) {
+      const result = spawnSync(
+        "/bin/bash",
+        [
+          "-c",
+          'source "$1"; openclaw_node_version_matches "$2" "$3"',
+          "node-floor",
+          helper,
+          version,
+          request,
+        ],
+        { encoding: "utf8" },
+      );
+      assert.equal(
+        result.status,
+        accepted ? 0 : 1,
+        `${version} requested as ${request}: ${result.stderr}`,
+      );
+    }
+  }
+});
