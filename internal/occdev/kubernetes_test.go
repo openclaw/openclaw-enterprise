@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -179,19 +180,22 @@ func TestClusterExistsMatchesOnlyTheExactName(t *testing.T) {
 	// `occ dev up` and `occ dev down` decide to create, reuse or delete a
 	// cluster from this answer, so a neighbouring name must not count.
 	for _, tc := range []struct {
+		name      string
 		inventory string
 		want      bool
 	}{
-		{`[{"name":"occ-dev-owned-2"},{"name":"occ-dev-own"}]`, false},
-		{`[{"name":"occ-dev-owned-2"},{"name":"occ-dev-owned"}]`, true},
-		{`[]`, false},
+		{"neighbouring names", `[{"name":"occ-dev-owned-2"},{"name":"occ-dev-own"}]`, false},
+		{"exact name", `[{"name":"occ-dev-owned-2"},{"name":"occ-dev-owned"}]`, true},
+		{"no clusters", `[]`, false},
 	} {
-		fakeEngine(t, "k3d", `"cluster list -o json") echo '`+tc.inventory+`' ;;`+"\n")
-		r := &runner{env: map[string]string{}}
-		got, err := r.clusterExists(context.Background(), "occ-dev-owned")
-		if err != nil || got != tc.want {
-			t.Fatalf("inventory %s: got %v, %v; want %v", tc.inventory, got, err, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			fakeEngine(t, "k3d", `"cluster list -o json") echo '`+tc.inventory+`' ;;`+"\n")
+			r := &runner{env: map[string]string{}}
+			got, err := r.clusterExists(context.Background(), "occ-dev-owned")
+			if err != nil || got != tc.want {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+		})
 	}
 }
 
@@ -219,8 +223,8 @@ contexts:
 	if err := r.writeKubeconfigs(context.Background(), state); err != nil {
 		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
 	}
-	if got := commands(); len(got) != 2 || !strings.HasPrefix(got[1], "kubectl --kubeconfig "+host) {
-		t.Fatalf("the host kubeconfig was not checked against the API: %q", got)
+	if !slices.Contains(commands(), "kubectl --kubeconfig "+host+" --context k3d-occ-dev-owned get --raw=/version") {
+		t.Fatalf("the host kubeconfig was not checked against the API: %q", commands())
 	}
 	data, err := os.ReadFile(filepath.Join(state.directory, "container-kubeconfig"))
 	if err != nil {
@@ -262,7 +266,9 @@ func TestDevelopmentNamespaceWaitRefusesAmbiguousOrUnownedNamespaces(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			fakeEngine(t, "kubectl", `"get namespaces --selector openclaw.dev/namespace -o json") echo '{"items":[`+tc.items+`]}' ;;`+"\n")
 			r := &runner{env: map[string]string{}}
-			name, id, err := r.waitForDevelopmentKubernetesNamespace(context.Background(), 5*time.Second)
+			// A fake that does not match the command reads as not ready, so a miss
+			// fails here after this short wait instead of with the real cause.
+			name, id, err := r.waitForDevelopmentKubernetesNamespace(context.Background(), 2*time.Second)
 			if tc.want == "" {
 				if err != nil || name != "occ-a" || id != "ns-a" {
 					t.Fatalf("got %q, %q, %v", name, id, err)
