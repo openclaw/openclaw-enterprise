@@ -10,11 +10,27 @@ This record preserves the dated changes to the OpenShell Sandbox provisioning fl
 
 - 2026-10-17 08:30: Native OpenClaw workers take the bearer-passthrough `APP_SERVER_PORT` exposure too, so a held model-check failure fails the revision instead of waiting for a node that never connects. (finding 1642)
 
+- 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
+
+- 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
+
+- 2026-10-14 14:52: Validate and snapshot startup Sandbox network policy overrides through the Driver. (authoring-run/5e9763cf-c7fd-4990-94ac-6bc267d0287a - a28596ab8cf5e028a5eb91c276feb19a3775554c)
+
+- 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
+
+- 2026-10-14 01:11: Reconcile endpoint validation and provider ownership with external OAuth custody in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
+
+- 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
+
+- 2026-10-13 18:22: Preserve opaque account metadata during Sandbox environment relocation. (authoring-run/a67c01b5-f0f7-434b-8183-d2dcc6941836 - 7c25b823f17e93f62d7ba8abea23e65df4b36fef)
+
 - 2026-10-13 16:45: Reconcile native private temporary state and retained writable-subpath preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - ff12fc86cd1662c98a9d8db78be9c2fa4facdcdd)
 
 - 2026-10-13 14:11: Reconcile setup-Secret ordering and preserve service-IPv6 history alongside credential endpoint safeguards. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
 - 2026-10-13 13:57: Reconciled development image import order with upstream rollout diagnostics. (authoring-run/503e74ea-e82a-4d1a-8081-fcf4fc4e6868 - 96272fa0a5e4f359ed354abb1918e44986c19e76)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
 
 - 2026-10-10 13:04: Reconcile native hook HOME/CA flow with endpoint safeguards; trim repeated narration. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
