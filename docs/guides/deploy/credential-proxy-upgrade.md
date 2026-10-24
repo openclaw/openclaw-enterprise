@@ -42,9 +42,10 @@ before withdrawing access. Selecting Credential Proxy alone does not provide one
 
 ### Keep schema histories separate
 
-The migrator recognizes the 59-receipt history before Credential Proxy and the
-62-receipt history through `0062_credential_delivery_custody`. Both upgrade to
-63 receipts, ending at `0063_prepared_attempt_settlement`. The
+The migrator recognizes the 59-receipt history before Credential Proxy, the
+62-receipt history through `0062_credential_delivery_custody` and the 63-receipt
+history through `0063_prepared_attempt_settlement`. Each upgrades to 64 receipts,
+ending at `0064_credential_source_retained_secrets`. The
 [migration reference](../../reference/settings/operations.md) lists the supported
 histories. The migrator checks receipt hashes, timestamps, and the database
 catalog; a count alone does not establish compatibility.

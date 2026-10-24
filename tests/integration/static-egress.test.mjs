@@ -506,6 +506,57 @@ test("legacy approved copies survive Secret rotation and failed live adoption; o
   assert.equal(bound.status, 409, "running source cutover is explicitly unsupported");
 });
 
+test("live adoption is refused while a legacy update may have left a Secret at the gateway (finding 1398)", async (t) => {
+  const f = await staticEgressFixture(t, { includeLegacy: true });
+  const path = `${f.path}/${f.legacySource.id}`;
+  const secretsPath = `/namespaces/${f.namespace.id}/secrets`;
+  const createSecret = async (name, value) => {
+    const created = await f.request("POST", secretsPath, { body: { name, value } });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    return created.data;
+  };
+  const heldKey = () => [...f.providers.values()][0].credentials.OPENAI_API_KEY;
+  const consumers = async (secret) =>
+    (
+      await f.controller.transact((unit) =>
+        unit.secrets.listReferences(f.namespace.id, secret.id, 10),
+      )
+    ).references;
+  const sent = await createSecret("sent-provider-key", "synthetic-key-sent");
+  // The gateway applies B but its reply is lost: OCC still records the original Secret while
+  // the legacy copy holds B.
+  f.observed.loseUpdateReply = true;
+  const lost = await f.request("PATCH", path, { body: { secrets: { api_key: sent.ref } } });
+  assert.notEqual(lost.status, 200, JSON.stringify(lost.body));
+  assert.equal(heldKey(), "synthetic-key-sent");
+  assert.deepEqual((await f.request("GET", path)).data.secrets, { api_key: f.secret.ref });
+
+  // Adoption makes no gateway write and keeps the legacy copy, so it cannot show B is unused.
+  // It is refused with no Secrets and with a replacement, and B stays a consumer.
+  const consent = { adoption: "live", authorityScope: "execution" };
+  const replacement = await createSecret("adopted-provider-key", "synthetic-key-adopted");
+  for (const body of [consent, { ...consent, secrets: { api_key: replacement.ref } }]) {
+    const refused = await f.request("PATCH", path, { body });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.match(refused.body.error.message, /has not completed/);
+  }
+  const unadopted = (await f.request("GET", path)).data;
+  assert.equal(unadopted.egress, undefined);
+  assert.deepEqual(unadopted.secrets, { api_key: f.secret.ref });
+  assert.equal((await f.request("DELETE", `${secretsPath}/${sent.id}`)).status, 409);
+  assert.deepEqual(await consumers(replacement), []);
+
+  // A legacy update that reaches the gateway and commits settles it: the copy holds the
+  // recorded Secret again, B is released, and adoption proceeds.
+  const resent = await f.request("PATCH", path, { body: {} });
+  assert.equal(resent.status, 200, JSON.stringify(resent.body));
+  assert.equal(heldKey(), "synthetic-key-initial");
+  assert.deepEqual(await consumers(sent), []);
+  const adopted = await f.request("PATCH", path, { body: consent });
+  assert.equal(adopted.status, 200, JSON.stringify(adopted.body));
+  assert.deepEqual(adopted.data.egress, { adoption: "live", retention: "none" });
+});
+
 test("current supplier evidence is required at access and send; stored receipts cannot authorize a replacement", async (t) => {
   const f = await staticEgressFixture(t);
   const original = structuredClone(f.observed.evidence);

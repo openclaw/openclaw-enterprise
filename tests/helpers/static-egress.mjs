@@ -261,6 +261,22 @@ export async function staticEgressFixture(
       providers.set(provider.metadata.name, provider);
       callback(null, { provider });
     },
+    // A legacy approved-copy update. With `observed.loseUpdateReply` set, one update applies
+    // and its reply fails, as from a gateway whose answer was lost.
+    UpdateProvider(call, callback) {
+      const provider = providers.get(call.request.provider.metadata.name);
+      if (!provider) {
+        callback({ code: grpc.status.NOT_FOUND });
+        return;
+      }
+      provider.credentials = { ...provider.credentials, ...call.request.provider.credentials };
+      if (observed.loseUpdateReply) {
+        observed.loseUpdateReply = false;
+        callback({ code: grpc.status.INTERNAL, details: "update reply lost" });
+        return;
+      }
+      callback(null, { provider });
+    },
     GetProvider(call, callback) {
       const provider = providers.get(call.request.name);
       callback(

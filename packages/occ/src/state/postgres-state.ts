@@ -549,12 +549,21 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
+  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress, cs.update_attempt_id,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
     WHERE css.credential_source_id = cs.id
-  ), '{}'::jsonb) AS secret_ids`;
+  ), '{}'::jsonb) AS secret_ids,
+  COALESCE((
+    SELECT jsonb_object_agg(retained.field, retained.secret_ids)
+    FROM (
+      SELECT csr.field, jsonb_agg(csr.secret_id ORDER BY csr.secret_id) AS secret_ids
+      FROM occ.credential_source_retained_secrets AS csr
+      WHERE csr.credential_source_id = cs.id
+      GROUP BY csr.field
+    ) AS retained
+  ), '{}'::jsonb) AS retained_secret_ids`;
 
 // Preserve the original reliable installation receipt. The current view uses only a
 // separately confirmed successor; an unobserved request never changes authority.
@@ -598,15 +607,21 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const retainedIds = jsonObject(row.retained_secret_ids);
   const ownerCapability = text(row, "owner_capability");
   if (
     (ownerCapability !== "credential_gateway" &&
       (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
-    Object.values(secretIds).some((value) => typeof value !== "string")
+    Object.values(secretIds).some((value) => typeof value !== "string") ||
+    Object.values(retainedIds).some(
+      (ids) => !Array.isArray(ids) || ids.some((id) => typeof id !== "string"),
+    ) ||
+    (row.update_attempt_id !== null && typeof row.update_attempt_id !== "string")
   ) {
     throw new PersistedStateInvalidError("Persisted credential source metadata is invalid.");
   }
+  const reference = (id: string) => ({ kind: "secret" as const, namespaceId, id });
   return immutableCopy({
     id: text(row, "id"),
     namespaceId,
@@ -619,9 +634,20 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
     secrets: Object.fromEntries(
       Object.entries(secretIds as Record<string, string>).map(([field, id]) => [
         field,
-        { kind: "secret" as const, namespaceId, id },
+        reference(id),
       ]),
     ),
+    ...(Object.keys(retainedIds).length === 0
+      ? {}
+      : {
+          retainedSecrets: Object.fromEntries(
+            Object.entries(retainedIds as Record<string, string[]>).map(([field, ids]) => [
+              field,
+              ids.map(reference),
+            ]),
+          ),
+        }),
+    ...(row.update_attempt_id === null ? {} : { updateAttemptId: text(row, "update_attempt_id") }),
     driverId: text(row, "driver_id"),
     ownerCapability,
     state,
@@ -2545,6 +2571,11 @@ export class PostgresPlatformState implements PlatformStateStore {
                  FROM occ.credential_source_secrets
                  WHERE namespace_id = $1 AND secret_id = $2
                  UNION
+                 -- An unfinished legacy update may have sent this Secret to the gateway.
+                 SELECT 'credential_source', credential_source_id
+                 FROM occ.credential_source_retained_secrets
+                 WHERE namespace_id = $1 AND secret_id = $2
+                 UNION
                  SELECT 'configuration', c.id
                  FROM occ.configurations AS c,
                       jsonb_each(COALESCE(c.secret_bindings, '{}'::jsonb)) AS binding(env, value)
@@ -2686,13 +2717,27 @@ export class PostgresPlatformState implements PlatformStateStore {
       credentialSourceId: string,
       lock = false,
     ): Promise<Readonly<CredentialSource> | undefined> => {
+      if (lock) {
+        // Lock first, then read in a new statement: under READ COMMITTED, a statement that
+        // waited for the lock re-reads only the locked row, so its Secret subqueries would
+        // still show references a transaction committed while it waited had replaced.
+        const locked = await client.query(
+          `SELECT 1 FROM occ.credential_sources AS cs
+           JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
+           WHERE cs.namespace_id = $1 AND cs.id = $2 FOR UPDATE OF cs`,
+          [namespaceId, credentialSourceId],
+        );
+        if (locked.rowCount !== 1) {
+          return undefined;
+        }
+      }
       const found = rows(
         (
           await client.query(
             `SELECT ${CREDENTIAL_SOURCE_COLUMNS}
              FROM occ.credential_sources AS cs
              JOIN occ.namespaces AS n ON n.id = cs.namespace_id AND n.deleted_at IS NULL
-             WHERE cs.namespace_id = $1 AND cs.id = $2${lock ? " FOR UPDATE OF cs" : ""}`,
+             WHERE cs.namespace_id = $1 AND cs.id = $2`,
             [namespaceId, credentialSourceId],
           )
         ).rows,
@@ -3008,6 +3053,95 @@ export class PostgresPlatformState implements PlatformStateStore {
         if (updated.rowCount !== inputs.length) {
           throw new DependencyUnavailableError(
             "Persisted credential source Secret fields are invalid.",
+          );
+        }
+        return findCredentialSource(namespaceId, credentialSourceId);
+      },
+      beginCredentialSourceUpdate: async (namespaceId, credentialSourceId, attemptId, retain) => {
+        const inputs = Object.entries(retain);
+        if (
+          inputs.some(
+            ([, reference]) => reference.kind !== "secret" || reference.namespaceId !== namespaceId,
+          )
+        ) {
+          throw new ScopeViolationError(
+            "Credential source Secret inputs must reference exact Secrets.",
+          );
+        }
+        const fenced = await client.query(
+          `UPDATE occ.credential_sources AS cs SET update_attempt_id = $3
+           FROM occ.namespaces AS n
+           WHERE cs.namespace_id = $1 AND cs.id = $2 AND cs.state = 'ready'
+             AND n.id = cs.namespace_id AND n.deleted_at IS NULL`,
+          [namespaceId, credentialSourceId, attemptId],
+        );
+        if (fenced.rowCount !== 1) {
+          return undefined;
+        }
+        if (inputs.length > 0) {
+          // The field and Secret foreign keys reject an unknown field and a missing Secret.
+          await client.query(
+            `INSERT INTO occ.credential_source_retained_secrets
+             (namespace_id, credential_source_id, field, secret_id)
+             SELECT $1, $2, input.field, input.secret_id
+             FROM unnest($3::text[], $4::text[]) AS input(field, secret_id)
+             ON CONFLICT DO NOTHING`,
+            [
+              namespaceId,
+              credentialSourceId,
+              inputs.map(([field]) => field),
+              inputs.map(([, reference]) => reference.id),
+            ],
+          );
+        }
+        return findCredentialSource(namespaceId, credentialSourceId);
+      },
+      settleCredentialSourceUpdate: async (namespaceId, credentialSourceId, attemptId) => {
+        const settled = await client.query(
+          `UPDATE occ.credential_sources SET update_attempt_id = NULL
+           WHERE namespace_id = $1 AND id = $2 AND update_attempt_id = $3`,
+          [namespaceId, credentialSourceId, attemptId],
+        );
+        if (settled.rowCount !== 1) {
+          return undefined;
+        }
+        await client.query(
+          `DELETE FROM occ.credential_source_retained_secrets
+           WHERE namespace_id = $1 AND credential_source_id = $2`,
+          [namespaceId, credentialSourceId],
+        );
+        return findCredentialSource(namespaceId, credentialSourceId);
+      },
+      abandonCredentialSourceUpdate: async (
+        namespaceId,
+        credentialSourceId,
+        attemptId,
+        release,
+        previousAttemptId,
+      ) => {
+        const abandoned = await client.query(
+          `UPDATE occ.credential_sources SET update_attempt_id = $4
+           WHERE namespace_id = $1 AND id = $2 AND update_attempt_id = $3`,
+          [namespaceId, credentialSourceId, attemptId, previousAttemptId ?? null],
+        );
+        if (abandoned.rowCount !== 1) {
+          return undefined;
+        }
+        const rows = Object.entries(release).flatMap(([field, ids]) =>
+          ids.map((id) => [field, id] as const),
+        );
+        if (rows.length > 0) {
+          await client.query(
+            `DELETE FROM occ.credential_source_retained_secrets AS r
+             USING unnest($3::text[], $4::text[]) AS input(field, secret_id)
+             WHERE r.namespace_id = $1 AND r.credential_source_id = $2
+               AND r.field = input.field AND r.secret_id = input.secret_id`,
+            [
+              namespaceId,
+              credentialSourceId,
+              rows.map(([field]) => field),
+              rows.map(([, id]) => id),
+            ],
           );
         }
         return findCredentialSource(namespaceId, credentialSourceId);

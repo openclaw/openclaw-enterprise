@@ -2493,6 +2493,115 @@ async function verifyCredentialSourceContract(
     }),
   );
 
+  // A legacy gateway update retains each replacement Secret and takes the update fence before
+  // the gateway write, because the gateway may hold that value before the update commits. The
+  // source is a consumer of every retained Secret until an update settles after its gateway
+  // write, so a retained Secret cannot be deleted.
+  const retainingSource = {
+    ...source,
+    id: identifier("cs"),
+    name: "Retaining update " + randomUUID(),
+  };
+  const recordedRef = { kind: "secret", namespaceId: sourceNamespace.id, id: sourceSecret.id };
+  const firstAttempt = randomUUID();
+  const laterAttempt = randomUUID();
+  const begin = (transaction, attemptId, retain) =>
+    transaction.credentialSources.beginCredentialSourceUpdate(
+      sourceNamespace.id,
+      retainingSource.id,
+      attemptId,
+      retain,
+    );
+  const settle = (transaction, attemptId) =>
+    transaction.credentialSources.settleCredentialSourceUpdate(
+      sourceNamespace.id,
+      retainingSource.id,
+      attemptId,
+    );
+  const consumers = (secretId) =>
+    store.read((state) => state.secrets.listReferences(sourceNamespace.id, secretId, 50));
+  await store.transact(async (transaction) => {
+    await transaction.credentialSources.createCredentialSource(retainingSource);
+    assert.deepEqual(await begin(transaction, firstAttempt, { api_key: replacementRef }), {
+      ...retainingSource,
+      retainedSecrets: { api_key: [replacementRef] },
+      updateAttemptId: firstAttempt,
+    });
+  });
+  assert.deepEqual(await consumers(replacementSecret.id), {
+    references: [{ kind: "credential_source", id: retainingSource.id }],
+    truncated: false,
+  });
+  await assert.rejects(
+    store.transact((transaction) =>
+      transaction.secrets.deleteSecret(sourceNamespace.id, replacementSecret.id),
+    ),
+    { name: "ScopeViolationError", message: "The Secret is referenced by active platform state." },
+    "A retained Secret cannot be deleted while the gateway may hold it.",
+  );
+  // Only the source's own fields retain a Secret.
+  await assert.rejects(
+    store.transact((transaction) =>
+      begin(transaction, laterAttempt, { other_key: replacementRef }),
+    ),
+    { name: "ScopeViolationError" },
+  );
+  await store.transact(async (transaction) => {
+    // A later attempt adds to the retained set and takes the fence; the earlier Secret stays.
+    assert.deepEqual(await begin(transaction, laterAttempt, { api_key: recordedRef }), {
+      ...retainingSource,
+      retainedSecrets: {
+        api_key: [replacementRef, recordedRef].sort((left, right) => (left.id < right.id ? -1 : 1)),
+      },
+      updateAttemptId: laterAttempt,
+    });
+    // Replacing the references leaves the retained Secrets alone; only the fenced attempt
+    // settles, and settling removes every retained Secret with the fence.
+    await transaction.credentialSources.replaceCredentialSourceSecrets(
+      sourceNamespace.id,
+      retainingSource.id,
+      { api_key: replacementRef },
+    );
+    assert.equal(await settle(transaction, firstAttempt), undefined);
+    assert.deepEqual(await settle(transaction, laterAttempt), {
+      ...retainingSource,
+      secrets: { api_key: replacementRef },
+    });
+    // A later update that fails after its gateway write leaves a retained Secret behind.
+    await begin(transaction, firstAttempt, { api_key: recordedRef });
+    // An attempt that stops before its gateway write releases only what it added, and only
+    // while it still holds the fence. It restores the fence it replaced: the earlier update
+    // may have written the gateway and stays unresolved.
+    const abandonedAttempt = randomUUID();
+    await begin(transaction, abandonedAttempt, { api_key: replacementRef });
+    const abandon = (attemptId, release) =>
+      transaction.credentialSources.abandonCredentialSourceUpdate(
+        sourceNamespace.id,
+        retainingSource.id,
+        attemptId,
+        release,
+        firstAttempt,
+      );
+    assert.equal(await abandon(firstAttempt, { api_key: [recordedRef.id] }), undefined);
+    assert.deepEqual(await abandon(abandonedAttempt, { api_key: [replacementRef.id] }), {
+      ...retainingSource,
+      secrets: { api_key: replacementRef },
+      retainedSecrets: { api_key: [recordedRef] },
+      updateAttemptId: firstAttempt,
+    });
+  });
+  // Deleting the source removes its retained Secrets; they never block the deletion.
+  await store.transact(async (transaction) => {
+    assert.equal(
+      await transaction.credentialSources.deleteCredentialSource(
+        sourceNamespace.id,
+        retainingSource.id,
+      ),
+      true,
+    );
+  });
+  assert.deepEqual(await consumers(replacementSecret.id), { references: [], truncated: false });
+
   // A non-model source binds through the Agent's credentialSources list. The draft and the
   // active revision each retain it, and a revision freezes exactly the draft's list.
   const tokenSource = {

@@ -18,9 +18,18 @@
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-worker-harness-exposure.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
-    "tests/integration/occ-metrics.test.mjs"
+    "tests/integration/occ-metrics.test.mjs",
+    "tests/integration/postgres-credential-source-update.test.ts"
   ],
   "files": [
+    {
+      "path": "tests/integration/postgres-credential-source-update.test.ts",
+      "expectedTests": [
+        "PATCH keeps every Secret the gateway may hold through a lost commit and a denied retry (finding 1398)",
+        "a controller that dies after the gateway write leaves the sent Secret retained for its successor (finding 1398)",
+        "an update that waited for the source lock retains a Secret the record no longer names (finding 1398)"
+      ]
+    },
     {
       "path": "tests/integration/occ-metrics.test.mjs",
       "expectedTests": [

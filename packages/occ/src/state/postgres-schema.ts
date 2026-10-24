@@ -483,6 +483,8 @@ export const credentialSources = occSchema.table(
     ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    // The legacy gateway update allowed to write the gateway next.
+    updateAttemptId: text("update_attempt_id"),
   },
   (table): PgTableExtraConfigValue[] => [
     check(
@@ -521,6 +523,10 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_state_valid",
       sql`${table.state} IN ('registering', 'ready', 'deleting')`,
+    ),
+    check(
+      "credential_sources_update_attempt_id_valid",
+      sql`${table.updateAttemptId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'`,
     ),
   ],
 );
@@ -585,6 +591,48 @@ export const credentialSourceSecrets = occSchema.table(
       .onDelete("restrict"),
     check("credential_source_secrets_field_format", sql`${table.field} ~ '^[a-z][a-z0-9_]{0,63}$'`),
     index("credential_source_secrets_secret_idx").on(table.namespaceId, table.secretId),
+  ],
+);
+
+/**
+ * Secrets an unfinished legacy gateway update may have sent to the gateway. Each stays a
+ * consumer of its Secret until an update's commit after a gateway write removes them all.
+ */
+export const credentialSourceRetainedSecrets = occSchema.table(
+  "credential_source_retained_secrets",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    credentialSourceId: text("credential_source_id").notNull(),
+    field: collatedText("field").notNull(),
+    secretId: text("secret_id").notNull(),
+  },
+  (table): PgTableExtraConfigValue[] => [
+    primaryKey({
+      name: "credential_source_retained_secrets_pkey",
+      columns: [table.credentialSourceId, table.field, table.secretId],
+    }),
+    foreignKey({
+      name: "credential_source_retained_secrets_source_owner",
+      columns: [table.namespaceId, table.credentialSourceId],
+      foreignColumns: [credentialSources.namespaceId, credentialSources.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "credential_source_retained_secrets_field_owner",
+      columns: [table.credentialSourceId, table.field],
+      foreignColumns: [credentialSourceSecrets.credentialSourceId, credentialSourceSecrets.field],
+    })
+      .onUpdate("restrict")
+      .onDelete("cascade"),
+    foreignKey({
+      name: "credential_source_retained_secrets_secret_owner",
+      columns: [table.namespaceId, table.secretId],
+      foreignColumns: [secrets.namespaceId, secrets.id],
+    })
+      .onUpdate("restrict")
+      .onDelete("restrict"),
+    index("credential_source_retained_secrets_secret_idx").on(table.namespaceId, table.secretId),
   ],
 );
 

@@ -171,6 +171,20 @@ if the request fails after that, repeating the same request converges. If the
 gateway no longer holds a copy (`absent`), the update also returns `503`;
 delete the source and register it again.
 
+OCC records each replacement Secret before the gateway call, together with a
+fence for that update attempt. Until an update reaches the gateway and commits,
+the gateway may hold any Secret an unfinished update sent, so each such Secret
+counts as a consumer of the source: deleting it returns `409` naming the
+source, as for the source's current Secrets. A later update adds to this set and
+never drops a Secret from it. If a second update is recorded before the first
+reaches the gateway, only the second writes it and the first returns `409`. The
+source's next successful update, or its deletion, releases the set. A request
+that fails before its gateway write releases the Secrets it added, unless a
+later update was recorded since.
+
+While such an update is unresolved, live adoption of the source returns `409`.
+Repeat an update without `adoption` until it succeeds, then adopt.
+
 Migration `0048_administrator_credential_source_grants` adds the current
 `credential_source` grants, including `update`, to an unchanged built-in
 Installation administrator Role from an earlier bootstrap. Other Roles keep
@@ -197,8 +211,9 @@ The issuer can replace an `oauth2-refresh-token` source's refresh token each
 time the gateway uses it, so the recorded Secret may hold an already-used
 token. Re-sending it can fail or make the issuer revoke the sign-in, so an
 update that keeps the `refresh_token` Secret, including `{}`, returns `409`.
-Complete a new sign-in, store its refresh token in a new Secret, and reference
-that Secret.
+So does resending a `refresh_token` Secret that an unfinished update may have
+sent to the gateway. Complete a new sign-in, store its refresh token in a new
+Secret, and reference that Secret.
 
 ## Rotate a refresh source
 

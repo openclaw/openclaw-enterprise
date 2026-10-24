@@ -445,12 +445,48 @@ export interface CredentialSourceRepository extends CredentialSourceReadReposito
   createCredentialSource(source: CredentialSource): Promise<Readonly<CredentialSource>>;
   /**
    * Points each existing Secret input field at a replacement same-Namespace Secret. The field
-   * set is fixed by the source type; only the referenced Secret IDs change.
+   * set is fixed by the source type; only the referenced Secret IDs change. It leaves the
+   * retained Secrets alone: only `settleCredentialSourceUpdate` removes them.
    */
   replaceCredentialSourceSecrets(
     namespaceId: string,
     credentialSourceId: string,
     secrets: Readonly<Record<string, SecretReference>>,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  /**
+   * Starts a legacy gateway update of a ready source: adds each `retain` Secret to its field's
+   * retained Secrets and makes `attemptId` the only update allowed to write the gateway.
+   * Returns `undefined` when the source is missing or not `ready`.
+   */
+  beginCredentialSourceUpdate(
+    namespaceId: string,
+    credentialSourceId: string,
+    attemptId: string,
+    retain: Readonly<Record<string, SecretReference>>,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  /**
+   * Ends the update `attemptId` after its gateway write: the gateway now holds exactly the
+   * recorded Secrets, so this removes every retained Secret and the fence. Returns `undefined`
+   * when the source is missing or another attempt holds the fence.
+   */
+  settleCredentialSourceUpdate(
+    namespaceId: string,
+    credentialSourceId: string,
+    attemptId: string,
+  ): Promise<Readonly<CredentialSource> | undefined>;
+  /**
+   * Ends the update `attemptId` that failed before any gateway write: removes only the
+   * retained Secrets it added (`release`, by field) and restores the fence it replaced
+   * (`previousAttemptId`, which an unresolved earlier update may have left). Returns
+   * `undefined` when the source is missing or another attempt holds the fence, whose update
+   * may rely on them.
+   */
+  abandonCredentialSourceUpdate(
+    namespaceId: string,
+    credentialSourceId: string,
+    attemptId: string,
+    release: Readonly<Record<string, readonly string[]>>,
+    previousAttemptId: string | undefined,
   ): Promise<Readonly<CredentialSource> | undefined>;
   /** Moves a registering source to `ready` once the gateway confirms its copy. */
   markCredentialSourceReady(
@@ -1935,7 +1971,10 @@ function repositories(
       for (const source of snapshot.credentialSources.values()) {
         if (
           source.namespaceId === namespaceId &&
-          Object.values(source.secrets).some((reference) => reference.id === secretId)
+          [
+            ...Object.values(source.secrets),
+            ...Object.values(source.retainedSecrets ?? {}).flat(),
+          ].some((reference) => reference.id === secretId)
         ) {
           add("credential_source", source.id);
         }
@@ -2307,6 +2346,82 @@ function repositories(
         }
       }
       const saved = immutableCopy({ ...current, secrets: { ...secrets } });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return immutableCopy(saved);
+    },
+    beginCredentialSourceUpdate: async (namespaceId, credentialSourceId, attemptId, retain) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.state !== "ready") {
+        return undefined;
+      }
+      const retained: Record<string, SecretReference[]> = Object.fromEntries(
+        Object.entries(current.retainedSecrets ?? {}).map(([field, references]) => [
+          field,
+          [...references],
+        ]),
+      );
+      for (const [field, reference] of Object.entries(retain)) {
+        // Mirrors the retained Secret's field and Secret foreign keys.
+        if (current.secrets[field] === undefined) {
+          throw new ScopeViolationError(
+            "Credential source Secret inputs must reference exact Secrets.",
+          );
+        }
+        if (
+          reference.kind !== "secret" ||
+          reference.namespaceId !== namespaceId ||
+          !snapshot.secrets.has(agentKey(namespaceId, reference.id))
+        ) {
+          throw new ScopeViolationError("The credential source references an unavailable Secret.");
+        }
+        const references = (retained[field] ??= []);
+        if (!references.some(({ id }) => id === reference.id)) {
+          references.push({ ...reference });
+          references.sort((left, right) => (left.id < right.id ? -1 : 1));
+        }
+      }
+      const saved = immutableCopy({
+        ...current,
+        updateAttemptId: attemptId,
+        ...(Object.keys(retained).length === 0 ? {} : { retainedSecrets: retained }),
+      });
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return saved;
+    },
+    settleCredentialSourceUpdate: async (namespaceId, credentialSourceId, attemptId) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.updateAttemptId !== attemptId) {
+        return undefined;
+      }
+      const { retainedSecrets: _retained, updateAttemptId: _attempt, ...settled } = current;
+      const saved = immutableCopy(settled);
+      snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
+      return saved;
+    },
+    abandonCredentialSourceUpdate: async (
+      namespaceId,
+      credentialSourceId,
+      attemptId,
+      release,
+      previousAttemptId,
+    ) => {
+      const current = await findCredentialSource(namespaceId, credentialSourceId);
+      if (current === undefined || current.updateAttemptId !== attemptId) {
+        return undefined;
+      }
+      const retained: Record<string, SecretReference[]> = {};
+      for (const [field, references] of Object.entries(current.retainedSecrets ?? {})) {
+        const kept = references.filter(({ id }) => !(release[field] ?? []).includes(id));
+        if (kept.length > 0) {
+          retained[field] = kept;
+        }
+      }
+      const { retainedSecrets: _retained, updateAttemptId: _attempt, ...rest } = current;
+      const saved = immutableCopy({
+        ...rest,
+        ...(previousAttemptId === undefined ? {} : { updateAttemptId: previousAttemptId }),
+        ...(Object.keys(retained).length === 0 ? {} : { retainedSecrets: retained }),
+      });
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
       return saved;
     },
