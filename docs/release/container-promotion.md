@@ -44,51 +44,47 @@ These tests do not authenticate to either registry or prove a live transfer.
 
 ## Verify the served Console
 
-After approved promotion and traffic selection, run this read-only command on a
-POSIX host with Python 3 and Git supporting `--no-lazy-fetch`. Set
-`CONTROLLER_SOURCE_SHA` to the full lowercase source commit from the receipt for the **controller image actually routed to
-users**. Supply a local repository containing it and the HTTPS URL users open.
-For a runtime-only upgrade, skip this check unless confirming the unchanged
-controller with its previous receipt and previous SHA. Source objects must already
-exist locally: missing objects in partial clones return `invalid-source`; the
-verifier never fetches them.
+After approved promotion and traffic selection, verify the Console served to
+users. On a POSIX host, use Node.js 24 and Git with `--no-lazy-fetch`. Select the
+full lowercase source commit from the receipt for the routed controller image.
+For a runtime-only upgrade, use the previous controller receipt and commit when
+checking the unchanged controller. Use a trusted checkout containing the
+verifier and release producers. The source repository may be a separate local
+checkout and need not be at the verifier's commit. Set `UPGRADE_EVIDENCE` to an
+existing private directory for the result.
 
 ```bash
 umask 077
-python3 scripts/verify-console-release.py /secure/src/openclaw-enterprise \
+export CONTROLLER_SOURCE_SHA='<full-lowercase-source-commit>'
+export UPGRADE_EVIDENCE='/secure/occ/upgrades/<private-directory>'
+cd /secure/tools/openclaw-enterprise # trusted checkout containing the verifier
+node scripts/verify-console-release.ts /secure/src/openclaw-enterprise \
   "$CONTROLLER_SOURCE_SHA" 'https://console.example.com/console/' \
   > "$UPGRADE_EVIDENCE/console-verification.json"
 ```
 
-Keep the result with the private publication and upgrade evidence. Exit zero
-(`verified`) proves one delivered build marker and base CSS against that commit;
-it records the revision and CSS SHA-256. Theme colors remain installation-owned.
+| Input or limit | Requirement                                                                                                                                                                                                                                                                                                                                                    |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Source         | The local repository must contain the commit and its Console source objects. Missing objects or a source template unsupported by this verifier return `invalid-source`; the command does not fetch objects or execute source from the selected commit.                                                                                                         |
+| URL            | Use the canonical HTTPS URL without credentials, query, fragment, dot segments, or a path beginning with `//`. TLS verification stays enabled. The command sends no cookies or tokens and follows no redirects or page links.                                                                                                                                  |
+| Responses      | Anonymous requests retrieve the HTML and then `/console/console.css` on the same origin. Each response needs exactly one `Content-Length` and one `Content-Type` (`text/html` or `text/css`, with only an optional `charset=utf-8`, quoted or unquoted). Compression, chunked or close-delimited bodies, ambiguous headers, and incomplete bodies are refused. |
+| Budgets        | HTML is limited to 256 KiB and CSS to 2 MiB. Git commands and idle HTTPS sockets time out after five seconds. A 20-second deadline covers the whole check.                                                                                                                                                                                                     |
 
-The check supports the existing release shell, including `renderConsoleThemeShell`
-output: an explicitly closed head containing the marker and the plain
-`<link rel="stylesheet" href="/console/console.css">`. Inert markup, extra attributes
-on that link, or malformed placement leave identity unverified. Both responses
-must have exactly one valid, bounded `Content-Length` and one `Content-Type`
-(`text/html` or `text/css`, respectively), with no parameters except optional
-`charset=utf-8` (quoted or unquoted). Chunked or close-delimited responses,
-incompatible or ambiguous content types, and compression return
-`unexpected-content`; sites or proxies using them remain unverified. Incomplete
-bodies and CDN rewrites that prevent byte comparison also leave identity
-unverified. This is not browser execution or proof of every asset, replica, image
-digest, Pod health, or
-backend migration. Continue the independent
+Keep the JSON result with the private publication and upgrade evidence. The
+command emits no response contents, URL, or exception details.
+
+| Result                                                       | Meaning and next action                                                                                                                |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `verified` (exit 0)                                          | The delivered Console shell and base CSS match the source commit. The record includes `revision` and `assetSha256`.                    |
+| `wrong-shell`, `wrong-asset`                                 | The delivered shell or CSS differs. Inspect the routed controller and caches before repeating the check.                               |
+| `invalid-source`, `invalid-input`                            | Check the local commit and objects, receipt, and URL.                                                                                  |
+| `redirect-refused`, `authentication-required`, `unavailable` | Inspect routing and access policy. `authentication-required` means HTTP 401 or 403.                                                    |
+| Other refusals                                               | Check the response framing, content types, size, markup, or timeout named by the result. Correct the cause before repeating the check. |
+
+The command exits 1 for refusals. It checks one delivered shell and base CSS,
+including the supported themed shell. Theme settings and assets are
+installation-owned and their values are not authenticated by this check. Browser
+execution, other assets and replicas, image digest, Pod health, and backend
+migrations require separate evidence. Keep TLS verification enabled and do not
+supply service credentials when correcting a refusal. Continue the
 [rollout and application checks](../guides/deploy/production-upgrade.md#verify-the-release).
-
-Use a canonical URL without credentials, query, fragment, dot segments, or a
-leading double slash in its path. The command retains TLS trust, sends no cookies
-or tokens, follows no redirects or page links, and fetches only the fixed
-same-origin CSS after checking HTML. Limits are 256 KiB HTML, 2 MiB CSS, five
-seconds per blocking operation and 20 seconds total. No response contents, URLs,
-or exception details are printed.
-
-`wrong-revision` and `wrong-asset` indicate mismatched delivery. Marker, HTML,
-stylesheet, framing, size, content or timeout failures leave identity unproved.
-`redirect-refused` can indicate sign-in or routing; `authentication-required`
-means HTTP 401/403. These and `unavailable` do not establish a wrong version.
-Inspect routing, access policy and caches privately, then rerun after correction;
-do not weaken TLS or supply service credentials.
