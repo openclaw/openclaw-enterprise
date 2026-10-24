@@ -795,9 +795,14 @@ test("deployment admission refuses a dedicated Harness the Installation cannot p
       () => driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, {}),
       (error) => error instanceof ConfigurationHarnessError && message.test(error.message),
     );
-    // Agent save leaves the Installation to deployment; embedded Agents need none of these.
-    driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, null);
+    // Agent save (null bindings) refuses it too: the execution mode is the Agent's (finding 2376).
+    assert.throws(
+      () => driver.validateHarnessAuth(codex, apiKeyAuth, codexConfiguration, null),
+      (error) => error instanceof ConfigurationHarnessError && message.test(error.message),
+    );
+    // Embedded Agents need none of these.
     driver.validateHarnessAuth(embedded, apiKeyAuth, embeddedConfiguration, {});
+    driver.validateHarnessAuth(embedded, apiKeyAuth, embeddedConfiguration, null);
   }
   new KubernetesComputeDriver(routedOptions({ runtime }), {
     nodeEnrollment: {},
@@ -9213,8 +9218,9 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
       ),
     /requires a provisioning SandboxDriver with networking, filesystem, and process containment/,
   );
-  // Agent save (null bindings) leaves the Installation's Sandbox Driver to deployment.
-  createKubernetesComputeDriver(driverOptions).validateHarnessAuth(
+  // Agent save (null bindings) leaves the Installation's Sandbox Driver to deployment. Node
+  // enrollment keeps the placement rule, which save also applies, satisfied.
+  new KubernetesComputeDriver(driverOptions, { nodeEnrollment: {} }).validateHarnessAuth(
     revision.harness,
     revision.harnessAuth,
     revision.configuration,
