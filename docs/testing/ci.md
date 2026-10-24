@@ -327,6 +327,10 @@ These lanes are excluded from `ci`, `full`, and Full Integration dispatch:
 - `repository-credentials-installed`: temporarily refused pending safe remote cleanup. See [installed Agent qualification](repository-credentials.md#qualify-an-installed-agent-against-github).
 - `postgres-azure-workload-identity`: see [Azure PostgreSQL tests](postgresql.md#azure-workload-identity-connections).
 - `ssh-host`: requires a disposable Linux/systemd host. Its optional model selector adds provider execution. See [SSH tests](ssh.md).
+- `plugin-model`: requires a disposable cluster, model credentials and one database per selected scenario. See [plugin tests](plugins.md#native-runtime-prerequisites).
+- `k3d-two-cluster`: requires two separately prepared clusters and a private configuration file. See [two-cluster validation](kubernetes.md#two-cluster-validation).
+- `openshell-oauth`: requires a prepared OpenShell OAuth gateway, trust files and tokens. See [OpenShell OAuth tests](openshell-oauth.md).
+- `image-pair-qualification`: requires staged old and new controller and broker images. See [image-pair qualification](docker.md#repository-image-pair-qualification).
 
 ### Results and cleanup
 
