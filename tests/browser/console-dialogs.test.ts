@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import type { Page } from "playwright";
 
+import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
   consoleViewports,
   detailUrl,
@@ -64,7 +67,15 @@ const openDialog = (page: Page) =>
   });
 
 test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become bottom sheets on a phone and return focus to their opener", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog pattern");
+  // A transparent page background exposes a backdrop painted twice on the page but once in the gutter.
+  const directory = await temporaryDirectory(t, "console-dialog-canvas-");
+  await writeFile(
+    join(directory, "theme.json"),
+    JSON.stringify({ schemaVersion: 1, colors: { bg: "#f7f5f000" } }),
+  );
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Dialog pattern", {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
   const agent = await fixture.createAgent(namespace.id, "Dialog Agent", nativeValues("dialogs"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const slackAgent = await fixture.createAgent(

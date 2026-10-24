@@ -25,6 +25,7 @@ test("mounted console themes serve public branding without changing API failures
     logo: "logo.png",
     favicon: "icon.png",
     colors: {
+      bg: "#DDEEFF66",
       accent: "#2457C5",
       surface2: "#EEEEEE",
       accentSubtle: "#2457C514",
@@ -53,6 +54,8 @@ test("mounted console themes serve public branding without changing API failures
   assert.doesNotMatch(policy, /unsafe-inline/);
   const css = await fixture.rawRequest("GET", "/console/theme/colors.css");
   assert.equal(css.response.status, 200);
+  assert.match(css.text, /--color-bg: #DDEEFF66/);
+  assert.match(css.text, /--color-canvas: color-mix\(in srgb, #DDEEFF 40%, Canvas\)/);
   assert.match(css.text, /--color-accent: #2457C5/);
   assert.match(css.text, /--color-surface-2: #EEEEEE/);
   assert.match(css.text, /--color-accent-subtle: #2457C514/);

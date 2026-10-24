@@ -13,9 +13,11 @@
   line-height: 1.5;
   font-synthesis: none;
   color: var(--text);
-  background: var(--bg);
+  background: var(--color-canvas);
   /* Colour roles shared by the Console, its controls and its navigation. */
   --color-bg: #f7f5f0;
+  /* Themes with a translucent background resolve it over Canvas once, for both root and body. */
+  --color-canvas: var(--color-bg);
   --color-surface: #ffffff;
   --color-surface-2: #f1f4f6;
   --color-surface-hover: #eaf1f6;
@@ -143,7 +145,7 @@
 }
 body {
   margin: 0;
-  background: var(--bg);
+  background: var(--color-canvas);
 }
 button,
 input,
@@ -2846,7 +2848,7 @@ select:not([multiple])[size="1"] {
    root canvas there; body keeps its own background so the page is dimmed only once. */
 @media (forced-colors: none) {
   :root:has(.dialog:modal) {
-    background-color: color-mix(in srgb, var(--color-overlay-mix), var(--color-bg));
+    background-color: color-mix(in srgb, var(--color-overlay-mix), var(--color-canvas));
     transition: background-color var(--duration-base) var(--ease);
     scrollbar-color: var(--color-text-muted) transparent;
   }
