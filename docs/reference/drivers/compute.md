@@ -3,21 +3,19 @@
 ## Overview
 
 `ComputeDriver` prepares and removes Namespace infrastructure and runs Agent
-revisions. OCC selects one Driver per Installation, authorizes operations, and
-stores immutable revision configurations. Compute owns gateway, workload
+revisions. OCC selects Drivers, authorizes operations and
+stores immutable configurations. Compute owns gateway, workload
 identity, routing, activation, and readiness; its backend owns underlying
 resources. A selected [SandboxDriver](sandbox.md) can create a dedicated Harness
 workload.
 
-See [Driver selection](selection.md) for supported combinations and package trust,
-the [feature matrix](compute-matrix.md), and
-[current versus planned placement](../../design.md#implementation-status).
+See [Driver selection](selection.md), the [feature matrix](compute-matrix.md),
+and [placement status](../../design.md#implementation-status).
 
 ## Interface
 
-The [shared contracts](../../../packages/contracts/src/index.ts) define the types.
-Every `ComputeDriver` has an `id`, `implementation`, and
-`capability: "compute"`.
+[Shared contracts](../../../packages/contracts/src/index.ts) require `id`,
+`implementation`, and `capability: "compute"`.
 
 Optional `getRuntimeImages(revision)` returns
 `{workload, container, image, imageId, commit, openclawCommit}` entries for
@@ -68,6 +66,13 @@ context is optional in TypeScript; the worker supplies it after authorization.
 OCC atomically fails deployment with durable `stopRevision` cleanup.
 Restart resumes cleanup, not preparation; codes exclude credentials.
 
+### Human runtime access
+
+`listAgentRuntimeRoles(configuration)` and
+`getAgentRuntimeAccess(revision, principalId, runtimeRole)` provide role
+catalogs and verified human transport. Kubernetes implements them; Docker/SSH omit
+them. See [runtime access](../agent-native-admin.md).
+
 ### Optional additions
 
 | Method or declaration                                                                               | When it is needed                                                                                                                                                                                                     |
@@ -98,9 +103,9 @@ This method neither checks readiness, authorizes callers, grants backend route
 permissions, nor saves URLs in Agent Configuration. Connection
 errors are dependency failures.
 
-Workspace-file access and the opt-in
-[Agent native admin UI](../agent-native-admin.md#agent-host-identity) require this
-endpoint. Kubernetes implements
+Workspace-file access requires this endpoint;
+[Agent native admin UI](../agent-native-admin.md#agent-host-identity) uses
+`getAgentRuntimeAccess`. Kubernetes implements
 [private routes](kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 
 ### Optional initial runtime credential provisioning

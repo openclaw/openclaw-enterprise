@@ -1,3 +1,5 @@
+import { nativeAdminComputeDriver } from "./console-agents-test-support.mjs";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
@@ -817,10 +819,21 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
 });
 
 test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["sharing-recipient"] });
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["sharing-recipient"],
+    computeDriver: nativeAdminComputeDriver("wss://private-gateway.example.invalid/sharing"),
+  });
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sharing rejection");
-  const agent = await fixture.createAgent(namespace.id, "Sharing Agent", nativeValues("sharing"));
+  const namespace = await fixture.createNamespace("Sharing rejection", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Sharing Agent",
+    nativeRolesGateway(nativeValues("sharing"), fixture.origin),
+  );
+  // Keep deployed policy available alongside the saved Configuration catalog.
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const baselineRoles = (await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`))
+    .data;
   const { page } = await newPage(t, fixture);
   const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
@@ -863,7 +876,7 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
   await panel.getByText("Check the entered values and resource IDs", { exact: false }).waitFor();
   assert.equal(await panel.getByText(reason, { exact: false }).count(), 0);
   const roles = await fixture.request("GET", `/namespaces/${namespace.id}/iam/roles`);
-  assert.equal(roles.data.length, 1);
+  assert.equal(roles.data.length - baselineRoles.length, 1);
 
   // The discovery Role now exists, so its rejected binding is the first write: reason shown.
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
@@ -880,8 +893,8 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
   await panel.getByRole("checkbox").check();
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
-  const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
-  assert.equal(bindings.data.length, 2);
+  const bindings = await fixture.addedAccessBindings(namespace.id);
+  assert.equal(bindings.length, 2);
   await page.route(`${policyPath}/access-bindings/*`, reject);
   const removeBinding = panel.getByRole("button", { name: "Remove binding", exact: true });
   // Removal deletes the binding at once, so it takes the destructive tone (finding 1967).
@@ -1036,6 +1049,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
 
   await page.getByRole("button", { name: "View version v2" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === second.revision.id);
+  await page.getByText('"marker": "rev-two"').waitFor({ state: "attached" });
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-two"').waitFor();
   await expectNoText(page, /"marker": "rev-one"|"marker": "draft-current"/, () =>
@@ -1045,6 +1059,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
 
   await page.getByRole("button", { name: "View version v1" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === first.revision.id);
+  await page.getByText('"marker": "rev-one"').waitFor({ state: "attached" });
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
   assertRevisionUrl(page, first.revision.id);
@@ -1584,12 +1599,18 @@ test("Agent detail saves plugin changes for the next revision without changing a
 
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    editedPlugins,
+  );
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
   await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
-  assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
+  assert.deepEqual(
+    JSON.parse(await page.locator(".agent-version-detail pre").textContent()),
+    originalPlugins,
+  );
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
 });
 
@@ -2852,6 +2873,12 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  const nativeStatusPath = `/namespaces/${namespace.id}/agents/${agent.id}/native-admin`;
+  const nativeStatusResponse = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}${nativeStatusPath}` &&
+      response.request().method() === "GET",
+  );
 
   await login(
     page,
@@ -2860,6 +2887,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("heading", { name: "Stop Candidate" }).waitFor();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  const nativeStatus = await nativeStatusResponse;
+  assert.equal(nativeStatus.status(), 200);
+  assert.equal((await nativeStatus.json()).data.status, "disabled");
+  assert.equal(requests.filter((request) => request.path === nativeStatusPath).length, 1);
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
@@ -2891,6 +2922,9 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/stop` &&
       response.request().method() === "POST",
+  );
+  const refreshedNativeStatus = page.waitForResponse(
+    (response) => response.url() === `${fixture.origin}${nativeStatusPath}`,
   );
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   const response = await stopResponse;
@@ -2931,13 +2965,10 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   assert.equal(stopped.data.activeRevisionId, active.revision.id);
   assert.deepEqual(stopped.data.harnessAuth, { method: "runtime" });
   assert.equal(stopped.data.configurationId, agent.configurationId);
-  // Changing only the requested runtime state must reload dependent panels,
-  // even while the selected revision remains unchanged pending worker shutdown.
-  const stopIndex = requests.findIndex((request) => request.path.endsWith("/stop"));
-  assert.ok(
-    requests.findIndex((request) => request.path.endsWith("/native-admin")) > stopIndex,
-    "native admin status must be reread after stop admission",
-  );
+  // Changed runtime state refreshes availability; the disabled feature remains hidden.
+  const refreshedNative = await refreshedNativeStatus;
+  assert.equal(refreshedNative.status(), 200);
+  assert.equal((await refreshedNative.json()).data.status, "disabled");
   const revisions = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,

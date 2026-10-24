@@ -276,10 +276,11 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 
 ### Native Gateway sharing
 
-Run the `gateway-routing` lane as shown above; it selects
-`tests/integration/native-admin-k3d-real.test.mjs`. Its sharing case checks
-Agent grants, denied access, model turns, and WebSocket revocation. It does not
-qualify account enrollment, per-chat authority, Git, or OpenShell.
+`gateway-routing` selects `tests/integration/native-admin-k3d-real.test.mjs`.
+It checks cookies, grants, sibling/Configuration denials, Console launch,
+model turns and WebSocket revocation within 30 seconds. Others continue. Role assignment before deployment, changes while stopped and
+redeployment are covered; account enrollment, per-chat authority, Git and
+OpenShell are not.
 
 ## Production TUI tests
 

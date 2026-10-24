@@ -1240,6 +1240,14 @@ test("a caller without a grant gets the same audited denial whether or not the t
   // The reader holds no grant in Tenant B. Every target below must answer the same audited
   // 403 whether the Namespace or Agent exists, so a refusal never reveals which ids are real.
   const namespaceRoutes = [
+    [
+      "PATCH",
+      `iam/access-bindings/${child("binding")}/runtime-role`,
+      {
+        runtimeRole: "researcher",
+        runtimeRoleConfiguration: { id: agent.configurationId, generation: 1 },
+      },
+    ],
     ["GET", "agents/repository-options"],
     ["GET", `agents/provision/${child("work")}`],
     ["POST", `agents/provision/${child("work")}/retry`],
@@ -1269,6 +1277,8 @@ test("a caller without a grant gets the same audited denial whether or not the t
   ];
   const agentRoutes = [
     ["GET", ""],
+    ["GET", "runtime-roles"],
+    ["GET", "native-admin"],
     ["GET", `revisions/${missingRevisionId}`],
     ["GET", `deployments/${missingRevisionId}`],
     ["GET", "repository-options"],

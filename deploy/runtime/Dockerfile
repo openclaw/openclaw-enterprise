@@ -113,6 +113,10 @@ RUN echo 'ef50d1e635be0a9afd970ee1ea95c3468c307759fedd3783180ac2a676fa015b  /tmp
 COPY deploy/runtime/openclaw-connect-ephemeral-expired-setup.patch /tmp/openclaw-connect-ephemeral-expired-setup.patch
 RUN echo '906fd14d2d36b98c4308d4db65f30092f27b84a69e5509cf04de2041f6e975d2  /tmp/openclaw-connect-ephemeral-expired-setup.patch' | sha256sum --check --strict \
     && git apply /tmp/openclaw-connect-ephemeral-expired-setup.patch
+# TODO: Remove this bridge when upstream accepts a verified proxy role at profile admission.
+COPY deploy/runtime/openclaw-trusted-proxy-role.patch /tmp/openclaw-trusted-proxy-role.patch
+RUN echo '1e076ffa1d47b1178e63817f9e7844188da2c34e3e7c39b708b3d35e72630702  /tmp/openclaw-trusted-proxy-role.patch' | sha256sum --check --strict \
+    && git apply /tmp/openclaw-trusted-proxy-role.patch
 # TODO: Remove this bridge patch when OpenClaw selects the native full-access profile.
 COPY deploy/runtime/openclaw-codex-full-access-profile.patch /tmp/openclaw-codex-full-access-profile.patch
 RUN echo 'bf0e9cd6d1d2420f42a33af130d534e1de6d1fe17701517c676824f5e80ec931  /tmp/openclaw-codex-full-access-profile.patch' | sha256sum --check --strict \

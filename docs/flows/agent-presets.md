@@ -149,13 +149,12 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mts:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mts)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+lists Namespace-readable summaries and reads the selection once with
+`revalidate: false`. **Start with default Preset** reads `default-codex`.
+Variable-free templates apply immediately; otherwise chooser and shortcut origin remain.
+Missing defaults or failed reads never open hardcoded starters; readable Presets remain selectable. **Start without Preset** opens
+the form without a Preset read, not as a fallback for denial.
+Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -312,6 +311,8 @@ or an immutable saved version.
 - 2026-10-04 22:00: Refresh superseded copies only when `includeDefaults` seeded them; a `presets.files` copy of a bundled file stays.
 - 2026-10-04 14:00: Refresh untouched copies of superseded bundled defaults at startup, and let any shipped version pass the Namespace deletion check.
 - 2026-10-03 20:30: Seed default Presets with the next Installation administrator when one cannot create them, so an upgrade that adds a default no longer stops API startup.
+- 2026-10-03 09:53: Exclude the selected Preset snapshot from replay after its values become an independent draft. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
+
 - 2026-09-28 10:36: Restore explicit creation without a Preset. (authoring-run/c140c47a-799b-48c8-929a-5d1a37eb31d1 - 9f7ae3cfb749a58394f8446f3a429db6ffa6f129)
 
 - 2026-09-27 01:09: Preserve exit discard for the default Preset shortcut and retain explicitly selected Preset drafts. (authoring-run/048d8546-acd0-4d1a-8231-61c9d9ccb9dc - 7d0da53a8f092b0e2533464424dcb9c7fe15b139)

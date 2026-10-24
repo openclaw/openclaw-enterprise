@@ -103,6 +103,11 @@ identity headers, or membership in another Namespace do not grant access.
 
 ## Permissions and Roles
 
+Agent runtime entry requires `agent:use` plus one exact direct person/Agent
+runtime assignment. Installation administration and management grants do not
+imply native permissions. See
+[Agent OpenClaw access](agent-native-admin.md#native-authority-and-drift).
+
 A Permission pairs an `action` with a `resourceKind`; a Role groups these
 Permissions. The kind selects a category such as `agent`, not an individual
 Agent ID. The [permissions cheat sheet](cheatsheets/permissions.md) lists the

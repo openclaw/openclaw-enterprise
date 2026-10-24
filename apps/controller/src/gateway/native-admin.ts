@@ -1,6 +1,5 @@
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
 import type { Agent, AgentRevision } from "@openclaw-enterprise/contracts";
-import { unsupportedNativeGatewayAuthFields } from "./auth-fields.ts";
 import { deriveNativeAdminHost } from "./native-admin-host.mjs";
 
 export { deriveNativeAdminHost } from "./native-admin-host.mjs";
@@ -76,22 +75,9 @@ export function nativeAdminConfigurationSupported(
   origin: string,
 ): boolean {
   const gateway = asRecord(revision.configuration.gateway);
-  const auth = asRecord(gateway?.auth);
-  const proxy = asRecord(auth?.trustedProxy);
   const ui = asRecord(gateway?.controlUi);
-  const approval = asRecord(proxy?.deviceAutoApprove);
-  const scopes = asRecord(auth?.identityScopes)?.["occ-workspace-files"];
+  // Transport authentication and native role support belong to Compute's runtime-access contract.
   return (
-    auth?.mode === "trusted-proxy" &&
-    unsupportedNativeGatewayAuthFields(auth).length === 0 &&
-    proxy?.userHeader === "x-occ-identity" &&
-    Array.isArray(proxy.allowUsers) &&
-    proxy.allowUsers.includes("occ-workspace-files") &&
-    Array.isArray(scopes) &&
-    scopes.includes("operator.admin") &&
-    approval?.enabled === true &&
-    Array.isArray(approval.scopes) &&
-    approval.scopes.includes("operator.admin") &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&

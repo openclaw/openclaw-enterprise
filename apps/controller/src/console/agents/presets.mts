@@ -8,7 +8,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
 import type { createDraftStore } from "../drafts.mjs";
-import type { NamespacePageContext } from "../namespaces.mjs";
+import type { ConsolePageContext } from "../page-context.mjs";
 import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
 import {
   renderPresetTemplate,
@@ -17,7 +17,7 @@ import {
 } from "../preset-variables.mjs";
 import { message, namespacePath } from "./list.mjs";
 
-type PresetContext = Pick<NamespacePageContext, "request" | "isCurrent" | "onExpired"> & {
+type PresetContext = Pick<ConsolePageContext, "request" | "isCurrent" | "onExpired"> & {
   namespaceId: string;
   drafts: ReturnType<ReturnType<typeof createDraftStore>["scope"]>;
 };
@@ -364,6 +364,7 @@ export function createPresetFields(
     try {
       const value = await context.request(
         `${namespacePath(context.namespaceId)}/presets/${encodeURIComponent(selectedId)}`,
+        { revalidate: false },
       );
       if (
         !context.isCurrent() ||

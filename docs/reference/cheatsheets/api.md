@@ -62,6 +62,7 @@
 ### Agents
 
 - [`listAgentRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryoptions): List approved repository choices for updating one Agent.
+- [`listAgentRuntimeRoles`](../api.md#get-namespacesnamespaceidagentsagentidruntimeroles): List configured runtime roles and deployed permission summaries for an Agent.
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
 - [`listAgentStandingApprovals`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryapprovals): Read attributable repository approvals and removed generations for one Agent.
 - [`listAgentStandingApprovalScopes`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes): Review resolved repository scope before explicitly approving it.
@@ -100,7 +101,7 @@
 - [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything.
 - [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
-- [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
+- [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve OpenClaw launch availability with an assigned runtime role.
 - [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
 - [`cancelSavedAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
 - [`deleteAgent`](../api.md#delete-namespacesnamespaceidagentsagentid): Begin or retry deletion of the requested Agent and its Agent revisions.
@@ -139,6 +140,7 @@
 - [`listIAMAccessBindings`](../api.md#get-namespacesnamespaceidiamaccessbindings): List exact Namespace IAM AccessBindings.
 - [`getIAMAccessBinding`](../api.md#get-namespacesnamespaceidiamaccessbindingsbindingid): Get an exact Namespace IAM AccessBinding.
 - [`createIAMAccessBinding`](../api.md#post-namespacesnamespaceidiamaccessbindings): Create an immutable exact-resource Namespace IAM AccessBinding.
+- [`updateIAMRuntimeRole`](../api.md#patch-namespacesnamespaceidiamaccessbindingsbindingidruntimerole): Change the runtime role on an exact human Agent access grant.
 - [`deleteIAMAccessBinding`](../api.md#delete-namespacesnamespaceidiamaccessbindingsbindingid): Delete one exact Namespace IAM AccessBinding.
 
 ### IAM roles

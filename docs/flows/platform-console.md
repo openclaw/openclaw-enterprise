@@ -141,9 +141,8 @@ stops reads. Missing provenance stays explicit.
 `apps/controller/src/console/console.mjs:loadPage`
 
 `agents/collection.mts:renderAgentList` forwards plain clicks on row content to
-its Agent-name link. It ignores links, buttons (including disabled buttons),
-modified clicks, and selected text. Focusing the name before activation preserves
-the same return-focus target. Keyboard users activate the existing name link.
+its Agent-name link. It ignores links, buttons (even disabled), modified clicks and selected text.
+Focusing the name preserves return focus. Keyboard users activate that link.
 
 `loadPage` starts with `GET /api/auth/session`. Opening an Agent from the list
 immediately shows **Loading agent details…** and **Back to Agents**. Its name,
@@ -152,7 +151,7 @@ a second Back does nothing, and refocusing does not interrupt it. Other routes t
 an Agent keep the current page, or show loading after 400 ms on a fresh load.
 Once visible, loading stays at least 300 ms (`loadingMinimumMs`).
 
-Other first visits and Refresh show loading after 250 ms. A return or refocus
+Other first visits and Refresh show loading after 250 ms. Return/refocus
 keeps the current page inert, with its own header and disabled Namespace selector;
 after one second it says **Still checking…**. The Console retains up to 16 views
 by route, Namespace, and session owner, excluding passwords and discovery state.
@@ -162,10 +161,12 @@ An interrupted return preserves the view; an interrupted Refresh discards it.
 through the response body. Cancellation preserves its reason; a socket failure is an interrupted read,
 not invalid JSON. Neither replays the request.
 
-On return, `loadPage` checks the user and retained GET dependencies. A match
-restores the DOM, handlers, drafts, and expanded debug details. Changed data,
-a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
-reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
+Returns revalidate GET data/pagination without request IDs and compare settled
+`403`/`404` refusals as outcomes. Matching answers restore DOM, handlers, drafts
+and disclosures; changed answers, a newly readable Namespace or Refresh rebuild.
+Other failed or pending reads, passwords and mutations prevent reuse. Live sections
+own their return checks rather than replaying polls. Tab-local `403` caching avoids
+repeated audits until Retry. Read-only catalog/diagnostic POSTs preserve views.
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not row reads. Each row's newest readable revisions page feeds its deployment
@@ -175,8 +176,7 @@ cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, be
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
 not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
-A changed user or session key clears retained views and drafts before further
-private reads. Missing sessions open login; failed reads offer Retry.
+Changing users or sessions clears retained views and drafts before private reads. Missing sessions open login; failed reads offer Retry.
 The [console sign-in flow](platform-console/sign-in-return.md) covers provider
 discovery, one-use session binding, and requested destination recovery.
 

@@ -161,6 +161,11 @@ export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") };
 export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
+export const SharingRoleChanged = story("agentSharingRoleChanged");
+export const SharingBeforeDeployment = story("agentSharingBeforeDeployment");
+export const SharingStopped = story("agentSharingStopped");
+export const SharingPolicyChanged = story("agentSharingPolicyChanged");
+export const SharingRolesUnavailable = story("agentSharingRolesUnavailable");
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
 

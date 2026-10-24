@@ -7,6 +7,7 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { nativeRolesGateway } from "../helpers/runtime-roles.mjs";
 import { nativeValues, pathRequests } from "./console-agents-browser-helpers.mjs";
 
 /** @import { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts" */
@@ -98,13 +99,10 @@ export async function waitForCreateFormReads(page) {
 
 export async function expectNativeAdminHidden(page) {
   assert.equal(
-    await page.getByRole("heading", { name: "Gateway administration" }).isVisible(),
+    await page.getByRole("heading", { name: "OpenClaw", exact: true }).isVisible(),
     false,
   );
-  assert.equal(
-    await page.getByRole("link", { name: "Open admin console", exact: true }).isVisible(),
-    false,
-  );
+  assert.equal(await page.getByText("Open OpenClaw", { exact: true }).isVisible(), false);
 }
 
 export function assertRevisionUrl(page, revisionId) {
@@ -331,29 +329,7 @@ export async function waitForLiveControls(page, ids) {
 }
 
 export function nativeAdminValues(marker, origin) {
-  const values = nativeValues(marker);
-  return {
-    ...values,
-    gateway: {
-      ...(values.gateway ?? {}),
-      controlUi: {
-        ...(values.gateway?.controlUi ?? {}),
-        enabled: true,
-        allowedOrigins: [origin],
-      },
-      auth: {
-        mode: "trusted-proxy",
-        trustedProxy: {
-          userHeader: "x-occ-identity",
-          allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
-        },
-        identityScopes: {
-          "occ-workspace-files": ["operator.admin"],
-        },
-      },
-    },
-  };
+  return nativeRolesGateway(nativeValues(marker), origin);
 }
 
 // Without a caller-permission summary the console keeps controls enabled, so the API's own

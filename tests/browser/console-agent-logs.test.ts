@@ -365,7 +365,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText("View admitted native configuration", { exact: true }).click();
   await waitForIdleFetches(page);
-  const disclosure = await page.locator(".native-document").elementHandle();
+  const disclosure = await page.locator("details.native-document").elementHandle();
 
   // Browser history also selects tabs without scrolling them through a click.
   await page.goBack();

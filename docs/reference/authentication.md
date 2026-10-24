@@ -102,7 +102,7 @@ not require Origin, and an invalid key never falls back to a session cookie.
 | `GET /api/auth/session`        | Returns safe account identity and a noncredential `sessionKey`, or `data: null` without a valid session.                                                                                       |
 | `POST /api/auth/sign-out`      | Revokes the current session. Protected API requests using that session subsequently return `401`.                                                                                              |
 
-Human-session Namespace IAM writes retain assigning authority through their transaction; see
+Human-session IAM writes retain assigning authority through COMMIT; see
 [Sharing commit guarantees](authorization.md#manage-namespace-policy).
 
 The `sessionKey` names the current session, stays stable across reads, and changes
@@ -239,11 +239,12 @@ sign-out clear prior host-only `openclaw_occ` and `openclaw_occ_shared` cookie
 names so browsers never choose between duplicates.
 
 Native-host requests authenticate the shared OCE session, resolve the exact
-Agent represented by the requested host, authorize exact Agent `administer`, and
-validate the selected version and supported native configuration before
-proxying. OCC strips browser cookies, `Authorization`, API and session keys,
-forwarded identity, and native scope headers before forwarding upstream, so the native
-gateway never receives the OCE session cookie. Native chat or other Agent-host
+Agent represented by the requested host, authorize exact Agent `use` with a
+direct runtime-role assignment, and validate the selected version and supported
+native configuration before proxying. OCC strips browser cookies, `Authorization`,
+API/session keys, forwarded identity, and native identity/role/policy-digest/scope
+headers, then injects the verified human descriptor. The native gateway never
+receives the OCE cookie. Native chat or other Agent-host
 activity does not renew the console session.
 
 ## Account provisioning

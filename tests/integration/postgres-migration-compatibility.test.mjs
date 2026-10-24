@@ -9,6 +9,8 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
+import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import {
   assertCredentialSchemaPrivileges,
   assertInjectedMigrationRollback,
@@ -1319,7 +1321,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 63);
+  assert.equal(receipts.length, 64);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1378,6 +1380,7 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.validate_access_binding_scope()", false],
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
+      ["occ.validate_runtime_assignment()", false],
     ].map(([identity, app_execute, searchPath = "search_path=pg_catalog, occ, pg_temp"]) => ({
       identity,
       owner: "occ_migrator",
@@ -1878,7 +1881,9 @@ async function canonicalData(db) {
             ]
           : table === "controller_work"
             ? ["work_kind"]
-            : [];
+            : table === "iam_access_bindings"
+              ? ["runtime_role"]
+              : [];
     result[table] = (
       await db.app.query(
         // New migration-owned compatibility columns may be defaulted onto
@@ -1990,6 +1995,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2404,6 +2410,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2601,6 +2608,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2616,6 +2624,7 @@ test(
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
+        // 0064 grants runtime-role privileges after its schema changes; abort there.
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
@@ -2694,7 +2703,7 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 63);
+    assert.equal(manifest.entries.length, 64);
     assert.deepEqual(
       manifest.entries.slice(58).map(({ tag }) => tag),
       [
@@ -2703,6 +2712,7 @@ test(
         "0061_repository_credential_authority",
         "0062_credential_delivery_custody",
         "0063_prepared_attempt_settlement",
+        "0064_agent_runtime_roles",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });
@@ -2811,7 +2821,7 @@ test(
       });
     }
 
-    // Discarding all four new receipts leaves main's exact ledger but the completed
+    // Discarding all five new receipts leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2819,7 +2829,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      4,
+      5,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(
@@ -3301,29 +3311,20 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const stored = (
+      await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [stock.id])
+    ).rows[0].permissions;
+    assert.equal(
+      stored.some(({ action, resourceKind }) => action === "create" && resourceKind === "preset"),
+      false,
+    );
+    assert.equal(
+      stored.some(
+        ({ action, resourceKind }) => action === "administer" && resourceKind === "installation",
+      ),
+      true,
+    );
     const presetId = `pre_${randomUUID()}`;
-    const authorize = (principalId, action, kind = "preset") =>
-      iam.authorize({
-        principalId,
-        action,
-        resource: {
-          kind,
-          id:
-            kind === "installation"
-              ? installationId
-              : kind === "preset" && action !== "create"
-                ? presetId
-                : namespaceId,
-          ...(kind === "installation" ? {} : { namespaceId }),
-        },
-      });
-    assert.equal((await authorize(principals[0], "create")).allowed, false);
-    assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
 
     // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
     await pool.query(await readFile(join(migrationsDirectory, "0024_agent_presets.sql"), "utf8"));
@@ -3342,6 +3343,33 @@ test(
           : entry.permissions,
       });
     }
+    // Current adapters require the current schema; keep the exact 0024 checks above historical.
+    const remainingMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name > "0024_agent_presets.sql")
+      .sort();
+    for (const name of remainingMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const authorize = (principalId, action, kind = "preset") =>
+      iam.authorize({
+        principalId,
+        action,
+        resource: {
+          kind,
+          id:
+            kind === "installation"
+              ? installationId
+              : kind === "preset" && action !== "create"
+                ? presetId
+                : namespaceId,
+          ...(kind === "installation" ? {} : { namespaceId }),
+        },
+      });
     for (const { action } of presetPermissions) {
       assert.equal((await authorize(principals[0], action)).allowed, true);
       assert.equal((await authorize(principals[1], action)).allowed, false);
@@ -3349,6 +3377,188 @@ test(
     assert.equal((await authorize(principals[0], "administer", "installation")).allowed, true);
     assert.equal((await authorize(principals[0], "read", "namespace")).allowed, true);
     assert.equal((await authorize(principals[1], "read", "namespace")).allowed, true);
+  },
+);
+
+test(
+  "Runtime-role upgrade preserves existing human administrators without a revocation fallback",
+  requiresHistoryPostgres,
+  async (context) => {
+    let pool;
+    context.after(async () => pool?.end());
+    const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
+      prefix: 63,
+    });
+    const namespaceId = await seedCanonicalData(db, {
+      preset: true,
+      computeAdmission: true,
+      executionAdmission: true,
+    });
+    const agentId = (
+      await db.app.query("SELECT id FROM occ.agents WHERE namespace_id=$1", [namespaceId])
+    ).rows[0].id;
+    const otherNamespace = `ns_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.namespaces(id,name,status,created_at) VALUES($1,$2,'ready',now())",
+      [otherNamespace, `other-${randomUUID()}`],
+    );
+    const people = Object.fromEntries(
+      ["global", "exact", "group", "otherScope", "readOnly"].map((name) => [
+        name,
+        `prn_${randomUUID()}`,
+      ]),
+    );
+    for (const principal of Object.values(people)) {
+      await db.app.query(
+        "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','runtime-upgrade',$1)",
+        [principal],
+      );
+    }
+    const adminRole = `role_${randomUUID()}`;
+    const readRole = `role_${randomUUID()}`;
+    await db.app.query("INSERT INTO occ.iam_roles(id,permissions) VALUES($1,$2),($3,$4)", [
+      adminRole,
+      JSON.stringify([{ action: "administer", resourceKind: "agent" }]),
+      readRole,
+      JSON.stringify([{ action: "read", resourceKind: "agent" }]),
+    ]);
+    const groupId = `group_${randomUUID()}`;
+    await db.app.query(
+      "INSERT INTO occ.iam_groups(id,namespace_id,name) VALUES($1,$2,'Runtime administrators')",
+      [groupId, namespaceId],
+    );
+    await db.app.query(
+      "INSERT INTO occ.iam_group_memberships(namespace_id,group_id,principal_id) VALUES($1,$2,$3)",
+      [namespaceId, groupId, people.group],
+    );
+    for (const [name, namespace, role, resourceKind, resourceId] of [
+      ["global", null, adminRole, null, null],
+      ["exact", namespaceId, adminRole, "agent", agentId],
+      ["otherScope", otherNamespace, adminRole, null, null],
+      ["readOnly", namespaceId, readRole, "agent", agentId],
+    ]) {
+      await db.app.query(
+        "INSERT INTO occ.iam_access_bindings(id,namespace_id,identity_subject_id,role_id,resource_kind,resource_id) VALUES($1,$2,$3,$4,$5,$6)",
+        [`binding_${randomUUID()}`, namespace, people[name], role, resourceKind, resourceId],
+      );
+    }
+    await db.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,namespace_id,group_subject_id,role_id) VALUES($1,$2,$3,$4)",
+      [`binding_${randomUUID()}`, namespaceId, groupId, adminRole],
+    );
+    const serviceId = (
+      await db.app.query("SELECT service_principal_id FROM occ.agents WHERE id=$1", [agentId])
+    ).rows[0].service_principal_id;
+    await db.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,namespace_id,identity_subject_id,role_id) VALUES($1,$2,$3,$4)",
+      [`binding_${randomUUID()}`, namespaceId, serviceId, adminRole],
+    );
+    const applicationUrl = new URL(db.migrationUrl);
+    applicationUrl.username = "occ_app";
+    applicationUrl.password = "occ-app-local";
+    pool = new pg.Pool({ connectionString: applicationUrl.toString() });
+    const state = new PostgresPlatformState(pool);
+    const iam = new NativeIAMDriver(state);
+    const resource = { kind: "agent", namespaceId, id: agentId };
+    // Installation, exact-Agent and Namespace-group administrators retain entry;
+    // read-only, other-Namespace and service identities must not acquire it.
+    const expected = [people.global, people.exact, people.group].sort();
+    assert.deepEqual(await runHistoryMigration(db, "production"), {
+      ok: true,
+      history: "preRuntimeRoles",
+    });
+    const assignments = (
+      await db.app.query(
+        "SELECT id,identity_subject_id,role_id,runtime_role FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL ORDER BY identity_subject_id",
+      )
+    ).rows;
+    assert.deepEqual(
+      assignments.map((row) => row.identity_subject_id),
+      expected,
+    );
+    assert.ok(assignments.every((row) => row.runtime_role === "platform-administrator"));
+    // Sharing resolves each grant through the Namespace Role list, including upgraded grants.
+    const roles = await state.read((unit) => unit.iamPolicy.listRoles(namespaceId));
+    for (const assignment of assignments) {
+      const role = roles.find((candidate) => candidate.id === assignment.role_id);
+      assert.ok(role, "The upgraded entry Role must be visible in Sharing.");
+      assert.equal(role.namespaceId, namespaceId);
+      assert.deepEqual(role.permissions, [
+        { action: "read", resourceKind: "agent" },
+        { action: "use", resourceKind: "agent" },
+      ]);
+    }
+    for (const principalId of Object.values(people)) {
+      const access = await iam.authorizeRuntimeAccess({ principalId, action: "use", resource });
+      assert.equal(access.allowed, expected.includes(principalId));
+      if (access.allowed) {
+        assert.equal(access.runtimeRole, "platform-administrator");
+      }
+    }
+    const assignment = assignments.find((row) => row.identity_subject_id === people.exact);
+    // The original OCE administrator grant survives both a downgrade and removal;
+    // neither transition may restore the old native administrator privilege.
+    await db.app.query("UPDATE occ.iam_access_bindings SET runtime_role='reviewer' WHERE id=$1", [
+      assignment.id,
+    ]);
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .runtimeRole,
+      "reviewer",
+    );
+    await db.app.query("DELETE FROM occ.iam_access_bindings WHERE id=$1", [assignment.id]);
+    assert.equal(
+      (await iam.authorize({ principalId: people.exact, action: "administer", resource })).allowed,
+      true,
+    );
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .allowed,
+      false,
+    );
+    await runHistoryMigration(db, "production");
+    assert.equal(
+      (await iam.authorizeRuntimeAccess({ principalId: people.exact, action: "use", resource }))
+        .allowed,
+      false,
+    );
+    // A deny on the old entry permission excludes all matching administrators.
+    const denied = await historyDatabase(
+      context,
+      await migrationHistoryFixture(),
+      "runtime_denied",
+      { prefix: 63 },
+    );
+    const deniedNamespace = await seedCanonicalData(denied, {
+      preset: true,
+      computeAdmission: true,
+      executionAdmission: true,
+    });
+    await denied.app.query(
+      "INSERT INTO occ.iam_identities(id,kind,issuer,subject) VALUES($1,'principal','runtime-upgrade',$1)",
+      [people.global],
+    );
+    await denied.app.query("INSERT INTO occ.iam_roles(id,permissions) VALUES($1,$2)", [
+      adminRole,
+      JSON.stringify([{ action: "administer", resourceKind: "agent" }]),
+    ]);
+    await denied.app.query(
+      "INSERT INTO occ.iam_access_bindings(id,identity_subject_id,role_id) VALUES($1,$2,$3)",
+      [`binding_${randomUUID()}`, people.global, adminRole],
+    );
+    await denied.app.query(
+      "INSERT INTO occ.iam_restrictions(id,namespace_id,action,resource_kind,effect) VALUES($1,$2,'administer','agent','deny')",
+      [`restriction_${randomUUID()}`, deniedNamespace],
+    );
+    await runHistoryMigration(denied, "production");
+    assert.equal(
+      (
+        await denied.app.query(
+          "SELECT count(*)::integer AS count FROM occ.iam_access_bindings WHERE runtime_role IS NOT NULL",
+        )
+      ).rows[0].count,
+      0,
+    );
   },
 );
 
@@ -3474,27 +3684,31 @@ test(
         [`binding_admin_${randomUUID()}`, principalId, entry.id],
       );
     }
-    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
-      import("../../packages/iam/src/index.ts"),
-      import("../../packages/occ/src/state/postgres-state.ts"),
-    ]);
-    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
-    const sourceId = `cs_${randomUUID()}`;
-    const authorize = async (principalId, action) =>
+    const before = (
+      await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [release.id])
+    ).rows[0].permissions;
+    assert.equal(
+      before.some(
+        ({ action, resourceKind }) => action === "update" && resourceKind === "credential_source",
+      ),
+      false,
+    );
+    assert.equal(
+      before.some(
+        ({ action, resourceKind }) => action === "read" && resourceKind === "credential_source",
+      ),
+      true,
+    );
+    assert.equal(
       (
-        await iam.authorize({
-          principalId,
-          action,
-          resource: {
-            kind: "credential_source",
-            id: action === "create" ? namespaceId : sourceId,
-            namespaceId,
-          },
-        })
-      ).allowed;
-    assert.equal(await authorize(principals[0], "update"), false);
-    assert.equal(await authorize(principals[0], "read"), true);
-    assert.equal(await authorize(principals[1], "read"), false);
+        await pool.query("SELECT permissions FROM occ.iam_roles WHERE id = $1", [
+          preCredentialSources.id,
+        ])
+      ).rows[0].permissions.some(
+        ({ action, resourceKind }) => action === "read" && resourceKind === "credential_source",
+      ),
+      false,
+    );
 
     // Run the repository migration itself, not copied UPDATE text or a test-only migrator.
     const sql = await readFile(join(migrationsDirectory, migration), "utf8");
@@ -3520,6 +3734,31 @@ test(
         .rows[0];
       assert.deepEqual(actual, expected(entry));
     }
+    // Preserve the historical row assertions above; current IAM adapters need the current schema.
+    const remainingMigrations = (await readdir(migrationsDirectory))
+      .filter((name) => /^\d{4}_.+\.sql$/.test(name) && name > migration)
+      .sort();
+    for (const name of remainingMigrations) {
+      await pool.query(await readFile(join(migrationsDirectory, name), "utf8"));
+    }
+    const [{ NativeIAMDriver }, { PostgresPlatformState }] = await Promise.all([
+      import("../../packages/iam/src/index.ts"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+    ]);
+    const iam = new NativeIAMDriver(new PostgresPlatformState(pool));
+    const sourceId = `cs_${randomUUID()}`;
+    const authorize = async (principalId, action) =>
+      (
+        await iam.authorize({
+          principalId,
+          action,
+          resource: {
+            kind: "credential_source",
+            id: action === "create" ? namespaceId : sourceId,
+            namespaceId,
+          },
+        })
+      ).allowed;
     for (const { action } of currentGrants) {
       assert.equal(await authorize(principals[0], action), true);
       assert.equal(await authorize(principals[1], action), true);

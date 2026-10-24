@@ -92,13 +92,17 @@ Stories reach error states through real controls after loading fixture data.
 | Navigation components                                                      | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC version, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                               |
 | Channels                                                                   | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials                                                                | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
-| Native admin                                                               | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                                                          |
+| Native admin                                                               | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, administrator self-assignment and explicit Refresh recovery, disabled panel hidden, and ordinary-user denial hidden. Launch opens a fixture page.                                                                                                                   |
 | Workspace                                                                  | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome, rereads after a version change.                                                                                                                                                                                                                                                                                |
 | Stop Agent                                                                 | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                                                                   | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
 Pending-read stories use the real client's 15-second timeout; reset them to replay
 loading.
+
+In **Components/Native admin → Administrator Needs Assignment**, self-assign
+`platform-administrator`, then **Refresh access** to show the launch link.
+**Disabled and hidden** and **Denied and hidden** omit this hint.
 
 ## Return navigation
 
@@ -138,6 +142,13 @@ Agent creation, editing, deployment, Stop, and Delete stories are in
 ### Create and deploy
 
 Moved to [Agent workflows](console-storybook-agent-workflows.md#create-and-deploy).
+
+### Sharing
+
+Use **Share before first deployment**, **Share while stopped**, **Configured and
+deployed role permissions**, **Change OpenClaw role** and **OpenClaw roles
+unavailable**. Inspect permissions, share a Principal, change its role and remove
+the assignment. Self-assignment is explained above.
 
 ### Return to loaded pages
 

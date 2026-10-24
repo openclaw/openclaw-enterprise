@@ -8,6 +8,7 @@ export interface NativeAdminProxyContext {
   readonly gatewayBase: string;
   readonly agentOrigin: string;
   readonly apiKey: string;
+  readonly runtimeHeaders: Readonly<Record<string, string>>;
 }
 
 export type NativeAdminWebSocketCloseReason =
@@ -16,6 +17,7 @@ export type NativeAdminWebSocketCloseReason =
   | "authorization_denied"
   | "agent_unavailable"
   | "revision_changed"
+  | "role_changed"
   | "disabled"
   | "dependency_timeout"
   | "dependency_failure"
@@ -64,6 +66,8 @@ const STRIPPED_REQUEST_HEADERS = new Set([
   "x-forwarded-for",
   "x-real-ip",
   "x-occ-identity",
+  "x-occ-role",
+  "x-occ-role-policy",
   "x-occ-session-key",
   "x-openclaw-scopes",
 ]);
@@ -188,7 +192,8 @@ function requestHeaders(
       HOP_BY_HOP_HEADERS.has(lower) ||
       STRIPPED_REQUEST_HEADERS.has(lower) ||
       connectionHeaders.has(lower) ||
-      lower.startsWith("x-forwarded-")
+      lower.startsWith("x-forwarded-") ||
+      Object.keys(context.runtimeHeaders).some((header) => header.toLowerCase() === lower)
     ) {
       continue;
     }
@@ -200,6 +205,7 @@ function requestHeaders(
   if (typeof request.headers.origin === "string") {
     headers.origin = request.headers.origin;
   }
+  Object.assign(headers, context.runtimeHeaders);
   headers["x-api-key"] = context.apiKey;
   return headers;
 }

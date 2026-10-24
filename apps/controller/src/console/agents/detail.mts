@@ -34,7 +34,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
-import { renderNativeAdminAccess } from "./native-admin.mjs";
+import { renderRuntimeAccess } from "./runtime-access.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
 import { renderAgentPlugins } from "./plugins.mjs";
@@ -1219,7 +1219,7 @@ export async function renderAgentDetail(
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   versionSummary.append(detailHeading, versionEvidence);
   detailPane.append(tabs, content);
-  const nativeAdmin = renderNativeAdminAccess(context, path);
+  const runtimeAccess = renderRuntimeAccess(context, path);
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1234,7 +1234,7 @@ export async function renderAgentDetail(
     statusLine,
     deploymentStatus,
   );
-  view.replaceChildren(recovery.section, nativeAdmin.section, overviewStatus, versionLayout);
+  view.replaceChildren(recovery.section, runtimeAccess.section, overviewStatus, versionLayout);
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -1909,7 +1909,7 @@ export async function renderAgentDetail(
         }
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
-      nativeAdmin.refresh();
+      runtimeAccess.refresh();
     }
     if (revisionResult) {
       renderOverview(revisionResult, snapshot);
@@ -2185,7 +2185,7 @@ export async function renderAgentDetail(
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
+        void Promise.all([runtimeAccess.ready, failed ? callerPermissionsRead : null]).then(
           revealDetail,
         );
       };

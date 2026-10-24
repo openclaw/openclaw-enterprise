@@ -74,7 +74,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/deployment-recovery.mts",
       "agents/deletion.mts",
       "agents/stop.mts",
-      "agents/native-admin.mts",
+      "agents/runtime-access.mts",
       "agents/harness-auth.mts",
       "agents/device-login.mts",
       "agents/credential-access.mts",
