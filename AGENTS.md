@@ -52,8 +52,10 @@ stop on unexpected changes.
 Follow the [contribution and review policy](CONTRIBUTING.md#prepare-a-pull-request)
 through merge. Core team authors may use their authorized merge bypass for their
 own PRs after the applicable review, CI, and specific holds are satisfied. Ask
-for human feedback on architectural RFCs early; implementation and RFC revision
-can proceed in parallel. Follow the [RFC process](docs/contributing/rfcs.md).
+for human feedback on architectural RFCs early. Driver contract changes require
+[RFC submission before code](#submit-an-rfc-before-changing-a-driver-contract);
+after submission, implementation and RFC revision can proceed in parallel.
+Follow the [RFC process](docs/contributing/rfcs.md).
 New contributors wait for maintainer feedback.
 
 ## Development style
@@ -77,6 +79,17 @@ For example, GitHub App token issuance implemented as a Backend must follow the
 [Backend contract](docs/reference/backends.md) and participate in composition.
 Token minting and revocation alone are insufficient; see
 [PR #136](https://github.com/openclaw/openclaw-enterprise/pull/136).
+
+### Submit an RFC before changing a Driver contract
+
+Changes to a Driver contract require an RFC submitted for human review before
+implementation. This includes adding, removing, or changing interface members,
+configuration contracts, or required behavior, even when signatures stay the same.
+
+If no submitted RFC covers the change, stop coding. Ask the human to pause
+implementation and [submit the proposal for review](docs/contributing/rfcs.md),
+updating the existing RFC if it owns this decision. Once submitted, code and
+RFC review can proceed in parallel unless a specific decision or hold says to wait.
 
 ### Require integration tests; reject low-value tests
 
@@ -249,6 +262,10 @@ for browsing and search. Keep it generated from the OpenAPI contract; the checke
 reports its word count without requiring a split. This exception covers no other
 page.
 
+Approved exception: `docs/testing/ci.md` is exempt from the length thresholds.
+The user approved keeping CI configuration and test coverage in one guide. The
+checker still reports its word count. This exception applies only to that page.
+
 Files named exactly `AGENTS.md`, including nested instruction documents, are
 also exempt from the length thresholds. The checker still reports their word
 counts. Exemptions follow the resolved file: an `AGENTS.md` symlink pointing to
@@ -256,9 +273,12 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
-Use [technical-writing](.agents/skills/technical-writing/SKILL.md) when creating,
-editing, or reviewing documentation and specifications. It bundles the relevant
-writing guidance locally; no personal skill installation is required.
+Before creating, updating, or reviewing documentation and specifications, read
+and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
+Use ASD-STE100 (Simplified Technical English) and complete its required
+[terminology and limits pass](.agents/skills/technical-writing/references/terminology-and-limits.md).
+The skill bundles the writing guidance locally; no personal skill installation
+is required.
 Follow its [page-scope guidance](.agents/skills/technical-writing/SKILL.md#choose-the-smallest-useful-page)
 to keep main guides focused and route edge-case diagnostics to troubleshooting.
 
@@ -368,8 +388,11 @@ Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credent
 
 ## Running integration tests
 
-Run all integration tests with `pnpm test:integration`, or target one case with
-`node --test tests/integration/<name>.test.mjs`. Real-runtime coverage uses the
+Write new integration tests as `*.test.ts` with types Node.js can erase. Register
+the file in the CI lane that runs it; the existing typecheck includes these tests.
+Keep existing JavaScript tests in place unless the change calls for migration.
+Run all integration tests with `pnpm test:integration`, or target one file with
+`node --test tests/integration/<name>.test.ts`. Real-runtime coverage uses the
 Docker Compose or Kubernetes integrations with explicitly selected runtime
 images and existing authorized model credentials. Follow the
 [testing guide](docs/testing/README.md) and
@@ -420,6 +443,8 @@ On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 
+Use [console-ui](.agents/skills/console-ui/SKILL.md) to build on the shared
+[Console components and styles](docs/contributing/console-ui.md).
 UI changes require reviewable visual evidence, not just passing checks.
 When adding or changing console pages, shared components, or Agent lifecycle
 controls:
@@ -437,8 +462,9 @@ controls:
   behavior; do not invent additional acceptance criteria.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video as native GitHub attachments in the
-  PR's Verification section. Both are required before merging UI changes.
+  Upload screenshots and a short video to GitHub, as native attachments or as
+  files in a gist, and show them in the PR's Verification section. Before and
+  after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the
   PR's Verification section. Embed media where supported; otherwise provide

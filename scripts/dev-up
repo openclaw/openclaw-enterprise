@@ -7,10 +7,10 @@ BOOTSTRAP_SERVICE_KEY_SOURCE="bootstrap:/var/lib/openclaw/bootstrap/initial-admi
 BOOTSTRAP_SERVICE_KEY_PATH="/var/lib/openclaw/bootstrap/initial-admin-service-key.json"
 STARTUP_TIMEOUT_SECONDS=300
 
-script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+script_dir="$(CDPATH="" cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(CDPATH="" cd "$script_dir/.." && pwd)"
 occ_cli="$repo_root/bin/occ"
-cd "$repo_root"
+CDPATH="" cd "$repo_root"
 
 development_compute_driver="${OCC_DEVELOPMENT_COMPUTE_DRIVER:-docker}"
 development_sandbox_driver="${OCC_DEVELOPMENT_SANDBOX_DRIVER:-none}"
@@ -53,7 +53,7 @@ case "$development_compute_driver" in
 esac
 
 usage() {
-  echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+  echo "usage: scripts/dev-up [--key-output PATH] [--sandbox-network-policy-file PATH] [--sandbox-network-policy-ceiling-file PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
 }
 
 quote_command() {
@@ -124,6 +124,9 @@ require_command() {
 require_command python3
 if [ ! -x "$occ_cli" ]; then
   fail "prerequisite" "OCC CLI is required at $occ_cli; run pnpm cli:build"
+fi
+if ! "$occ_cli" dev check-profile; then
+  exit 2
 fi
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-dev-up.XXXXXXXXXX")"

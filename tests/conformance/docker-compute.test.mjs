@@ -11,6 +11,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
 } from "../../packages/occ/src/index.ts";
+import { assertCleanupFailure } from "../helpers/compute-cleanup-failure.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 
 test("Docker preflight rejects an interrupted response and can retry", async () => {
@@ -77,6 +78,164 @@ try {
   await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
     timeout: 10_000,
   });
+});
+
+test("Docker Compute rejects an unbounded API response before its request deadline", async () => {
+  const source = String.raw`
+import assert from "node:assert/strict";
+import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
+let interval;
+let versionRequests = 0;
+let streamedBytes = 0;
+const limit = 4 * 1024 * 1024;
+const server = http.createServer((request, response) => {
+  if (request.url === "/_ping") {
+    response.end("OK");
+    return;
+  }
+  if (request.url.startsWith("/images/")) {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+    return;
+  }
+  assert.equal(request.url, "/version");
+  versionRequests += 1;
+  if (versionRequests === 3) {
+    // Exactly at the cap, declared and sent: read whole.
+    const empty = JSON.stringify({ Version: "27.0.0", Pad: "" });
+    const body = empty.replace('"Pad":""', '"Pad":"' + "x".repeat(limit - empty.length) + '"');
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(Buffer.byteLength(body)),
+    });
+    response.end(body);
+    return;
+  }
+  if (versionRequests === 1) {
+    response.writeHead(200, {
+      "content-type": "application/json",
+      "content-length": String(4 * 1024 * 1024 + 1),
+    });
+    response.flushHeaders();
+    return;
+  }
+  response.writeHead(200, { "content-type": "application/json" });
+  const chunk = Buffer.alloc(64 * 1024, 0x20);
+  interval = setInterval(() => {
+    response.write(chunk);
+    streamedBytes += chunk.length;
+  }, 5);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const nativeRequest = http.request;
+http.request = (options, callback) =>
+  nativeRequest({ ...options, socketPath: undefined, host: "127.0.0.1", port: server.address().port }, callback);
+syncBuiltinESMExports();
+try {
+  const { DockerComputeDriver } = await import(process.argv[1]);
+  const driver = new DockerComputeDriver({ images: { gateway: "fixture:local", agent: "fixture:local" } });
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.equal(streamedBytes, 0);
+  await assert.rejects(driver.preflight(), { message: "Docker API response is too large." });
+  assert.ok(streamedBytes > 4 * 1024 * 1024, String(streamedBytes));
+  assert.ok(streamedBytes < 6 * 1024 * 1024, String(streamedBytes));
+  clearInterval(interval);
+  await driver.preflight();
+} finally {
+  clearInterval(interval);
+  http.request = nativeRequest;
+  syncBuiltinESMExports();
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const driver = new URL(
+    "../../apps/controller/src/drivers/compute/docker/index.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(process.execPath, ["--input-type=module", "-e", source, driver.href], {
+    timeout: 10_000,
+  });
+});
+
+test("Docker Agent readiness handles interrupted status responses immediately", async () => {
+  // Execute the exact generated container healthcheck against a real loopback peer that
+  // sends headers and a partial body before resetting the response stream.
+  const source = String.raw`
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { readdirSync } from "node:fs";
+import http from "node:http";
+import { join } from "node:path";
+import { promisify } from "node:util";
+const { AGENT_READINESS_ENTRYPOINT } = await import(process.argv[1]);
+const wsStore = readdirSync(join(process.cwd(), "node_modules/.pnpm")).find((entry) =>
+  entry.startsWith("ws@"),
+);
+assert.ok(wsStore);
+const wsModules = join(process.cwd(), "node_modules/.pnpm", wsStore, "node_modules");
+const server = http.createServer((_request, response) => {
+  response.writeHead(200, { "content-type": "application/json", "content-length": "100" });
+  response.write('{"phase":"ready",');
+  setTimeout(() => response.destroy(), 10);
+});
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+try {
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_STATUS_PORT: String(server.address().port),
+        OPENCLAW_AGENT_REVISION_ID: "rev_interrupted_status",
+        APP_SERVER_TOKEN: "synthetic-token",
+        APP_SERVER_PORT: "1",
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin runtime status unavailable: ECONNRESET\n");
+      return true;
+    },
+  );
+  await assert.rejects(
+    promisify(execFile)(process.execPath, ["-e", AGENT_READINESS_ENTRYPOINT], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        NODE_PATH: wsModules,
+        OPENCLAW_PLUGIN_READY_MARKER: join(process.cwd(), ".missing-readiness-marker"),
+        OPENCLAW_RUNTIME_STATUS_PORT: String(server.address().port),
+      },
+      encoding: "utf8",
+      timeout: 5_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stderr, "");
+      assert.equal(error.stdout, "plugin ready marker is missing\n");
+      return true;
+    },
+  );
+} finally {
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+`;
+  const runtimeEntrypoints = new URL(
+    "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
+    import.meta.url,
+  );
+  await promisify(execFile)(
+    process.execPath,
+    ["--input-type=module", "-e", source, runtimeEntrypoints.href],
+    { cwd: process.cwd(), timeout: 10_000 },
+  );
 });
 
 test("Docker namespace delete treats a network that vanished before DELETE as removed", async () => {
@@ -460,6 +619,7 @@ function dockerGatewayRevision(driver, configuration = {}) {
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration(configuration, "info"),
     harness: { id: "openclaw", version: "1.0.0", mode: "embedded" },
     compute: { id: driver.id, implementation: driver.implementation },
@@ -474,9 +634,11 @@ function splitEnvironment(entry) {
   return [entry.slice(0, separator), entry.slice(separator + 1)];
 }
 
-test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
-  // Model only the Docker inspect/create boundary; token selection and reconciliation
-  // run in the real Driver. The Compose integration separately kills a real worker.
+/**
+ * Models only the Docker inspect/create/start/delete boundary over one in-memory container map;
+ * reconciliation runs in the real Driver. `createDriver()` returns a fresh Driver on that map.
+ */
+function fakeDockerEngine() {
   const containers = new Map();
   const createDriver = () => {
     const driver = new DockerComputeDriver({
@@ -511,30 +673,58 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
     driver.container = async (name) => containers.get(name);
     return driver;
   };
-  const driver = createDriver();
-  const revision = {
-    id: "revision-docker-recovery",
+  return { containers, createDriver };
+}
+
+function dockerAgentRevision(driver, { id, agentId, revision = 1, mode }) {
+  return {
+    id,
     namespaceId: tenant.id,
-    agentId: "agent-recovery",
-    revision: 1,
+    agentId,
+    revision,
     configurationId: "cfg_00000000-0000-4000-8000-000000000001",
     configurationKind: "agent",
     configurationGeneration: 1,
+    executionAdmission: { version: 2, mode: "unprotected" },
     configuration: admitLoggingConfiguration({}, "info"),
-    harness: { id: "codex", version: "1.0.0", mode: "dedicated" },
+    harness: { id: mode === "dedicated" ? "codex" : "openclaw", version: "1.0.0", mode },
     compute: { id: driver.id, implementation: driver.implementation },
-    servicePrincipalId: "service-principal-docker-recovery",
+    servicePrincipalId: `service-principal-${agentId}`,
     createdAt: tenant.createdAt,
   };
+}
+
+/** Runs `body` with the model credential the Docker runtime requires, then restores it. */
+async function withModelKey(body) {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-openai-api-key";
+  try {
+    return await body();
+  } finally {
+    if (previousKey === undefined) {
+      delete process.env.OPENAI_API_KEY;
+    } else {
+      process.env.OPENAI_API_KEY = previousKey;
+    }
+  }
+}
+
+test("Docker Compute recovery keeps dedicated transport paired across container reuse and replacement", async () => {
+  // The Compose integration separately kills a real worker.
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-recovery",
+    agentId: "agent-recovery",
+    mode: "dedicated",
+  });
   const role = (name) =>
     [...containers.entries()].find(
       ([, value]) => value.Config.Labels["org.openclaw.enterprise.role"] === name,
     );
   const token = (container) =>
     container.Config.Env.find((value) => value.startsWith("APP_SERVER_TOKEN="));
-  const previousKey = process.env.OPENAI_API_KEY;
-  process.env.OPENAI_API_KEY = "test-openai-api-key";
-  try {
+  await withModelKey(async () => {
     assert.equal((await driver.prepareRevision(revision)).ready, true);
     const [agentName, agent] = role("agent");
     const [gatewayName, gateway] = role("gateway");
@@ -570,14 +760,100 @@ test("Docker Compute recovery keeps dedicated transport paired across container 
       invalidAgent,
       "missing credentials must fail closed without adopting a new token",
     );
-  } finally {
-    if (previousKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousKey;
-    }
-  }
+  });
 });
+
+// Finding 2268: when preparation fails and its cleanup fails too, the preparation's own failure
+// stays first, so the worker classifies the deployment by it. Every cleanup still runs after an
+// earlier one fails: the created container's removal, then the lifecycle cleanup.
+test("Docker preparation keeps its own failure first when every cleanup also fails", async () => {
+  const { containers, createDriver } = fakeDockerEngine();
+  const driver = createDriver();
+  driver.setLifecycleDrivers([
+    {
+      id: "hooks",
+      capability: "configuration",
+      implementation: "test",
+      computeLifecycleHooks: {
+        async beforeWorkloadStart() {},
+        async beforeWorkloadStop() {
+          throw new Error("lifecycle cleanup refused");
+        },
+      },
+    },
+  ]);
+  const revision = dockerAgentRevision(driver, {
+    id: "revision-docker-cleanup",
+    agentId: "agent-cleanup",
+    mode: "dedicated",
+  });
+  const primary = new Error("gateway reconcile refused");
+  driver.reconcileGateway = async () => {
+    throw primary;
+  };
+  const removed = [];
+  driver.removeContainer = async (name) => {
+    removed.push(name);
+    throw new Error("container removal refused");
+  };
+  const error = await withModelKey(() =>
+    driver.prepareRevision(revision).then(
+      () => assert.fail("the preparation must fail"),
+      (failure) => failure,
+    ),
+  );
+  assertCleanupFailure(error, primary, [
+    /container removal refused/,
+    /lifecycle hook beforeWorkloadStop failed/,
+  ]);
+  assert.deepEqual(removed, [driver.agentContainerName(tenant.id, revision.agentId, revision.id)]);
+  assert.equal(containers.size, 1, "only the agent container was created");
+});
+
+// Every topology keeps one gateway container per Agent, so preparing a redeploy candidate
+// replaces the active revision's gateway. The worker stops a refused candidate beside an active
+// revision only when Compute declares exclusive replacement; without it the candidate's gateway
+// kept serving under the predecessor's active pointer (finding 1800).
+for (const mode of ["embedded", "dedicated"]) {
+  test(`Docker ${mode} redeploy is exclusive, so a refused candidate leaves nothing serving`, async () => {
+    const { containers, createDriver } = fakeDockerEngine();
+    const driver = createDriver();
+    const agentId = `agent-redeploy-${mode}`;
+    const active = dockerAgentRevision(driver, { id: `revision-${mode}-1`, agentId, mode });
+    const candidate = dockerAgentRevision(driver, {
+      id: `revision-${mode}-2`,
+      agentId,
+      revision: 2,
+      mode,
+    });
+    const serving = () =>
+      [...containers.values()].map(
+        ({ Config }) =>
+          `${Config.Labels["org.openclaw.enterprise.role"]}:${Config.Labels["org.openclaw.enterprise.revision-id"]}`,
+      );
+    await withModelKey(async () => {
+      assert.equal((await driver.prepareRevision(active)).ready, true);
+      assert.ok(serving().includes(`gateway:${active.id}`));
+
+      assert.equal(
+        driver.requiresStoppedPredecessors?.(candidate),
+        true,
+        "the candidate takes the Agent's only gateway, so Docker must declare exclusive replacement",
+      );
+      // The worker sequence is simulated here (the postgres worker suites cover the worker's
+      // side): exclusive replacement stops every predecessor, then prepares the candidate.
+      await driver.stopRevision(active);
+      assert.deepEqual(serving(), []);
+      assert.equal((await driver.prepareRevision(candidate)).ready, true);
+      assert.ok(serving().includes(`gateway:${candidate.id}`));
+      assert.ok(serving().every((entry) => !entry.endsWith(active.id)));
+
+      // A refused candidate is stopped, so the Agent is unavailable rather than serving it.
+      await driver.stopRevision(candidate);
+      assert.deepEqual(serving(), []);
+    });
+  });
+}
 
 // These checks exercise the real Driver at Docker's API boundary. Container exit
 // status is an external observation; native file writes are covered separately by
@@ -595,6 +871,7 @@ for (const mode of ["embedded", "dedicated"]) {
       configurationId: "cfg-workspace",
       configurationKind: "agent",
       configurationGeneration: 1,
+      executionAdmission: { version: 2, mode: "unprotected" },
       configuration: admitLoggingConfiguration(
         mode === "dedicated"
           ? { agents: { entries: { main: { workspace: "/home/node/workspace" } } } }

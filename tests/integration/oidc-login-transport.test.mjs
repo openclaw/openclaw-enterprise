@@ -8,6 +8,7 @@ import {
   createIdTokenSigner,
   createLoginFixture,
   expectDenied,
+  expectProviderUnavailable,
   loginOrigin as origin,
   loginSecret as secret,
   redirectProviderFetch,
@@ -162,7 +163,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.end();
     };
     const before = requests.length;
-    await expectDenied(await fixture.callback());
+    await expectProviderUnavailable(await fixture.callback());
     assert.deepEqual(requests.slice(before), ["/oauth/token"]);
     assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
     assert.deepEqual(fixture.operationalLogs(), [
@@ -192,7 +193,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.writeHead(503, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "jwks down", detail: "fixture-code" }));
     };
-    await expectDenied(await fixture.callback());
+    await expectProviderUnavailable(await fixture.callback());
     assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
     assert.deepEqual(fixture.operationalLogs(), [
       unavailableLog({ step: "jwks", cause: "http_status", status: 503 }),
@@ -203,7 +204,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
   await t.test("a provider-reported server_error logs the authorization step", async () => {
     const fixture = loginFixture();
     const before = requests.length;
-    await expectDenied(
+    await expectProviderUnavailable(
       await fixture.callback(`state=${callbackState}&error=server_error&error_description=x`),
     );
     assert.equal(requests.length, before);
@@ -230,7 +231,7 @@ test("OIDC login fetches only its pinned URLs and binds the ID token to the atte
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "invalid_client", error_description: "fixture-code" }));
     };
-    await expectDenied(await fixture.callback());
+    await expectProviderUnavailable(await fixture.callback());
     assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
     assert.deepEqual(fixture.operationalLogs(), [
       unavailableLog({ step: "token", cause: "client_rejected" }),
@@ -298,7 +299,7 @@ test("an unreachable OIDC token endpoint logs connect_refused with its code", as
   t.after(() => refusing.release());
   redirectProviderFetch(t, pinned, `http://127.0.0.1:${refusing.port}`);
   const fixture = loginFixture();
-  await expectDenied(await fixture.callback());
+  await expectProviderUnavailable(await fixture.callback());
   assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
   assert.deepEqual(fixture.operationalLogs(), [
     unavailableLog({ step: "token", cause: "connect_refused", code: "ECONNREFUSED" }),
@@ -311,7 +312,7 @@ test("a TLS failure at the OIDC token endpoint logs cause tls", async (t) => {
   const { port } = await startProviderServer(t, (_request, response) => response.end("{}"));
   redirectProviderFetch(t, pinned, `https://127.0.0.1:${port}`);
   const fixture = loginFixture();
-  await expectDenied(await fixture.callback());
+  await expectProviderUnavailable(await fixture.callback());
   assert.deepEqual(fixture.denials, [["PROVIDER_UNAVAILABLE", "oidc"]]);
   const [line, ...rest] = fixture.operationalLogs();
   assert.deepEqual(rest, []);

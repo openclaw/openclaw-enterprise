@@ -1,4 +1,5 @@
 import { DependencyUnavailableError } from "@openclaw-enterprise/occ";
+import { readCappedBody } from "@openclaw-enterprise/utils";
 
 const CHATGPT_API_BASE = "https://api.chatgpt.com/v1";
 const CODEX_LOCAL_ACCESS_SCOPE = "chatgpt.workspace.feature.allow-codex-local-access.access";
@@ -26,7 +27,8 @@ function nonempty(value: unknown): value is string {
 }
 
 function identifier(value: string): string {
-  if (!nonempty(value)) {
+  // A `.` or `..` segment would resolve to a parent path, such as the account itself.
+  if (!nonempty(value) || value === "." || value === "..") {
     throw new DependencyUnavailableError("The ChatGPT account identity is invalid.");
   }
   return encodeURIComponent(value);
@@ -209,11 +211,11 @@ export class ChatGPTClient {
         await response.body?.cancel().catch(() => {});
         throw new Error("oversized");
       }
-      const contents = await response.text();
-      if (Buffer.byteLength(contents) > MAX_RESPONSE_BYTES) {
+      const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+      if (contents === undefined) {
         throw new Error("oversized");
       }
-      const parsed: unknown = JSON.parse(contents);
+      const parsed: unknown = JSON.parse(contents.toString("utf8"));
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
         throw new Error("invalid");
       }

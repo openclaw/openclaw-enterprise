@@ -1,7 +1,7 @@
 ---
 created: 2026-09-27
-updated: 2026-10-05
-last_updated_session: authoring-run/eb95c719-31db-483c-9db3-c9573329209d
+updated: 2026-10-14
+last_updated_session: authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582
 ---
 
 # Agent Channel Directory Lookup Flow
@@ -39,7 +39,7 @@ graph TD
   D -->|current| M{"Managed Helm proxy?"}
   M -->|yes| H["Tunnel through proxy Service DNS"]
   M -->|no| I["Tunnel through external proxy IP"]
-  H --> E["Slack Driver reads workspace and bounded directory pages"]
+  H --> E["Slack Driver reads workspace and directory pages"]
   I --> E
   E -->|provider error| X
   E --> F["Console shows names and exact IDs"]
@@ -77,14 +77,16 @@ OCC rechecks grants and Secret backend identity after the read. It passes the
 token only in process to the ChannelDriver. The bundled Slack implementation
 requires a bot identity from `auth.test` and pages through `users.list` or
 `conversations.list`. Exact-ID searches and saved IDs use `users.info` or `conversations.info`.
-The response contains bounded candidates and pagination state, never the token.
+The response contains at most 100 candidates and pagination state, never the token.
 An incomplete page cannot establish that a name is absent or unique.
 
 `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.call`
 cancels an unused response body on a non-success HTTP status before returning
 the safe rate-limit or unavailable error. This releases occupied transport
 capacity even when the error body has not finished. The same request owner
-serves credential validation; no automatic retry is added.
+serves credential validation; no automatic retry is added. Successful responses
+have an 8,000,000-byte streaming cap before decoded JSON is checked against the
+existing limit of 2,000,000 UTF-16 code units. Overflow cancels the body read and returns `invalid_response`.
 
 ### 3. Display names and save IDs
 
@@ -152,6 +154,8 @@ view.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:23: Document streaming and decoded Slack response limits. (authoring-run/a404e7a3-9acf-4b50-9307-31e50b1b3582 - 4727e9b109a2127150e03e39e859d45e0668f82f)
 
 - 2026-10-05 19:32: Describe failed HTTP response cleanup and native connection recovery. (authoring-run/eb95c719-31db-483c-9db3-c9573329209d - 5a2dd43d2e524637e7173457def040fa79d42a93)
 

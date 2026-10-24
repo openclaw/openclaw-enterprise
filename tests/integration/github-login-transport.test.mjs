@@ -9,6 +9,7 @@ import {
   cookiePairs,
   createLoginFixture,
   expectDenied,
+  expectProviderUnavailable,
   loginOrigin as origin,
   redirectProviderFetch,
   startProviderServer,
@@ -79,7 +80,9 @@ test(
         assert.equal(exchange.get("code_verifier"), "v".repeat(43));
         assert.equal(exchange.get("grant_type"), "authorization_code");
         assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
-        assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+        assert.deepEqual(login.denials, [
+          ["EXTERNAL_IDENTITY_REJECTED", "github", { subject: "12345678", login: undefined }],
+        ]);
         assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user"]);
       },
     );
@@ -97,7 +100,7 @@ test(
             response.end("fixture-sensitive-error");
           };
           const before = requests.length;
-          await expectDenied(await login.callback());
+          await expectProviderUnavailable(await login.callback());
           assert.equal(requests.slice(before).includes("/redirect-target"), false);
           assert.deepEqual(login.subjects, []);
           assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
@@ -126,7 +129,7 @@ test(
         });
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       assert.ok(
         elapsed >= providerDeadlineMs * 0.9 && elapsed < providerDeadlineMs + 2_000,
@@ -151,7 +154,7 @@ test(
         response.write('{"id":');
       };
       const started = performance.now();
-      await expectDenied(await login.callback());
+      await expectProviderUnavailable(await login.callback());
       const elapsed = performance.now() - started;
       // Separate per-request timers would take about 3.5 seconds here.
       assert.ok(
@@ -190,7 +193,7 @@ test(
           response.end(
             JSON.stringify({ error: code, error_description: "fixture-sensitive-error" }),
           );
-        await expectDenied(await login.callback());
+        await expectProviderUnavailable(await login.callback());
         assert.deepEqual(login.subjects, []);
         assert.deepEqual(login.denials, [["PROVIDER_UNAVAILABLE", "github"]]);
         assert.deepEqual(login.operationalLogs(), [
@@ -269,8 +272,19 @@ test(
         for (const [name, reason, handler, query, overrides] of cases) {
           const login = loginFixture(overrides);
           serve = handler;
-          await expectDenied(await login.callback(query));
-          assert.deepEqual(login.denials, reason === undefined ? [] : [[reason, "github"]], name);
+          await expectDenied(
+            await login.callback(query),
+            reason === "PROVIDER_UNAVAILABLE" ? reason : undefined,
+          );
+          assert.deepEqual(
+            login.denials,
+            reason === undefined
+              ? []
+              : name === "unenrolled subject"
+                ? [[reason, "github", { subject: "12345678", login: undefined }]]
+                : [[reason, "github"]],
+            name,
+          );
           assert.deepEqual(login.unmatched, reason === undefined ? ["github"] : [], name);
         }
       },
@@ -421,9 +435,9 @@ test(
         for (const response of held) {
           response.writeHead(503).end();
         }
-        await Promise.all((await Promise.all(pending)).map(expectDenied));
+        await Promise.all((await Promise.all(pending)).map(expectProviderUnavailable));
         serve = (_request, response) => response.writeHead(503).end();
-        await expectDenied(await login.callback(undefined, "10.0.5.99"));
+        await expectProviderUnavailable(await login.callback(undefined, "10.0.5.99"));
       },
     );
 
@@ -643,7 +657,7 @@ test(
     const providerOrigin = `http://127.0.0.1:${port}`;
     const acme = "/user/memberships/orgs/acme";
     const other = "/user/memberships/orgs/other";
-    const team = "/orgs/other/teams/platform/memberships/Octo-Cat";
+    const team = "/orgs/other/teams/platform/memberships/fixture-user-987654321";
     redirectProviderFetch(
       t,
       new Set(
@@ -678,7 +692,7 @@ test(
     };
     const notFound = (response) => response.writeHead(404).end('{"message":"Not Found"}');
     // answers: path -> (response) => void; unlisted membership paths fail the test.
-    function provider(answers, login = "Octo-Cat") {
+    function provider(answers, login = "fixture-user-987654321") {
       const routes = Object.entries(answers);
       return (request, response) => {
         if (request.url === "/login/oauth/access_token") {
@@ -707,7 +721,7 @@ test(
       });
       assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
     }
-    const subject = { subject: "12345678" };
+    const subject = { subject: "12345678", login: "fixture-user-987654321" };
 
     await t.test("an active organization member reaches the account lookup", async () => {
       const login = allowlisted();
@@ -716,7 +730,7 @@ test(
       // The fixture State holds no account, so the attached-identity lookup refuses.
       await expectDenied(await login.callback());
       assert.deepEqual(login.subjects, [[providerId, "12345678"]]);
-      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github"]]);
+      assert.deepEqual(login.denials, [["EXTERNAL_IDENTITY_REJECTED", "github", subject]]);
       assert.deepEqual(requests.slice(before), ["/login/oauth/access_token", "/user", acme]);
     });
 
@@ -829,7 +843,7 @@ test(
         ]);
         assert.doesNotMatch(
           JSON.stringify(login.operationalLogs()),
-          /acme|Octo-Cat|ghu_|fixture-sensitive/,
+          /acme|fixture-user-987654321|ghu_|fixture-sensitive/,
         );
       });
     }
@@ -841,6 +855,9 @@ test(
       await expectRefused(await login.callback(), "MEMBERSHIP_UNAVAILABLE");
       assert.deepEqual(requests.slice(before).slice(2), [acme, other], "no team request");
       assert.equal(login.operationalLogs()[0].cause, "malformed_response");
+      assert.deepEqual(login.denials, [
+        ["MEMBERSHIP_UNAVAILABLE", "github", { subject: "12345678", login: undefined }],
+      ]);
     });
 
     // A team's organization lookup is shared with a listed organization, failure included.

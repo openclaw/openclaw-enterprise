@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	openShellVersion           = "0.1.3-pre.2"
-	openShellSourceSHA256      = "77afc69ad28e55f11a05cbc68d6dc5a6cc5c989a68d0f9d55ae0868af2b3f476"
+	openShellVersion           = "0.1.5"
+	openShellSourceSHA256      = "b627a526427197854f8ee1d783996e666e0bfd6b7a785b70df7709304d9b6f62"
 	agentSandboxManifestSHA256 = "230ee446d6035f631577e1c6b857f6973a8f09a0a853675d3cc34ebfe47abd6b"
 	openShellSourceArchiveURL  = "https://github.com/NVIDIA/OpenShell/archive/refs/tags/v" + openShellVersion + ".tar.gz"
 	agentSandboxManifestURL    = "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v0.5.2/sandbox.yaml"

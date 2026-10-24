@@ -1,3 +1,4 @@
+import type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 import type { AgentRevision, Namespace, SandboxHarnessLostCode } from "./index.ts";
 
 /**
@@ -34,6 +35,7 @@ export type RuntimeLogRecord =
       readonly kind: RuntimeLogKind;
       readonly level: RuntimeLogLevel;
       readonly message: string;
+      readonly decision?: SandboxPolicyDecision;
       readonly subsystem?: string;
       readonly fields?: Readonly<Record<string, string | number | boolean>>;
       readonly truncated?: true;
@@ -120,6 +122,19 @@ export interface AgentRuntimeHarnessStatus {
   readonly restarts?: number;
 }
 
+/**
+ * The running Agent's active revision's dedicated Harness Sandbox, read on request. `unobserved`
+ * when there is nothing to read: no running active revision, a Harness that is not dedicated,
+ * or a Sandbox Driver that keeps no lifecycle record.
+ */
+export type AgentHarnessStatusRead =
+  | { readonly status: "unobserved" }
+  | {
+      readonly status: "observed";
+      readonly revisionId: string;
+      readonly harness: AgentRuntimeHarnessStatus;
+    };
+
 export interface AgentRuntimeDescription {
   readonly revisionId: string;
   readonly observedAt: string;
@@ -175,6 +190,7 @@ export interface SandboxLogRequest {
 
 /** One raw Sandbox log line as the Sandbox runtime reported it; OCC sanitizes every field. */
 export interface SandboxLogLine {
+  readonly decision?: SandboxPolicyDecision;
   readonly time: string | null;
   readonly sandboxId: string;
   readonly level: string;

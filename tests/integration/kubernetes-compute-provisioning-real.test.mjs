@@ -409,6 +409,16 @@ test(
     }
     const originalOperatorConfigMap = await resource("configmap", "operator-sentinel", cleanupName);
     const originalOperatorSecret = await resource("secret", "operator-sentinel", cleanupName);
+    // A Configuration whose OCC transaction failed after its ConfigMap create applied (finding
+    // 1400): the Driver's own ownership metadata, no record, and teardown removes it.
+    const orphanedConfiguration = {
+      ...configuration,
+      id: `cfg_${randomUUID()}`,
+      namespaceId: cleanupOwner.id,
+    };
+    await configurationDriver.create(orphanedConfiguration);
+    const orphanedConfigMap = kubernetesConfigurationName(orphanedConfiguration.id);
+    await resource("configmap", orphanedConfigMap, cleanupName);
 
     // Valid deletion removes fixed OCC infrastructure without touching the operator's namespace.
     const deletingOwner = { ...cleanupOwner, status: "deleting" };
@@ -423,6 +433,7 @@ test(
     for (const kind of ["networkpolicies", "resourcequotas", "limitranges"]) {
       assert.deepEqual(await resources(kind, cleanupName), []);
     }
+    assert.equal(await missing("configmap", orphanedConfigMap, cleanupName), true);
     const preservedNamespace = await resource("namespace", cleanupName);
     assert.equal(preservedNamespace.metadata.uid, originalCleanupNamespace.metadata.uid);
     assert.deepEqual(preservedNamespace.metadata.labels, originalCleanupNamespace.metadata.labels);
@@ -687,13 +698,20 @@ test(
     assert.match(admitted.data.provisioning.url, /^\/namespaces\//);
     await fixture.startWorker();
     const provisioned = await waitFor(
-      "Kubernetes provisioning to admit its first deployment",
+      "Kubernetes provisioning to queue its first deployment wait",
       async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.revisionId !== undefined ? observed.data : undefined;
+        assert.notEqual(observed.data.status, "failed", JSON.stringify(observed.body));
+        // The handoff commits revisionId while the worker still holds the provisioning lease
+        // ("running"); its deployment wait is deferred ("queued") in a later transaction.
+        // Inspect the handoff only after that deferral has committed (finding 1253).
+        return observed.data.revisionId !== undefined && observed.data.status === "queued"
+          ? observed.data
+          : undefined;
       },
     );
+    // A poll can see "queued" just before the pending event stops the worker; this stop covers it.
     await handoffWorkerStop;
     await fixture.stopWorker();
     assert.equal(provisioned.status, "queued");
@@ -708,8 +726,14 @@ test(
     assert.equal(revisions.status, 200, JSON.stringify(revisions.body));
     assert.equal(revisions.data.length, 1);
     assert.equal(revisions.data[0].id, provisioned.revisionId);
-    assert.equal(revisions.data[0].compute.id, driver.id);
-    assert.equal(revisions.data[0].compute.implementation, driver.implementation);
+    // The list returns a summary; the admitted Compute placement is on the exact revision.
+    const exactRevision = await fixture.request(
+      "GET",
+      `/namespaces/${namespaceOwner.id}/agents/${provisioned.agentId}/revisions/${provisioned.revisionId}`,
+    );
+    assert.equal(exactRevision.status, 200, JSON.stringify(exactRevision.body));
+    assert.equal(exactRevision.data.compute.id, driver.id);
+    assert.equal(exactRevision.data.compute.implementation, driver.implementation);
 
     const configuration = await resource(
       "configmap",

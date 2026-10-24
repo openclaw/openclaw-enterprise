@@ -138,7 +138,7 @@ GitHub lifecycle; password sign-in shares step 3. Commit must be confirmed; read
 
 ### Sign-in admission
 
-**October 1, 2026:** The limits below are historical. [RFC-0019](../0019-sign-in-hardening.md) records when the controller will check a password after repeated failures (#613, #727); that combined policy still awaits human review.
+**October 1, 2026:** The limits below are historical. [RFC-0024](../0024-sign-in-hardening.md) records when the controller will check a password after repeated failures (#613, #727); that combined policy still awaits human review.
 
 Admission is keyed: password attempts by client address and by email, 10 per minute and two active per key; GitHub start and callback by address, 30 per minute and four active. Global lanes cap only concurrency, four password and eight GitHub, with no per-minute ceiling because a proxy presents one address. A reserved recovery lane keyed by the recovery email admits 20 per minute, two active, one slot reserved. The table holds 4,096 entries. Denied attempts return `429` without an audit event at launch. Limits are process-local, hence one controller.
 

@@ -6,11 +6,34 @@ const currentVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
+// A SOUL.md long enough to scroll; its first line names the version that serves it.
+const soulVersion = (version) =>
+  `# SOUL.md served by ${version}\n\n` +
+  Array.from(
+    { length: 40 },
+    (_, index) => `Line ${index + 1}: keep answers short and cite the files you used.\n`,
+  ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
+const runtimeLogsPage = {
+  group: "Pages/Agent detail",
+  path: `${candidateVersion}&tab=logs`,
+  deployed: true,
+  candidateDeploymentStatus: "succeeded",
+};
+const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
-const oauthForm = [...form, { selector: "#agent-auth-method", value: "oauth" }];
+const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
+const reservedConfigurationWrite = {
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+  method: "PATCH",
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The Configuration is reserved for provisioning and is not available for this operation.",
+};
+
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -21,6 +44,21 @@ const readyForm = [
   { selector: "#agent-name", value: "Research assistant" },
   { selector: "#agent-model", value: "gpt-5.6-sol" },
   ...createModelSecret("storybook-model-api-key"),
+];
+const modelCredentialSourceTypes = [
+  {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  },
+];
+const dedicatedOpenclawForm = [
+  ...readyForm,
+  { selector: "#agent-harness", value: "openclaw" },
+  { selector: ".launch-runtime summary", click: true },
+  { selector: "#execution-mode", value: "dedicated" },
 ];
 const passwordPresetForm = [
   { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
@@ -37,6 +75,12 @@ const existingPresetSecret = [
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+// A plugin tool-deny refusal as the API words it, naming the selected plugin.
+const pluginToolRefusal =
+  'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
+// The same refusal from Create Agent's preflight, worded as the OpenClaw Plugin Driver words it.
+const pluginPreflightRefusal =
+  "Configuration setting tools.deny blocks every tool of plugin codex-plugin:calendar@openai-curated-remote; remove the matching deny entry or deselect the plugin.";
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -358,17 +402,215 @@ const devdayCreateCheckpoint = [
 ];
 const devdayAdminCheckpoint = [
   { selector: 'a[href*="agt_00000000-0000-4000-8000-000000000001"]', click: true },
-  { selector: ".native-admin-access a.primary" },
+  { selector: ".native-admin-access a[href]" },
 ];
 
 const shareExistingPerson = [
-  { selector: "#share-principal-id", value: "person-demo" },
+  { selector: "#share-principal-id", value: "prn_person-demo" },
   { selector: ".agent-access-consent input", click: true },
   click("Share Agent"),
 ];
 
 // Page failures use the HTTP boundary; isolated component previews receive their input state.
 export const scenarios = {
+  secrets: {
+    group: "Pages/Secrets",
+    name: "Populated",
+    path: "/console/secrets",
+    description:
+      "The library shows names and IDs. The privacy notice explains why stored values are never returned. Simulated UI proof.",
+    steps: [
+      "Search by name or ID. Tab to a result and press Enter; its dialog names the Namespace and lists consumers.",
+      "Create a Secret with a dummy value, replace it, then delete it. Switch Namespace to inspect isolation in navigation.",
+    ],
+  },
+  secretsMobile: {
+    group: "Pages/Secrets",
+    name: "Mobile",
+    path: "/console/secrets",
+    mobile: true,
+    description: "The Secret list and dialogs at phone width. Simulated UI proof.",
+  },
+  secretsSearch: {
+    group: "Pages/Secrets",
+    name: "No search matches",
+    path: "/console/secrets",
+    actions: [{ selector: '[aria-label="Search Secrets"]', value: "no-such-secret" }],
+    description: "Clear the search to see the Secrets in this Namespace again.",
+  },
+  secretsEmpty: {
+    group: "Pages/Secrets",
+    name: "Empty",
+    path: "/console/secrets",
+    emptySecrets: true,
+    description: "An authorized list without Secrets offers creation.",
+  },
+  secretsLoading: {
+    group: "Pages/Secrets",
+    name: "Loading",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, hold: true }],
+    description: "Namespace admission succeeds while the Secret list is still loading.",
+  },
+  secretsUnavailable: {
+    group: "Pages/Secrets",
+    name: "Read unavailable",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, status: 503 }],
+    description: "A failed Secret collection read shows recovery, with no stale rows.",
+  },
+  secretsNoNamespace: {
+    group: "Pages/Secrets",
+    name: "No readable Namespace",
+    path: "/console/secrets",
+    emptyNamespaces: true,
+    description: "Secret requests require an admitted Namespace selection.",
+  },
+  secretsNamespaceNotReady: {
+    group: "Pages/Secrets",
+    name: "Namespace provisioning",
+    path: "/console/secrets",
+    namespaceStatus: "provisioning",
+    description: "Metadata stays readable; creation and replacement wait for Namespace readiness.",
+  },
+  secretsCreate: {
+    group: "Pages/Secrets",
+    name: "Create",
+    path: "/console/secrets",
+    actions: [click("Create Secret")],
+    description:
+      "The header identifies the Namespace. The form preserves whitespace and explains that you can replace a saved value but cannot retrieve it.",
+    steps: [
+      "Enter a name and a dummy value. Use Show value beside the Value label, then hide it again.",
+      "Press Enter from Secret name to submit. After the save, Close is the only dialog action.",
+    ],
+  },
+  secretsMissingValue: {
+    group: "Pages/Secrets",
+    name: "Missing value",
+    path: "/console/secrets",
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description: "Required-value errors remain beside their field; no request is sent.",
+  },
+  secretsCreateDenied: {
+    group: "Pages/Secrets",
+    name: "Create denied",
+    path: "/console/secrets",
+    denySecretCreate: true,
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "The API refuses creation. The form clears the value, disables editing, and focuses Close.",
+  },
+  secretsUnknownSave: {
+    group: "Pages/Secrets",
+    name: "Unknown save outcome",
+    path: "/console/secrets",
+    rules: [{ path: presetSecretsPath, method: "POST", bodyError: true }],
+    actions: [
+      click("Create Secret"),
+      { selector: "#secret-name", value: "Team API key" },
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An unreadable reply leaves an amber warning that the outcome is unknown. The value is erased and this dialog cannot resubmit.",
+  },
+  secretsConsumers: {
+    group: "Pages/Secrets",
+    name: "Consumers and restricted references",
+    path: "/console/secrets",
+    secretConsumers: {
+      agents: ["agt_00000000-0000-4000-8000-000000000001"],
+      configurations: ["cfg_00000000-0000-4000-8000-000000000001"],
+      credentialSources: [],
+      provisioningRequests: [],
+      unreadable: 2,
+      truncated: true,
+    },
+    actions: [click("Demo model API key (simulated)")],
+    description:
+      "Agent links and other consumer IDs are grouped by resource. The blue notice explains restricted visibility; the amber warning identifies an incomplete list. Simulated UI proof.",
+  },
+  secretsReplace: {
+    group: "Pages/Secrets",
+    name: "Replace value",
+    path: "/console/secrets",
+    actions: [click("Demo model API key (simulated)"), click("Replace value")],
+    description:
+      "Replacement preserves the reference and explains deployment and CredentialSource handoff. Existing values are never loaded.",
+  },
+  secretsReplaceDenied: {
+    group: "Pages/Secrets",
+    name: "Replace denied",
+    path: "/console/secrets",
+    rules: [{ suffix: "/secrets/sec_demo_model", method: "PATCH", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Replace value"),
+      { selector: "#secret-value", value: "synthetic-story-value" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description: "A denied replacement clears the value, disables editing, and focuses Close.",
+  },
+  secretsDelete: {
+    group: "Pages/Secrets",
+    name: "Delete confirmation",
+    path: "/console/secrets",
+    actions: [click("Demo model API key (simulated)"), click("Delete Secret")],
+    description:
+      "Permanent storage deletion requires confirmation and explains upstream revocation and previously delivered values.",
+  },
+  secretsDeleteConflict: {
+    group: "Pages/Secrets",
+    name: "Concurrent reference conflict",
+    path: "/console/secrets",
+    rules: [
+      {
+        suffix: "/secrets/sec_demo_model",
+        method: "DELETE",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+      },
+    ],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Delete Secret"),
+      click("Permanently delete Secret"),
+    ],
+    description:
+      "A newly added reference can refuse deletion after the detail read. Reopen the detail to inspect current consumers.",
+  },
+  secretsDeletionUnconfirmed: {
+    group: "Pages/Secrets",
+    name: "Deletion could not be confirmed",
+    path: "/console/secrets",
+    rules: [
+      { suffix: "/secrets/sec_demo_model", method: "DELETE", bodyError: true },
+      {
+        suffix: "/secrets/sec_demo_model",
+        skip: 1,
+        data: { id: "sec_different", name: "Different Secret (simulated)" },
+      },
+    ],
+    actions: [
+      click("Demo model API key (simulated)"),
+      click("Delete Secret"),
+      click("Permanently delete Secret"),
+      click("Check deletion status"),
+    ],
+    description:
+      "The delete response was lost, then the status check returned a different Secret. The dialog leaves the outcome unknown and offers no second Delete.",
+  },
+
   runtimeImages: {
     group: "Pages/Navigation",
     name: "Debug runtime images",
@@ -422,8 +664,9 @@ export const scenarios = {
     name: "Signed out",
     path: "/console/login",
     signedOut: true,
+    buildRevision: "1234567890abcdef1234567890abcdef12345678",
     description:
-      "The email and password form. Any nonempty demo email/password signs into this fixture.",
+      "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
   },
   githubLogin: {
     group: "Pages/Sign in",
@@ -480,7 +723,7 @@ export const scenarios = {
       click("Recovery sign-in"),
       { selector: "#username", value: "member@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description:
       "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
@@ -565,6 +808,16 @@ export const scenarios = {
     description:
       "With recovery-only password sign-in, a disabled account's GitHub sign-in gives the same administrator advice.",
   },
+  recoveryOnlyProviderUnavailable: {
+    group: "Pages/Sign in",
+    name: "Recovery-only provider outage",
+    path: "/console/?authError=github&authReason=provider-unavailable",
+    signedOut: true,
+    githubEnabled: true,
+    passwordRecoveryOnly: true,
+    description:
+      "The provider could not answer or refused the client, so the page says sign-in is unavailable right now and points administrators to Recovery sign-in, not to an identity attach.",
+  },
   googleResultRejected: {
     group: "Pages/Sign in",
     name: "Google result not confirmed",
@@ -593,7 +846,7 @@ export const scenarios = {
     actions: [
       { selector: "#username", value: "operator@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description: "A rejected sign-in leaves the form available for retry.",
   },
@@ -602,8 +855,22 @@ export const scenarios = {
     name: "Session expired",
     path: draft,
     signedOut: true,
+    expiredSession: true,
     description:
-      "A protected deep link with no session redirects to sign-in and retains the return destination.",
+      "A protected deep link in a tab whose session expired says so, redirects to sign-in and retains the return destination.",
+    steps: [
+      "Sign in with the fixture credentials and confirm the Agent draft page returns.",
+      "Confirm no draft is saved or deployment started by signing in.",
+    ],
+  },
+  firstVisit: {
+    group: "Pages/Sign in",
+    name: "Deep link, first visit",
+    path: draft,
+    signedOut: true,
+    description:
+      "A first visit to a protected deep link asks to sign in without saying a session expired, and retains the return destination.",
+    steps: ["Sign in with the fixture credentials and confirm the Agent draft page returns."],
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
@@ -616,26 +883,81 @@ export const scenarios = {
     name: "Checking session",
     rules: [{ path: "/api/auth/session", hold: true }],
     description:
-      "A pending session read. The real client times out after 15 seconds; reset to replay loading.",
+      "Reload with the entry script throttled: “Loading OpenClaw Enterprise…” appears before it runs, then becomes “Checking session…” in the same place.",
+    steps: [
+      "Check that neither console navigation nor a sign-in form appears while the session is unknown.",
+      "Wait for Session unavailable, then choose Retry to repeat the check.",
+    ],
   },
   logoutFailure: {
     group: "Pages/Sign in",
-    name: "Logout unconfirmed",
+    name: "Sign-out unconfirmed",
     rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    actions: [...account, click("Logout")],
+    actions: [...account, click("Sign out")],
     description:
-      "Failed logout with a still-active session hides private content until revocation can be confirmed.",
+      "Failed sign-out with a still-active session hides private content until revocation can be confirmed.",
   },
   agents: {
     group: "Pages/Agents",
     name: "Populated",
     description:
-      "Searchable Agent table with draft and deployed Agents. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
+      "Searchable Agent table with draft and deployed Agents, each with Stop and Delete row icons. Open an Agent to explore its tabs. The shared shell, table, and controls use the Claw palette and typography.",
     steps: [
       "Check text, search input, buttons, and the current navigation item. The console stays light with either system appearance preference.",
-      "Tab through the search and creation controls, then search for an Agent and open its detail page.",
+      "Click an open area of an Agent row, such as the padding in Execution mode or Created. The same Agent detail opens as when clicking its name. Use ← Agents and repeat at phone width.",
+      "Tab to an Agent name and press Enter. Keyboard navigation still opens that Agent.",
+      "Open a current-version or latest-deployment link: it opens that version. Stop and Delete open their confirmations and keep the list visible; Cancel returns to the row. Disabled icons do not open the Agent.",
+      "Drag across an Agent ID to select text. Releasing the mouse keeps the list visible so the ID can be copied.",
       "Open Namespaces and return to Agents; the sidebar stays mounted while the destination data loads.",
       "At a narrow viewport, use Open navigation and choose a page; the drawer must close and return focus to the page.",
+    ],
+  },
+  agentsRowNavigation: {
+    group: "Pages/Agents",
+    name: "Row navigation",
+    description:
+      "Open an Agent from row padding or text. Name and version links, row actions, and text selection keep their existing behavior.",
+    steps: [
+      "Click padding in Execution mode or Created. The Agent detail opens. Use ← Agents and confirm focus returns to its name. Repeat at phone width.",
+      "Press Enter on the focused name to open the same Agent, then return.",
+      "Open a current-version or latest-deployment link and confirm its version is selected.",
+      "Open Stop or Delete and cancel. The list stays visible. In Row restricted, disabled buttons and their icons do not open the Agent.",
+      "Select part of an Agent ID with the mouse. Releasing the mouse keeps the selected text and list visible.",
+    ],
+  },
+  navigationFirstVisit: {
+    group: "Pages/Navigation",
+    name: "First visits",
+    rules: [
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", delayMs: 150 },
+      { suffix: "/agents/agt_00000000-0000-4000-8000-000000000002", delayMs: 1200 },
+    ],
+    description:
+      "Open an Agent from the list. The destination and Back to Agents appear immediately. The Agent’s name, actions, and overview appear together after the access checks. Read times are simulated.",
+    steps: [
+      "Open Research assistant. Its 150 ms read finishes without waiting for a minimum loading time.",
+      "Open Documentation assistant. During its 1200 ms read, choose Back to Agents. Focus returns to that link and the late response does not reopen it.",
+      "Open Documentation assistant again and switch to another window and back during its read: Loading agent details and Back to Agents stay. Double-click Back to Agents: the list opens once and the console stays.",
+      "Reload the story: the cold visit shows the session status, then Agents, with no loading panels between them.",
+    ],
+  },
+  navigationAgentReadRetry: {
+    group: "Pages/Navigation",
+    name: "Retry opening an Agent",
+    rules: [
+      {
+        method: "GET",
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000002",
+        delayMs: 900,
+        status: 503,
+        once: true,
+      },
+    ],
+    description:
+      "The first read of Documentation assistant returns a simulated 503. The page stays on Agent details so you can retry or go back to the list.",
+    steps: [
+      "Open Documentation assistant. Loading agent details is replaced by Could not load agent details; the page heading stays Agent details.",
+      "Choose Try again. Documentation assistant opens without a page reload, and Back returns to the list.",
     ],
   },
   navigationRetained: {
@@ -651,12 +973,26 @@ export const scenarios = {
       },
     ],
     description:
-      "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access is rechecked before page controls become active. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
+      "Returning to unchanged pages and Agent tabs preserves loaded controls, expanded panels, and edits. Access and reads are rechecked before a retained page is shown. Refresh explicitly reloads. Simulated API; no backend persistence proof.",
     steps: [
-      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. The loaded list and search remain visible while reads are pending.",
+      "Wait for Agents, enter a search, open Create Agent, then return using the Agents breadcrumb. Create Agent stays shown, inactive, while access and reads are rechecked; then the loaded list and search return unchanged. Refocusing the window rechecks the same way, without a loading state.",
       "Use Tab to focus Namespaces, then Enter. After loading, its heading has focus and the next Tab reaches Refresh. Back and Forward focus the destination heading while retaining loaded content.",
       "Open an Agent and expand Native configuration. Visit Credentials and Workspace files, then return to Configuration: the disclosure stays expanded. Return to Agents and use Back: native admin access and the selected tab stay loaded through access checks. Refresh explicitly rereads the page.",
       "Switch Namespace to confirm the previous scope's rows disappear. Reset the story to clear retained state.",
+    ],
+  },
+  navigationSlowRecheck: {
+    group: "Pages/Navigation",
+    name: "Slow rechecks",
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 2500 }],
+    description:
+      "Every session check after the first load takes 2.5 s. Returns and refocus keep the shown page and say Still checking after 1 s; Refresh shows loading after 250 ms. Simulated API; no backend proof.",
+    steps: [
+      "Wait for Agents, then select Refresh. The list stays shown, inactive, for 250 ms, then Loading replaces it. When the list returns, focus is on Refresh.",
+      "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 300 ms it dims with a progress cursor, without moving, and after 1 s Still checking… appears beside Refresh until the unchanged Agents list returns.",
+      "Focus an Agent link, switch windows, then return. The list stays visible and inactive, says Still checking… after 1 s, then returns focus to the link. If you focus Namespaces while waiting, focus stays there.",
+      "Focus Refresh, the Namespace selector or a sidebar link, switch windows, then return. When the list returns, focus is back on that control.",
+      "Open the Agent. In the sidebar, focus Agents and press Enter. Focus waits on the page heading while the list loads, then returns to the Agent link; it does not drop to the page body.",
     ],
   },
   navigationAgentReturn: {
@@ -711,12 +1047,13 @@ export const scenarios = {
   navigationExpired: {
     group: "Pages/Navigation",
     name: "Return session expired",
-    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401 }],
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401, once: true }],
     description:
-      "Session expiry clears private content and retained navigation state. The fixture supplies a delayed unauthorized response.",
+      "Session expiry clears private content and retains only the validated destination. The fixture supplies a delayed unauthorized response.",
     steps: [
       "Wait for Agents, then select Refresh or navigate to Namespaces.",
-      "When the session check fails, confirm the sign-in form replaces all private content. Browser Back must not restore the collection.",
+      "When the session check fails, confirm the sign-in form replaces all private content.",
+      "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
   },
   observabilityLink: {
@@ -750,6 +1087,99 @@ export const scenarios = {
       "Select v1 to inspect the readable admitted snapshot. Return to Agents and open Documentation assistant to check that its draft remains editable.",
     ],
   },
+  agentsRowStopConfirm: {
+    group: "Pages/Agents",
+    name: "Stop from the list",
+    deployed: true,
+    actions: [{ selector: '[aria-label="Stop Research assistant"]', click: true }],
+    description:
+      "The row's Stop icon opens the same confirmation as Agent detail. Cancel returns focus to the icon without a write; Stop Agent requests the stopped state.",
+    steps: [
+      "Cancel the dialog and check focus returns to the Stop icon.",
+      "Open it again and select Stop Agent. The row shows Stop requested, its Stop icon is disabled, and the list stays open.",
+      "In Populated, never-deployed Agents show no Stop icon, as on Agent detail.",
+    ],
+    gap: "The fixture records the requested state only. Live runtime shutdown is not simulated.",
+  },
+  agentsRowStopped: {
+    group: "Pages/Agents",
+    name: "Stop requested from the list",
+    deployed: true,
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "An accepted row Stop shows a status notice, a Stop requested badge, and a disabled Stop icon. Delete stays available.",
+  },
+  agentsRowDeleteConfirm: {
+    group: "Pages/Agents",
+    name: "Delete from the list",
+    deployed: true,
+    actions: [{ selector: '[aria-label="Delete Research assistant"]', click: true }],
+    description:
+      "The row's Delete icon opens the permanent-deletion confirmation, including the commands that remove the kept Configuration and model Secret.",
+    steps: [
+      "Select Permanently delete Agent. The row shows Deleting and both icons are disabled.",
+      "Select Refresh: the row still shows Deleting, because the list keeps an Agent until its cleanup finishes.",
+    ],
+    gap: "The fixture does not run cleanup. Open the Agent to follow deletion status.",
+  },
+  agentsRowStopDenied: {
+    group: "Pages/Agents",
+    name: "Stop from the list denied",
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "Permission advice allowed Stop, but the controller refuses the confirmed write, as after a removed grant. The alert names the missing Agent operate access; the row stays running.",
+  },
+  agentsRowDeleteDenied: {
+    group: "Pages/Agents",
+    name: "Delete from the list denied",
+    deployed: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "DELETE",
+        status: 403,
+      },
+    ],
+    actions: [
+      { selector: '[aria-label="Delete Research assistant"]', click: true },
+      { selector: ".agent-delete-dialog button.danger", click: true },
+    ],
+    description:
+      "Permission advice allowed Delete, but the controller refuses the confirmed write. The alert names the missing Agent delete access; the Agent stays in the list.",
+  },
+  agentsRowRestricted: {
+    group: "Pages/Agents",
+    name: "Row actions unavailable for this caller",
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission summary says this caller can neither stop nor delete these Agents. Each row disables its icons and says why before any confirmation.",
+    steps: [
+      "Find No access to stop or delete under each row's icons. The icons do not open a confirmation.",
+      "Open an Agent: its detail page explains the same restrictions.",
+    ],
+    gap: "The summary is advisory. The controller still authorizes each write.",
+  },
+  agentsRowStopUnknown: {
+    group: "Pages/Agents",
+    name: "Stop from the list outcome unknown",
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
+    actions: [
+      { selector: '[aria-label="Stop Research assistant"]', click: true },
+      { selector: ".agent-stop-dialog button.danger", click: true },
+    ],
+    description:
+      "An unconfirmed row Stop disables that row's actions until Refresh rereads the list. The console never resends the request.",
+  },
   agentsSearch: {
     group: "Pages/Agents",
     name: "No search matches",
@@ -761,13 +1191,66 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
-    gap: "Provisioning a Namespace and granting access happen outside the console.",
+    gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
     group: "Pages/Agents",
     name: "Namespace unavailable",
     path: "/console/agents?namespace=ns_missing",
     description: "A stale Namespace link asks the reader to switch scope.",
+  },
+  agentsCreateRestricted: {
+    group: "Pages/Agents",
+    name: "Create Agent unavailable for this caller",
+    readOnlyPermissionSummary: true,
+    description: "The permission summary says this caller cannot create an Agent here.",
+    steps: [
+      "Find the explanation beside Create Agent. The action is unavailable; opening a readable Agent still works.",
+    ],
+  },
+  agentsCreateRestrictedEmpty: {
+    group: "Pages/Agents",
+    name: "Empty, Create Agent unavailable",
+    emptyAgents: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
+  },
+  agentsNamespaceProvisioning: {
+    group: "Pages/Agents",
+    name: "Empty, Namespace still provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    description:
+      "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
+  },
+  agentsNamespaceBecomesReady: {
+    group: "Pages/Agents",
+    name: "Namespace becomes ready",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["provisioning", "ready"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "The Agents list rechecks a provisioning Namespace every 10 s while the reader stays on it, without a Refresh. When it reads ready, a success note replaces the warning in place, Create Agent loses its not-ready description, and the search text and focus stay.",
+    steps: [
+      'Keep the caret in Search Agents. After the first recheck (about 10 s) the note still begins "Namespace status: Provisioning."; within about 20 s it becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
+    ],
+  },
+  agentsNamespaceMissing: {
+    group: "Pages/Agents",
+    name: "Namespace leaves the list while provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    // Rechecks start once the page shows its search box, so the first load still lists it.
+    actions: [{ selector: 'input[type="search"]', focus: true }],
+    description:
+      "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
+    steps: [
+      'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
+      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+    ],
   },
   agentsDenied: {
     group: "Pages/Agents",
@@ -827,12 +1310,24 @@ export const scenarios = {
     rules: [{ path: "/backends", status: 503 }],
     description: "Backend discovery fails and can be retried.",
   },
+  backendsDenied: {
+    group: "Pages/Backends",
+    name: "Access denied",
+    path: "/console/backends",
+    rules: [{ path: "/backends", status: 403 }],
+    description:
+      "A caller without Installation access is told Backends apply to the whole Installation. The Namespace selector is hidden, since another Namespace would not change the answer.",
+  },
   namespaces: {
     group: "Pages/Namespaces",
     name: "Ready and provisioning",
     path: "/console/namespaces",
     description:
-      "Installation-wide Namespace identity and status cards, without a Namespace selector.",
+      "Installation-wide Namespace cards and Create Namespace, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning.",
+    steps: [
+      "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
+      "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -863,26 +1358,276 @@ export const scenarios = {
     name: "Empty",
     path: "/console/namespaces",
     emptyNamespaces: true,
-    description: "No accessible Namespaces. Provisioning and IAM are external prerequisites.",
+    description:
+      "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
+  },
+  namespacesEmptyMember: {
+    group: "Pages/Namespaces",
+    name: "Empty for a member",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    description:
+      "A person who does not administer the Installation gets Create Namespace as a secondary action and is told to ask an administrator. A Namespace create grant still works from it.",
+  },
+  namespaceCreateRefused: {
+    group: "Pages/Namespaces",
+    name: "Create refused, then closed",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+      { click: "Cancel" },
+    ],
+    description:
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
+  },
+  namespaceCreate: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace",
+    path: "/console/namespaces",
+    actions: [{ click: "Create Namespace", focus: true }],
+    description:
+      "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
+    steps: [
+      "Enter a unique name and create. Inspect the provisioning explanation, then select Done to see the new Namespace or Open Agents to use it.",
+    ],
+  },
+  namespaceCreateMobile: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace on mobile",
+    path: "/console/namespaces",
+    mobile: true,
+    emptyNamespaces: true,
+    actions: [{ click: "Create Namespace", focus: true }],
+    description:
+      "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
+  },
+  namespaceCreateRequired: {
+    group: "Pages/Namespaces",
+    name: "Create name required",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Submitting an empty name shows a persistent inline error and focuses the field without sending a request.",
+  },
+  namespaceCreateInvalidName: {
+    group: "Pages/Namespaces",
+    name: "Create invalid name",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support\tteam" },
+    ],
+    description:
+      "A pasted tab is refused at the field as it arrives, by the API's own Name rule, before any request. More than 200 characters is refused the same way instead of being cut.",
+  },
+  namespaceCreateConflict: {
+    group: "Pages/Namespaces",
+    name: "Create name conflict",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Engineering" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An existing name is refused. The entered name remains editable; choose another name and submit again.",
+  },
+  namespaceCreateDenied: {
+    group: "Pages/Namespaces",
+    name: "Create permission denied",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+  },
+  namespaceCreatePending: {
+    group: "Pages/Namespaces",
+    name: "Create pending",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", hold: true }],
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "While creation waits, the field and actions are disabled and Escape cannot dismiss the form. After the client timeout, inspect the unknown-outcome recovery.",
+  },
+  namespaceCreateUnknown: {
+    group: "Pages/Namespaces",
+    name: "Create outcome unknown",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+  },
+  namespaceCreateSuccess: {
+    group: "Pages/Namespaces",
+    name: "Namespace created",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+  },
+  namespaceCreateUnreadable: {
+    group: "Pages/Namespaces",
+    name: "Created without read access",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    // A create-only role: the authorized list never includes the new Namespace.
+    rules: [{ path: "/namespaces", data: [] }],
+    actions: [
+      { click: "Create Namespace", focus: true },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
   },
   namespacesDenied: {
     group: "Pages/Namespaces",
     name: "Access denied",
     path: "/console/namespaces",
     rules: [{ path: "/namespaces", status: 403 }],
-    description: "Namespace discovery is denied.",
+    description:
+      "Namespace discovery is denied, as for an account whose access was removed. Private data stays hidden, and the panel offers Sign out beside Retry.",
+    steps: ["Choose Sign out and confirm the sign-in page replaces the panel."],
   },
   settings: {
     group: "Pages/Settings",
     name: "Account",
     path: "/console/settings",
-    description: "Signed-in name and email. There are no editable settings in this release.",
+    description:
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect read-only Installation Driver schemas. There are no editable settings in this release.",
+    steps: [
+      "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Inspect Installation Driver schemas below the cards; no startup values or mutation controls are shown.",
+      "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
+      "At a phone width, Sign out spans the Session card.",
+    ],
+  },
+  settingsNameIsEmail: {
+    group: "Pages/Settings",
+    name: "Account without a display name",
+    path: "/console/settings",
+    // Sign-in providers that have no display name record the email as the name.
+    sessionUser: {
+      id: "storybook-operator",
+      name: "operator@example.com",
+      email: "operator@example.com",
+    },
+    description:
+      "An account whose recorded name is its email address. The account card names it once, by email.",
+    steps: [
+      "Check that the account card shows the initial O and operator@example.com under Email, with no Name row repeating the address.",
+      "Compare Account: a distinct display name still shows under Name.",
+    ],
+  },
+  settingsSignOutFailure: {
+    group: "Pages/Settings",
+    name: "Sign-out unconfirmed",
+    path: "/console/settings",
+    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
+    // The account menu's hidden Sign out comes first in the page, so name the card's button.
+    actions: [{ selector: ".settings-sign-out", click: true }],
+    description:
+      "Sign out from the Session card fails with the session still active: private content stays hidden until revocation can be confirmed.",
+    steps: [
+      "Choose Retry: it repeats the sign-out and keeps private content hidden until it succeeds.",
+    ],
   },
   notFound: {
     group: "Pages/Navigation",
     name: "Page not found",
     path: "/console/missing",
     description: "An unknown console route offers a return to Agents.",
+  },
+  createNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    description:
+      "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
+  },
+  createFormNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
+  },
+  createFormNamespaceBecomesReady: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace becomes ready after a failed check",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: [503, "ready"],
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-auth-method", value: "api_key" },
+      { selector: "#agent-name", value: "Release notes Agent", focus: true },
+    ],
+    description:
+      "The open form rechecks a provisioning Namespace every 10 s while Create Agent waits for it. The first recheck fails and the next one still runs; when the Namespace reads ready, a success note takes the warning's place at the same height, so the field being typed in does not move, and Create Agent is enabled.",
+    steps: [
+      'Keep the caret in Agent name. Within about 20 s the warning note above the form becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      'Confirm Agent name did not move and keeps its text and focus, the status line reads "Dedicated Agents are provisioned and deployed when created.", and Create Agent is enabled.',
+    ],
+  },
+  createFormNamespaceFailed: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace turns failed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["failed"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      'A Namespace that fails while the form is open never becomes ready by waiting. The next recheck shows its failed status, ends the recheck, and Create Agent stays disabled for every plan, described by "This Namespace cannot hold new Agents, so Create Agent is unavailable."',
+    steps: [
+      'Within about 10 s the note reads "Namespace status: Failed." and the status line says the Namespace cannot hold new Agents.',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. No further Namespace reads happen.",
+    ],
+  },
+  createFormNamespaceMissing: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace no longer listed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      "The Namespace list the form rereads no longer holds its Namespace: it was deleted, or the reader lost access. The recheck ends, the note asks for another Namespace, and Create Agent stays disabled for every plan. Start over keeps that answer.",
+    steps: [
+      'Within about 10 s the note reads "This Namespace is missing or you no longer have access. Choose another Namespace." and the status line reads "Create Agent is unavailable until you choose another Namespace."',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. Choose Start over: Creating Agents is not available, with the same note.",
+    ],
   },
   createStart: {
     group: "Pages/Create Agent",
@@ -896,13 +1641,25 @@ export const scenarios = {
     path: create,
     actions: form,
     description:
-      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; supported Installations also offer Dedicated under Runtime details. No model is selected by default.",
+      "OpenAI defaults to Codex with Dedicated execution. Selecting OpenClaw starts in Embedded mode; Runtime details also offers Dedicated. No model is selected by default.",
     steps: [
       "Keep OpenAI and the Codex harness, enter a dummy API key, and select a listed model.",
       'In Configuration JSON, edit plugins.entries.codex.config.appServer: set sandbox to "workspace-write", approvalPolicy to "never", and remoteWorkspaceRoot to "/workspace/custom".',
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
+  },
+  createInvalidConfiguration: {
+    group: "Pages/Create Agent",
+    name: "Invalid Configuration JSON",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#configuration-json", value: '{\n  "agents": {\n    "defaults": {,\n  }\n}' },
+      click("Create Agent"),
+    ],
+    description:
+      "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -1124,11 +1881,26 @@ export const scenarios = {
     actions: [
       ...form,
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
-      { selector: '[aria-label="Default plugin approvers people"]', focus: true },
     ],
     description:
-      "New Agents inherit OpenClaw's existing approval routing until an operator selects a default. The directory explains that a Slack bot Secret must be selected under Channels before names can be resolved.",
+      "Choose a Slack bot Secret here to search by name, or enter exact IDs. The search choice does not bind the Secret to the Agent.",
     gap: "The fixture does not prove Secret permissions or OpenClaw approval enforcement.",
+  },
+  createPluginApproversLookup: {
+    group: "Pages/Create Agent",
+    name: "Search for plugin approvers",
+    path: create,
+    pluginCapabilities,
+    actions: [
+      ...form,
+      { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
+      { selector: "#approver-directory-secret", value: "Slack bot token (simulated)" },
+      { selector: '[aria-label="Default plugin approvers people"]', value: "Alex" },
+      { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
+    ],
+    description:
+      "A search-only Secret resolves people by name before the Agent has a Slack channel. Select Alex Chen: their name and handle stay visible while the saved selection resolves.",
+    gap: "The Secret and directory are simulated; no Slack request or permission check is made.",
   },
   createPluginsSetupReminder: {
     group: "Pages/Create Agent",
@@ -1284,6 +2056,7 @@ export const scenarios = {
       "Review the Driver-specific policy fields supplied by the capability descriptor.",
       "Expand Create event, change a tool setting, then click Done and inspect Plugin selections JSON.",
       "Reopen Configure plugins, click inside its padding, then click the gray backdrop. Only the backdrop closes it; selections remain and focus returns to Configure plugins.",
+      "In a frame 1100 px wide or narrower (Components / Dialogs / Plugins (tablet) is 1024 px), the catalog and detail stack: choose Calendar to see only its detail, then Back to plugins to return to the catalog. Wider, both panes show side by side.",
     ],
     gap: pluginPreviewGap,
   },
@@ -1505,6 +2278,83 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createPending: {
+    group: "Pages/Create Agent",
+    name: "Create pending",
+    path: create,
+    rules: [{ suffix: "/agents/provision", method: "POST", hold: true }],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961).",
+    steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
+    gap: "The real client gives up after 15 seconds and reports an unknown outcome, which ends the busy state; reset the story to replay it. Other controls' requests disable Create without marking it busy; the browser tests cover that, not this story.",
+  },
+  createDeploymentNamedWait: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment names its wait",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_INCOMPLETE",
+      message: "Waiting for the runtime to become ready.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "After handoff the provisioning job names its first deployment's wait. Create Agent adds that sentence, the one Deployment activity shows, to the provisioning line.",
+    steps: [
+      "Click Create Agent. The line moves from “Provisioning Agent…” to “Provisioning Agent… Waiting for the runtime to become ready.” and Create Agent stays disabled.",
+    ],
+  },
+  createDeploymentPodQuotaFull: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment waits on a full Pod quota",
+    path: create,
+    actions: readyForm,
+    // Each rule skips the first read so the quota message appears before the interruption.
+    rules: [
+      { pathIncludes: "/deployments/", skip: 1, hold: true, once: true },
+      {
+        pathIncludes: "/deployments/",
+        skip: 1,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+        once: true,
+      },
+      { pathIncludes: "/deployments/", skip: 1, status: 404, code: "NOT_FOUND" },
+    ],
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    },
+    description:
+      "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
+    steps: [
+      "Click Create Agent. Watch the Pod quota message stay in place while the next read stalls and another gets a 503.",
+      "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
+    ],
+  },
+  createDeploymentImagePullFailed: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment cannot pull its image",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_IMAGE_PULL_FAILED",
+      message:
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent shows that sentence alone in place of the provisioning line, as it does for a full Pod quota.",
+    steps: [
+      "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",
@@ -1516,6 +2366,33 @@ export const scenarios = {
     steps: [
       "Click Create Agent and wait for the credential initialization failure.",
       "Open the existing Agent link; confirm the form offers no retry that would create another Agent.",
+    ],
+  },
+  createProvisioningStopped: {
+    group: "Pages/Create Agent",
+    name: "Stopped before the first deployment",
+    path: create,
+    actions: readyForm,
+    provisioningCancelledByStop: true,
+    description:
+      "Someone stopped the new Agent before its first version was admitted. Provisioning is cancelled, but the stopped Agent keeps its name, so the page links it instead of offering a new Agent.",
+    steps: [
+      "Click Create Agent and wait for the cancelled provisioning.",
+      "Confirm the page says Provisioning stopped, asks for no new Agent, and links the kept Agent.",
+    ],
+  },
+  createDeploymentStopped: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment stopped",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "failed",
+    provisionedDeploymentStopped: true,
+    description:
+      "Someone stopped the new Agent while its first deployment was rolling out. The request names the stop and asks for no repair.",
+    steps: [
+      "Click Create Agent and wait for the stopped first deployment.",
+      "Confirm the message names the stop without asking to correct a cause, and open the existing Agent link.",
     ],
   },
   createUnsupportedProvisioning: {
@@ -1553,6 +2430,47 @@ export const scenarios = {
     ],
     description:
       "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
+  },
+  createSecretRequiredFields: {
+    group: "Pages/Create Agent",
+    name: "Create Secret required fields",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
+      click("Create Secret"),
+    ],
+    description:
+      "Create Secret with no value: the Value field shows its error under the control and takes focus, with no browser bubble.",
+  },
+  createSecretRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret refused",
+    path: create,
+    rules: [{ suffix: "/secrets", method: "POST", status: 409, code: "NAMESPACE_NOT_READY" }],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      ...createModelSecret("storybook-model-api-key"),
+    ],
+    description:
+      "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
+  },
+  createModelSecretRequired: {
+    group: "Pages/Create Agent",
+    name: "Model credential Secret required",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
   },
   createSlackSecretStaged: {
     group: "Pages/Create Agent",
@@ -1668,20 +2586,74 @@ export const scenarios = {
     group: "Pages/Create Agent",
     name: "OpenAI with dedicated OpenClaw",
     path: create,
-    nativeWorkerSupport: "custom-image",
-    actions: [
-      ...readyForm,
-      { selector: "#agent-harness", value: "openclaw" },
-      { selector: ".launch-runtime summary", click: true },
-      { selector: "#execution-mode", value: "dedicated" },
-    ],
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: dedicatedOpenclawForm,
     description:
-      "Experimental Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation declares custom-image native worker support. A model and dummy API-key Secret are selected; channel controls remain available.",
+      "Dedicated OpenClaw uses the same Agent creation form as Codex. The simulated Installation has the default runtime's native worker support and a model Credential Source catalog. Its selected dummy Secret is registered before provisioning; the Harness receives a placeholder.",
     steps: [
       "Confirm the Harness is OpenClaw and Execution mode is Dedicated.",
       "Open the Slack editor, then cancel it. Channel controls remain available for dedicated OpenClaw.",
       "Select Embedded, then return to Dedicated. Confirm the Harness remains OpenClaw.",
       "Create the Agent and follow simulated provisioning to Agent details. Open Configuration and confirm the snapshot shows Dedicated execution and the OpenClaw Harness.",
+    ],
+  },
+  createDedicatedCodexCredentialSource: {
+    group: "Pages/Create Agent",
+    name: "Codex with model Credential Source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    actions: readyForm,
+    description:
+      "The same model Secret picker and Credential Gateway guidance apply to dedicated Codex. Creating the Agent registers its model source before guided provisioning.",
+    steps: [
+      "Confirm the API-key Secret picker remains available and its guidance explains credential registration.",
+      "Create the Agent and follow simulated provisioning. Its saved authentication uses a Credential Source.",
+    ],
+  },
+  createCredentialRegistrationUnknown: {
+    group: "Pages/Create Agent",
+    name: "Model credential registration outcome unknown",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "ready",
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The registration response is unavailable after the simulated Credential Source becomes ready. The form preserves the model Secret and asks the operator to check registration before retrying.",
+    steps: [
+      "Select Check credential registration. The saved source is found ready and Create Agent becomes available.",
+      "Create the Agent and confirm the source is reused, with no new model Secret or registration.",
+    ],
+  },
+  createCredentialRegistrationMismatch: {
+    group: "Pages/Create Agent",
+    name: "Registration response identifies a different source",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "different-source",
+    actions: dedicatedOpenclawForm,
+    description:
+      "The simulated registration succeeds, but its response identifies another source in the same Namespace.",
+    steps: [
+      "Select Create Agent. The form asks you to check registration and does not start provisioning.",
+      "Select Check credential registration. The form finds the requested source and lets you continue without registering it again.",
+    ],
+  },
+  createCredentialRegistrationCleanup: {
+    group: "Pages/Create Agent",
+    name: "Remove failed model credential registration",
+    path: create,
+    credentialSourceTypes: modelCredentialSourceTypes,
+    credentialRegistrationOutcome: "deleting",
+    actions: [
+      ...dedicatedOpenclawForm,
+      click("Create Agent"),
+      click("Check credential registration"),
+    ],
+    description:
+      "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
+    steps: [
+      "Remove failed credential registration is a red-edged destructive button: it deletes the registration at once. Select it and confirm that the model Secret remains saved.",
+      "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
     ],
   },
   createEmbedded: {
@@ -1695,6 +2667,73 @@ export const scenarios = {
     ],
     description:
       "Selecting OpenClaw defaults to Embedded, keeping OpenClaw and its model credential together in the Gateway. Unsupported channel editing remains disabled.",
+  },
+  createOpenclawWithoutNativeWorkers: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw without native worker support",
+    path: create,
+    nativeWorkerSupport: false,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation cannot admit dedicated OpenClaw: it has no Sandbox Driver that can provision it, or its runtime lacks native worker support. OpenClaw defaults to Embedded execution, which works only when no Sandbox Driver is selected; Dedicated is disabled with an explanation.",
+    steps: [
+      "Confirm Dedicated is unavailable for OpenClaw and the explanation names the missing Sandbox Driver or runtime support.",
+      "Select Codex and confirm Dedicated remains available.",
+    ],
+  },
+  createOpenclawNoExecutionMode: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw with no usable execution mode",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This Sandbox Driver refuses Embedded OpenClaw and cannot provision Dedicated OpenClaw. The form explains why neither mode is available, disables Create Agent, and does not promise to save a draft.",
+    steps: [
+      "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
+      "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSandboxDriverOutage: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw during a Sandbox Driver outage",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    sandboxDriverUnavailable: true,
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation's selected Sandbox Driver is unavailable right now, so Agent save answers 503 for every harness until the driver returns. The alert says Agents cannot be created for now and to reload, not that an administrator must select another Sandbox Driver. Create Agent stays disabled for OpenClaw and Codex.",
+    steps: [
+      "Confirm the alert says the Sandbox Driver is unavailable right now and Create Agent is disabled.",
+      "Select Codex and confirm the alert stays and Create Agent stays disabled.",
+    ],
+  },
+  createOpenclawSandboxDedicated: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw on a Sandbox Driver installation",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that provisions dedicated OpenClaw. It refuses Embedded execution, so selecting OpenClaw preselects Dedicated and disables Embedded.",
   },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
@@ -1777,6 +2816,38 @@ export const scenarios = {
     description:
       "Repository choices are usable while descriptions load. Descriptions appear without changing selections or moving focus.",
   },
+  createRepositoriesHiddenCharacters: {
+    group: "Pages/Create Agent",
+    name: "Repository descriptions with hidden characters",
+    path: create,
+    actions: repositoryForm,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        description: "Release notes \u202etxt.exe, zero\u200bwidth and \u2066isolate\u2069 end",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "example/handbook",
+        description: "Guías del equipo · Ελληνικά · Русский · עברית",
+        allowedProfiles: ["git-read"],
+      },
+      {
+        repositoryRef: "team",
+        displayName: "example/team",
+        description:
+          "Team \u{1f468}\u200d\u{1f469}\u200d\u{1f467} \u{1f3f3}\ufe0f\u200d\u{1f308} " +
+          "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} " +
+          "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u0915\u094d\u200d\u0937, " +
+          "joined A\u200dB, stray \u200d\u200djoiners",
+        allowedProfiles: ["git-read"],
+      },
+    ],
+    description:
+      "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
+  },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
     name: "Contributor access and write limits",
@@ -1844,6 +2915,36 @@ export const scenarios = {
     description:
       "Search a short repository name. Exact names appear first with their owners visible, followed by prefixes and substrings. Press Enter to add the first match; the query stays available for another addition.",
   },
+  createRepositoriesLocaleSearch: {
+    group: "Pages/Create Agent",
+    name: "Locale-stable repository search",
+    path: create,
+    actions: [...repositoryForm, { selector: "#repository-search", value: "ibm" }],
+    repositoryOptions: [
+      {
+        repositoryRef: "IBM-platform",
+        displayName: "acme/platform",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "acme/handbook",
+        allowedProfiles: ["git-read"],
+      },
+      ...["api", "docs", "infrastructure", "mobile"].map((name) => ({
+        repositoryRef: name,
+        displayName: `acme/${name}`,
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      })),
+    ],
+    description:
+      "Search matching uses stable casing, so ibm finds the approved IBM-platform reference even when its display name does not contain the query.",
+    steps: [
+      "Confirm that searching for ibm leaves acme/platform visible.",
+      "Select acme/platform and confirm IBM-platform appears as the selected repository reference.",
+    ],
+    gap: "Simulated UI proof only; this preview does not verify GitHub App access or repository credential delivery.",
+  },
   createRepositoriesCustom: {
     group: "Pages/Create Agent",
     name: "Custom access survives default changes",
@@ -1902,7 +3003,7 @@ export const scenarios = {
       "Unavailable repository choices show administrator setup guidance and allow a draft without repositories.",
     steps: [
       "Read the setup guidance and open Set up repository access to review the operator procedure.",
-      "Retry repository choices, or save a draft without repositories.",
+      "Confirm no Retry repository choices button appears, then save a draft without repositories.",
     ],
     gap: "Simulated UI proof only; this preview does not configure a GitHub App or verify repository access.",
   },
@@ -2000,7 +3101,11 @@ export const scenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
+      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft. With a Preset chosen, Use Preset is the filled button and Start with default Preset is secondary.",
+    steps: [
+      'Under Start with default Preset, the hint reads "The default Preset is default-codex."',
+      "Use Preset is filled and Start with default Preset is secondary. Choose Choose a Preset in Preset template: the filled style returns to Start with default Preset.",
+    ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
   createPresetExistingSecret: {
@@ -2088,6 +3193,19 @@ export const scenarios = {
       "Use Preset with an empty Model stops at the required Model field. Variables with defaults stay optional.",
     gap: "All credentials and API responses in this preview are simulated.",
   },
+  createPresetRequiredFields: {
+    group: "Pages/Create Agent",
+    name: "Preset required fields",
+    path: create,
+    standardCodexPreset: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+    ],
+    description:
+      "Use Preset with every variable empty: each field shows its own error under the control, linked to it, and focus moves to Name. The browser's validation bubble never shows.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPresetDraft: {
     group: "Pages/Create Agent",
     name: "Standard Codex password draft",
@@ -2168,13 +3286,57 @@ export const scenarios = {
   },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
-    name: "Agent creation needs an administrator",
+    name: "Permission check failed",
+    path: create,
+    actions: form,
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
+    ],
+    description:
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+    steps: [
+      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
+      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+    ],
+    gap: "The member creation browser test also covers a successful retry.",
+  },
+  createMember: {
+    group: "Pages/Create Agent",
+    name: "Member with Agent create",
     path: create,
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+    steps: [
+      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
+    ],
+    gap: "The member creation browser test uses a member account and the real Installation permission check.",
+  },
+  createMemberGrantRefused: {
+    group: "Pages/Create Agent",
+    name: "Member Agent created, grant needs an administrator",
+    path: create,
+    observabilityDenied: true,
+    actions: [...readyForm, click("Create Agent")],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+    steps: [
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
+      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
+    ],
+  },
+  createRestricted: {
+    group: "Pages/Create Agent",
+    name: "Create Agent unavailable for this caller",
+    path: create,
+    readOnlyPermissionSummary: true,
+    description:
+      "Opened by URL, Create Agent refuses up front when the permission summary says this caller cannot create an Agent here. The API still decides.",
   },
   createCapabilitiesError: {
     group: "Pages/Create Agent",
@@ -2226,7 +3388,11 @@ export const scenarios = {
       ...createModelSecret("storybook-anthropic-key"),
     ],
     description:
-      "Anthropic offers only the OpenClaw harness, with Embedded execution. Its fixed model list is available before credential entry and starts without a selection.",
+      "Anthropic offers only the OpenClaw harness, with Embedded execution. Authentication method stays clickable with Anthropic API key as its only option. Its fixed model list is available before credential entry and starts without a selection.",
+    steps: [
+      "Open Authentication method and select Anthropic API key. It remains clickable even though it is the only available method.",
+      "Confirm the selected model credential Secret stays selected after choosing the authentication method.",
+    ],
   },
   createCodexPat: {
     group: "Pages/Create Agent",
@@ -2248,7 +3414,7 @@ export const scenarios = {
     pluginCapabilities,
     actions: oauthForm,
     description:
-      "Experimental first-deploy login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
+      "Experimental login for a dedicated Codex Agent. The limitations notice stays visible throughout login and recovery. The model picker remains available; credentials never enter the browser.",
   },
   createOAuthPending: {
     group: "Pages/Create Agent",
@@ -2267,10 +3433,10 @@ export const scenarios = {
     pluginCapabilities,
     actions: startOAuthLogin,
     description:
-      "The fixture completes login after one poll. Configure plugins uses the server-owned login reference. No access or refresh token appears in this preview.",
+      "The fixture completes login after one poll. Agent creation includes the source in both Harness authentication and its credentialSources list. No access or refresh token appears in this preview.",
     steps: [
       "Wait for ChatGPT login ready, then open Configure plugins and add Calendar.",
-      "Choose a model and create the Agent. Deployment is simulated; the runtime token handoff is not proved here.",
+      "Choose a model and create the Agent. Deployment is simulated; credential-service delivery is not proved here.",
     ],
   },
   createOAuthDenied: {
@@ -2290,6 +3456,15 @@ export const scenarios = {
     actions: startOAuthLogin,
     description:
       "An Installation whose selected Drivers do not support device login reports it as unavailable. Choose another authentication method; no device code or sign-in link appears.",
+  },
+  createOAuthStartUnconfirmed: {
+    group: "Pages/Create Agent",
+    name: "ChatGPT sign-in start unconfirmed (Experimental)",
+    path: create,
+    rules: [{ suffix: "/device-authorizations", method: "POST", bodyError: true }],
+    actions: oauthForm,
+    description:
+      "Choose Sign in with OAuth. The simulated response is interrupted after its headers, so the Console cannot tell whether sign-in started. Switch authentication methods and return: a second sign-in stays unavailable.",
   },
   createOAuthError: {
     group: "Pages/Create Agent",
@@ -2311,16 +3486,15 @@ export const scenarios = {
   },
   pluginsOAuthRevision: {
     group: "Pages/Agent detail",
-    name: "Separate ChatGPT login for plugin editing (Experimental)",
+    name: "Saved ChatGPT login for plugin editing (Experimental)",
     path: `${draft}&tab=plugins`,
     deployed: true,
     auth: "oauth",
     agentPlugins: JSON.parse(pluginSelections),
     pluginCapabilities,
     pluginDiscovery,
-    actions: [click("Sign in with OAuth")],
     description:
-      "A separate configuration login enables plugin browsing while the deployed Agent retains its own credential. Saving plugin selections never replaces authentication.",
+      "Plugin browsing uses the Agent's saved credential source without another login. Saving plugin selections never replaces authentication.",
   },
   authOAuthReconnect: {
     group: "Components/Credentials",
@@ -2328,9 +3502,16 @@ export const scenarios = {
     path: `${draft}&tab=credentials`,
     deployed: true,
     auth: "oauth",
-    actions: [click("Sign in with OAuth")],
+    credentialSources: [
+      { sourceId: "cs_00000000-0000-4000-8000-000000000010" },
+      { sourceId: "cs_00000000-0000-4000-8000-000000000011" },
+    ],
     description:
-      "The current Agent login is preserved by default. A completed new login only replaces the saved source when Save authentication source is chosen; deployment remains separate.",
+      "Sign in and save a replacement explicitly. The Agent replaces its prior Harness source binding and retains unrelated tool bindings; deployment remains separate.",
+    steps: [
+      "Sign in with OAuth, wait for the simulated ready status, then Save authentication source.",
+      "Inspect the PATCH: credentialSources keeps the tool entry, removes the old Harness entry, and adds the new Harness source once.",
+    ],
   },
   createPatToOpenClaw: {
     group: "Pages/Create Agent",
@@ -2442,12 +3623,106 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
         method: "POST",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        // The API's catch-all conflict names nothing to act on, so the Console keeps its own text.
+        message: "The requested platform resource already exists.",
         once: true,
       },
+      // The first Namespace check after the refusal fails; the refused draft survives it.
+      { path: "/namespaces", skip: 1, status: 503, code: "DEPENDENCY_UNAVAILABLE", once: true },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
-      "Provisioning admission conflicts before any separate Configuration save. Edit the request and retry from the same draft.",
+      "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
+    steps: [
+      "Select the Agents link: the simulated Namespace check fails once. Select Retry.",
+      "Choose Create Agent: the refused form returns with its name, model, and Secret.",
+    ],
+  },
+  createRefusalReason: {
+    group: "Pages/Create Agent",
+    name: "Provisioning refusal with a reason",
+    path: create,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
+        once: true,
+      },
+    ],
+    actions: [...dedicatedOpenclawForm, click("Create Agent")],
+    description:
+      "The Installation lost its provisioning Sandbox Driver after the form loaded. The API refuses dedicated OpenClaw with a 409 that names the missing Driver, and the Console shows that reason instead of an unknown outcome.",
+    steps: [
+      "Confirm the refusal names the missing Sandbox Driver and no Retry provisioning request button appears.",
+      "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
+    ],
+  },
+  createPluginPreflightRefusal: {
+    group: "Pages/Create Agent",
+    name: "Plugin refusal before anything is saved",
+    path: create,
+    unsupportedProvisioning: true,
+    pluginCapabilities,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginPreflightRefusal,
+        once: true,
+      },
+    ],
+    actions: [
+      ...readyForm,
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      // Pressed as a person would, so focus starts on the button that disables.
+      { ...click("Create Agent"), focus: true },
+    ],
+    description:
+      "Create Agent asks the API first whether it would refuse the plugin selections with this Configuration. The API refuses: the Configuration denies every tool of the selected plugin. Nothing is saved, so the refusal is the only line, takes focus in view, and every field stays editable, the Configuration JSON included.",
+    steps: [
+      "At 360-390 px, confirm the focused refusal is on screen with no Secret or Configuration saved line and no sideways scroll.",
+      "Open Configuration JSON under Advanced settings and confirm it is editable, then select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
+  },
+  createPluginRefusal: {
+    group: "Pages/Create Agent",
+    name: "Plugin refusal after the Configuration is saved",
+    path: create,
+    unsupportedProvisioning: true,
+    pluginCapabilities,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginToolRefusal,
+        once: true,
+      },
+    ],
+    actions: [
+      ...readyForm,
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      // Pressed as a person would, so focus starts on the button that disables.
+      { ...click("Create Agent"), focus: true },
+    ],
+    description:
+      "Agent create refuses after the form saved its Configuration, as on a retry, which has no preflight: the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
+    steps: [
+      "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
+      "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
   },
   createUnknown: {
     group: "Pages/Create Agent",
@@ -2469,7 +3744,8 @@ export const scenarios = {
     name: "First version",
     path: draft,
     steps: [
-      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+      "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
+      "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
     ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",
@@ -2488,6 +3764,58 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  editCurrentConfiguration: {
+    group: "Pages/Agent detail",
+    name: "Edit current Configuration",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    actions: [click("Edit current Configuration")],
+    // The page brings the editor into view itself.
+    scrollToTabs: false,
+    description:
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below. The draft's \"New version\" notice comes to the top with the editor below it, so the screen says this is the draft; a window too short for both brings the editor to the top instead.",
+    steps: [
+      'The page shows the draft. The notice "New version. Changes affect future deployments using this Configuration." sits at the top of the window, and Configuration JSON is in view below it with the caret in it; no Edit Configuration button is left to press. Check this at desktop and phone widths.',
+      "In a window about 420 px tall, open the story again: Configuration JSON comes to the top with the caret in it, and the notice is above the window.",
+      "Choose Cancel: the editor closes and Edit Configuration takes focus.",
+    ],
+  },
+  agentHeaderActions: {
+    group: "Pages/Agent detail",
+    name: "Header actions",
+    path: revision,
+    deployed: true,
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1500 }],
+    description:
+      "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
+    steps: [
+      "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+      "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
+      "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+      "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
+    ],
+    nextStory: "authSaveHoldsNavigation",
+  },
+  longVersionHistory: {
+    group: "Pages/Agent detail",
+    name: "Long version history",
+    path: draft,
+    deployed: true,
+    revisionHistory: 8,
+    revisionPageSize: 3,
+    // Each older page takes 1.5 s, so its loading state can be seen.
+    rules: [{ suffix: "/revisions", queryParam: "cursor", delayMs: 1500 }],
+    description:
+      "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
+    steps: [
+      "Check that v8, v7, and v6 are listed with Show older versions below the list.",
+      "With the keyboard, Tab into the list (focus lands on v8), then Tab once more to Show older versions and press Enter. For about 1.5 s it reads Loading older versions…, looks disabled and keeps focus; pressing Enter again loads nothing more. When v5, v4, and v3 appear, focus is still on Show older versions.",
+      "Press Enter again. When v2 and v1 load, the button is gone and focus moves to v2, the first version that loaded, scrolled into view in the list.",
+      "Tab out of the list and Shift+Tab back: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
+      "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
+    ],
+    gap: "The fixture uses three versions per page; the API default is 50.",
+  },
   draftAutomaticCredentials: {
     group: "Pages/Agent detail",
     name: "First deployment creates credentials",
@@ -2505,6 +3833,14 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Keep Configuration edits",
     path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        delayMs: 3000,
+        once: true,
+      },
+    ],
     actions: [
       click("Edit Configuration"),
       { selector: "#configuration-json", value: '{"unfinished":' },
@@ -2514,33 +3850,94 @@ export const scenarios = {
     steps: [
       "Visit Channels, then Configuration and confirm the unfinished text remains.",
       "Open Namespaces and return with Back. Cancel discards the edit without saving.",
+      "Edit again, enter {} and select Save configuration. During the 3-second simulated save, a sidebar link keeps the page and says to wait; once saved, it leaves.",
     ],
     gap: "Simulated UI proof; no deployment or real persistence.",
   },
   agentSharing: {
     group: "Pages/Agent detail",
     name: "Share an Agent",
-    path: draft,
+    path: `${draft}&tab=access`,
     description:
       "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
     steps: [
-      "Enter person-demo as the existing Principal ID.",
+      "Enter prn_person-demo as the existing Principal ID.",
       "Review the native-access disclosure, acknowledge it, and share.",
-      "Remove the direct binding; Namespace discovery remains available.",
+      "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
     ],
   },
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     description:
       "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
   },
+  agentSharingHoldsNavigation: {
+    group: "Pages/Agent detail",
+    name: "Sharing holds navigation",
+    path: `${draft}&tab=configuration`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/iam/access-bindings",
+        method: "POST",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    actions: [
+      { selector: 'button[aria-label^="View version v1"]', click: true },
+      click("Access"),
+      ...shareExistingPerson,
+      { selector: 'a[data-nav="agents"]', click: true },
+    ],
+    description:
+      "The story opens a version from the draft, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+    steps: [
+      "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
+      "Open the preview in its own tab to try browser Back. While sharing, Back opens Configuration. Back again keeps that version open and explains why.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
+    ],
+  },
+  agentSharingHoldsAfterDelete: {
+    group: "Pages/Agent detail",
+    name: "Sharing holds navigation after Delete",
+    path: `${draft}&tab=access`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/iam/access-bindings",
+        method: "POST",
+        delayMs: 4000,
+        once: true,
+      },
+      // The deletion status poll never answers, so the Agent stays deleting.
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        hold: true,
+      },
+    ],
+    actions: [
+      ...shareExistingPerson,
+      click("Delete Agent"),
+      { selector: ".agent-delete-dialog button.danger", click: true },
+      { selector: "a.page-back", click: true },
+    ],
+    description:
+      "The story shares the Agent, deletes it while the first grant is pending, then selects ← Agents. Delete replaces the page with its deletion row; the note above that row says why the page stays until both grants are written, about 4 s later.",
+    steps: [
+      "While the note “This page stays open until sharing finishes.” shows above Danger zone, select ← Agents or Agents in the sidebar: the page stays and the note remains. Select Reset story to replay the hold.",
+      "When the grants are written, the note goes and ← Agents opens the Agents list.",
+    ],
+    gap: "The deletion status check never answers here, so the Agent stays deleting.",
+  },
   agentSharingRemoved: {
     group: "Pages/Agent detail",
     name: "Direct Agent grant removed",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
@@ -2548,7 +3945,7 @@ export const scenarios = {
   agentSharingDenied: {
     group: "Pages/Agent detail",
     name: "Sharing administration denied",
-    path: draft,
+    path: `${draft}&tab=access`,
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
@@ -2556,19 +3953,103 @@ export const scenarios = {
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
       "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+  },
+  agentSharingRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Share Agent required fields",
+    path: `${draft}&tab=access`,
+    actions: [click("Share Agent")],
+    description:
+      "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
+  },
+  agentPluginsRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections JSON error",
+    path: `${draft}&tab=plugins`,
+    actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
+    description:
+      "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
+  },
+  agentAuthenticationRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Authentication source required fields",
+    path: `${draft}&tab=credentials`,
+    auth: null,
+    actions: [
+      { selector: "#harness-auth-method", value: "api_key" },
+      click("Save authentication source"),
+    ],
+    description:
+      "API key with no Secret: the API key Secret field shows its error under the control and takes focus, with no browser bubble.",
+  },
+  agentWorkspaceRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Workspace file too large",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "a".repeat(16_385) },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Save a file over 16 KiB: the error shows under AGENTS.md and focus moves to it, with no browser bubble. Reload clears it.",
+    gap: "Simulated files; no live Agent gateway.",
   },
   configurationEditor: {
     group: "Pages/Agent detail",
     name: "Edit Configuration",
     path: draft,
     actions: [click("Edit Configuration")],
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        delayMs: 1500,
+      },
+    ],
     description:
-      "Edit native JSON on the current draft. Save Configuration persists values; deployment remains a separate action.",
+      "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
+    steps: [
+      "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
+      "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
+      "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
+      "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
+      "Visit Plugins, then Channels, then Configuration. Edit and save a setting, then use browser Back while the save is in progress. Configuration stays open to show the result.",
+      "After “Configuration saved.”, use Back once to return to Channels. Forward returns to Configuration without saving again.",
+    ],
+  },
+  configurationSaveRefused: {
+    group: "Pages/Agent detail",
+    name: "Edit Configuration refused",
+    path: draft,
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
+    description:
+      "A viewer without Configuration update saves: the refusal is an alert that takes focus and comes into view.",
+  },
+  configurationSaveUnconfirmed: {
+    group: "Pages/Agent detail",
+    name: "Save response names another Configuration",
+    path: draft,
+    configurationSaveResponseId: "cfg_00000000-0000-4000-8000-000000000002",
+    description:
+      "The simulated save succeeds, but the response names a different Configuration. The editor requires a reload before another save.",
+    steps: [
+      "Choose Enable gateway password access, then Save Configuration. Save stays disabled and the message says the outcome is unknown.",
+      "Choose Reload draft. The saved password reference is visible without a second save.",
+    ],
   },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
@@ -2603,7 +4084,8 @@ export const scenarios = {
         status: 403,
       },
     ],
-    description: "A denied save retains the draft and does not change the saved Configuration.",
+    description:
+      "A denied save names the Configuration update grant it needs, retains the draft and does not change the saved Configuration.",
   },
   gatewayPasswordSaving: {
     group: "Pages/Agent detail",
@@ -2619,6 +4101,48 @@ export const scenarios = {
     ],
     description:
       "A pending save blocks further Configuration edits and deployment; a timed-out write requires draft readback.",
+  },
+  pluginsUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections, viewer cannot update the Agent",
+    path: `${draft}&tab=plugins`,
+    deployed: true,
+    auth: "codex_pat",
+    agentPlugins: JSON.parse(pluginSelections),
+    pluginCapabilities,
+    pluginDiscovery,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  pluginsToolRefusal: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections refused by the Configuration",
+    path: `${draft}&tab=plugins`,
+    // Keep the scroll the refusal's focus gives, rather than jump back to the tabs.
+    scrollToTabs: false,
+    deployed: true,
+    auth: "codex_pat",
+    pluginCapabilities,
+    pluginDiscovery,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginToolRefusal,
+      },
+    ],
+    actions: [
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      { ...click("Save plugin selections"), focus: true },
+    ],
+    description:
+      "The Configuration denies every tool of the selected plugin, so the API refuses the save. The refusal shows as an error and takes focus; editing the selections clears it.",
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
@@ -2638,7 +4162,7 @@ export const scenarios = {
       "In Available, select Calendar, filter tools by create, and expand Create event. Switch to Configured, filter plugins by Calendar, and choose Calendar with a different tool filter. Round-trip the tabs: each keeps its selection, query, tool filter, and expanded rows without another catalog request.",
       "Remove Calendar from Configured: its details clear even though Available still lists it. Add Calendar again from Available; Configured must not restore the removed detail state.",
       "In Configure plugins, change Calendar's tool policy, add Documents from the next page, and select Done.",
-      "Select Save plugin selections, then Deploy new version. Compare the new version with the earlier immutable plugin snapshot.",
+      "Select Save plugin selections. The tab updates in place: the page keeps its scroll and focus moves to Plugin selections saved. Then select Deploy new version and compare the new version with the earlier immutable plugin snapshot.",
     ],
     gap: "Catalog and deployment responses are simulated. This does not verify plugin access, installation, policy enforcement, or a live Agent turn.",
   },
@@ -2688,7 +4212,7 @@ export const scenarios = {
       "Calendar explicitly has no Slack approvers, while Create event overrides it with a different user. The UI distinguishes both from inherited lists.",
     steps: [
       "Change Calendar to Inherit Agent default approvers and inspect Plugin selections JSON.",
-      "Search Create event tool approvers people to choose between duplicate Alex Chen names by exact ID.",
+      "Search Create event tool approvers people to distinguish the two Alex Chen results by their handles.",
     ],
     gap: overrideApproverGap,
   },
@@ -2710,7 +4234,7 @@ export const scenarios = {
       { selector: '[aria-label="Default plugin approvers people results"] [role="option"]' },
     ],
     description:
-      "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one saves a team-qualified selector.",
+      "The selected bot Secret resolves names within Demo workspace. The open Alex search keeps its results on browser refocus; choosing one shows their name and handle and saves a team-qualified selector.",
     steps: [
       "Switch to another browser tab and return. The open query and results remain while Agent access is checked.",
       "Move focus to another Console control to close the list, then focus the search field to reopen it.",
@@ -2734,7 +4258,7 @@ export const scenarios = {
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
       { selector: '[aria-label="Default plugin approvers people"]', focus: true },
       { selector: '[aria-label="Default plugin approvers people"]', value: "UDEMO123" },
-      { selector: ".slack-directory-panel:not([hidden]) .error:not(:empty)" },
+      { selector: ".slack-directory-panel:not([hidden]) .status:not(:empty)" },
       click("Add UDEMO123"),
       click("Save plugin selections"),
       { selector: '.content [aria-live="polite"][aria-busy="false"]' },
@@ -2743,7 +4267,7 @@ export const scenarios = {
       "When the API reports channel directory lookup as unavailable, the approver field still accepts a raw Slack user ID and saves it on the draft Agent.",
     steps: [
       "Confirm the directory error explains that exact IDs can still be entered.",
-      "Review the saved default plugin approver chip: UDEMO123 remains visible because names could not be resolved.",
+      "Review the saved default plugin approver chip: Name unavailable keeps the selection visible and removable when the directory cannot resolve it.",
       "Open Plugin selections JSON or inspect the saved Agent response in browser tools to confirm the plugin policy JSON was not changed by the approver save.",
     ],
     gap: "The 501 directory response, Slack user ID, and Agent save are simulated. This proves Console behavior only, not Slack identity validity or runtime approval delivery.",
@@ -2767,7 +4291,60 @@ export const scenarios = {
       { selector: "#configuration-json", value: "{ invalid" },
       click("Save Configuration"),
     ],
-    description: "Invalid JSON retains editor contents and sends no Configuration write.",
+    description:
+      "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+  },
+  invalidConfigurationInvisibleCharacters: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON after invisible characters",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      // A left-to-right mark, a soft hyphen and a word joiner, as pasted from a document.
+      { selector: "#configuration-json", value: '{"name": "a\u200Eb\u00ADc\u2060d", x}' },
+      click("Save Configuration"),
+    ],
+    description:
+      "The name hides a left-to-right mark, a soft hyphen and a word joiner, which take no visible space. The error names column 18, where the stray x appears, not the 21st character.",
+    steps: [
+      "Read the error under the editor: Invalid JSON at line 1, column 18.",
+      "Count the visible characters on the line: the x is the 18th.",
+    ],
+  },
+  configurationChangedElsewhereMerged: {
+    group: "Pages/Agent detail",
+    name: "Configuration edits merged over another browser's save",
+    path: draft,
+    configurationChangedElsewhere: {
+      values: { gateway: { bind: "loopback" }, agents: { defaults: { model: "codex/gpt-5.1" } } },
+    },
+    actions: [
+      click("Edit Configuration"),
+      {
+        selector: "#configuration-json",
+        value: JSON.stringify(
+          {
+            gateway: { mode: "local", bind: "lan" },
+            agents: {
+              defaults: {
+                model: "codex/gpt-4.1",
+                models: { "codex/gpt-4.1": { agentRuntime: { id: "codex" } } },
+              },
+            },
+            channels: {},
+          },
+          null,
+          2,
+        ),
+      },
+      click("Save Configuration"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser changed the model and the gateway bind while this editor set the bind. Reload draft merges this reader's edit over the reread document and names the value both changed.",
+    steps: [
+      "Check the note names /gateway/bind with the saved value, and the editor keeps the other browser's model with this reader's bind.",
+    ],
   },
   admitted: {
     group: "Pages/Agent detail",
@@ -2775,7 +4352,10 @@ export const scenarios = {
     path: revision,
     deployed: true,
     description:
-      "The selected immutable version has recorded deployment success. It is not proof of current live serving health.",
+      "v1 is selected, its recorded deployment completed, and live serving is not verified.",
+    steps: [
+      "Open Deployment details with Enter to inspect the completed stages. Refresh deployment; your disclosure choice is preserved.",
+    ],
   },
   repositoryDraft: {
     group: "Pages/Agent detail",
@@ -2805,6 +4385,88 @@ export const scenarios = {
     ],
     description:
       "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+    steps: [
+      "Visit Channels, return to Repositories, change a selection, then press browser Back. The selection stays, with a note to save or cancel before leaving.",
+      "Cancel the edit. Back returns to Channels; Forward opens Repositories with the saved selection.",
+    ],
+  },
+  repositoryEditorNotConfigured: {
+    group: "Pages/Agent detail",
+    name: "Repository access without a Repo Driver",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
+        status: 503,
+        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+      },
+    ],
+    description:
+      "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
+    gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
+  },
+  repositoryEditorLoading: {
+    group: "Pages/Agent detail",
+    name: "Repository access while choices load",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
+        hold: true,
+      },
+    ],
+    description:
+      "Repository choices are still loading. The selected repository's summary reads “Access awaiting verification” in a blue badge: nothing is wrong yet, so it is not red.",
+    gap: "The simulated repository choices never answer in this story.",
+  },
+  repositoryEditorUpdateDenied: {
+    group: "Pages/Agent detail",
+    name: "Repository access, viewer cannot update the Agent",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  repositoryEditorSaveRefused: {
+    group: "Pages/Agent detail",
+    name: "Repository access save refused",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [
+      { selector: "#repository-default-git-read", click: true },
+      click("Save repository access"),
+    ],
+    description:
+      "The Agent update is refused. The refusal is a danger block under the editor and takes focus; the grey line keeps progress and unsaved-change notes only.",
+    gap: "The refusal is simulated; the API decides every save.",
   },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
@@ -2822,7 +4484,10 @@ export const scenarios = {
     deployed: true,
     candidateDeploymentStatus: "queued",
     description:
-      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified.",
+      "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+    ],
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
@@ -2832,6 +4497,63 @@ export const scenarios = {
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+    ],
+  },
+  deploymentRunningActivates: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, then current",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    description:
+      "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      "Before the status poll lands, Tab into the Versions list (focus lands on v7, the viewed version) and press Down to v6.",
+      'Within about 5 s the notice begins "Current version" and Selected version reads v7. The Versions list is rebuilt with v7 marked Current, and focus stays on v6; Tab out and back lands on v6.',
+    ],
+  },
+  deploymentCompletesRereadFails: {
+    group: "Pages/Agent detail",
+    name: "New version completes, Agent reread fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The page's own Agent read answers; the reread after the deployment completes fails.
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 503 }],
+    description:
+      "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
+    ],
+  },
+  deploymentStatusReadRecovers: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, one status read fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The first poll after arrival fails once; the next one records success.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description:
+      "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
+    ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",
@@ -2876,6 +4598,98 @@ export const scenarios = {
     description:
       "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
+  agentsLongName: {
+    group: "Pages/Agents",
+    name: "Long unbroken name",
+    deployed: true,
+    agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
+    description:
+      "One Agent has the longest allowed name, 200 characters with no space. The name wraps within the width of its ID, so the other columns keep their places.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+      "Tab to the long name and press Enter: the Agent opens.",
+    ],
+  },
+  agentsLongNameDigits: {
+    group: "Pages/Agents",
+    name: "Long name of digit groups",
+    deployed: true,
+    agentName: Array.from({ length: 40 }, (_, index) => String(1000 + index))
+      .join("-")
+      .slice(0, 200),
+    description:
+      "A 200-character name of digit groups joined by hyphens. A browser breaks a line after each hyphen, so the name wraps at its hyphens like any hyphenated name.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNamePunctuation: {
+    group: "Pages/Agents",
+    name: "Long name with punctuation after hyphens",
+    deployed: true,
+    agentName: Array.from({ length: 50 }, () => "abc")
+      .join("-.5")
+      .slice(0, 200),
+    description:
+      "A 200-character name of letter groups joined by a hyphen, a full stop and a digit. A browser does not break a line at a hyphen before closing punctuation, so the console treats the name as unbroken and it wraps within the width of its ID.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNameDashes: {
+    group: "Pages/Agents",
+    name: "Long name of em dashes",
+    deployed: true,
+    agentName: "\u2014".repeat(200),
+    description:
+      "A name of 200 em dashes. A browser does not break a line between two em dashes, so the name wraps within the width of its ID.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNameJoiners: {
+    group: "Pages/Agents",
+    name: "Long name of word-joiner runs",
+    deployed: true,
+    agentName: `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    actions: [{ selector: 'input[type="search"]', value: "Joiners" }],
+    description:
+      "A 196-character name of word-joiner (U+2060) runs of 20, each just short of the long-name threshold, found by a search. Checking such a name took seconds and froze the list on load and on each search keystroke (finding 1999); the check is now linear, so search answers at once and the name wraps as before.",
+    steps: [
+      "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
+    ],
+  },
+  agentsLongNameMixed: {
+    group: "Pages/Agents",
+    name: "Long name held by emoji, quotes and digits",
+    deployed: true,
+    agentName: "\u043e\u0442\u0447\u0451\u0442-2026-\u00abbuild\u00bb\u26a1deploy\u26a1"
+      .repeat(10)
+      .slice(0, 200),
+    description:
+      "A 200-character name of Cyrillic words, digits after hyphens, quoted words and lightning emoji. A browser breaks a line at none of these, so the name has no break at all; the console now treats it as unbroken and it wraps within the width of its ID, where before it widened the table (findings 2000 and 2001).",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNamePhone: {
+    group: "Pages/Agents",
+    name: "Long unbroken name (phone)",
+    deployed: true,
+    mobile: true,
+    agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
+    description:
+      "The same 200-character name at 390 px wraps inside its stacked row, and the page does not scroll sideways.",
+  },
+  agentsIdLigaturesPhone: {
+    group: "Pages/Agents",
+    name: "Agent ID with ff (phone)",
+    deployed: true,
+    mobile: true,
+    agentId: "agt_ffffffff-ffff-4fff-bfff-ffffffffffff",
+    description:
+      'Each character of an ID is its own glyph: "ff" never draws as a ligature, so this ID is as wide as one with no "f". To compare, view it where the monospace font has ligatures (Nimbus Mono PS, a common Linux default): before finding 2114 each "ff" there drew as one glyph, and this ID was a third shorter.',
+  },
   agentsDeploymentFailed: {
     group: "Pages/Agents",
     name: "Latest deployment failed",
@@ -2884,8 +4698,10 @@ export const scenarios = {
     bootstrapFailure: true,
     path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
     description:
-      "The list shows the newest visible failure beside the current version, without asserting serving health.",
+      "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
+      'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
+      "Hover the one-line failure to read its whole text.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
   },
@@ -2902,7 +4718,7 @@ export const scenarios = {
       "A failed deployment stays failed while its separate cleanup completes. Safe evidence remains after the Pod disappears.",
     steps: [
       "Read the failing oauth-bootstrap exit status beside the successful init container.",
-      "Wait for cleanup to change from pending to completed; the deployment must still show failed.",
+      "Wait for revision cleanup to change from pending to completed; the deployment must still show failed.",
     ],
   },
   agentsDeploymentDenied: {
@@ -2913,6 +4729,9 @@ export const scenarios = {
     latestDeploymentReadStatus: 403,
     description:
       "Agent identity and current pointer remain visible while deployment access is denied.",
+    steps: [
+      "Current version cannot be named by number without the versions read, so it shows the selected version's short ID as a link, in code type.",
+    ],
   },
   agentsDeploymentLoading: {
     group: "Pages/Agents",
@@ -2922,6 +4741,71 @@ export const scenarios = {
     latestDeploymentReadDelay: 6000,
     description:
       "Deployment reads show loading beside the current pointer, then show the visible result.",
+    steps: [
+      'Current version reads "Reading version…" and Latest deployment "Reading deployment…" until the versions read lands; then they read "v1" and "v1 · Completed".',
+    ],
+  },
+  agentsCurrentVersionOlder: {
+    group: "Pages/Agents",
+    name: "Current version older than the first page",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    description:
+      "The newest page of versions lists only v7, so the current v6 is read on its own while the latest deployment fills from that page.",
+    steps: [
+      'Latest deployment reads "v7 · Failed" while Current version still reads "Reading version…". About 4 s later it reads "v6".',
+    ],
+    gap: "The fixture lists one version per page so the current version falls off the first page; the API default is 50.",
+  },
+  agentsCurrentVersionDenied: {
+    group: "Pages/Agents",
+    name: "Current version unreadable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The current v6 is off the first page and its own read is refused, so Current version keeps its short ID. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
+    steps: [
+      'Current version shows the short ID as a link, in code type, and Latest deployment reads "v7 · Failed".',
+    ],
+  },
+  agentsReturnWhileDeploymentsLoad: {
+    group: "Pages/Agents",
+    name: "Return while deployments load",
+    deployed: true,
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Back reveals the rechecked Agents list before a slow deployment read finishes. The previous result does not stand in for the pending one.",
+    steps: [
+      "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
+      "The list is usable immediately. Latest deployment starts blank; after 250 ms it says “Reading deployment…”, never linking to the old result. When access is denied, the Agent stays visible.",
+      "After Back, focus the Research assistant link while its deployment still reads, switch windows, then return. The same list returns with focus on the link.",
+    ],
   },
   agentsDeploymentError: {
     group: "Pages/Agents",
@@ -2956,10 +4840,100 @@ export const scenarios = {
     description:
       "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
     steps: [
+      "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
+      "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
+      'In the Versions list, v7 reads "v7", a space, then a red "Failed" badge; v6 keeps its blue "Current" badge and no other version has an outcome badge. A screen reader announces "View version v7, deployment failed".',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
+  },
+  sandboxLost: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox lost",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "lost", code: "SANDBOX_STOPPED" },
+    description:
+      "The current version's Sandbox stopped (for example after a node restart) and OCC does not restart it. The Agent still reads active, so Live serving says the Sandbox is lost and names the next step.",
+    steps: [
+      'Live serving shows a red "Sandbox lost" badge and, on the line under it, "Deploy a new version." The line was reserved while the Sandbox was read, so nothing below moved.',
+      "At 390 and 900 wide the note stays on one line under the badge.",
+    ],
+    gap: "The Sandbox record is simulated; this story does not verify a live OpenShell read or a node restart.",
+  },
+  sandboxRunning: {
+    group: "Pages/Agent detail",
+    name: "Current version's Sandbox running",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "running" },
+    description:
+      "A healthy Sandbox carries no warning: Live serving stays Not verified, with Sandbox running under it.",
+  },
+  sandboxStatusUnknown: {
+    group: "Pages/Agent detail",
+    name: "Sandbox status unknown",
+    path: currentVersion,
+    deployed: true,
+    harness: { state: "unknown", code: "UNAVAILABLE" },
+    description:
+      "The Sandbox Driver could not read the Sandbox record. Live serving stays Not verified and says the Sandbox status is unknown; it never reports a Sandbox it could not read as lost.",
+  },
+  agentHeader: {
+    group: "Pages/Agent detail",
+    name: "Page header with a long name",
+    path: currentVersion,
+    deployed: true,
+    agentName: "Quarterly release review and signoff bot",
+    description:
+      "The Agent page header: ← Agents, the name with Refresh and Create new version at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+    steps: [
+      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Create new version stay on its first line and nothing overlaps.",
+      "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
+      "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
+      "Select Create new version; the draft opens and its header shows Refresh only.",
+      "On the draft, select Edit Configuration and change a value, then select ← Agents. The page stays and says why, as the sidebar does.",
+    ],
+  },
+  agentHeaderMobile: {
+    group: "Pages/Agent detail",
+    name: "Page header at 390px",
+    path: currentVersion,
+    deployed: true,
+    mobile: true,
+    description:
+      "At 390px the header is four rows: ← Agents with Refresh and Create new version, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
+    steps: [
+      "Check that the ID row has no trailing separator and the Namespace control spans the row.",
+      "Leave the window and come back while the access recheck runs: Create new version is held with the page, and focus returns to it afterwards.",
+    ],
+  },
+  agentHeaderNoClipboard: {
+    group: "Pages/Agent detail",
+    name: "Copy Agent ID without clipboard access",
+    path: currentVersion,
+    deployed: true,
+    clipboard: "unavailable",
+    actions: [{ selector: ".page-meta-copy", click: true }],
+    description:
+      "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
+    steps: ["Check that the Agent ID is selected and no Copied status appears."],
+  },
+  draftCredentialRejected: {
+    group: "Pages/Agent detail",
+    name: "Next step after a rejected credential",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateCredentialRejected: true,
+    description:
+      "The provider rejected v7's model credential and the draft still uses it. Prepare this version keeps Check authentication and credentials open and never says Ready to deploy: deploying again does not fix the credential.",
+    steps: [
+      "In Prepare this version, the first step has a check and the second an open ring with the detail The last deployment's model credential was rejected.",
+      "Beside Deploy new version the status asks to update or replace the credential in Credentials first. Deploy stays enabled because a Secret value can be updated in place.",
+    ],
+    gap: "The rejected credential is simulated deployment evidence; this story does not call a model provider.",
   },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",
@@ -2978,7 +4952,7 @@ export const scenarios = {
       "The draft has no Logs tab, but failed v7 activity links directly to v7 Logs. Simulated log access is denied and the visible panel explains the required permission.",
     steps: [
       "Select Open v7 Logs in Deployment activity. Confirm v7 is viewed, the Logs tab is selected and focused, and its panel scrolls into view.",
-      "Check that the log permission error is visible instead of output; use Back to restore the draft.",
+      "Check that the log permission error is visible instead of output. The recovery at the top drops Open v7 Logs and asks someone with log access to check them; use Back to restore the draft.",
     ],
     gap: "The failure and permission denial are simulated UI evidence; they do not establish backend authorization or live log availability.",
   },
@@ -2990,7 +4964,141 @@ export const scenarios = {
     candidateDeploymentStatus: "failed",
     candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
     description:
-      "v7 failed its startup model check; the record names the runtime's classified cause (the provider rejected the model or request format) beside the Configuration guidance.",
+      "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
+    steps: [
+      "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
+      "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+      "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
+      "At phone width, the failure, both recovery links, and selected version are still near the top.",
+    ],
+  },
+  deploymentFailsWhileWatching: {
+    group: "Pages/Agent detail",
+    name: "Deployment fails while watching",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    // Show the in-progress record on arrival, then let the next poll read the failed record.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        once: true,
+        data: { status: "running", progress: null, error: null, warnings: [] },
+      },
+    ],
+    description:
+      "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
+    steps: [
+      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+      'Once v7 fails, "Deployment failed · v7" is the first card and Deployment details are folded. Open them: they show the failure\'s record and stay open.',
+    ],
+  },
+  deploymentModelProbeRetried: {
+    group: "Pages/Agent detail",
+    name: "New version failed its model check after a retry",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "rate_limit-attempt2" },
+    description:
+      "The startup model check was retried once. On the second attempt, the provider reported a rate limit.",
+    steps: [
+      "In the failed deployment, confirm the Cause gives the rate or usage limit advice and says the check was retried once and failed again.",
+    ],
+    gap: "The failure is simulated; it does not prove the runtime's retry or the provider's limit.",
+  },
+  deploymentModelProbeFailedReadOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer cannot edit",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    readOnlyPermissionSummary: true,
+    description:
+      "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
+    steps: [
+      "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
+      "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
+    ],
+    gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
+  },
+  deploymentModelProbeFailedDeployOnly: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    description:
+      "Recovery offers Open version draft when the viewer may deploy but cannot update the Agent. Configuration access is separate.",
+    steps: [
+      "Select Open version draft and confirm the Configuration tab opens in view, focused, without deploying.",
+    ],
+    gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
+  },
+  deploymentFailedDeployAgain: {
+    group: "Pages/Agent detail",
+    name: "New version failed, deploy again",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateDependencyUnavailable: true,
+    description:
+      "v7 failed because a controller dependency stayed unavailable. The recovery leads with the failure's own next step and offers Deploy again first, because that message says to deploy again.",
+    steps: [
+      "At 1440 and 390 wide, read the message and see Deploy again without scrolling.",
+      "Deploy again is the one filled button and Open v7 Logs an edged secondary button. At 390 wide they stack, each the block's full width. The message's first sentence ends with DEPENDENCY_UNAVAILABLE in code.",
+      "Select Deploy again: the draft opens with its Deploy new version in view and focused, without deploying.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
+  deploymentFailedDeployAgainUnreadable: {
+    group: "Pages/Agent detail",
+    name: "New version failed, Configuration unreadable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateDependencyUnavailable: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The same failure for a viewer who may deploy but cannot read the Configuration. The draft Deploy again opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+    steps: [
+      "At 1440 and 390 wide, confirm the recovery shows the deploy-again message with one link, Open v7 Logs, and never shows Deploy again.",
+    ],
+    gap: "The failure and the denial are simulated; the API still authorizes every page a link opens.",
+  },
+  deploymentModelProbeFailedDeployOnlyUnreadable: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy, Configuration unreadable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The startup model check failure for a viewer who may deploy but can neither update the Agent nor read its Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+    steps: [
+      "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open version draft.",
+    ],
+    gap: "The failure, permissions and denial are simulated; the API still authorizes every page a link opens.",
   },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
@@ -3002,6 +5110,29 @@ export const scenarios = {
     description:
       "v7 is selected despite a recorded finalization failure. The timeline reports failure without claiming selection never occurred.",
   },
+  deploymentStopped: {
+    group: "Pages/Agent detail",
+    name: "Deployment stopped by the owner",
+    path: candidateVersion,
+    deployed: true,
+    stopped: true,
+    candidateDeploymentStatus: "failed",
+    candidateStopped: true,
+    description:
+      "The owner stopped the Agent while v7 was deploying. Latest visible deployment reads v7 · Stopped with neutral stages, no failure banner, and a deploy-again next step.",
+    gap: "The stopped record is simulated UI evidence; it does not verify a live deployment.",
+  },
+  deploymentSuperseded: {
+    group: "Pages/Agent detail",
+    name: "Deployment superseded by a newer version",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateSuperseded: true,
+    description:
+      "A newer version the viewer cannot read superseded v7 before it became current. Latest visible deployment reads v7 · Superseded with neutral stages and no failure banner, and nothing names the newer version.",
+    gap: "The superseded record is simulated UI evidence; it does not verify a live deployment.",
+  },
   deploymentSucceeded: {
     group: "Pages/Agent detail",
     name: "New version activated",
@@ -3010,6 +5141,26 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     description:
       "v7 is now selected and its original deployment recorded success. This remains historical evidence, not a live probe.",
+  },
+  deploymentActivityLoading: {
+    group: "Pages/Agent detail",
+    name: "Deployment activity loading",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    rules: [
+      {
+        prefix:
+          "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/",
+        delayMs: 4000,
+      },
+    ],
+    description:
+      "Deployment status reads take 4 s, longer than the page waits for them (about 2 s). The page shows with Deployment activity as one loading row; the in-progress record then fills that row as folded Deployment details, and Latest visible deployment reads v7 · In progress. Nothing above the version tabs moves.",
+    steps: [
+      "Reload at desktop and phone width and watch the version tabs: they stay in place when the record arrives, and v7's deployment record fills its two loading rows.",
+      "Open Deployment details to read the in-progress stages.",
+    ],
   },
   deploymentUnavailable: {
     group: "Pages/Agent detail",
@@ -3033,9 +5184,53 @@ export const scenarios = {
     deployed: true,
     slack: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 3000 }],
+    steps: [
+      "Tab to Run diagnostics for this version, then press Enter or Space.",
+      "After 250 ms, focus moves to “Waiting for diagnostic results…” while the button is disabled. Leave focus there.",
+      "When the checks arrive, focus returns to Run diagnostics. Its description gives the Observed time.",
+      "Click Refresh record, which re-renders this panel as a deployment poll does, then press Tab. Run diagnostics still has that description.",
+    ],
+    description:
+      "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
+  },
+  diagnosticsFast: {
+    group: "Pages/Agent detail",
+    name: "Current observations that answer at once",
+    path: candidateVersion,
+    deployed: true,
+    slack: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 100 }],
+    steps: [
+      "Tab to Run diagnostics for this version, then press Enter. The checks answer in 100 ms.",
+      "No “Waiting for diagnostic results…” line appears and the button does not disable. Focus stays on Run diagnostics, and its description gives the Observed time.",
+      "Press Enter again. No waiting line appears in between; the same checks are inserted again, so a screen reader announces them again.",
+    ],
+    description:
+      "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",
+  },
+  diagnosticsReader: {
+    group: "Pages/Agent detail",
+    name: "Current observations for a reader without operate",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, and the danger zone has no Stop row.",
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
+  diagnosticsRefused: {
+    group: "Pages/Agent detail",
+    name: "Current observations refused",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", status: 403, code: "FORBIDDEN" }],
     actions: [click("Run diagnostics for this version")],
     description:
-      "An on-demand observation for viewed v7 reports timestamped Slack configuration, authentication, and connectivity checks. It does not change v7's persisted deployment result.",
+      "The API refuses diagnostics. The refusal comes into view below the button, which keeps focus.",
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",
@@ -3060,10 +5255,16 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deployments/rev_00000000-0000-4000-8000-000000000007/diagnostics",
         method: "POST",
         status: 503,
+        delayMs: 3000,
         code: "DEPENDENCY_UNAVAILABLE",
       },
     ],
-    actions: [click("Run diagnostics for this version")],
+    steps: [
+      "Tab to Run diagnostics for this version and press Enter. Leave focus on “Waiting for diagnostic results…” until the response arrives.",
+      "Focus returns to Run diagnostics, described by the alert that current-runtime diagnostics are unavailable (a simulated 503).",
+      "Click Refresh record, which re-renders this panel as a deployment poll does, then press Tab. Run diagnostics is still described by the alert.",
+      "Press Enter to run it again. While waiting, press Shift+Tab to move to Refresh record. Focus should stay there when the same alert appears.",
+    ],
     description:
       "A failed on-demand check reports its own error. The viewed v7 deployment record remains succeeded.",
   },
@@ -3078,10 +5279,36 @@ export const scenarios = {
     steps: [
       "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
-      "Expand the runtime.startup_phase row to inspect its fields. The timestamp, level, origin, and message remain aligned in the collapsed rows.",
-      "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
+      "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. From 320px up, each timestamp stays on one line; below about 400px it takes a line of its own, with the level beside the origin under it. When the Logs card is narrower than 662px (at 1000px and below, and from 1101px to about 1280px, where the card sits beside the version list), the message moves under the time, level, and origin instead of shrinking.",
+      "Select Follow, confirm it changes to Following, then select Following to stop. At 390px, check that the controls remain usable, each log level stays on one line, and long messages wrap without horizontal scrolling.",
     ],
     gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
+  },
+  runtimeLogsSlowFirstStatus: {
+    group: "Pages/Agent detail",
+    name: "Open Logs on a phone while runtime status is loading",
+    path: `${candidateVersion}&tab=logs`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    mobile: true,
+    // Let the Console place the reader; a fixture scroll would conceal a jump on entry.
+    scrollToTabs: false,
+    rules: [{ suffix: "/runtime", delayMs: 700, once: true }],
+    description:
+      "Open the direct Logs link at 390 px. The first runtime status takes 700 ms; status and log output appear together instead of moving the output after it appears.",
+  },
+  runtimeLogsSlowTabClick: {
+    group: "Pages/Agent detail",
+    name: "Select Logs while runtime status is loading",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/runtime", delayMs: 1200, once: true }],
+    description:
+      "The first runtime status takes 1.2 s after the Logs tab is selected. Stop Agent and Delete Agent stay hidden under the reserved area until the strip and output appear, so nothing below moves.",
+    steps: [
+      "Scroll to the version tabs and select Logs. The area keeps its height and Stop and Delete are hidden; after 1.2 s the strip, output and both cards appear in place and the panel scrolls into view.",
+    ],
   },
   runtimeLogsStartupWarnings: {
     group: "Pages/Agent detail",
@@ -3092,6 +5319,17 @@ export const scenarios = {
     runtimePod: "startupWarnings",
     description:
       "The Gateway Pod is Ready with no restarts; its startup readiness-probe Event is listed in muted text as an earlier warning instead of in the warning color.",
+  },
+  runtimeLogsDedicatedPods: {
+    ...runtimeLogsPage,
+    name: "Runtime status for a dedicated Agent's Pods",
+    runtimePod: "dedicatedPair",
+    description:
+      "The Agent (Harness) and Gateway Pod cards share the Logs panel's width, each with its long generated name and its init containers.",
+    steps: [
+      "At 1440 the two cards sit side by side and together fill the panel; no blank column is left beside them.",
+      "At 390 each card spans the panel, one under the other.",
+    ],
   },
   runtimeLogsFilteredDownload: {
     group: "Pages/Agent detail",
@@ -3111,6 +5349,39 @@ export const scenarios = {
       "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
     ],
   },
+  runtimeLogsRateLimited: {
+    ...runtimeLogsPage,
+    name: "Rate-limited log reads with Follow off or on",
+    rules: [{ suffix: "/runtime/logs", skip: 1, status: 429, code: "RUNTIME_LOGS_RATE_LIMITED" }],
+    actions: [click("Refresh logs")],
+    description:
+      "The first page loads, then log requests are rate limited. This fixture omits Retry-After: Refresh logs asks you to try again, without another audited read.",
+    steps: [
+      "Select Follow. When its next read is rate limited, the message says the Console is waiting for the next read.",
+      "While Following is still selected, choose Download. That action asks you to try again; the Console will not repeat the download.",
+    ],
+  },
+  runtimeLogsRefreshRateLimited: {
+    ...runtimeLogsPage,
+    name: "Rate-limited Refresh logs keeps the loaded lines",
+    rules: [
+      {
+        suffix: "/runtime/logs",
+        skip: 1,
+        status: 429,
+        code: "RUNTIME_LOGS_RATE_LIMITED",
+        retryAfter: 5,
+      },
+    ],
+    actions: [click("Refresh logs")],
+    description:
+      "The first page loads, then Refresh logs is rate limited with Retry-After: 5. The loaded lines and their Showing line stay; the message says when to try again.",
+    steps: [
+      "Check that the loaded log rows are still shown under 'Too many requests. Try again in 5 seconds.'",
+      "Wait 5 seconds. The message changes to 'Too many requests. You can try again now.' without another read.",
+      "Select Include debug. That read is for another selection, so the old rows clear before its rate-limited answer.",
+    ],
+  },
   runtimeLogsDenied: {
     group: "Pages/Agent detail",
     name: "Runtime logs without administer",
@@ -3128,6 +5399,70 @@ export const scenarios = {
       "An Agent operator sees Pod status and Events but no log text. The page names the missing grants and does not request the log view again.",
     steps: [
       "Check that the permission message is visible inside the Logs card and unavailable actions remain disabled.",
+    ],
+  },
+  runtimeLogPodReplaced: {
+    ...runtimeLogsPage,
+    name: "Selected Pod disappears from runtime status",
+    runtimePod: "rollover",
+    description:
+      "On the next status poll, gateway-retiring disappears. The Console starts the selected Pod’s log tail without mixing the two Pods’ output.",
+    steps: [
+      "Select gateway-retiring in Pod / container before the next status poll. Its name appears in the output and the caption.",
+      "After about ten seconds, the picker, output and caption all name the remaining Pod. No action or manual refresh is needed.",
+    ],
+  },
+  runtimeLogAccessLost: {
+    ...runtimeLogsPage,
+    name: "Log access lost after output appears",
+    rules: [{ ...refuseLogRead, skip: 1, once: true }],
+    description:
+      "The first page loads. The next log read is refused, then the fixture restores access. The Console remembers the refusal until sign-out.",
+    steps: [
+      "With log rows visible, select Follow. At the next poll the rows and their source caption disappear, Follow stops, and Download is disabled. The Pod card stays: status access did not change.",
+      "Without resetting the story, log out and sign in with invented values. Open Research assistant, then Logs: the rows return. Reset the story to try Download instead of Follow.",
+    ],
+  },
+  runtimeLogDownloadRefused: {
+    ...runtimeLogsPage,
+    name: "Download refused while an earlier log page is in flight",
+    rules: [
+      { suffix: "/runtime/logs", queryParam: "cursor", delayMs: 8000, once: true },
+      { ...refuseLogRead, queryParam: "download" },
+    ],
+    description:
+      "A follow poll starts after two seconds. The fixture holds its successful response for eight more seconds; a Download during that interval is refused immediately.",
+    steps: [
+      "With rows visible, select Follow, wait about three seconds, then select Download. No file downloads; the rows clear and the controls become unavailable.",
+      "Wait for the earlier page to arrive. The access message stays, no rows come back, and Follow does not restart. Reset the story to repeat.",
+    ],
+  },
+  runtimeStatusAccessLost: {
+    ...runtimeLogsPage,
+    name: "Pod status access lost while logs remain readable",
+    rules: [{ suffix: "/runtime", skip: 1, status: 403, code: "FORBIDDEN" }],
+    description:
+      "The first status and log reads succeed. At the next status poll, about ten seconds later, the Pod and its observation time are replaced by the status access message.",
+    steps: [
+      "Leave Follow off until the Pod disappears. The log rows stay, and the Console does not read another log page just because the status request was refused.",
+      "Select Follow. Reading logs still works without the old Pod selection; it does not restore the Pod card.",
+    ],
+  },
+  runtimeStatusAccessRestored: {
+    ...runtimeLogsPage,
+    name: "Pod status access restored on Back",
+    rules: [
+      {
+        suffix: "/permissions",
+        once: true,
+        data: { update: true, deploy: true, operate: false, delete: true },
+      },
+      { suffix: "/runtime", once: true, status: 403, code: "FORBIDDEN" },
+    ],
+    description:
+      "At first the Agent permission response says operate is not granted: logs load, but status is refused. On the next visit the permission response grants operate.",
+    steps: [
+      "Wait for both the status access message and the log rows. Open Namespaces, then use browser Back; the Console asks for status once more and shows the Pod.",
     ],
   },
   runtimeLogsReaderDownload: {
@@ -3256,7 +5591,77 @@ export const scenarios = {
       },
     ],
     actions: [click("Deploy new version")],
-    description: "A rejected deployment reports failure and re-enables the action.",
+    description:
+      "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
+  },
+  deployInProgress: {
+    group: "Pages/Agent detail",
+    name: "Deployment in progress",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        hold: true,
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
+  },
+  deployHoldsNavigation: {
+    group: "Pages/Agent detail",
+    name: "Deployment holds navigation",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        delayMs: 3600,
+      },
+    ],
+    actions: [click("Deploy new version"), { selector: 'a[data-nav="agents"]', click: true }],
+    description:
+      "The story selects Deploy new version, then Agents in the sidebar. The page stays, and a note under “Deploying…” says why until the simulated request answers 3.6 s later.",
+    steps: [
+      "While the note “This page stays open until the deploy request finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "Double-click Agents while the note shows: its text is written once, so a screen reader reads it once.",
+      "When the request answers, the note goes and the new version opens; Agents in the sidebar now leaves.",
+    ],
+  },
+  deployRefusedBeforeAdmission: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused before admission",
+    path: draft,
+    rules: [
+      {
+        method: "POST",
+        suffix: "/deploy",
+        delayMs: 1_000,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+      },
+    ],
+    description:
+      "The Controller refuses this deployment because the Configuration binds a Secret from a different Secret Driver.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "Read the refusal. Focus returns to Deploy new version, enabled and described by that message. No second request is sent.",
+    ],
+  },
+  deployOutcomeUnknown: {
+    group: "Pages/Agent detail",
+    name: "Deployment outcome unknown",
+    path: draft,
+    rules: [{ method: "POST", suffix: "/deploy", delayMs: 1_000, status: 503, once: true }],
+    description:
+      "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+    ],
   },
   deployRefusedSetting: {
     group: "Pages/Agent detail",
@@ -3275,6 +5680,30 @@ export const scenarios = {
     actions: [click("Deploy new version")],
     description:
       "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
+  },
+  deployOpensVersion: {
+    group: "Pages/Agent detail",
+    name: "Deployment opens the new version",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        delayMs: 600,
+      },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        once: true,
+        delayMs: 900,
+      },
+    ],
+    description:
+      "An admitted deployment opens the new version. The draft stays shown, inactive, while the version loads; keyboard focus moves from “Deploying…” to the page heading, then to the new version’s heading, never to the page itself.",
+    steps: [
+      "Use Tab to reach Deploy new version, then press Enter. “Deploying…” appears and holds focus during the 600 ms request.",
+      "Once the deployment is admitted, focus moves to the Agent heading while the draft stays shown, then to the Loading page heading after 250 ms, then to the new version’s heading when it opens.",
+    ],
   },
   deployAgentPrincipalDenied: {
     group: "Pages/Agent detail",
@@ -3325,26 +5754,41 @@ export const scenarios = {
     path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "Approved OpenClaw mech mascot beside OCE and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
-      "Approved OpenClaw mech mascot beside OCE with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
     actions: account,
     description:
-      "Account Settings and Logout. Namespace selection is available directly in the page header.",
+      "The account row in the dark navigation opens a light menu with Settings and Sign out. Use the arrow keys to check focus inside the menu, then Escape to return to the account.",
+  },
+  menuMobile: {
+    group: "Components/Navigation",
+    name: "Mobile account menu",
+    mobile: true,
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".topbar-avatar", click: true },
+    ],
+    description:
+      "390px top bar: navigation toggle, wordmark and the account avatar, which opens Settings and Sign out without the drawer.",
+    steps: [
+      "Press Escape; focus returns to the avatar. Open navigation, then check the menu closed.",
+    ],
   },
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    description: "The header selector shows the current Namespace and readable alternatives.",
+    description:
+      "The header's compact Namespace control (its label is the muted prefix inside the box) shows the current Namespace and readable alternatives.",
     steps: [
       "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
       "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
@@ -3359,7 +5803,7 @@ export const scenarios = {
     description:
       "Choose a Namespace directly from the header at 390px, without opening navigation.",
     steps: [
-      "Check that the long Namespace name truncates before the inset chevron.",
+      "Check that the compact control stays 32px tall and the long Namespace name truncates before the inset chevron.",
       "Choose Research, then return to the long Namespace and check the selection.",
     ],
   },
@@ -3368,9 +5812,12 @@ export const scenarios = {
     name: "Mobile drawer",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".mobile-toggle", click: true },
+    ],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+      "390px viewport with the simulated OCC revision beside the wordmark in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
@@ -3461,6 +5908,20 @@ export const scenarios = {
     steps: [
       "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
       "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
+    ],
+  },
+  slackDrawerNoAuthentication: {
+    group: "Components/Channels",
+    name: "Slack editor, no model authentication",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    auth: null,
+    actions: [click("Edit Slack")],
+    description:
+      "An Agent with no model authentication source: the drawer's notice adds that model credentials are configured in the Credentials tab before deploying. With a source bound (Slack editor), the notice stops after the first sentence.",
+    steps: [
+      'The notice at the top of the drawer reads "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying."',
+      'Open the Slack editor story: its notice reads only "New version. Changes affect future deployments using this Configuration."',
     ],
   },
   slackDirectoryChannels: {
@@ -3781,10 +6242,121 @@ export const scenarios = {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 409,
+        code: "RESOURCE_CONFLICT",
+        message:
+          "The Configuration changed since it was read. Read its current generation before updating it.",
+        details: [{ path: "/expectedGeneration", code: "INVALID_VALUE" }],
       },
     ],
     actions: [click("Edit Slack"), click("Save configuration")],
-    description: "A rejected Configuration write keeps the drawer and feedback visible.",
+    description:
+      "The API refuses the Configuration write with 409: another save landed after the page's reread. The editor closes and the section offers Reload draft, with focus on it.",
+  },
+  channelProvisioningReserved: {
+    group: "Components/Channels",
+    name: "Save refused during provisioning",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
+  },
+  channelSaveRejected: {
+    group: "Components/Channels",
+    name: "Save rejected",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+      },
+    ],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "A rejected Configuration write keeps the drawer and feedback visible, with focus back on Save configuration.",
+  },
+  channelSaveDenied: {
+    group: "Components/Channels",
+    name: "Save denied",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "A caller without Configuration update is refused. The drawer stays open with the edits and names the grant to ask an administrator for; the text is the same for every refusal.",
+  },
+  channelChangedElsewhere: {
+    group: "Components/Channels",
+    name: "Configuration changed elsewhere",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [click("Edit Slack"), click("Save configuration")],
+    description:
+      "Another browser saved this Configuration after the page read it. The editor closes and the section offers Reload draft; editing, deployment and tab changes wait for it.",
+    steps: [
+      "Check that focus is on Reload draft and the alert says the saved Configuration changed while you were editing.",
+      "Select Reload draft: the tab rebuilds in place with Draft reloaded., and Edit Slack saves again.",
+    ],
+  },
+  channelChangedElsewhereWithEdits: {
+    group: "Components/Channels",
+    name: "Configuration changed elsewhere with unsaved edits",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      click("Save configuration"),
+    ],
+    description:
+      "Another browser saved this Configuration while Edit Slack had unsaved changes. The alert says Reload draft reopens them over the saved settings.",
+    steps: [
+      "Check that focus is on Reload draft and the alert ends with Reload draft reopens your Slack edits over the saved settings.",
+      "Select Reload draft: Edit Slack reopens with Direct-message policy still Disabled and says the edits are applied over the reloaded settings; Save configuration saves them.",
+    ],
+  },
+  channelChangedElsewhereMerged: {
+    group: "Components/Channels",
+    name: "Edits merged over another browser's save",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    slackPolicy: "open",
+    configurationChangedElsewhere: {
+      values: {
+        channels: {
+          slack: {
+            dmPolicy: "allowlist",
+            allowFrom: ["UDDDD111", "UEEEE222"],
+            channels: { CDEMO123: { users: ["UDEMO123", "UOTHER99"] } },
+          },
+        },
+      },
+    },
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-allowed-user-ids", value: "UDEMO123, UNEW4567" },
+      { selector: "#slack-dm-policy", value: "pairing" },
+      click("Save configuration"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser added a channel user and set a DM allowlist while this editor added a user and chose Pairing. Reload draft adds only this reader's user to the reread list and names the DM policy both browsers changed.",
+    steps: [
+      "Check the note: Allowed people in these channels (added UNEW4567), and Direct-message policy also changed in another browser, saved as Allowlist.",
+      "Check that the channel list keeps UOTHER99 and the DM list keeps UDDDD111 and UEEEE222; Save configuration saves the merge.",
+    ],
   },
   channelSavePending: {
     group: "Components/Channels",
@@ -3802,6 +6374,44 @@ export const scenarios = {
     actions: [click("Disable Slack")],
     description:
       "A pending channel save disables deployment and revision navigation. The real client times out after 15 seconds; reset the story to replay it.",
+  },
+  channelSecretGrantRefused: {
+    group: "Components/Channels",
+    name: "Slack token saved, grant refused",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    rules: [{ suffix: "/iam/roles", status: 403 }],
+    description:
+      "A session the console takes for an Installation administrator saves a Slack token from the editor. The Configuration saves, but its IAM read for the Agent's grant is refused. That is a known outcome, not an unknown one: the page names who can grant it and links to Credentials, where Retry Secret access waits.",
+    steps: [
+      "The editor closes. A warning above Channels names the Installation administrator step; Prepare says to resolve the saved Secret access grant, not that the outcome is unknown.",
+      "Edit Slack stays available. Open Credentials: the app token reads Bound · Agent access not confirmed beside Retry Secret access.",
+    ],
+    gap: "The member browser test uses a member account and the real Native IAM refusal.",
+  },
+  channelSecretGrantMemberUnverified: {
+    group: "Components/Channels",
+    name: "Member Slack token saved, access not verified",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    observabilityDenied: true,
+    actions: [
+      click("Edit Slack"),
+      { selector: "#slack-secret-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save configuration"),
+    ],
+    description:
+      "A member saves a Slack token from the editor. The session already knows this member does not administer the Installation, so it sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access and names the Installation administrator step.",
+    steps: [
+      "The editor closes. The warning above Channels says access was not verified; Prepare says to resolve the saved Secret access grant. The request log shows no /iam/ request.",
+      "Open Credentials: the app token reads Bound · Agent access not confirmed. There is no Retry Secret access; Reload draft clears the warning.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
   },
   channelSaveUnknown: {
     group: "Components/Channels",
@@ -3827,6 +6437,15 @@ export const scenarios = {
     description:
       "The saved harness authentication source can be reviewed or changed before deployment.",
   },
+  credentialsUpdateDenied: {
+    group: "Components/Credentials",
+    name: "Model authentication, viewer cannot update the Agent",
+    path: `${draft}&tab=credentials`,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent update, so Save authentication source and its fields are disabled, and the note names the grant to ask for.",
+    gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
   credentialsSlack: {
     group: "Components/Credentials",
     name: "Slack tokens missing",
@@ -3851,7 +6470,71 @@ export const scenarios = {
     slack: true,
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+      "A different app Secret is selected but not saved. Deploy would use the saved Secret, not the one shown in the picker.",
+    steps: [
+      "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
+      "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
+    ],
+  },
+  credentialsDiscardSecretChoice: {
+    group: "Components/Credentials",
+    name: "Discard an unsaved Secret choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    unreadableSecretId: "sec_demo_slack_bot_token",
+    description:
+      "The saved Slack bot token is not readable. After choosing a different Secret, you can discard that unsaved choice without finding the original in the picker.",
+    steps: [
+      "Slack bot token shows “Bound Secret”. Choose “Slack backup token (simulated)”; Deploy is disabled until you save or reload.",
+      "Choose Reset story to reopen the saved configuration, as a page reload would. The bot token again shows “Bound Secret” and Deploy is available. Do not deploy.",
+    ],
+  },
+  credentialsSaveProvisioningReserved: {
+    group: "Components/Credentials",
+    name: "Secret choices after a refused save",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
+    steps: [
+      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+      "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
+    ],
+  },
+  credentialsSaveConflict: {
+    group: "Components/Credentials",
+    name: "Secret choices after a conflict",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        ...reservedConfigurationWrite,
+        message: "The requested platform resource already exists.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "A save meets a generic conflict. The Console explains that the Secret choices conflict with saved state, without claiming a duplicate or a stale generation.",
+    steps: [
+      "Press Save channel Secrets. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
+      "Choose the saved Slack app token again. Deploy becomes available; no deployment or second save is needed.",
+    ],
+  },
+  credentialsSlackCarried: {
+    group: "Components/Credentials",
+    name: "Slack token choice carried through a conflict",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    configurationChangedElsewhere: true,
+    actions: [
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
+      click("Save channel Secrets"),
+      click("Reload draft"),
+    ],
+    description:
+      "Another browser saved this Configuration first. The chosen app token stays shown, and Reload draft applies it over the reread bindings for Save channel Secrets.",
   },
   credentialsSecretListDenied: {
     group: "Components/Credentials",
@@ -3867,6 +6550,48 @@ export const scenarios = {
     ],
     description:
       "Secret references remain preserved when metadata cannot be listed; the picker shows Bound Secret without an ID.",
+  },
+  credentialsSecretListScrolling: {
+    group: "Components/Credentials",
+    name: "Scrolling Secret list",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [1, 2, 3, 4, 5, 6, 7, 8].map((index) => ({
+      id: `sec_story_scroll_${index}`,
+      name: `Scrolling Secret ${index} (simulated)`,
+    })),
+    description:
+      "With more readable Secrets than fit, the open API key Secret list scrolls. It is not a Tab stop: focus stays in the field and moves on with Tab.",
+    steps: [
+      "Click API key Secret. The list opens and scrolls.",
+      "Press Tab. The list closes and focus moves to the metadata link below the field, not to the page.",
+      "Click the field, type Scrolling, then drag the list's scrollbar. The list stays open with the search kept, and the field keeps focus.",
+    ],
+  },
+  credentialsSecretListFailsAfterStaging: {
+    group: "Components/Credentials",
+    name: "Secret list fails after a staged Secret",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets",
+        method: "GET",
+        delayMs: 4000,
+        status: 503,
+      },
+    ],
+    actions: [
+      { selector: "#harness-auth-secret", value: "__openclaw_create_secret__" },
+      { selector: "#create-harness-auth-secret-name", value: "Created while loading (simulated)" },
+      { selector: "#create-harness-auth-secret-value", value: "synthetic-demo-key" },
+      click("Create Secret"),
+    ],
+    description:
+      "A Secret created while the list loads is staged. The list read then fails, and the hint still says the binding is staged instead of showing a list error.",
+    steps: [
+      "Wait four seconds for the simulated list failure. The hint under API key Secret still reads Secret binding staged. Save changes to apply it.",
+      "Choose Reset story to replay it.",
+    ],
+    gap: "The list failure is simulated; a lost session (401) still ends the session as before.",
   },
   credentialsSlackGrantDenied: {
     group: "Components/Credentials",
@@ -3885,7 +6610,20 @@ export const scenarios = {
       },
     ],
     description:
-      "A saved Secret reference remains visible when the follow-up exact Secret access grant is denied.",
+      "The Configuration saves, but the follow-up exact Secret access grant is refused (403). The warning says only an Installation administrator can grant it, the saved app token reads Bound · Agent access not confirmed, and Retry Secret access retries the grant without another save.",
+  },
+  credentialsSlackGrantMissing: {
+    group: "Components/Credentials",
+    name: "Slack Secret bound without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    slackGrantMissing: "SLACK_APP_TOKEN",
+    description:
+      "An Installation administrator opens an Agent whose saved app token Secret has no Agent grant, for example after a member's refused grant. The console reads the Namespace IAM policy, marks the token, blocks Deploy, and offers Retry Secret access.",
+    steps: [
+      "The Slack app token reads Bound · Agent access not confirmed; the warning says deploying would be refused.",
+      "Select Retry Secret access. Both tokens read Bound and Deploy new version is available; do not deploy.",
+    ],
   },
   credentialsSavePending: {
     group: "Components/Credentials",
@@ -3894,17 +6632,18 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         hold: true,
+        once: true,
       },
     ],
     actions: [
-      { selector: "#runtime-slack-app-token", value: "simulated-token" },
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
       click("Save channel Secrets"),
     ],
     description:
-      "A pending Secret save disables deployment. The real client times out after 15 seconds; reset the story to replay it.",
+      "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
   },
   credentialsSaveUnknown: {
     group: "Components/Credentials",
@@ -3913,15 +6652,15 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 503,
         once: true,
       },
     ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "simulated-token" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Save the simulated replacement to see an uncertain Secret save. Reload the draft and inspect saved state before deploying or retrying.",
+      "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",
@@ -3981,7 +6720,7 @@ export const scenarios = {
       "Save the selected model Secret, then confirm the exact Agent grant through Namespace IAM. Saving does not establish model readiness.",
     steps: [
       "Click Save authentication source.",
-      "The refreshed form retains Service Accounts; the request log shows the Agent PATCH followed by exact Secret access creation.",
+      "Look for “Authentication source saved.” Focus stays at Save authentication source; the request log shows the Agent PATCH followed by access for that Secret.",
     ],
   },
   authSecretGrantDenied: {
@@ -3991,12 +6730,65 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 403, once: true }],
     actions: [click("Save authentication source")],
     description:
-      "The Agent binding is saved, but granting its Secret access is denied. Deployment stays blocked in this view until access is confirmed.",
+      "The Agent binding is saved, but the request to grant its Secret access is refused (403). The warning says that request was refused, names the Installation administrator step, and keeps Retry credential access for when access is restored. Deployment stays blocked in this view until access is confirmed.",
     steps: [
       "Read the partial-save message and disabled authentication controls.",
       "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
       "The form refreshes without another Agent PATCH.",
     ],
+  },
+  authSecretGrantMissing: {
+    group: "Components/Credentials",
+    name: "Authentication Secret without an Agent grant",
+    path: `${draft}&tab=credentials`,
+    harnessGrantMissing: true,
+    description:
+      "An Installation administrator opens an Agent whose saved model Secret has no Agent grant, for example after a member saved it. The console reads the Namespace IAM policy, says deploying would be refused, names Save authentication source and blocks Deploy.",
+    steps: [
+      "Read the warning under the authentication form; Prepare says to confirm authentication and Secret access in Credentials.",
+      "Select Save authentication source. The grant is written, the tab rebuilds without the warning, and Deploy new version is available; do not deploy.",
+    ],
+  },
+  authSecretGrantMemberUnverified: {
+    group: "Components/Credentials",
+    name: "Member authentication saved, access not verified",
+    path: `${draft}&tab=credentials`,
+    observabilityDenied: true,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+      click("Save authentication source"),
+    ],
+    description:
+      "A member saves a new model Secret. The session already knows this member does not administer the Installation, so the form sends no IAM request for the Agent's grant. The warning says this session did not verify the Agent's access, names the Installation administrator and the step that grants it, and offers no Retry credential access.",
+    steps: [
+      "Read the warning: this session did not verify access, and an Installation administrator opens this Agent's Credentials and selects Save authentication source.",
+      "Only Reload authentication source remains. Deploy new version stays blocked. The request log shows the Agent PATCH and no /iam/ request.",
+    ],
+    gap: "The member browser test uses a member account and the real Installation permission check.",
+  },
+  authSaveRefused: {
+    group: "Components/Credentials",
+    name: "Authentication save refused",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+      click("Save authentication source"),
+    ],
+    description:
+      "The Agent update is refused. The refusal is a danger block that takes focus; progress (“Saving authentication…”) stays a grey hint.",
+    gap: "The refusal is simulated; the API decides every save.",
   },
   authSecretGrantLoading: {
     group: "Components/Credentials",
@@ -4006,6 +6798,28 @@ export const scenarios = {
     actions: [click("Save authentication source")],
     description:
       "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
+  },
+  authSaveHoldsNavigation: {
+    group: "Components/Credentials",
+    name: "Authentication save holds navigation",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        delayMs: 3600,
+      },
+    ],
+    actions: [
+      click("Save authentication source"),
+      { selector: 'a[data-nav="agents"]', click: true },
+    ],
+    description:
+      "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
+    steps: [
+      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or choose another Namespace. The page and selected Namespace stay the same. Reset the story to try again.",
+      "When the save answers, the note goes; Agents in the sidebar now leaves.",
+    ],
   },
   authSaveUnknown: {
     group: "Components/Credentials",
@@ -4065,7 +6879,11 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "available",
     description:
-      "Authorized launch link and warning. The fixture opens an explanatory page instead of a real gateway.",
+      "The Agent overview puts the authorized admin launch beside its access and configuration warning. The link opens a fixture, not a gateway.",
+    steps: [
+      "Check the selected version, completed deployment, and unverified live serving at desktop and phone widths.",
+      "Expand Deployment details, then open the admin console. Compare Denied and hidden: there is no launch or access warning there.",
+    ],
   },
   nativeStopped: {
     group: "Components/Native admin",
@@ -4090,6 +6908,18 @@ export const scenarios = {
     deployed: true,
     nativeAdmin: "denied",
     description: "Denied native-admin access hides the whole panel.",
+  },
+  nativeRefreshing: {
+    group: "Components/Native admin",
+    name: "Refreshing access",
+    path: draft,
+    nativeAdmin: "stopped",
+    // The first access check answers at once; each Refresh access reads for 1.5 s.
+    rules: [{ suffix: "/native-admin", skip: 1, delayMs: 1500 }],
+    description: "Refresh access keeps keyboard focus while it rereads native admin access.",
+    steps: [
+      "Tab to Refresh access and press Enter. While Checking access… shows, focus stays on the button and Enter again sends nothing.",
+    ],
   },
   workspaceNavigation: {
     group: "Components/Workspace",
@@ -4152,13 +6982,68 @@ export const scenarios = {
     ],
     description: "Unauthorized reads do not enable blank overwrites.",
   },
+  workspaceSaveDenied: {
+    group: "Components/Workspace",
+    name: "Save denied",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [{ suffix: "/AGENTS.md", method: "PUT", status: 403 }],
+    actions: [
+      {
+        selector: '[id="workspace-AGENTS.md"]',
+        value: "# Updated guidance\nReview changes before applying them.",
+      },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "A refused save names the Agent operate grant it needs and keeps the edit on screen.",
+  },
+  workspaceOperateDenied: {
+    group: "Components/Workspace",
+    name: "Save needs Agent operate",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "The Agent permission answer denies operate: the files load read-only, and each Save stays in the Tab order, looks disabled and is described by the note naming Agent operate.",
+    steps: ["Tab to Save AGENTS.md and press Enter. Nothing is sent and the file is unchanged."],
+    gap: "Simulated files and permission answer; the API still refuses the write.",
+  },
   workspaceMissing: {
     group: "Components/Workspace",
     name: "Missing file",
     path: `${revision}&tab=workspace`,
     deployed: true,
-    rules: [{ suffix: "/AGENTS.md", method: "GET", status: 404, once: true }],
-    description: "A missing file can be created; unrelated file editors still load.",
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+        once: true,
+      },
+    ],
+    description:
+      "A file the API confirms missing says so on first load and can be created; unrelated file editors still load.",
+  },
+  workspaceResourceMissing: {
+    group: "Components/Workspace",
+    name: "Agent unavailable while reading a file",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested platform resource was not found.",
+        once: true,
+      },
+    ],
+    description: "The Agent was unavailable, so the editor cannot assume AGENTS.md is empty.",
+    steps: ["Choose Reload AGENTS.md. Once its contents load, edit the file to enable Save."],
   },
   workspaceUnknown: {
     group: "Components/Workspace",
@@ -4174,7 +7059,133 @@ export const scenarios = {
       click("Save AGENTS.md"),
     ],
     description:
-      "An uncertain write blocks retry until Reload lets the reader inspect current content.",
+      "After an uncertain save, reload the same file to inspect its contents before deciding whether to save again.",
+  },
+  workspaceMissingReadback: {
+    group: "Components/Workspace",
+    name: "Missing file after uncertain create",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      { suffix: "/AGENTS.md", method: "PUT", status: 503, once: true },
+    ],
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "# Interrupted first create" },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
+  },
+  workspaceVersionReread: {
+    group: "Components/Workspace",
+    name: "Reread after a version change",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    rules: [
+      // IDENTITY.md stays missing: the file-specific 404 answers the first read and the reread.
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      // The new version's gateway cannot answer the SOUL.md reread.
+      { suffix: "/SOUL.md", method: "GET", skip: 1, once: true, status: 503 },
+    ],
+    description:
+      "v7 finishes deploying while Workspace files are open. Unedited files are reread in place from it.",
+    steps: [
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
+      "IDENTITY.md keeps its missing-file error and adds no reread warning.",
+      "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
+    ],
+    gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",
+  },
+  workspaceVersionRereadFocused: {
+    group: "Components/Workspace",
+    name: "Reread keeps a focused editor's caret",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    workspaceFiles: { "SOUL.md": soulVersion("v6") },
+    // v7 serves a different SOUL.md; the reread after it succeeds.
+    rules: [
+      {
+        suffix: "/SOUL.md",
+        method: "GET",
+        skip: 1,
+        once: true,
+        data: { name: "SOUL.md", content: soulVersion("v7") },
+      },
+    ],
+    description:
+      "v7 finishes deploying while a reader has clicked into SOUL.md without editing. The file is reread with v7's contents, and the caret, selection and scroll stay where they were.",
+    steps: [
+      "Scroll SOUL.md to line 20 and select a word there. Don't type, and don't click Refresh deployment (it would take focus).",
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded. SOUL.md says SOUL.md reloaded with its current contents., and its first line now reads v7.",
+      "The selection is still on line 20 and SOUL.md has not scrolled. Type a word: it replaces the selection on line 20.",
+    ],
+    gap: "Simulated API results demonstrate presentation only. Browser tests cover the caret and scroll after a changed reread.",
+  },
+  workspaceVersionRereadUnconfirmed: {
+    group: "Components/Workspace",
+    name: "Reread cannot confirm a missing file",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    rules: [
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        once: true,
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      // A resource 404 does not confirm the file is still missing.
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        once: true,
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested platform resource was not found.",
+      },
+    ],
+    description:
+      "IDENTITY.md was read as missing; the reread for v7 gets a resource 404, which does not confirm that.",
+    steps: [
+      "IDENTITY.md shows its missing-file error.",
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
+      "IDENTITY.md says it could not be reread. Click Reload IDENTITY.md: the file now reads, and IDENTITY.md loaded. replaces the warning and the error.",
+    ],
+    gap: "Simulated API results demonstrate presentation only; the resource 404 is controlled.",
+  },
+  deletionPermissionDuringConfirmation: {
+    group: "Components/Deletion",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Delete Agent")],
+    description: "The story opens Delete before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Delete, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Delete is unavailable, without sending a delete request.",
+    ],
   },
   deletionConfirm: {
     group: "Components/Deletion",
@@ -4189,6 +7200,12 @@ export const scenarios = {
     name: "Cleanup in progress",
     path: draft,
     deleting: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1300 }],
+    steps: [
+      "Focus Refresh deletion status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again and press Tab during Checking. The response leaves focus where you moved it.",
+      "Leave the page open: the 3 s status polls do not change Refresh to Checking or rewrite the deletion notice.",
+    ],
     description:
       "An already deleting Agent retains manual confirmed recovery and status refresh controls; worker progress is simulated.",
   },
@@ -4226,6 +7243,7 @@ export const scenarios = {
     name: "Permission denied",
     path: draft,
     rules: [
+      { suffix: "/permissions", status: 503 },
       {
         path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
         method: "DELETE",
@@ -4234,7 +7252,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "A denied deletion leaves the Agent available and explains the missing permission.",
+      "Permission advice is unavailable. The attempted deletion is denied and the Console explains the missing access.",
   },
   deletionConflict: {
     group: "Components/Deletion",
@@ -4263,7 +7281,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "The request may have started cleanup. Refresh status instead of submitting again.",
+      "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
   },
   createFlow: {
     group: "Flows",
@@ -4290,7 +7308,7 @@ export const scenarios = {
       "Choose the provider first, then a compatible harness. The production form updates native Configuration and execution mode; credentials and deployment remain simulated.",
     steps: [
       "Check the inset arrows on the Namespace, Provider, Harness, and Authentication method controls. Use the controls with a mouse and keyboard.",
-      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Dedicated requires an Installation with native worker support; the separate Dedicated OpenClaw stories simulate that prerequisite.",
+      "OpenAI starts with Codex and Dedicated execution. Select OpenClaw: Embedded is selected and channel controls are disabled. Expand Runtime details and select Dedicated; the OpenClaw harness stays selected and channel controls become available.",
       "Select Anthropic: only OpenClaw is available, and the previous provider's credential and model are cleared. Enter a dummy API key and choose a listed model.",
       "Select OpenAI again: Codex is selected by default. Choose Service Accounts, enter a dummy token, and choose a listed model.",
       "Select OpenClaw: authentication changes to API key and the token and model are cleared. Enter a dummy API key and select a model to continue creation.",
@@ -4299,13 +7317,25 @@ export const scenarios = {
   },
   createExitFlow: {
     group: "Flows",
-    name: "Restart Agent creation",
+    name: "Keep an Agent draft",
     path: create,
-    description: "Leave a default starter Agent form and return to the initial creation choices.",
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+        once: true,
+      },
+    ],
+    description:
+      "Leave a default starter Agent form and return to it, keep it after a refused Create, then discard it with Cancel.",
     steps: [
       "Choose Start with default Preset and enter an Agent name.",
-      "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
+      "Select the Agents link, then choose Create Agent again: the form returns with the name.",
+      "Choose a listed model, create a model Secret, and select Create Agent: a simulated conflict refuses it once. Leave and return the same way: the name, model, and Secret return, ready to retry.",
+      "Select Cancel and confirm Discard this draft. Choose Create Agent: the initial choices are shown.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },
@@ -4475,7 +7505,7 @@ export const scenarios = {
     steps: [
       "Start on the Agents list and open oceclaw.",
       "Confirm the Console shows a selected deployed revision, simulated deployment status, and available native admin access.",
-      "Click Open native admin UI. The target fixture opens with an existing #openclaw-feedback message.",
+      "Click Open admin console. The target fixture opens with an existing #openclaw-feedback message.",
       "Enter a new message, click Send in the simulated Admin UI, and confirm the visible assistant reply.",
     ],
     gap: "The Admin UI target is a fixture page. It demonstrates the link target and chat-shaped result only; it does not connect to a gateway, Slack, credentials, or a model.",
@@ -4537,6 +7567,30 @@ export const scenarios = {
     ],
     gap: "The fixture proves saved Console state and request shape only. Use a live Slack app to prove channel delivery.",
   },
+  stopPermissionDuringConfirmation: {
+    group: "Components/Stop Agent",
+    name: "Permission arrives while confirmation is open",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    rules: [{ suffix: "/permissions", delayMs: 3500 }],
+    actions: [click("Stop Agent")],
+    description: "The story opens Stop before the delayed permission summary answers no.",
+    steps: [
+      "Watch the open confirmation explain the restriction, disable Stop, and move focus to Cancel.",
+      "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
+    ],
+  },
+  dangerZoneReader: {
+    group: "Pages/Agent detail",
+    name: "Danger zone, viewer cannot stop or delete",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent operate and delete, so the page has no Danger zone: neither Stop Agent nor Delete Agent is offered.",
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
   stopConfirm: {
     group: "Components/Stop Agent",
     name: "Confirmation",
@@ -4544,6 +7598,22 @@ export const scenarios = {
     deployed: true,
     actions: [click("Stop Agent")],
     description: "Confirm stopping the Agent or cancel without changing its requested state.",
+    steps: [
+      "Confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the version detail does not reload.",
+      "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
+    ],
+  },
+  stopPending: {
+    group: "Components/Stop Agent",
+    name: "Stop pending",
+    path: revision,
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", hold: true }],
+    actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
+    description:
+      "The Stop request is held, so the confirmation stays on Stopping…. The button is busy, not unavailable: it sets aria-busy and shows the progress pointer (finding 1927).",
+    steps: ["Hover Stopping…: the pointer is progress, not not-allowed, and Cancel is disabled."],
+    gap: "The request never answers; this story does not verify a stop.",
   },
   stopRequested: {
     group: "Components/Stop Agent",
@@ -4551,8 +7621,25 @@ export const scenarios = {
     path: revision,
     deployed: true,
     stopped: true,
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, delayMs: 1800 }],
+    steps: [
+      "Focus Refresh stop status and press Enter. When Checking finishes, focus returns to Refresh.",
+      "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
+    ],
     description:
-      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+  },
+  stopReadDiscoversDeletion: {
+    group: "Components/Stop Agent",
+    name: "Deletion discovered",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    deletingOnRefresh: true,
+    description: "Another actor starts deletion after the page loads.",
+    steps: [
+      "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
+    ],
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -4574,6 +7661,13 @@ export const scenarios = {
     description:
       "An absent selected version does not establish candidate cleanup. Explicit repeated Stop remains available; history is readable.",
   },
+  stopNeverDeployed: {
+    group: "Components/Stop Agent",
+    name: "Never deployed",
+    path: draft,
+    description:
+      "An Agent created without a deploy is stopped with no version, so the danger zone has no Stop row and the overview reports no stop request.",
+  },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
     name: "Repeated Stop outcome unknown",
@@ -4585,17 +7679,21 @@ export const scenarios = {
       click("Request Stop again"),
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
-    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
+    description:
+      "An uncertain repeated Stop offers only Refresh stop status until a successful readback.",
   },
   stopDenied: {
     group: "Components/Stop Agent",
     name: "Permission denied",
     path: revision,
     deployed: true,
-    rules: [{ suffix: "/stop", method: "POST", status: 403 }],
+    rules: [
+      { suffix: "/permissions", status: 503 },
+      { suffix: "/stop", method: "POST", status: 403 },
+    ],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "An authorization denial keeps the Agent running and explains the required access.",
+      "Permission advice is unavailable. The attempted stop is denied and the Console explains the required access.",
   },
   stopUnknown: {
     group: "Components/Stop Agent",
@@ -4605,22 +7703,25 @@ export const scenarios = {
     rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "An uncertain stop response requires a status refresh before another stop request.",
+      "Stop may have been accepted. Refresh stop status checks this Agent without sending another stop request.",
   },
   stopFlow: {
     group: "Flows",
     name: "Stop an Agent",
-    path: revision,
+    path: `${revision}&tab=workspace`,
     deployed: true,
+    clearRevisionOnStopReadback: true,
     description:
       "Open the Stop Agent confirmation and request the stopped desired state while preserving draft, revisions, credentials, and workspace data.",
     steps: [
       "Open Stop Agent and review the confirmation copy.",
-      "Confirm Stop Agent. The page reports Stop requested and keeps revision/workspace inspection available.",
+      "With Workspace files open, confirm Stop Agent. The result stays in view, focus moves to Refresh stop status, and the current version still has file editors.",
+      "Refresh stop status. The fixture now clears the current version; Workspace shows why files are unavailable, without reloading the page.",
+      "Open Configuration, then Workspace files again. The unavailable notice remains; the old editors do not return.",
       "Focus Request Stop again, press Enter, then Cancel or Escape. Focus returns to Request Stop again without submitting. Reopen and confirm if recovery is needed; refresh an uncertain outcome before retrying.",
       "Return to Create new version and Deploy new version to request running again.",
     ],
-    gap: "Stop Agent confirms OCC accepted the stopped desired state and selected revision metadata only. Verify live gateway shutdown outside Console if required. Disabling a channel does not stop the Agent; deletion is destructive.",
+    gap: "The fixture separates Stop acceptance from the next read clearing the selected revision. Neither establishes that a live gateway shut down. Disabling a channel does not stop the Agent; deletion is destructive.",
   },
   deleteFlow: {
     group: "Flows",
@@ -4638,3 +7739,170 @@ export const scenarios = {
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
   },
 };
+
+for (const [id, state, name] of [
+  ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  [
+    "policyConfigurationAlternate",
+    "alternate",
+    "Another Driver renders enum fields from its schema",
+  ],
+  ["policyConfigurationLoading", "discoveryLoading", "Configuration discovery loading"],
+  ["policyConfigurationDenied", "discoveryDenied", "Configuration discovery denied"],
+  ["policyConfigurationStale", "stalePreview", "A superseded preview preserves the newer draft"],
+  [
+    "policyConfigurationRefresh",
+    "refreshRace",
+    "Overlapping policy refreshes retain the newest read",
+  ],
+  ["policyConfigurationJson", "json", "Complex fields retain invalid JSON for correction"],
+  [
+    "policyConfigurationHidden",
+    "ownerDenied",
+    "Policy hidden while independent logs remain visible",
+  ],
+  ["policyConfigurationInvalid", "invalid", "Configuration preview field errors"],
+  ["policyConfigurationConflict", "conflict", "Configuration version conflict retains draft"],
+  ["policyDenialsEmpty", "empty", "No denials in the loaded window"],
+  ["policyDenialsDisabled", "disabled", "Policy editing disabled"],
+  ["policyDenialsUnsupported", "unsupported", "Sandbox policy capability unavailable"],
+  ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
+  ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
+  ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
+  ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],
+  ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
+  ["policyDenialsCeilingDenied", "ceilingDenied", "Policy addition exceeds the delegation ceiling"],
+  [
+    "policyDenialsSuggestionsUnavailable",
+    "suggestionsUnavailable",
+    "Manual policy editing without suggestions",
+  ],
+  ["policyDenialsReadDenied", "readDenied", "Policy logs denied but policy remains editable"],
+  ["policyDenialsLoading", "loading", "Policy decisions loading"],
+  [
+    "policyDenialsNoCredential",
+    "noCredential",
+    "Policy logs unavailable without runtime credentials",
+  ],
+  ["policyDenialsProtected", "protected", "Protected execution refuses network policy additions"],
+]) {
+  scenarios[id] = {
+    group: "Pages/Agent detail",
+    name,
+    path: `${candidateVersion}&tab=policy`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    policyState: state,
+    ...(state === "discoveryLoading"
+      ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
+      : {}),
+    ...(state === "discoveryDenied"
+      ? { rules: [{ suffix: "/driver-configurations", status: 403 }] }
+      : {}),
+    ...(state === "stalePreview" ? { rules: [{ suffix: "/validate", delayMs: 3000 }] } : {}),
+    description:
+      "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
+    steps: [
+      "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
+      "Use the schema field Add and Remove controls to edit proposed rules. Confirm these local edits do not save. Review changes and return with Back to editing.",
+      "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
+      "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
+    ],
+    gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "refreshRace"
+      ? {
+          description:
+            "Another operator's simulated saves advance the policy between two overlapping reads.",
+          steps: [
+            "Double-click Refresh policy. The older read returns first; wait for saved policy v3.",
+            "Apply the saved policy to the current revision. Observe pending status, then simulated provider confirmation from continued polling.",
+          ],
+        }
+      : {}),
+    ...(state === "ownerDenied"
+      ? {
+          steps: [
+            "Refresh denials and confirm the independent log window loads even though discovery has no policy descriptor.",
+            "Scroll to the policy and suggestion permission refusals. Confirm neither offers a retry or editing control.",
+          ],
+        }
+      : {}),
+    ...(state === "unsupported"
+      ? {
+          steps: [
+            "The tab says once that the Sandbox Driver does not support per-Agent network policy. It reads no Sandbox logs or suggestions and offers no editor.",
+          ],
+        }
+      : {}),
+    ...(state === "protected"
+      ? {
+          steps: [
+            "The tab states that protected execution applies: the Credential Proxy routes alone govern this Agent's egress, so network policy additions are refused. The proposal editor and Apply are unavailable.",
+            "A rule saved before protected execution applied blocks every protected deploy. Choose Remove saved network rules and confirm the saved policy is now empty.",
+          ],
+        }
+      : {}),
+    ...(state === "ceilingDenied"
+      ? {
+          steps: [
+            "Review the suggested outside.example.org addition and compare it with the Installation delegation ceiling.",
+            "Choose Review changes. The preview ceiling rejection must be announced and brought into view, with the attempted addition preserved for correction.",
+            "Confirm the saved policy version and additions are unchanged. This preview simulates the API rejection; the browser integration exercises actual OCC admission.",
+          ],
+        }
+      : {}),
+    ...(state === "applyRejected"
+      ? {
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "incompletePreview"
+      ? {
+          steps: [
+            "Choose Review suggestion, then Review changes. The preview omits the rules; your proposal stays editable and Save is unavailable.",
+          ],
+        }
+      : {}),
+    ...(state === "unconfirmedSave"
+      ? {
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "The save response omits the rule. Confirm that live application was not requested, then choose Refresh policy to see the rule that was saved.",
+          ],
+        }
+      : {}),
+    ...(state === "readDenied"
+      ? { rules: [{ suffix: "/runtime/logs", status: 403, code: "AUTHORIZATION_DENIED" }] }
+      : {}),
+    ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
+    ...(state === "noCredential"
+      ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+  };
+}
+
+// The shell and assets are produced by the API's actual theme loader/renderer.
+for (const [id, source, name, theme] of [
+  ["themeSignIn", "login", "Custom sign-in", "custom"],
+  ["themeNavigation", "agents", "Custom desktop navigation", "custom"],
+  ["themeMobile", "mobile", "Custom mobile navigation", "custom"],
+  ["themeLongName", "agents", "Long product name", "long-name"],
+  ["themeEmpty", "agentsEmpty", "Custom empty state", "custom"],
+  ["themeDenied", "agentsDenied", "Custom denied state", "custom"],
+  ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
+  ["themeCredentials", "authMissing", "Custom missing credentials", "custom"],
+  ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
+]) {
+  scenarios[id] = {
+    ...scenarios[source],
+    name,
+    theme,
+    description:
+      "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
+  };
+}

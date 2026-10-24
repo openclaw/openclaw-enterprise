@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { get as httpGet } from "node:http";
 import { createServer } from "node:https";
@@ -23,8 +24,14 @@ const echoPattern =
     ? undefined
     : new RegExp(process.env.PROBE_ENDPOINT_ECHO_PATTERN, "g");
 const observing = process.env.PROBE_OBSERVE_NATIVE_PORT !== undefined;
+const publicReadJourney = process.env.PROBE_PUBLIC_READ_JOURNEY === "1";
+const skipperFixture =
+  process.env.PROBE_SKIPPER_PREPARED_COMPUTE === "1"
+    ? (await import("./skipper-prepared-compute-model.mjs")).skipperPreparedComputeEvents
+    : undefined;
 const nativePort = Number(process.env.PROBE_OBSERVE_NATIVE_PORT);
 const statusPort = Number(process.env.PROBE_OBSERVE_STATUS_PORT);
+const credentialLabels = readCredentialLabels(process.env.PROBE_ENDPOINT_CREDENTIAL_DIGESTS);
 // Codex opens the Responses API over a WebSocket first and falls back to HTTPS.
 // Use the WebSocket implementation the runtime image already ships.
 const { WebSocketServer } = createRequire("/app/node_modules/ws/package.json")("ws");
@@ -35,6 +42,47 @@ const rejection = JSON.stringify({
     code: "invalid_api_key",
   },
 });
+
+function readCredentialLabels(value) {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error();
+    }
+    const entries = Object.entries(parsed);
+    const labels = new Map();
+    if (entries.length === 0) {
+      throw new Error();
+    }
+    for (const [label, digest] of entries) {
+      if (
+        !/^[a-z][a-z0-9-]{0,63}$/.test(label) ||
+        typeof digest !== "string" ||
+        !/^[0-9a-f]{64}$/.test(digest) ||
+        labels.has(digest)
+      ) {
+        throw new Error();
+      }
+      labels.set(digest, label);
+    }
+    return labels;
+  } catch {
+    throw new Error("Invalid probe endpoint credential digests");
+  }
+}
+
+function callerLabel(request) {
+  if (credentialLabels === undefined) {
+    return undefined;
+  }
+  const token = /^Bearer (\S+)$/i.exec(request.headers.authorization ?? "")?.[1];
+  return token === undefined
+    ? null
+    : (credentialLabels.get(createHash("sha256").update(token).digest("hex")) ?? null);
+}
 
 function emit(event) {
   process.stdout.write(`${JSON.stringify({ ...event, at: Date.now() })}\n`);
@@ -115,8 +163,66 @@ function answerEvents(model, text) {
   ];
 }
 
+// The smoke's model stand-in requests a real Codex tool call. The command reads
+// the endpoint from the managed skill; the provider-only title is never supplied
+// to the model or the command before the tool output returns.
+function publicReadEvents(model, request) {
+  if (!publicReadJourney) {
+    return undefined;
+  }
+  let input;
+  try {
+    input = JSON.parse(request).input;
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const output = input.find(
+    (item) => item.type === "function_call_output" && item.call_id === "public-read-call",
+  );
+  if (output) {
+    const result = JSON.stringify(output.output);
+    const title = result.match(/public-pull-[0-9a-f-]{36}/u)?.[0];
+    const curlCode = result.match(/curl: \(([0-9]{1,3})\)/u)?.[1];
+    emit({
+      event: "public-read-tool-result",
+      result: title ? "title-returned" : curlCode ? `curl-${curlCode}` : "no-title",
+    });
+    return answerEvents(model, title ?? "PUBLIC_READ_TOOL_FAILED");
+  }
+  if (!request.includes("OCE_PUBLIC_READ_JOURNEY")) {
+    return undefined;
+  }
+  const command = [
+    "set -eu",
+    'test "$CODEX_NETWORK_PROXY_ACTIVE" = 1',
+    'test "$CODEX_NETWORK_ALLOW_LOCAL_BINDING" = 0',
+    'origin=$(grep -Eo "http://[0-9.]+:8080" /home/node/.openclaw/skills/public-github-read/SKILL.md | head -1)',
+    'curl -q --proxy "$HTTP_PROXY" --noproxy "" --fail-with-body -sS --max-time 15 "$origin/repos/example/public-project/pulls/27"',
+  ].join("\n");
+  const item = {
+    type: "function_call",
+    call_id: "public-read-call",
+    name: "exec_command",
+    arguments: JSON.stringify({ cmd: command }),
+  };
+  const base = {
+    id: "resp_public_read",
+    object: "response",
+    model,
+    created_at: Math.floor(Date.now() / 1000),
+  };
+  return [
+    { type: "response.created", response: { ...base, status: "in_progress", output: [] } },
+    { type: "response.output_item.done", output_index: 0, item },
+    { type: "response.completed", response: { ...base, status: "completed", output: [item] } },
+  ];
+}
+
 // Answer one model turn after the configured delay, unless the caller left.
-function turn(transport, model, request, respond, closed) {
+function turn(transport, model, request, respond, closed, caller) {
   emit({ event: "request", transport, turn: true });
   if (mode === "hang") {
     return;
@@ -126,11 +232,16 @@ function turn(transport, model, request, respond, closed) {
     if (closed()) {
       return;
     }
-    respond(answerEvents(model, text));
+    respond(
+      skipperFixture?.({ model, request, answerEvents, emit }) ??
+        publicReadEvents(model, request) ??
+        answerEvents(model, text),
+    );
     emit({
       event: "turn-answered",
       transport,
       status: 200,
+      ...(caller === undefined ? {} : { caller }),
       ...(echoPattern === undefined ? {} : { text }),
     });
   }, delayMs);
@@ -139,6 +250,12 @@ function turn(transport, model, request, respond, closed) {
 const server = createServer(
   { key: readFileSync("/fixture/key.pem"), cert: readFileSync("/fixture/cert.pem") },
   (request, response) => {
+    const caller = callerLabel(request);
+    if (caller === null) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(rejection);
+      return;
+    }
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
@@ -189,6 +306,7 @@ const server = createServer(
         body,
         (events) => sseResponse(response, events),
         () => response.destroyed,
+        caller,
       );
     });
   },
@@ -202,7 +320,8 @@ server.on("tlsClientError", (error) => emit({ event: "tls-error", code: error.co
 
 const sockets = new WebSocketServer({ noServer: true });
 server.on("upgrade", (request, socket, head) => {
-  if (mode === "reject") {
+  const caller = callerLabel(request);
+  if (caller === null || mode === "reject") {
     emit({ event: "request", transport: "websocket", turn: true });
     socket.end(
       "HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\n" +
@@ -256,6 +375,7 @@ server.on("upgrade", (request, socket, head) => {
           }
         },
         () => !open,
+        caller,
       );
     });
   });

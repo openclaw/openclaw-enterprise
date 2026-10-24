@@ -12,10 +12,23 @@ app.kubernetes.io/component: {{ .component }}
 {{- $_ := required "grafana.adminSecretName must name an existing private Secret" .Values.grafana.adminSecretName -}}
 {{- if empty .Values.cluster.cidrs }}{{ fail "cluster.cidrs must identify Kubernetes API endpoints" }}{{ end -}}
 {{- range .Values.cluster.cidrs }}
-{{- if not (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+/32$" .) }}{{ fail "cluster.cidrs requires exact IPv4 /32 endpoints" }}{{ end -}}
+{{- /* One IPv4 host. The old pattern accepted leading zeros and octets above 255, which Go's ParseCIDR rejects. */ -}}
+{{- if not (regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32$" (toString .)) }}{{ fail "cluster.cidrs requires exact IPv4 /32 endpoints" }}{{ end -}}
 {{- end -}}
 {{- range $name, $image := .Values.images }}
 {{- if not (regexMatch "^[^[:space:]@]+@sha256:[a-f0-9]{64}$" $image) }}{{ fail (printf "images.%s must use an immutable SHA-256 reference" $name) }}{{ end -}}
+{{- /* Docker permits uppercase in the registry host and tag, never in the repository path. Keep the existing reference-shape rule, including IPv6 registry hosts. */ -}}
+{{- $remainder := $image -}}
+{{- if contains "/" $image -}}
+{{- $first := index (splitn "/" 2 $image) "_0" -}}
+{{- if or (eq $first "localhost") (regexMatch "[.:]" $first) (ne (lower $first) $first) -}}
+{{- $remainder = index (splitn "/" 2 $image) "_1" -}}
+{{- end -}}
+{{- end -}}
+{{- $repository := index (splitn ":" 2 $remainder) "_0" -}}
+{{- if ne (lower $repository) $repository -}}
+{{- fail (printf "images.%s repository path must be lowercase; Kubernetes refuses to pull an uppercase one" $name) -}}
+{{- end -}}
 {{- end -}}
 {{- range $index, $client := .Values.grafana.clients }}
 {{- if or (empty $client.namespace) (empty $client.podLabels) }}{{ fail "grafana.clients requires namespace and nonempty podLabels" }}{{ end -}}

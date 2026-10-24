@@ -98,8 +98,8 @@ jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
 done
 ```
 
-The deployment inventory lists every Namespace, Agent, desired state and active
-revision. A controller that predates `deployment-inventory` cannot answer it;
+The deployment inventory lists every Namespace, Agent, desired state and selected
+version. A controller that predates `deployment-inventory` cannot answer it;
 the per-Namespace `agent list` records the same Agents. `secret list` returns
 metadata only.
 
@@ -113,10 +113,38 @@ pg_dump --format=custom --file "$BASELINE/openclaw_enterprise.pgdump" "$OCC_MIGR
 pg_restore --list "$BASELINE/openclaw_enterprise.pgdump" >/dev/null
 ```
 
-`migrations.txt` holds the migration receipts. `pg_restore --list` proves the
-dump is readable, not that it restores; follow your database's backup and
-restore procedure when the release has migrations that may need data restored.
-Use a `pg_dump` at least as new as the server.
+`migrations.txt` holds the migration receipts. `pg_restore --list` only checks
+that the dump is readable. Before relying on the backup, restore it into a
+separate disposable database. Provision the required roles first, and use an
+identity authorized to restore ownership and grants. Set `RESTORE_DATABASE_URL`
+to that database privately. Use a `pg_dump` at least as new as the server.
+
+```bash
+pg_restore --exit-on-error --single-transaction --dbname "$RESTORE_DATABASE_URL" \
+  "$BASELINE/openclaw_enterprise.pgdump"
+```
+
+Keep normal ownership and ACL restoration; do not use `--no-owner` or
+`--no-acl`. Set `RESTORED_MIGRATION_DATABASE_URL` privately to the dedicated
+migrator login for that same restored database. From the matching release, run:
+
+```bash
+OCC_MIGRATION_DATABASE_URL="$RESTORED_MIGRATION_DATABASE_URL" pnpm db:migrate:production --check
+```
+
+Require exit 0, `migration.checked`, and the expected `history`. Compare all
+receipts with the baseline:
+
+```bash
+psql "$RESTORED_MIGRATION_DATABASE_URL" -At \
+  -c 'SELECT id, hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id' |
+  diff -u "$BASELINE/migrations.txt" -
+```
+
+Compare the data you must retain with the appropriate baseline. The [catalog boundary](../../reference/settings/operations.md#migration-history)
+recognizes one reviewed logical-restore equivalent. A successful check does not
+prove backup completeness or provenance, and does not authorize a launch,
+recovery, or retry. Do not restore over the original database.
 
 ## Record Agent data
 
@@ -144,12 +172,12 @@ eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
 Rerun the same commands into a new directory and compare. Expect new image
 digests and Pod names, new Helm revisions, the new controller image and
 Installation checksum in the live values, receipts appended by the release's
-migrations and, after a runtime release, new active revision IDs. Several of an
+migrations and, after a runtime release, new selected Agent revision IDs. Several of an
 Agent's NetworkPolicies and, for a dedicated Agent, its Harness Service select
-the active revision, so a runtime release changes the revision in those
+the selected version, so a runtime release changes the Agent revision ID in those
 selectors. A dedicated Agent's gateway Deployment, Service and HTTPRoute can
 also be recreated; the Service gets a new cluster IP and the HTTPRoute new
-revision annotations. Agents add and delete
+Agent revision annotations. Agents add and delete
 their own workspace files, so the file count can change slightly. Investigate
 any other change, in particular a changed PVC UID, a missing or altered earlier
 receipt, any other NetworkPolicy, Service or RoleBinding change, a different

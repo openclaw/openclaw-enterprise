@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
-import { setTimeout as delay } from "node:timers/promises";
 import { createHumanLogin } from "../../apps/controller/src/auth/github.ts";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
 import { idTokenSigner, rsaSigningKey } from "./id-token.mjs";
+import { listen } from "./listen.mjs";
+import { waitUntil } from "./wait-for.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const { APIError, betterAuth } = await import(require.resolve("better-auth"));
@@ -163,10 +164,21 @@ export function createLoginFixture({
   };
 }
 
-export async function expectDenied(response) {
+export async function expectDenied(response, code = undefined) {
   assert.equal(response.status, 401);
-  assert.deepEqual(await response.json(), { message: "Authentication was not accepted." });
+  assert.deepEqual(
+    await response.json(),
+    code === undefined
+      ? { message: "Authentication was not accepted." }
+      : { message: "Authentication was not accepted.", code },
+  );
   assert.doesNotMatch(response.headers.get("set-cookie") ?? "", /session_token|login_receipt/);
+}
+
+// A provider failure carries its code, which the controller turns into the Console's outage
+// advice; it is resolved before any identity, so it reveals nothing about accounts.
+export function expectProviderUnavailable(response) {
+  return expectDenied(response, "PROVIDER_UNAVAILABLE");
 }
 
 export function cookiePairs(response) {
@@ -177,11 +189,7 @@ export function cookiePairs(response) {
 }
 
 export async function until(predicate) {
-  const deadline = performance.now() + 2_000;
-  while (!predicate()) {
-    assert.ok(performance.now() < deadline, "Expected transport observation before deadline");
-    await delay(10);
-  }
+  await waitUntil("the transport observation", predicate, { timeoutMs: 2_000, intervalMs: 10 });
 }
 
 // Sends only the provider's fixed URLs to `target`. Real fetch, cancellation, stream
@@ -216,12 +224,7 @@ export async function startProviderServer(t, handle) {
   // overdue server timer destroys it, and fails as a provider outage. Only the client
   // closes idle connections here.
   server.keepAliveTimeout = 0;
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return { requests, port: server.address().port };
+  return { requests, port: await listen(t, server) };
 }
 
 // One subtest per [endpoint, step] and framing. The endpoint answers past the provider
@@ -251,7 +254,7 @@ export async function testOversizedProviderBodies(t, { endpoints, serve, provide
             response.write(declared ? "x" : "x".repeat(64 * 1024 + 1));
           });
           const started = performance.now();
-          await expectDenied(await fixture.callback());
+          await expectProviderUnavailable(await fixture.callback());
           assert.ok(performance.now() - started < 2_000);
           await until(() => closed);
           assert.deepEqual(fixture.subjects, []);

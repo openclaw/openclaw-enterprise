@@ -4,18 +4,17 @@ import test from "node:test";
 
 import {
   checkGrafanaDatasource,
+  containerLogTail,
+  distinctPorts,
+  portClash,
   queryPrometheus,
   waitForMonitoring,
 } from "../helpers/metrics-monitoring-readiness.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 async function loopbackServer(t, respond) {
   const server = createServer(respond);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(async () => {
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return `http://127.0.0.1:${await listen(t, server)}`;
 }
 
 // The diagnostic a non-retryable readiness query error carries.
@@ -174,4 +173,52 @@ test("null or malformed Prometheus responses retain their stage and status", asy
       expected,
     );
   }
+});
+
+test("monitoring ports are distinct and picked within a bound", async () => {
+  const picks = [9100, 9100, 9200];
+  assert.deepEqual(await distinctPorts(2, async () => picks.shift()), [9100, 9200]);
+  let picked = 0;
+  await assert.rejects(
+    distinctPorts(
+      2,
+      async () => {
+        picked += 1;
+        return 9100;
+      },
+      4,
+    ),
+    {
+      message: "Unable to pick 2 distinct free ports in 4 attempts.",
+    },
+  );
+  assert.equal(picked, 4, "the bound counts every pick");
+});
+
+test("only a listener bind failure counts as a port clash", () => {
+  assert.equal(
+    portClash(
+      'time=2026-10-17T05:20:03.290Z level=ERROR source=main.go:1180 msg="Unable to start web listener" err="listen tcp 127.0.0.1:41234: bind: address already in use"',
+    ),
+    true,
+  );
+  assert.equal(portClash('level=ERROR msg="Error loading config" err="parsing YAML file"'), false);
+  // Another bind failure is not a port someone else took; new ports would not help.
+  assert.equal(
+    portClash(
+      'msg="Unable to start web listener" err="listen tcp 127.0.0.1:80: bind: permission denied"',
+    ),
+    false,
+  );
+});
+
+test("a container log diagnostic keeps the last lines one per entry", () => {
+  const log = `${Array.from({ length: 30 }, (_, index) => `line ${index}`).join("\n")}\n\n`;
+  assert.deepEqual(containerLogTail(log, 3), ["line 27", "line 28", "line 29"]);
+  assert.deepEqual(containerLogTail("only\r\n"), ["only"]);
+  // By default the last 15 lines.
+  assert.deepEqual(
+    containerLogTail(log),
+    Array.from({ length: 15 }, (_, index) => `line ${index + 15}`),
+  );
 });

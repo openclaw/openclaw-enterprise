@@ -30,7 +30,7 @@ func TestK3dStartupRejectsConflictingHostPortsBeforeSetup(t *testing.T) {
 			t.Setenv("OCC_DEVELOPMENT_STATE_DIRECTORY", state)
 			// No external tools can run: invalid ports must be rejected first.
 			t.Setenv("PATH", t.TempDir())
-			err = upK3d(context.Background(), Options{Repository: parent}, tc.mode)
+			err = upK3d(context.Background(), Options{Repository: parent}, tc.mode, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), "ports must differ") {
 				t.Fatalf("expected port rejection before setup, got %v", err)
 			}

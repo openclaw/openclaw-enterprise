@@ -40,8 +40,14 @@ graph TD
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`
 accepts an optional closed `observability` block in trusted Installation YAML.
-It rejects malformed URLs, unsupported schemes, credentials, fragments, and
-unknown fields. Production and configured PostgreSQL development pass the
+It rejects malformed URLs, unsupported schemes, credentials, fragments, an IPv4
+host that is not four decimal octets from 0 to 255 with no leading zeros, a
+tab or newline, a backslash before the query, and unknown fields. Shorthand
+and integer hosts, and any `@` before the host, stop
+API and worker startup with log code `OBSERVABILITY_URL_INVALID`; correct the
+URL and restart. The
+[breaking-change notice](../../guides/deploy/breaking-changes.md) has the
+wording. Production and configured PostgreSQL development pass the
 validated URL to `createFastifyApp`. Compose development also accepts an
 observability-only YAML with its default Drivers. Changing it requires API restart; it is
 not persisted as an Installation resource or used as an OTLP export target.
@@ -52,7 +58,7 @@ not persisted as an Installation resource or used as an OTLP export target.
 
 The console settles the read once per session owner: an allowed response or a `403` is reused across navigation and, through tab `sessionStorage` keyed by the noncredential session binding, across reloads in the same tab, so a Namespace-only user produces one audited denial per session and tab rather than one per page. Transient failures retry on the next page load. Logout and an owner change clear the result. Revoking or granting administration takes effect in the console at the next sign-in or in a new tab; the API check still applies to every request. The settled answer also tells Agent detail whether to mount the Installation-admin sharing panel.
 
-`apps/controller/src/console/shell.mjs:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
+`apps/controller/src/console/shell.mts:renderShell` adds **Observability** with an external-link icon only for a returned URL. It opens a separate tab with `noopener noreferrer`; the browser does not send the OCC session to the destination. The external service authenticates the user independently.
 
 ## Debugging and Verification
 
@@ -72,6 +78,10 @@ The console settles the read once per session owner: an allowed response or a `4
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-14 12:20: Startup refuses a tab, newline, or a backslash before the query, and logs `OBSERVABILITY_URL_INVALID`. A backslash in the query stays. (2383)
+
+- 2026-10-13 22:10: Startup refuses an observability IPv4 host that is not four decimal octets. (2329)
 
 - 2026-10-05 01:30: A navigation joins the in-flight probe instead of repeating it. (flake-hunt-8)
 

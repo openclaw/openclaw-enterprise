@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { renameSync } from "node:fs";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
+import { createControllerAuth } from "../helpers/password-hasher.mjs";
 import { resolveApprovedHarness as resolveApprovedDevelopmentHarness } from "../../apps/controller/src/composition/production-harness.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
@@ -17,6 +17,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
+import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const run = promisify(execFile);
 const occCli = join(process.cwd(), "bin", "occ");
@@ -83,6 +84,14 @@ test("service API keys authenticate scoped automation without replacing sessions
       });
       return controller;
     },
+  });
+  let rotateKeyBeforeResponse;
+  app.addHook("onSend", (_request, reply, payload, done) => {
+    if (rotateKeyBeforeResponse && reply.statusCode === 403) {
+      rotateKeyBeforeResponse();
+      rotateKeyBeforeResponse = undefined;
+    }
+    done(null, payload);
   });
   await app.listen({ host: "127.0.0.1", port: 0 });
   t.after(() => app.close());
@@ -251,8 +260,7 @@ test("service API keys authenticate scoped automation without replacing sessions
   );
 
   await t.test("occ CLI exercises Configuration CRUD and Agent stop/delete", async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), "openclaw-occ-cli-"));
-    t.after(() => rm(directory, { recursive: true, force: true }));
+    const directory = await temporaryDirectory(t, "openclaw-occ-cli-");
     const keyFile = join(directory, "service-key.json");
     const adminKeyFile = join(directory, "admin-service-key.json");
     const bodyFile = join(directory, "configuration.json");
@@ -794,6 +802,8 @@ test("service API keys authenticate scoped automation without replacing sessions
     });
     assert.equal(JSON.parse(deletingAgent.stdout).status, "deleting");
 
+    // Rotate after admission refuses the Namespace key, before the CLI receives that refusal.
+    rotateKeyBeforeResponse = () => renameSync(adminKeyFile, keyFile);
     await assert.rejects(
       run(occCli, ["installation", "get", "--output", "json"], { env }),
       (error) => {
@@ -801,9 +811,13 @@ test("service API keys authenticate scoped automation without replacing sessions
         assert.equal(error.stdout, "");
         assert.match(error.stderr, /FORBIDDEN/);
         assert.match(error.stderr, /HTTP 403/);
+        assert.ok(error.stderr.includes(`is scoped to Namespace ${namespaceId};`));
         return true;
       },
     );
+    // A new command reads the replacement Installation key; only the refused one used the old key.
+    assert.equal(rotateKeyBeforeResponse, undefined, "rotated the key before delivering the 403");
+    await run(occCli, ["iam", "service-principal", "list"], { env });
   });
 
   await t.test(
