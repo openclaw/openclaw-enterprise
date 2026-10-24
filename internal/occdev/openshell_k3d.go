@@ -187,6 +187,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err := r.validateDevelopmentRepositoryImage(ctx); err != nil {
 		return err
 	}
+	if err := r.selectDevelopmentImageRegistry(ctx); err != nil {
+		return err
+	}
 	state.ContainerEngine = r.engine
 	state.DockerHost = r.env["DOCKER_HOST"]
 	exists, err := r.clusterExists(ctx, state.Cluster)
@@ -270,6 +273,17 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
+	// The node pulls registry-pinned images while the registry is attached to
+	// the cluster network; it is detached once every image is in the node, and
+	// before the rollback deletes the network on failure.
+	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
+		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
+	}
+	defer func() {
+		if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 
 	var runtimeImage string
 	if sandboxDriver == "none" {
@@ -340,6 +354,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		if err != nil {
 			return err
 		}
+	}
+	if err := r.detachDevelopmentImageRegistry(ctx); err != nil {
+		return err
 	}
 	var assets *openShellDevelopmentAssets
 	if sandboxDriver == "openshell" {

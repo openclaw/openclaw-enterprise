@@ -231,6 +231,9 @@ func (r *runner) importRuntime(ctx context.Context, s *developmentState) (string
 }
 
 func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState, image string) (result string, resultErr error) {
+	if port, path, ok := r.imageRegistry.source(image); ok {
+		return r.pullDevelopmentImage(ctx, s, image, port, path)
+	}
 	selected := image
 	if strings.Contains(image, "@") {
 		digest := sha256.Sum256([]byte(image))

@@ -412,6 +412,11 @@ async function buildImages({ preparedGit = false } = {}) {
   }
   await exportEnvironment({
     ...repository,
+    // The k3d node pulls the controller and runtime images from this loopback
+    // registry by digest instead of importing exported archives.
+    ...(preparedGit
+      ? {}
+      : { OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER: slotNames.registryContainer }),
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
     OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
