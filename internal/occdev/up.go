@@ -68,12 +68,16 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return err
 	}
-	apiPort, err := positiveSetting(r, "OPENCLAW_DEV_PORT", 3000, 65535)
-	if err != nil {
-		return err
-	}
-	if err := checkAPIKubernetesPorts(apiPort, port); err != nil {
-		return err
+	// A shell value wins over env files, so refuse its collision before any tool runs. Without
+	// one, .env or --env-file can still move the port: the rendered check below decides.
+	if r.env["OPENCLAW_DEV_PORT"] != "" {
+		apiPort, err := positiveSetting(r, "OPENCLAW_DEV_PORT", 3000, 65535)
+		if err != nil {
+			return err
+		}
+		if err := checkAPIKubernetesPorts(apiPort, port); err != nil {
+			return err
+		}
 	}
 	threshold, err := positiveSetting(r, "OCC_DEVELOPMENT_KUBERNETES_DISK_THRESHOLD_PERCENT", 5, 20)
 	if err != nil {
@@ -196,11 +200,13 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if err != nil {
 		return fmt.Errorf("invalid analyzed API URL: %w", err)
 	}
-	// Compose files and --env-file can move the published API port, so check the rendered one too.
-	if renderedAPIPort, err := strconv.Atoi(parsedAPI.Port()); err == nil {
-		if err := checkAPIKubernetesPorts(renderedAPIPort, port); err != nil {
-			return err
-		}
+	// Compose files, .env and --env-file can move the published API port; this one binds.
+	renderedAPIPort, err := strconv.Atoi(parsedAPI.Port())
+	if err != nil {
+		return fmt.Errorf("invalid analyzed API URL port: %q", parsedAPI.Port())
+	}
+	if err := checkAPIKubernetesPorts(renderedAPIPort, port); err != nil {
+		return err
 	}
 	if state.BrowserPort != 0 && parsedAPI.Port() == strconv.Itoa(state.BrowserPort) {
 		return fmt.Errorf("browser and controller API ports must differ")
