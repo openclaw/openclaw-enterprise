@@ -31,6 +31,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   agentPostRequests,
+  allowNativeProvider,
   configurationPostRequests,
   createRepositoryLaunchFixture,
   enterManualModel,
@@ -145,6 +146,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository Agent");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await allowNativeProvider(page, "openai");
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page
     .getByRole("alert")

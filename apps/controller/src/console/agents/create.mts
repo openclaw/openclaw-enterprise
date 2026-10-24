@@ -55,6 +55,50 @@ import {
   rejectionMessage,
 } from "./list.mjs";
 
+function harnessPluginPolicyConflict(values: LaunchValues, harnessId: string, providerId: string) {
+  const pluginId = harnessId === "codex" ? "codex" : providerId;
+  const requirement =
+    harnessId === "codex"
+      ? "for the Codex Harness"
+      : `for the OpenClaw ${providerId} model provider`;
+  const plugins = values.plugins ?? {};
+  if (plugins.enabled === false) {
+    return `Configuration setting plugins.enabled must not be false ${requirement}.`;
+  }
+  for (const key of ["allow", "deny"] as const) {
+    const list = plugins[key];
+    if (list !== undefined && (!Array.isArray(list) || list.some((id) => typeof id !== "string"))) {
+      return `Configuration setting plugins.${key} must be a list of plugin IDs.`;
+    }
+  }
+  const ids = (list: string[] | undefined) =>
+    (list ?? []).map((id) => id.trim().toLowerCase()).filter(Boolean);
+  if (ids(plugins.deny).includes(pluginId)) {
+    return `Configuration setting plugins.deny must not list ${pluginId} ${requirement}.`;
+  }
+  const allow = ids(plugins.allow);
+  if (allow.length > 0 && !allow.includes(pluginId)) {
+    return `Configuration setting plugins.allow must include ${pluginId} ${requirement}. To permit this plugin, open Advanced settings → Configuration JSON and add "${pluginId}" to plugins.allow, keeping its existing entries.`;
+  }
+  const entries = Object.entries(plugins.entries ?? {}).filter(
+    ([id]) => id.trim().toLowerCase() === pluginId,
+  );
+  // Persisted JSON and replay fingerprints cannot preserve ordered alias overrides.
+  if (entries.length > 1) {
+    return `Configuration setting plugins.entries must contain at most one entry for ${pluginId} after trimming whitespace and ignoring case; remove duplicate entries.`;
+  }
+  const entry = entries[0]?.[1];
+  if (
+    entry !== null &&
+    typeof entry === "object" &&
+    "enabled" in entry &&
+    entry.enabled === false
+  ) {
+    return `Configuration setting plugins.entries.${pluginId}.enabled must not be false ${requirement}. To enable this plugin, open Advanced settings → Configuration JSON and set plugins.entries.${pluginId}.enabled to true.`;
+  }
+  return "";
+}
+
 type ApplyPreset = Parameters<typeof createPresetFields>[1];
 type PresetOptions = Partial<Parameters<ApplyPreset>[1]>;
 type Permissions = Static<typeof NamespaceCallerPermissionsResponse>["data"];
@@ -103,7 +147,12 @@ type LaunchValues = Record<string, unknown> & {
     entries?: Record<string, { model?: ModelSelection; models?: Record<string, ModelSettings> }>;
   };
   models?: { providers?: Record<string, { models?: ProviderModel[] }> };
-  plugins?: { entries?: Record<string, unknown>; allow?: string[] };
+  plugins?: {
+    enabled?: unknown;
+    entries?: Record<string, unknown>;
+    allow?: string[];
+    deny?: string[];
+  };
 };
 
 function modelPrimary(selection: ModelSelection | undefined): string | undefined {
@@ -1297,22 +1346,23 @@ function renderAgentForm(
       }
     }
     values.models = { ...values.models, providers };
+    const codex = values.plugins?.entries?.codex;
+    const codexDisabled =
+      codex !== null && typeof codex === "object" && "enabled" in codex && codex.enabled === false;
     if (next.plugins) {
+      const runtimeEntry = {
+        ...next.plugins.entries.codex,
+        ...(codexDisabled ? { enabled: false } : {}),
+      };
       values.plugins = {
         ...values.plugins,
-        allow: [...new Set([...(values.plugins?.allow ?? []), ...next.plugins.allow])],
         entries: {
           ...values.plugins?.entries,
-          codex: resetTransport
-            ? next.plugins.entries.codex
-            : (values.plugins?.entries?.codex ?? next.plugins.entries.codex),
+          codex: resetTransport ? runtimeEntry : (codex ?? runtimeEntry),
         },
       };
-    } else if (values.plugins?.entries?.codex) {
+    } else if (values.plugins?.entries?.codex && !codexDisabled) {
       delete values.plugins.entries.codex;
-      if (Array.isArray(values.plugins.allow)) {
-        values.plugins.allow = values.plugins.allow.filter((id) => id !== "codex");
-      }
     }
     configuration.value = JSON.stringify(values, null, 2);
     // Snapshot the serialized selections, where an undefined primary is omitted. Unrelated
@@ -1322,7 +1372,7 @@ function renderAgentForm(
         ? modelSelections(JSON.parse(configuration.value) as LaunchValues)
         : undefined;
     configuration.setCustomValidity("");
-    feedback.textContent = "";
+    feedback.textContent = harnessPluginPolicyConflict(values, harness.value, nativeProvider.value);
     renderChannelEditor();
   }
   function clearModelCredential() {
@@ -3009,6 +3059,11 @@ function renderAgentForm(
     if (mode.value === "embedded" && hasEnabledChannel(values)) {
       feedback.textContent =
         "Channels require Dedicated execution. Select Dedicated under Runtime details or disable configured channels before creating the Agent.";
+      return;
+    }
+    const pluginConflict = harnessPluginPolicyConflict(values, harness.value, nativeProvider.value);
+    if (pluginConflict) {
+      feedback.textContent = `${pluginConflict} Update Configuration JSON or choose a compatible Harness and provider.`;
       return;
     }
     const repositoryBindings = repositories.bindings();

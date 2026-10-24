@@ -10,6 +10,12 @@ This record preserves the dated changes to the harness execution topology flow. 
 
 - 2026-10-22 22:10: Gateway readiness also requires native `/startupz`. Native `/readyz` admits a Gateway while OpenClaw still inspects its agent databases in the background, for example after an unclean stop, and the first chat turn then failed with HTTP 500. `/startupz` holds until that inspection ends. (fix-2185 - 16e97918f)
 
+- 2026-10-02 06:00: Budget the workspace node binding ack wait per binding across activation retries. (fix-deploy-node-pairing)
+
+- 2026-09-30 09:30: Include the Harness network profile in Service selectors for EKS policy resolution. (authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e - 0d00e8970b69)
+
+- 2026-09-30 21:00: Delete a repaired embedded predecessor's Secret and ConfigMap copies at repair time. (fix/dogfood3b-1)
+
 - 2026-09-30 10:30: Repair a never-served unready embedded Gateway during redeploy with pending workspace setup. (fix-dogfood-1)
 
 - 2026-09-30 09:54: Correct dedicated replacement: the worker stops the predecessor Gateway before preparation, so redeploys interrupt service. (authoring-run/a37a9c9b-9e94-4bd2-88c5-dfa5c5f94d12 - 90899dc55ab7)

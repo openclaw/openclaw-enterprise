@@ -1,8 +1,7 @@
 # Harness execution
 
-A Harness calls models and runs Agent tools. Bundled deployments run OpenClaw
-inside the gateway or OpenClaw or Codex in a separate runtime. Select the Agent's
-execution mode and a compatible model and Harness in its Configuration.
+A Harness calls models and runs Agent tools. Select a compatible execution mode,
+model and Harness in Agent Configuration.
 
 For an overview of the Gateway/Harness boundary and file flows, see
 [Remote Harness execution and split storage](../guides/topics/remote-harness.md).
@@ -24,14 +23,13 @@ a dedicated gateway and Harness run as separate Pods in the Agent's
 ServiceAccount and storage. Embedded OpenClaw and its built-in Harness remain
 one untrusted workload.
 
-Each dedicated AgentRevision owns one Harness that all its sessions share: the
-Codex app server or the native OpenClaw node host. OpenShell contains the whole
-AgentRevision, not each session; see
-[Agent runtime isolation](security/runtime-isolation.md#agent-runtime-isolation)
-for the trust boundary. The node host admits a configurable number of
-session-owned worker processes with separate managed workspaces; Kubernetes
-defaults to eight retained workers. Additional sessions are refused until a
-hosted session stops, and active workers are not displaced.
+Each dedicated AgentRevision owns one shared Harness: Codex app server or native
+OpenClaw node host.
+[OpenShell isolates the AgentRevision](security/runtime-isolation.md#agent-runtime-isolation),
+not sessions. The node host retains session-owned worker processes with separate
+managed workspaces (configurable limit, Kubernetes default eight). At capacity,
+it refuses new sessions until a hosted session stops, without displacing active
+workers.
 
 Dedicated Codex has no separate OCE session-count limit. Active top-level turns
 use OpenClaw's `agents.defaults.maxConcurrent`, which defaults, absent an
@@ -59,10 +57,16 @@ built-in provider with no runtime policy, custom provider, or plugin routing.
 `openai`, `codex`, explicitly configured providers, and plugin-routed providers
 require an explicit supported runtime policy.
 
-Dedicated Codex accepts only the native `codex` provider, or `openai` when the
+Dedicated Codex accepts `codex`, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
 in the separate Harness workspace.
+
+OCE Kubernetes admission refuses Agent save, provisioning and deployment
+if required `codex` or OpenClaw `openai`/`anthropic` plugins are disabled, denied,
+excluded from nonempty allowlists, or duplicated after normalization.
+Missing/empty allowlists are unrestricted. OCE requires explicit permission,
+unlike Gateway runtime-only provider auto-enable.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an
@@ -98,8 +102,7 @@ revoked authority, or a missing required Driver fail closed; see
 
 ## Harness authentication
 
-The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
-model-auth selector. Kubernetes supports these combinations:
+The Agent's [harnessAuth binding](agents.md#harness-authentication) selects model authentication. Kubernetes supports:
 
 | Binding                                     | Topology           | Credential consumer                                                                                               |
 | ------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |

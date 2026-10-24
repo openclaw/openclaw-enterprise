@@ -19,6 +19,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   agentPostRequests,
+  allowNativeProvider,
   agentProvisionPostRequests,
   configurationPostRequests,
   createModelCredentialSecret,
@@ -126,6 +127,9 @@ async function openModelSourceForm(t, fixture, namespace, harness = "codex") {
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
+  if (harness === "openclaw") {
+    await allowNativeProvider(page, "openai");
+  }
   await page.getByLabel("Harness", { exact: true }).selectOption(harness);
   if (harness === "openclaw") {
     await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -198,6 +202,7 @@ test("The pinned runtime lets the Console request dedicated OpenClaw provisionin
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
+  await allowNativeProvider(page, "openai");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
   const mode = page.getByLabel("Execution mode");
@@ -886,6 +891,7 @@ async function fillOpenClawDraft(t, fixture, namespace, name) {
   await startWithoutPreset(page, fixture, namespace);
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Agent name").fill(name);
+  await allowNativeProvider(page, "openai");
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await enterManualModel(page, `model-secret-${randomUUID()}`, "gpt-5.1");
   await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -1291,6 +1297,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
     {
       name: "a mode the reader picked is kept",
       async before(page) {
+        await allowNativeProvider(page, "openai");
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
         await page.locator(".launch-runtime:not([open]) > summary").click();
         await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -1304,6 +1311,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
       // Choosing the harness again hands the mode back to the form.
       name: "a picked mode followed by a harness change is the form's again",
       async before(page) {
+        await allowNativeProvider(page, "openai");
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
         await page.locator(".launch-runtime:not([open]) > summary").click();
         await page.getByLabel("Execution mode").selectOption("dedicated");
@@ -1315,6 +1323,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
     {
       name: "Anthropic keeps Embedded",
       async before(page) {
+        await allowNativeProvider(page, "anthropic");
         await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       },

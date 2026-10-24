@@ -26,6 +26,49 @@ import type { HarnessAuthMethodRule } from "../harness-auth-method.ts";
  */
 type SettingError = (setting: string, requirement: string) => Error;
 
+/** The selected runtime needs its plugin; admission must not widen the caller's policy. */
+export function requireHarnessPluginPolicy(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  pluginId: string,
+  requirement: string,
+  createError: SettingError,
+): void {
+  const plugins = asRecord(configuration.plugins);
+  if (plugins?.enabled === false) {
+    throw createError("plugins.enabled", `must not be false ${requirement}`);
+  }
+  const ids = (key: "allow" | "deny"): readonly string[] => {
+    const list = plugins?.[key];
+    if (list === undefined) {
+      return [];
+    }
+    if (!Array.isArray(list) || list.some((id) => typeof id !== "string")) {
+      throw createError(`plugins.${key}`, "must be a list of plugin IDs");
+    }
+    return (list as string[]).map((id) => id.trim().toLowerCase()).filter(Boolean);
+  };
+  if (ids("deny").includes(pluginId)) {
+    throw createError("plugins.deny", `must not list ${pluginId} ${requirement}`);
+  }
+  const allow = ids("allow");
+  if (allow.length > 0 && !allow.includes(pluginId)) {
+    throw createError("plugins.allow", `must include ${pluginId} ${requirement}`);
+  }
+  const entries = Object.entries(asRecord(plugins?.entries) ?? {}).filter(
+    ([id]) => id.trim().toLowerCase() === pluginId,
+  );
+  // Provisioning fingerprints and PostgreSQL jsonb cannot preserve ordered alias overrides.
+  if (entries.length > 1) {
+    throw createError(
+      "plugins.entries",
+      `must contain at most one entry for ${pluginId} after trimming whitespace and ignoring case; remove duplicate entries`,
+    );
+  }
+  if (asRecord(entries[0]?.[1])?.enabled === false) {
+    throw createError(`plugins.entries.${pluginId}.enabled`, `must not be false ${requirement}`);
+  }
+}
+
 export const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 
 /**

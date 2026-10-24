@@ -694,3 +694,152 @@ test("public Agent revisions return the selected binding without private credent
   const historical = await fixture.request("GET", `${path}/${revision.id}`);
   assert.deepEqual(historical.data.harnessAuth, agent.harnessAuth);
 });
+
+for (const providerId of ["codex", "openai", "anthropic"]) {
+  test(`REST ${providerId} Agent admission rejects blocked native plugin policy without changing Configuration`, async (t) => {
+    const harnessId = providerId === "codex" ? "codex" : "openclaw";
+    const executionMode = harnessId === "codex" ? "dedicated" : "embedded";
+    const configurationValues = () => {
+      const values = createHarnessConfiguration(harnessId, "gpt-5.1");
+      values.plugins ??= {};
+      if (providerId === "anthropic") {
+        const ref = "anthropic/claude-sonnet-4-5";
+        values.agents.defaults = {
+          model: ref,
+          models: { [ref]: { agentRuntime: { id: "openclaw" } } },
+        };
+        values.models.providers = {
+          anthropic: { api: "anthropic-messages", models: [{ id: "claude-sonnet-4-5" }] },
+        };
+      }
+      return values;
+    };
+    const fixture = await createConsoleAppFixture(t, {
+      filesystemConfiguration: true,
+      channelRuntime: true,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`REST ${providerId} native plugin policy`, {
+      ready: true,
+    });
+    const secret = await fixture.createSecret(namespace.id, "Model key", "synthetic-model-key");
+    const policies = [
+      [{ allow: ["knowledge"] }, "plugins.allow"],
+      [{ deny: [` ${providerId.toUpperCase()} `] }, "plugins.deny"],
+      [{ enabled: false }, "plugins.enabled"],
+      [{ entries: { [providerId]: { enabled: false } } }, `plugins.entries.${providerId}.enabled`],
+      [
+        { entries: { [providerId.toUpperCase()]: { enabled: false } } },
+        `plugins.entries.${providerId}.enabled`,
+      ],
+      // Required-plugin aliases are ambiguous in either order, even with equal enablement.
+      ...[true, false].flatMap((enabled) =>
+        [false, true].map((reverse) => {
+          const entries = [
+            [providerId, { enabled: true }],
+            [` ${providerId.toUpperCase()} `, { enabled }],
+          ];
+          return [
+            { entries: Object.fromEntries(reverse ? entries.reverse() : entries) },
+            "plugins.entries must contain at most one entry",
+          ];
+        }),
+      ),
+      [{ allow: providerId }, "plugins.allow"],
+      [{ deny: [42] }, "plugins.deny"],
+    ];
+    for (const [policy, setting] of policies) {
+      const values = configurationValues();
+      Object.assign(values.plugins, policy);
+      // Configuration may be staged; binding an Agent must reject policy that blocks its runtime or provider.
+      const configuration = await fixture.createConfiguration(namespace.id, values);
+      const response = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: `Blocked ${providerId} Agent`,
+          executionMode,
+          configurationId: configuration.id,
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+      });
+      assert.equal(response.status, 400, JSON.stringify(response.body));
+      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assert.ok(response.body.error.message.includes(setting), response.body.error.message);
+      const saved = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.deepEqual(saved.data.values.plugins, values.plugins);
+      assert.deepEqual(
+        (await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data,
+        [],
+      );
+    }
+    // Missing/empty allowlists are unrestricted; explicit permission remains valid without rewriting it.
+    for (const allow of [
+      undefined,
+      [],
+      ["knowledge", providerId],
+      [` ${providerId.toUpperCase()} `],
+    ]) {
+      const values = configurationValues();
+      delete values.plugins.allow;
+      if (allow !== undefined) {
+        values.plugins.allow = allow;
+      }
+      values.plugins.deny = ["blocked-plugin"];
+      const configuration = await fixture.createConfiguration(namespace.id, values);
+      const response = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+        body: {
+          name: `Allowed ${providerId} ${JSON.stringify(allow)}`,
+          executionMode,
+          configurationId: configuration.id,
+          harnessAuth: { method: "api_key", source: secret.ref },
+        },
+      });
+      assert.equal(response.status, 201, JSON.stringify(response.body));
+      const saved = await fixture.request(
+        "GET",
+        `/namespaces/${namespace.id}/configurations/${configuration.id}`,
+      );
+      assert.deepEqual(saved.data.values.plugins, values.plugins);
+    }
+
+    const existing = await fixture.createAgent(
+      namespace.id,
+      "Policy update Agent",
+      configurationValues(),
+      {
+        executionMode,
+        harnessAuth: { method: "api_key", source: secret.ref },
+      },
+    );
+    const blocked = configurationValues();
+    blocked.plugins.allow = ["knowledge"];
+    // Staged Configuration edits cannot bypass validation through an existing Agent or deployment.
+    await fixture.updateConfiguration(namespace.id, existing.configurationId, blocked);
+    for (const [method, path, body] of [
+      [
+        "PATCH",
+        `/namespaces/${namespace.id}/agents/${existing.id}`,
+        { configurationId: existing.configurationId },
+      ],
+      ["POST", `/namespaces/${namespace.id}/agents/${existing.id}/deploy`, undefined],
+    ]) {
+      const response = await fixture.request(method, path, { body });
+      assert.equal(response.status, 400, `${method} ${path}: ${JSON.stringify(response.body)}`);
+      assert.equal(response.body.error.code, "INVALID_REQUEST");
+      assert.ok(response.body.error.message.includes("plugins.allow"), response.body.error.message);
+    }
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${existing.configurationId}`,
+    );
+    assert.deepEqual(saved.data.values.plugins, blocked.plugins);
+    const unchanged = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/agents/${existing.id}`,
+    );
+    assert.equal(unchanged.data.name, "Policy update Agent");
+    assert.equal(unchanged.data.activeRevisionId, existing.activeRevisionId);
+  });
+}

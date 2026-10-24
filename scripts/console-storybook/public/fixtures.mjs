@@ -610,6 +610,9 @@ export function installFixture(scenario, evidence) {
       ),
     );
   }
+  if (scenario.nativePluginSettings) {
+    preset.template.configuration.values.plugins = structuredClone(scenario.nativePluginSettings);
+  }
   if (scenario.modelFallbackSelection) {
     const ids = ["primary-model", "fallback-one", "fallback-two"];
     preset.name = "Models with ordered fallbacks";

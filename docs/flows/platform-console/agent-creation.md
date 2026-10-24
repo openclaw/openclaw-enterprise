@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
-updated: 2026-10-20
-last_updated_session: fix-1020c
+updated: 2026-10-24
+last_updated_session: authoring-run/01899543-402d-43ab-86e0-b54e3afdd9ad
 ---
 
 # Console Agent creation
@@ -57,6 +57,17 @@ Credential, provider, and Harness changes clear results and invalidate pending r
 
 ### 2. Choose a model and starter Configuration
 
+`create.mts:updateModelConfiguration` preserves `plugins.allow` and `plugins.deny`,
+changing Codex’s runtime wiring without replacing an explicit disabled entry's
+`enabled: false`. Switching away retains that disable; an absent entry gets enabled
+defaults when Codex is selected. `harnessPluginPolicyConflict` refuses blocked
+runtime/provider plugins before validation or creation requests. A disabled-entry
+refusal names the `enabled: true` repair. An allowlist refusal directs the operator
+to add the named plugin in **Advanced settings → Configuration JSON**, keeping
+existing entries. Kubernetes Compute’s `validateHarnessAuth` enforces
+[OCE's admission policy](../../reference/harness-execution.md#native-runtime-selection)
+for API callers.
+
 `create.mts:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
 `renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
 `updateControls`. Manual mode preserves `model.value` and clears the dropdown.
@@ -81,6 +92,8 @@ permits creation without bindings, and only without retained selections; other
 failures block submission.
 
 ### 4. Submit provisioning or an ordinary draft
+
+`apps/controller/src/console/agents/create.mts:renderAgentForm`
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
@@ -140,5 +153,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ## Changelog
 
+- 2026-10-24 10:33: Preserve an explicit Codex disable through Harness switches and explain the required repair before creation. (authoring-run/01899543-402d-43ab-86e0-b54e3afdd9ad - e699c55f8)
 - 2026-10-22 10:56: Confirm creation responses before granting access or continuing provisioning. (console-create-delivery-20261022 - eef3442ff)
+- 2026-10-21 16:25: Preserve authored native plugin permissions across Harness selection and explain explicit repairs for conflicts refused before writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - bac4fdd4f)
 - 2026-10-20 05:00: Split from the platform console flow's step 3. (docs-split-1020)

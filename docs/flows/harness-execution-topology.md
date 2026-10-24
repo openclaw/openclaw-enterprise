@@ -74,6 +74,11 @@ An associated
 `access_token` additionally requires dedicated Codex; the frozen account
 contains only its OCC identity, credential kind, and opaque Secret reference.
 
+`apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts:requireHarnessPluginPolicy`
+rejects policies that block Codex or OpenClaw’s selected provider during Harness
+admission, including provisioning replay, retry and worker checks before effects.
+Required-plugin aliases must be unique.
+
 ### 2. Claim work and realize the approved topology
 
 `apps/controller/src/worker.ts:ControllerWorker`
@@ -302,6 +307,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
 
+- 2026-10-20 12:09: Preserve native plugin policy and reject required-plugin conflicts during Harness admission. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 61140f671)
+
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
@@ -350,11 +357,5 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - 2026-10-02 14:00: End node pairing and ack waits early for claimable Work. (r7-d221)
 
 - 2026-10-02 12:00: Delete a replaced embedded predecessor's Secret and ConfigMap copies at activation re-render. (fix-d280-embedded-retire)
-
-- 2026-10-02 06:00: Budget the workspace node binding ack wait per binding across activation retries. (fix-deploy-node-pairing)
-
-- 2026-09-30 09:30: Include the Harness network profile in Service selectors for EKS policy resolution. (authoring-run/1373b7f3-e273-466a-b9da-bb197bdb469e - 0d00e8970b69)
-
-- 2026-09-30 21:00: Delete a repaired embedded predecessor's Secret and ConfigMap copies at repair time. (fix/dogfood3b-1)
 
 [Harness execution topology documentation history](harness-execution-topology/history.md) preserves the older dated entries.

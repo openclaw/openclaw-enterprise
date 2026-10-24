@@ -260,6 +260,34 @@ release, which alone can settle it, then follow the
 [Credential Proxy upgrade](credential-proxy-upgrade.md). Do not replay uncertain
 work.
 
+## 2026-10-21: required Harness plugins need explicit permission
+
+**What breaks.** With Kubernetes Compute, Agent creation, Agent PATCH and deploy
+return `400` if native plugin policy blocks `codex` for Codex, or `openai`/`anthropic`
+for the selected OpenClaw provider. Fresh provisioning, replay and retry also
+return `400`. A previously queued conflicting plan fails permanently with
+`PROVISIONING_REJECTED` before resource creation. Running versions are unchanged.
+
+**Who is affected.** Stored Configurations, Presets and provisioning plans with
+`plugins.enabled: false`, a required plugin in `plugins.deny`, a nonempty
+`plugins.allow` missing it, a disabled required entry, or duplicate required
+entries after trimming whitespace and ignoring case. Missing/empty allowlists
+remain unrestricted. This is stricter
+[OCE admission policy](../../reference/harness-execution.md#native-runtime-selection):
+the pinned Gateway can add a selected provider to its in-memory allowlist at startup.
+
+**How to tell.** The refusal names the setting, such as
+`Configuration setting plugins.allow must include openai for the OpenClaw openai model provider.`
+
+**Steps.** If you intend to permit the plugin, edit the draft Configuration or
+Preset explicitly. For example, when switching the default Codex Preset to
+OpenClaw/OpenAI, change `plugins.allow` from `["codex"]` to `["codex", "openai"]`.
+Keep other entries. Remove only the required plugin from `plugins.deny`, set
+`plugins.enabled` and `plugins.entries.<required-id>.enabled` to `true` if disabled,
+and consolidate aliases into one entry. Otherwise choose a compatible Harness/provider.
+Save and deploy again. Stored provisioning plans are immutable: submit corrected
+settings with a new request ID instead of replaying or retrying the old plan.
+
 ## 2026-10-16: stored model provider settings are checked at deploy
 
 **What breaks.** On every Compute, deploying or redeploying an Agent runs the

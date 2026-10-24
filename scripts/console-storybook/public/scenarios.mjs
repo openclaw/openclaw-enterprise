@@ -23,6 +23,22 @@ const runtimeLogsPage = {
 };
 const refuseLogRead = { suffix: "/runtime/logs", status: 403, code: "FORBIDDEN" };
 const form = [click("Start with default Preset")];
+const nativePluginForm = [
+  { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+  { selector: "#preset-variable-name", value: "Native plugin example" },
+  { selector: "#preset-variable-model", value: "gpt-5.1" },
+  { selector: "#preset-variable-modelSecret", value: "storybook-model-key" },
+  click("Use Preset"),
+  { selector: ".launch-advanced summary", click: true },
+];
+const nativePlugins = {
+  entries: { knowledge: { enabled: true, config: { collection: "team-notes" } } },
+};
+const nativePluginSteps = [
+  "Inspect Configuration JSON, then select Codex. The allowlist and denylist stay unchanged; only Codex's runtime entry is added.",
+  "With an allowlist excluding Codex, try Create Agent: the policy conflict requires an explicit Configuration JSON edit.",
+  "Select OpenClaw again. Confirm the same policy remains and Codex's runtime entry is removed.",
+];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
 const reservedConfigurationWrite = {
@@ -3182,6 +3198,87 @@ export const scenarios = {
     actions: existingPresetSecret,
     description:
       "An empty Namespace Secret catalog requires creating a new Secret or returning after a Secret is available.",
+  },
+  createNativePluginsUnrestricted: {
+    group: "Pages/Create Agent",
+    name: "Native plugins without an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: nativePlugins,
+    actions: nativePluginForm,
+    description:
+      "Harness switches preserve an omitted native plugin allowlist and configured entries.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: ["knowledge", "openai"] },
+    actions: nativePluginForm,
+    description:
+      "A restrictive allowlist is preserved. Selecting Codex reports the conflict rather than granting permission.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsEmptyAllowlist: {
+    group: "Pages/Create Agent",
+    name: "Native plugins with an empty allowlist",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, allow: [] },
+    actions: nativePluginForm,
+    description: "An explicitly authored empty array remains unrestricted in both Harnesses.",
+    steps: nativePluginSteps,
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsCodexRoundTrip: {
+    group: "Pages/Create Agent",
+    name: "Codex allowlist round-trip",
+    path: create,
+    standardCodexPreset: true,
+    actions: [...passwordPresetForm, { selector: ".launch-advanced summary", click: true }],
+    description:
+      "The shipped Codex Preset keeps its codex-only allowlist. OpenClaw reports its blocked OpenAI provider.",
+    steps: [
+      'Inspect plugins.allow, switch to OpenClaw, then back to Codex. The list stays [codex] throughout. Try Create Agent with OpenClaw: the refusal directs you to Advanced settings → Configuration JSON. To permit OpenAI, explicitly change plugins.allow from ["codex"] to ["codex", "openai"], keeping the existing entry, then submit again.',
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsDenyConflict: {
+    group: "Pages/Create Agent",
+    name: "Codex denied by native policy",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: { ...nativePlugins, deny: ["codex"] },
+    actions: [...nativePluginForm, { selector: "#agent-harness", value: "codex" }],
+    description: "Selecting Codex preserves the denylist and reports the conflict before creation.",
+    steps: [
+      "Try Create Agent. Edit Configuration JSON to deliberately remove the codex denial, or select OpenClaw.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
+  },
+  createNativePluginsDisabledEntry: {
+    group: "Pages/Create Agent",
+    name: "Codex explicitly disabled in Configuration",
+    path: create,
+    standardOpenclawPreset: true,
+    nativePluginSettings: {
+      ...nativePlugins,
+      allow: ["knowledge", "openai", "codex"],
+      entries: { ...nativePlugins.entries, codex: { enabled: false } },
+    },
+    actions: nativePluginForm,
+    description:
+      "Selecting Codex preserves its explicit disable. Creation requires an explicit Configuration JSON repair; an absent entry still gets enabled runtime defaults.",
+    steps: [
+      "Inspect plugins.entries.codex.enabled: false, then select Codex. The entry stays disabled and the refusal names the exact Configuration JSON edit.",
+      "Switch to OpenClaw and back to Codex. The explicit disable remains. Try Create Agent: no validation or creation request is sent.",
+      "Set plugins.entries.codex.enabled to true in Configuration JSON, then select Create Agent. The simulated workflow starts provisioning.",
+    ],
+    gap: "Simulated UI proof; no plugin is loaded or model turn executed.",
   },
   createStandardOpenclawPreset: {
     group: "Pages/Create Agent",
