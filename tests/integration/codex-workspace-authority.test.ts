@@ -1,3 +1,7 @@
+import { globalAgent } from "node:https";
+import { connect } from "node:tls";
+import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
+import type { EgressRoute } from "../../packages/contracts/src/index.ts";
 import { once } from "node:events";
 import type { IncomingMessage } from "node:http";
 import pg from "pg";
@@ -725,6 +729,295 @@ async function workspaceJourney(t: TestContext, persistence: "memory" | "postgre
   const secret = await f.request("GET", `/namespaces/${f.namespace.id}/secrets/${f.secret.id}`);
   assert.equal(secret.status, 200);
 }
+
+test("bundled workspace registration admits the five native routes and refuses substituted policy or sender", async (t) => {
+  const workspace = "synthetic-workspace";
+  const identity = {
+    chatgpt_account_id: workspace,
+    chatgpt_account_is_fedramp: false,
+    chatgpt_user_id: "synthetic-user",
+    chatgpt_plan_type: "team",
+  };
+  const tls = await selfSigned(await temporaryDirectory(t, "bundled-workspace-"), {
+    subjectAltName: "DNS:auth.openai.com,DNS:chatgpt.com",
+  });
+  const calls: string[] = [];
+  const account = {
+    id: workspace,
+    name: "Synthetic workspace",
+    plan_type: "team",
+    structure: "workspace",
+    workspace_backend_origin: "https://chatgpt.com",
+    account_routing_override: "NO_CONSTRAINT",
+  };
+  const replies = new Map<string, unknown>([
+    ["/api/accounts/v1/user-auth-credential/whoami", identity],
+    [
+      "/backend-api/wham/accounts/check",
+      { accounts: [account], account_ordering: [workspace], default_account_id: workspace },
+    ],
+    ["/backend-api/codex/models?client_version=0.163.0", { models: [nativeModel()] }],
+    [
+      "/backend-api/codex/responses",
+      {
+        output: [
+          {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Synthetic reply" }],
+          },
+        ],
+      },
+    ],
+    [
+      "/backend-api/wham/config/bundle",
+      { config_toml: { enterprise_managed: [] }, requirements_toml: { enterprise_managed: [] } },
+    ],
+  ]);
+  const port = await listen(
+    t,
+    createServer(tls, (request, response) => {
+      assert.equal(request.headers.authorization, "Bearer synthetic-key-initial");
+      calls.push(request.method + " " + request.headers.host + request.url);
+      assert.ok(replies.has(request.url!));
+      response
+        .writeHead(200, { "content-type": "application/json" })
+        .end(JSON.stringify(replies.get(request.url!)));
+    }),
+  );
+  const originalConnect = globalAgent.createConnection;
+  t.mock.method(
+    globalAgent,
+    "createConnection",
+    function (options: Record<string, unknown>, callback: unknown) {
+      if (options.host !== "auth.openai.com" && options.host !== "chatgpt.com") {
+        return originalConnect.call(globalAgent, options, callback as never);
+      }
+      return connect(
+        { ...options, host: "127.0.0.1", port, servername: options.host, ca: tls.cert },
+        callback as never,
+      );
+    },
+  );
+  const f = await staticEgressFixture(t, {
+    workspaceExchange: true,
+    proxyDriverId: "sandbox-openshell",
+    ...(databaseUrl && {
+      appFactory: (context: TestContext, options: object) => postgresApp(context, options),
+    }),
+  });
+  assert.ok("context" in f);
+  assert.equal(f.revision.harnessAuth.credentialProxyId, f.egress.id);
+  assert.equal(f.revision.executionAdmission.version, 3);
+  assert.equal(calls.length, 1);
+  // Selecting the installation alone must not enroll another Agent for workspace inference.
+  const unbound = await f.request("POST", `/namespaces/${f.namespace.id}/agents`, {
+    body: {
+      name: "unbound-agent",
+      configurationId: f.agent.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: { method: "runtime" },
+    },
+  });
+  assert.equal(unbound.status, 201);
+  const unboundMetadata = await f.deployAgent(f.namespace.id, unbound.data.id);
+  const unboundRevision = await f.controller.transact((unit: PlatformUnitOfWork) =>
+    unit.revisions.findRevision(f.namespace.id, unbound.data.id, unboundMetadata.id),
+  );
+  assert.deepEqual(unboundRevision?.egressPlan?.routes, []);
+  assert.equal(calls.length, 1);
+  await assert.rejects(f.verifyReplacedNamespace(), /Preprovisioned Kubernetes Namespace/);
+  const worker = new ProtectedExecutionDriver(f.installedDriver);
+  const wiring = await worker.configure(f.context);
+  const network = Object.values(
+    wiring.configuration.network_policies as Record<
+      string,
+      { endpoints: unknown[]; binaries: unknown }
+    >,
+  );
+  const packageRoot = "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2";
+  for (const rule of network) {
+    assert.deepEqual(rule.binaries, [
+      {
+        path:
+          packageRoot +
+          "-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+      },
+      {
+        path:
+          packageRoot +
+          "-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+      },
+    ]);
+  }
+  assert.deepEqual(
+    network.map((rule) => rule.endpoints[0]),
+    f.context.plan.routes.map((route: EgressRoute) => ({
+      host: new URL(route.origin).host,
+      ports: [443],
+      protocol: "rest",
+      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+      rules: [{ allow: { method: route.method, path: route.path } }],
+      path: route.path,
+    })),
+  );
+  const observation = await worker.observe(f.context, f.attachment);
+  assert.ok(observation?.enforcement?.peerKeyId);
+  const plan = f.context.plan;
+  const changedPlan = {
+    ...plan,
+    routes: plan.routes.map((route: EgressRoute, i: number) =>
+      i === 0 ? { ...route, origin: "https://other.invalid" } : route,
+    ),
+  };
+  const badContext = {
+    ...f.context,
+    plan: changedPlan,
+    revision: { ...f.context.revision, egressPlan: changedPlan },
+  };
+  await assert.rejects(worker.configure(badContext), /exact model-only/);
+  await assert.rejects(
+    f.sandboxDriver.provisionHarness({
+      ...badContext,
+      kubernetes: {},
+      requirements: {
+        loginMode: "codex_pat",
+        image: "runtime:fixture",
+        command: ["/app/bin/codex"],
+        workspaceMounts: [],
+        files: [],
+        labels: {},
+        environment: [],
+        credentialAttachments: [],
+        proxyWiring: { ...wiring, plan: changedPlan },
+      },
+    }),
+    /exact model-only/,
+  );
+  for (const profile of ["git-write", "github-installation"]) {
+    const git = {
+      driver: { id: "git", implementation: "github" },
+      deadlineWallMs: Date.now() + 60_000,
+      bindings: [
+        {
+          profile,
+          repositoryRef: "source",
+          backendId: "github",
+          grant: { providerInstanceId: "supplier", repositoryId: "source", grantId: "grant" },
+        },
+      ],
+    };
+    const mixed = { ...plan, repositoryGit: git, repositoryGitAuthorization: "online-request" };
+    await assert.rejects(
+      worker.configure({
+        ...f.context,
+        plan: mixed,
+        revision: { ...f.context.revision, egressPlan: mixed },
+      }),
+      /not qualified|no OpenShell release is qualified/i,
+    );
+  }
+  const captures = plan.routes.map((route: EgressRoute) => {
+    const captured = f.capture();
+    captured.request.target = {
+      ...captured.request.target,
+      method: route.method,
+      host: new URL(route.origin).host,
+      port: 443,
+      path: route.path,
+      ...(route.path.endsWith("/models") && { query: "client_version=0.163.0" }),
+    };
+    captured.request.headers.push({ name: "chatgpt-account-id", value: workspace });
+    if (route.method === "GET") captured.request.body = Buffer.alloc(0);
+    return captured;
+  });
+  for (const req of captures) {
+    const resolved = await f.resolve(req);
+    const ready: { credential_headers: { name: string; value: string }[] } = resolved.ready;
+    assert.ok(ready);
+    assert.ok((await f.authorize(f.permitRequest(req, ready))).allowed);
+    const target = req.request.target;
+    const url = new URL("https://" + target.host + target.path);
+    if ("query" in target) url.search = String(target.query);
+    const returned = await new Promise<Buffer>((resolve, reject) => {
+      const request = httpsRequest(
+        url,
+        {
+          method: target.method,
+          headers: Object.fromEntries(
+            [...req.request.headers, ...ready.credential_headers].map((h) => [h.name, h.value]),
+          ),
+        },
+        async (response) => resolve(await buffer(response)),
+      );
+      request.on("error", reject).end(req.request.body);
+    });
+    const protectedReply = await f.protect(req, {
+      status: 200,
+      headers: [{ name: "content-type", value: "application/json" }],
+      body: returned,
+      trailers: [],
+      response_complete: true,
+    });
+    assert.equal(protectedReply.response_complete, true, target.path);
+  }
+  assert.equal(calls.length, 6);
+  const reads = f.secretReads;
+  for (const override of [
+    { host: "other.invalid" },
+    { host: "alias.chatgpt.com" },
+    { method: "DELETE" },
+    { path: "/backend-api/other" },
+  ]) {
+    const req = f.capture();
+    Object.assign(req.request.target, { ...captures[3]!.request.target, ...override });
+    req.request.headers = captures[3]!.request.headers;
+    assert.ok((await f.resolve(req)).refused);
+  }
+  const wrongAccount = f.capture();
+  Object.assign(wrongAccount.request.target, captures[3]!.request.target);
+  wrongAccount.request.headers.push({ name: "chatgpt-account-id", value: "other-workspace" });
+  assert.ok((await f.resolve(wrongAccount)).refused);
+  const wrongModel = f.capture({ model: "other-model", input: "hello", store: false });
+  Object.assign(wrongModel.request.target, captures[3]!.request.target);
+  wrongModel.request.headers = captures[3]!.request.headers;
+  assert.ok((await f.resolve(wrongModel)).refused);
+  assert.equal(f.secretReads, reads);
+  // The configured name and capability list cannot substitute for the selected implementation.
+  f.observed.available = false;
+  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  f.observed.available = true;
+  f.observed.implementationName = "other/sender";
+  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  f.observed.implementationName = "oce/static-egress";
+  f.observed.implementationVersion = "2";
+  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  f.observed.implementationVersion = "1";
+  f.observed.requiredCapabilities = ["openshell.supervisor-middleware.contract"];
+  await assert.rejects(worker.configure(f.context), /no negotiated/);
+  const beforeStockRead = f.secretReads;
+  const unavailable = await f.request("POST", f.path, {
+    body: {
+      name: "stock-refusal",
+      type: "codex-pat",
+      secrets: { access_token: f.secret.ref },
+    },
+  });
+  assert.equal(unavailable.status, 503);
+  assert.equal(f.secretReads, beforeStockRead);
+  assert.equal(calls.length, 6);
+  f.observed.requiredCapabilities = undefined;
+  const registered = f.observed.observation!.registered_exchange_public_key;
+  f.observed.observation!.registered_exchange_public_key = Buffer.alloc(32, 2);
+  assert.equal(await worker.verify(f.context, observation), false);
+  f.observed.observation!.registered_exchange_public_key = registered;
+  await f.revoke();
+  const revoked = f.capture();
+  Object.assign(revoked.request.target, captures[3]!.request.target);
+  revoked.request.headers = captures[3]!.request.headers;
+  assert.ok((await f.resolve(revoked)).refused);
+  assert.equal(calls.length, 6);
+});
 
 if (databaseUrl) {
   test("registered workspace PAT exchange persists exact Harness ownership in PostgreSQL", (t) =>

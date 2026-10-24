@@ -476,6 +476,7 @@
     {
       "path": "tests/integration/codex-workspace-authority.test.ts",
       "expectedTests": [
+        "bundled workspace registration admits the five native routes and refuses substituted policy or sender",
         "registered workspace PAT exchange persists exact Harness ownership in PostgreSQL",
         "registered workspace PAT exchange enforces source ownership, response custody and withdrawal",
         "workspace PAT classifies two-turn message metadata without widening Platform policy"

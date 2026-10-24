@@ -35,6 +35,8 @@ import {
   advertisesOpenShellExecutionProfile,
   openShellExchangeCapabilities as capabilities,
 } from "./openshell-exchange-capabilities.ts";
+import { codexWorkspaceRoutes, codexWorkspaceProviderRef } from "./codex-workspace-provider.ts";
+import { verifiedCodexWorkspaceProvider } from "./codex-workspace-identity.ts";
 import { openAiStaticProvider } from "./openai-provider.ts";
 
 export interface OpenShellProxyOptions {
@@ -164,6 +166,23 @@ function enforcementEvidence(
   };
 }
 
+// The controller can run on a different architecture from the dedicated Harness.
+// Match the two canonical ELF paths in the pinned runtime package, never its npm launcher.
+const codexPackageRoot =
+  "/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2";
+const workspaceBinaries = [
+  {
+    path:
+      codexPackageRoot +
+      "-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
+  },
+  {
+    path:
+      codexPackageRoot +
+      "-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+  },
+];
+
 /** Nonsecret, exact routing consumed and independently checked by the paired Sandbox. */
 export function openShellEgressConfiguration(
   plan: ProxyPlan,
@@ -173,13 +192,38 @@ export function openShellEgressConfiguration(
     throw new Error("The protected execution permits at most one binding.");
   }
   requireConfiguration(OpenShellCredentialProxyDriver, options);
+  const workspace = plan.routes.some(
+    ({ binding }) =>
+      binding.grant.kind === "workspace_inference" ||
+      binding.source.provider.id === codexWorkspaceProviderRef.id,
+  );
+  if (workspace) {
+    const binding = plan.routes[0]!.binding;
+    if (
+      options.middlewareName !== codexWorkspaceProviderRef.id ||
+      options.repositoryMiddlewareName !== undefined ||
+      plan.repositoryGit !== undefined ||
+      plan.repositoryGitAuthorization !== undefined ||
+      plan.harnessCredentialSource !== undefined ||
+      binding.source.installationId !== plan.execution.installationId ||
+      binding.source.namespaceId !== plan.execution.namespaceId ||
+      binding.grant.kind !== "workspace_inference" ||
+      !isDeepStrictEqual(binding.source.provider, codexWorkspaceProviderRef) ||
+      !isDeepStrictEqual(binding.execution, plan.execution) ||
+      !isDeepStrictEqual(plan.routes, codexWorkspaceRoutes(binding))
+    ) {
+      throw new DependencyUnavailableError(
+        "The bundled workspace sender requires its exact model-only plan and registration.",
+      );
+    }
+  }
   const hosts = [...new Set(plan.routes.map((route) => new URL(route.origin).hostname))];
   // Keep the authority installed for a zero-route plan. The selector names no
   // reachable rule: network_policies below remains empty, never a wildcard.
   if (!hosts.length) {
     hosts.push("deny-egress.invalid");
   }
-  if (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!)) {
+  if (!workspace && (hosts.length !== 1 || !/^[a-z0-9]+(?:[.-][a-z0-9]+)*$/.test(hosts[0]!))) {
     throw new Error("Protected egress requires one literal host.");
   }
   if (plan.repositoryGit) {
@@ -206,13 +250,16 @@ export function openShellEgressConfiguration(
           `oce-egress-${index}`,
           {
             name: `oce-egress-${index}`,
+            ...(workspace && { binaries: workspaceBinaries }),
             endpoints: [
               {
                 host: origin.hostname,
                 ports: [Number(origin.port || 443)],
                 protocol: "rest",
                 enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-                access: "NETWORK_ACCESS_PRESET_FULL",
+                ...(workspace
+                  ? { rules: [{ allow: { method: route.method, path: route.path } }] }
+                  : { access: "NETWORK_ACCESS_PRESET_FULL" }),
                 path: route.path,
               },
             ],
@@ -308,6 +355,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       this.bindRepositoryGit = selection.bindRepositoryGit;
     }
     const exchange = selection.exchangeAuthority;
+    const workspace = options.middlewareName === codexWorkspaceProviderRef.id;
+    if (workspace && (!exchange || options.repositoryMiddlewareName)) {
+      throw new Error("The workspace registration requires its dedicated installation exchange.");
+    }
     if (exchange) {
       this.bindExchange = (createProxy) =>
         bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
@@ -326,6 +377,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       providers: [
         openAiStaticProvider,
         credentialFreeMetadataProvider,
+        ...(workspace ? [verifiedCodexWorkspaceProvider] : []),
         ...(selection.preparedProviders ?? []),
       ],
       assertAvailable: async (signal: AbortSignal, profile?: RepositoryGitDeliveryProfile) => {
@@ -343,12 +395,18 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         if (
           !registration ||
           !Array.isArray(extensions) ||
+          (workspace &&
+            extensions.filter((value) => asRecord(value)?.configured_name === registration)
+              .length !== 1) ||
           !extensions.some((value) => {
             const item = asRecord(value);
             return (
               item?.configured_name === registration &&
               (item.kind === "EXTENSION_KIND_SUPERVISOR_MIDDLEWARE" || item.kind === 4) &&
               item.protocol_major === 1 &&
+              (!workspace ||
+                (item.implementation_name === "oce/static-egress" &&
+                  item.implementation_version === "1")) &&
               (git ||
                 (advertisesOpenShellExecutionProfile(item.required_capabilities) &&
                   advertisesOpenShellExecutionProfile(item.supported_capabilities)))

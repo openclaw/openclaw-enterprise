@@ -3,6 +3,8 @@ import { parse as parseToml, TomlDate } from "smol-toml";
 import type {
   CredentialProviderDefinition,
   CredentialSource,
+  EgressBinding,
+  EgressRoute,
   EgressRequest,
   EgressResponse,
 } from "@openclaw-enterprise/contracts";
@@ -54,13 +56,40 @@ function framed(request: EgressRequest, host: string, workspace: string): boolea
   );
 }
 
+export const codexWorkspaceProviderRef = Object.freeze({
+  id: "codex-workspace-pat-https",
+  generation: 1,
+});
+
+/** The provider and paired Sandbox derive the same exact routes from one admitted binding. */
+export function codexWorkspaceRoutes(binding: EgressBinding): readonly EgressRoute[] {
+  return [
+    ["https://auth.openai.com", identityPath, "GET"],
+    ["https://chatgpt.com", accountPath, "GET"],
+    ["https://chatgpt.com", modelsPath, "GET"],
+    ["https://chatgpt.com", responsesPath, "POST"],
+    ["https://chatgpt.com", policyPath, "GET"],
+  ].map(([origin, path, method], index) =>
+    immutableCopy({
+      route: { id: `${binding.binding.id}/${index}`, generation: binding.binding.generation },
+      binding,
+      origin: origin!,
+      path: path!,
+      method: method as "GET" | "POST",
+      operationPolicy: { id: "codex-workspace-requests", generation: 1 },
+      responsePolicy: { id: "codex-workspace-responses", generation: 1 },
+      deadlineMs: 30_000,
+    }),
+  );
+}
+
 /** The registered Driver must separately qualify its installed sender, TLS and response
  * custody. This factory does not enable the bundled stock sender or relax its host guard. */
 export function createCodexWorkspacePatProvider(
   authority: CodexWorkspaceAuthority,
 ): CredentialProviderDefinition {
   return Object.freeze<CredentialProviderDefinition>({
-    ref: { id: "codex-workspace-pat-https", generation: 1 },
+    ref: codexWorkspaceProviderRef,
     schemaVersion: 1,
     sourceOwnership: "proxy",
     sourceType: {
@@ -107,24 +136,7 @@ export function createCodexWorkspacePatProvider(
       ) {
         throw new Error("Workspace PAT grant does not match its source and execution.");
       }
-      return [
-        ["https://auth.openai.com", identityPath, "GET"],
-        ["https://chatgpt.com", accountPath, "GET"],
-        ["https://chatgpt.com", modelsPath, "GET"],
-        ["https://chatgpt.com", responsesPath, "POST"],
-        ["https://chatgpt.com", policyPath, "GET"],
-      ].map(([origin, path, method], index) =>
-        immutableCopy({
-          route: { id: `${binding.binding.id}/${index}`, generation: binding.binding.generation },
-          binding,
-          origin: origin!,
-          path: path!,
-          method: method as "GET" | "POST",
-          operationPolicy: { id: "codex-workspace-requests", generation: 1 },
-          responsePolicy: { id: "codex-workspace-responses", generation: 1 },
-          deadlineMs: 30_000,
-        }),
-      );
+      return codexWorkspaceRoutes(binding);
     },
     classify(route, request) {
       const grant = route.binding.grant;

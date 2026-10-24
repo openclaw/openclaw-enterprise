@@ -120,12 +120,17 @@ const verifySource: NonNullable<CredentialProviderDefinition["verifySource"]> = 
   }
 };
 
-/** Used by real external Installation composition only when this exact profile is reported.
+export const verifiedCodexWorkspaceProvider: CredentialProviderDefinition = Object.freeze({
+  ...createCodexWorkspacePatProvider(authority),
+  verifySource,
+});
+
+/** Used by external Installation composition only when this exact profile is reported.
  * The package retains responsibility for sender qualification and assertAvailable evidence. */
 export function bindVerifiedCodexWorkspaceSource(
   proxy: CredentialProxyDriver,
 ): CredentialProxyDriver {
-  const provider = createCodexWorkspacePatProvider(authority);
+  const provider = verifiedCodexWorkspaceProvider;
   if (!proxy.sourceControl.providers.some((entry) => isDeepStrictEqual(entry.ref, provider.ref))) {
     return proxy;
   }
@@ -136,7 +141,7 @@ export function bindVerifiedCodexWorkspaceSource(
     if (entry.sourceType.type !== "codex-pat" || entry.sourceOwnership !== "proxy") {
       throw new Error("The reported workspace provider has invalid ownership.");
     }
-    return Object.freeze({ ...provider, verifySource });
+    return provider;
   });
   const control = proxy.sourceControl;
   // Keep lifecycle methods bound to the package instance, including private fields.

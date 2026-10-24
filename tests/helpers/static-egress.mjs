@@ -1,3 +1,8 @@
+import { createCredentialProxyInstallationConfiguration } from "./installation-driver-configuration.mjs";
+import { loadInstallationFile } from "./installation-file.mjs";
+import { gatewayRouting } from "./kubernetes-routed-scenarios.mjs";
+import { availablePort } from "./available-port.mjs";
+import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
 import {
@@ -89,6 +94,7 @@ export async function staticEgressFixture(
     includeLegacy = false,
     protectedSourceOnly = false,
     proxyDriverId = "openshell-egress",
+    workspaceExchange = false,
     now = () => new Date(),
     physicalPlacement = false,
     recordInstallation = true,
@@ -115,17 +121,35 @@ export async function staticEgressFixture(
   const certPath = generated.certPath;
   const objects = new Map();
   let namespace;
+  const namespaceUid = randomUUID();
+  let observedUid = namespaceUid;
   const namespaceResource = () => ({
     apiVersion: "v1",
     kind: "Namespace",
     metadata: {
+      uid: observedUid,
       name: `oce-${createHash("sha256").update(namespace.id).digest("hex").slice(0, 15)}`,
       labels: {
         "app.kubernetes.io/managed-by": "openclaw-enterprise",
+        ...(workspaceExchange && {
+          "openclaw-enterprise.io/gateway": createHash("sha256")
+            .update(gatewayRouting.gatewayNamespace + "/" + gatewayRouting.gatewayName)
+            .digest("hex")
+            .slice(0, 12),
+          ...Object.fromEntries(
+            ["enforce", "audit", "warn"].map((mode) => [
+              "pod-security.kubernetes.io/" + mode,
+              "restricted",
+            ]),
+          ),
+        }),
         "openclaw.dev/gateway-namespace": namespace.id,
         "openclaw.dev/namespace": namespace.id,
       },
-      annotations: { "openclaw.dev/namespace-id": namespace.id },
+      annotations: {
+        "openclaw.dev/namespace-id": namespace.id,
+        ...(workspaceExchange && { "openclaw.dev/namespace-lifecycle": "preprovisioned" }),
+      },
     },
     status: { phase: "Active" },
   });
@@ -232,6 +256,8 @@ export async function staticEgressFixture(
   });
 
   const Gateway = grpc.loadPackageDefinition(loadGatewayDefinition()).openshell.v1.OpenShell;
+  const middlewareName = workspaceExchange ? "codex-workspace-pat-https" : "oce-authority";
+  const sandboxIdForDriver = workspaceExchange ? proxyDriverId : "openshell-sandbox";
   const gateway = new grpc.Server();
   const observed = {
     available: true,
@@ -239,6 +265,13 @@ export async function staticEgressFixture(
     policy: undefined,
     deleted: [],
     workspaceVisible: true,
+    implementationName: "oce/static-egress",
+    implementationVersion: "1",
+    requiredCapabilities: /** @type {string[] | undefined} */ (undefined),
+    observation:
+      /** @type {{source_policy_hash:string,effective_policy:object,inert_provider_rule:string,registered_exchange_public_key:Buffer} | undefined} */ (
+        undefined
+      ),
   };
   // OpenShell reports negotiated capabilities in lexical order, including the base contract.
   const gatewayCapabilities = ["openshell.supervisor-middleware.contract", ...capabilities].sort();
@@ -270,14 +303,23 @@ export async function staticEgressFixture(
         provider ? { provider } : undefined,
       );
     },
-    GetGatewayInfo(_call, callback) {
+    GetGatewayInfo(call, callback) {
+      if (
+        workspaceExchange &&
+        call.metadata.get("authorization")[0] !== "Bearer synthetic-gateway-control"
+      ) {
+        callback({ code: grpc.status.UNAUTHENTICATED });
+        return;
+      }
       callback(null, {
         status: 1,
         extensions: observed.available
           ? [
               {
                 kind: 4,
-                configured_name: "oce-authority",
+                configured_name: middlewareName,
+                implementation_name: observed.implementationName,
+                implementation_version: observed.implementationVersion,
                 protocol_major: 1,
                 supported_capabilities: observed.supportedCapabilities ?? gatewayCapabilities,
                 required_capabilities: observed.requiredCapabilities ?? gatewayCapabilities,
@@ -386,7 +428,7 @@ export async function staticEgressFixture(
         rootCertificatePath: certPath,
       },
       drivers: {
-        sandbox: "openshell-sandbox",
+        sandbox: sandboxIdForDriver,
         credential_gateway: "openshell-credentials",
         credential_proxy: proxyDriverId,
       },
@@ -394,8 +436,8 @@ export async function staticEgressFixture(
     { gatewayClient },
   );
   t.after(() => backend.client.close());
-  const egressOptions = { middlewareName: "oce-authority", authorityScope: "execution" };
-  const sandbox = new OpenShellSandboxDriver(
+  const egressOptions = { middlewareName, authorityScope: "execution" };
+  let sandbox = new OpenShellSandboxDriver(
     {
       egress: egressOptions,
       gateway: { workspaceMode: "operator" },
@@ -419,7 +461,7 @@ export async function staticEgressFixture(
         ],
       },
     },
-    { id: "openshell-sandbox", backend },
+    { id: sandboxIdForDriver, backend },
   );
   const preparedTokens = new TokenService();
   const owner = createPreparedGitHub
@@ -441,8 +483,24 @@ export async function staticEgressFixture(
       withdraw: (...args) => owner.withdraw(...args),
     });
   }
-  const egress = new OpenShellCredentialProxyDriver(egressOptions, {
+  const keys = generateKeyPairSync("ed25519");
+  const issuerPublicKeyPath = join(directory, "gateway-public.pem");
+  const exchangeAuthority = workspaceExchange && {
+    host: "127.0.0.1",
+    port: await availablePort(),
+    certificatePath: certPath,
+    privateKeyPath: generated.keyPath,
+    issuerPublicKeyPath,
+    issuer: "https://gateway.example.test",
+    audience: "oce-egress",
+    keyId: "fixture-key",
+  };
+  if (exchangeAuthority) {
+    await writeFile(issuerPublicKeyPath, keys.publicKey.export({ format: "pem", type: "spki" }));
+  }
+  let egress = new OpenShellCredentialProxyDriver(egressOptions, {
     id: proxyDriverId,
+    ...(exchangeAuthority && { exchangeAuthority }),
     preparedProviders: preparedProvider
       ? [preparedProvider]
       : owner
@@ -488,17 +546,63 @@ export async function staticEgressFixture(
     app.controller.registerDriver(catalog);
     app.controller.selectDriver(catalog.capability, catalog.id);
   }
-  const installedDriver = new InstalledDriver(
+  let installedDriver = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
     { capabilities: { sandbox, credential_proxy: egress } },
     { sandbox: sandbox.id, credential_proxy: egress.id },
   );
+  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
+  let installedCompute;
+  if (exchangeAuthority) {
+    const config = createCredentialProxyInstallationConfiguration();
+    const gatewayTokenPath = join(directory, "gateway-token");
+    await writeFile(gatewayTokenPath, "synthetic-gateway-control");
+    const [selected] = config.backend;
+    selected.id = backend.id;
+    selected.drivers.sandbox = sandbox.id;
+    selected.drivers.credential_proxy = egress.id;
+    selected.configuration = {
+      endpoint: `https://127.0.0.1:${gatewayPort}`,
+      rootCertificatePath: certPath,
+      auth: { mode: "bearerTokenFile", path: gatewayTokenPath },
+    };
+    config.drivers.sandbox.id = sandbox.id;
+    config.drivers.credential_proxy = {
+      id: egress.id,
+      configuration: { ...egressOptions, authority: exchangeAuthority },
+    };
+    const compute = config.drivers.compute.configuration;
+    compute.authentication = { mode: "kubeconfig", kubeconfigPath, context: "fixture" };
+    config.drivers.secret.id = "bound-secret";
+    config.drivers.secret.configuration.authentication = compute.authentication;
+    compute.servicePrincipalCredentials = { mode: "disabled" };
+    compute.gatewayRouting = gatewayRouting;
+    delete compute.network.gatewayClients;
+    const selectedDrivers = await loadInstallationFile(t, config, {
+      environment: {
+        OCC_PREPROVISIONED_NAMESPACE: JSON.stringify({
+          namespaceId: namespace.id,
+          uid: namespaceUid,
+        }),
+      },
+    });
+    installedDriver = selectedDrivers.protectedDriver;
+    sandbox = installedDriver.require("sandbox");
+    egress = installedDriver.require("credential_proxy");
+    installedCompute = selectedDrivers.computeDriver;
+    for (const driver of [selectedDrivers.secretDriver, installedCompute]) {
+      app.controller.registerDriver(driver);
+      app.controller.selectDriver(driver.capability, driver.id);
+    }
+    t.after(() => installedDriver.close());
+  }
   app.controller.registerDriver(installedDriver);
   app.controller.selectDriver("sandbox", sandbox.id);
-  namespace = await app.createNamespace(`egress-${randomUUID().slice(0, 8)}`, { ready: true });
-  runtimeNamespace = physicalPlacement
-    ? await placement.resolveSandboxNamespace(namespace)
-    : namespace;
+  runtimeNamespace = installedCompute
+    ? await installedCompute.resolveSandboxNamespace(namespace)
+    : physicalPlacement
+      ? await placement.resolveSandboxNamespace(namespace)
+      : namespace;
   const post = async (resource, body) => {
     const result = await app.request("POST", `/namespaces/${namespace.id}/${resource}`, { body });
     assert.equal(result.status, 201, JSON.stringify(result.body));
@@ -540,9 +644,13 @@ export async function staticEgressFixture(
     ? undefined
     : await post("credential-sources", {
         name: "inference",
-        type: "openai",
-        config: { base_url: `https://provider.example.test:${providerPort}/v1` },
-        secrets: { api_key: secret.ref },
+        ...(workspaceExchange
+          ? { type: "codex-pat", secrets: { access_token: secret.ref } }
+          : {
+              type: "openai",
+              config: { base_url: `https://provider.example.test:${providerPort}/v1` },
+              secrets: { api_key: secret.ref },
+            }),
       });
   const config = await app.createConfiguration(namespace.id, {
     agents: {
@@ -690,7 +798,6 @@ export async function staticEgressFixture(
     await app.activateRevision(namespace.id, agent.id, revision.id);
   }
 
-  const keys = generateKeyPairSync("ed25519");
   const identity = new OpenShellEgressIdentity({
     issuer: "https://gateway.example.test",
     audience: "oce-egress",
@@ -715,7 +822,14 @@ export async function staticEgressFixture(
       }
     : app.controller;
   let authority = createOpenShellEgressAuthority(identity, authorityController);
-  const authorityPort = await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
+  const authorityPort = exchangeAuthority
+    ? exchangeAuthority.port
+    : await bindOpenShellEgressAuthority(authority, "127.0.0.1:0", cert, key);
+  if (exchangeAuthority) {
+    const binding = await installEgressAuthority(app.controller, installedDriver);
+    assert.ok(binding);
+    t.after(() => binding.close());
+  }
   t.after(() => authority.forceShutdown());
   const definition = loader.loadSync(
     new URL(
@@ -997,6 +1111,14 @@ export async function staticEgressFixture(
     installation,
     sandboxDriver: sandbox,
     installedDriver,
+    async verifyReplacedNamespace() {
+      observedUid = randomUUID();
+      try {
+        await installedCompute.resolveSandboxNamespace(namespace);
+      } finally {
+        observedUid = namespaceUid;
+      }
+    },
     gatewayClient: backend.client.clientForNamespace(runtimeNamespace.name),
     observed,
     clients,

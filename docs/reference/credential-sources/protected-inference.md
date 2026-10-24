@@ -4,12 +4,37 @@ Select the Credential Proxy Driver only with a Kubernetes Compute and OpenShell 
 enforces the whole-execution profile below. The security principal is one freshly
 admitted Agent execution. Its parent, a sibling and an ordinary client can use the
 same allowed operation. A different execution, even of the same Agent, cannot
-inherit that authority. There is no caller binary allowlist or client hook.
+inherit that authority. The bundled workspace profile below also checks the
+executable or its ancestors.
 
 The bundled legacy OpenShell release cannot enforce this profile. Before using a
 candidate pair, [qualify its installed dispatch and response custody](../../testing/protected-repository-custody.md)
 and test the actual static inference path. A repository metadata read exercises the
 shared exchange but does not establish static inference or Git transport support.
+
+## Select the bundled workspace exchange
+
+For a dedicated Codex Agent in a preprovisioned Namespace, set the Credential
+Proxy’s `middlewareName` to `codex-workspace-pat-https`, configure its installation
+exchange authority and leave `repositoryMiddlewareName` unset. Select the same
+TLS service in OpenShell. The authenticated Gateway must report exactly one
+registration with that name, implementation `oce/static-egress` version `1`,
+protocol major 1, and the execution capabilities as both required and supported.
+
+Bind the verified `codex-pat` source to the Agent and grant its service principal
+access to that source. The Agent uses a nonsecret login marker. The sender checks
+the loaded policy and registered supervisor key before releasing a request. It
+allows workspace identity, account selection, model catalog, Responses and managed
+policy requests. It excludes `GET /backend-api/wham/settings/user` and refuses
+either protected Git profile on the same execution.
+
+Qualify the sender and the immutable runtime image on each target platform.
+The five rules name the packaged Linux x64 and ARM64 Codex executable paths for
+version `0.163.0-alpha.2`. The local native turn covered Linux x64. ARM64
+requires separate qualification. Protect the executable and its parent
+directories against replacement or shadowing. A Codex descendant may make its
+own authorized request and receive its filtered response. It cannot read
+another request’s response or obtain the reusable workspace token.
 
 ## Execution admission cutoff
 

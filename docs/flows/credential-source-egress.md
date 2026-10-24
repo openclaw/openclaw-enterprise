@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
 updated: "2026-10-24"
-last_updated_session: authoring-run/ded21924-0d2a-4f83-9299-1926d35ceb01
+last_updated_session: authoring-run/1303a689-0f82-440b-a43f-1b2869851779
 ---
 
 # Protected credential request flow
@@ -44,45 +44,43 @@ graph TD
   F -- "unsafe, late or failed" --> H["Withhold; effects may exist"]
 ```
 
-Fixtures do not qualify deployed supervisors or no-bypass networking.
+Qualify deployed supervisors and networking separately.
 
 ## Execution Trace
 
 ### Workspace PAT qualification boundary
 
-`apps/controller/src/composition/driver-packages.ts:createExternalProtectedDriver`
-wires verification for the reported PAT profile; stock senders do not advertise it.
+`apps/controller/src/composition/driver-packages.ts:createExternalProtectedDriver` and
+the bundled workspace registration select the same PAT verifier.
+`openShellEgressConfiguration` checks the provider's five routes for both Drivers.
+Each method and path requires the packaged Codex executable or an ancestor
+matching that executable. Each caller opens its own authorized response channel.
+Altered routes, missing registration and repository bindings refuse installation.
+
 `packages/occ/src/index.ts:admitStaticEgressSource` authorizes Secret UID/version access.
-`apps/controller/src/drivers/egress-proxy/codex-workspace-identity.ts:bindVerifiedCodexWorkspaceSource`
-checks the fixed HTTPS whoami audience with operator-owned trust; invalid TLS,
-redirects, ambiguous JSON and FedRAMP identities refuse.
+`apps/controller/src/drivers/egress-proxy/codex-workspace-identity.ts:verifySource`
+uses operator trust for HTTPS whoami. Invalid TLS, redirects, ambiguous JSON and
+FedRAMP identities refuse. `egress.verifiedIdentity` records identity/material
+evidence without bearers. Admission and release require current evidence.
+Unbound updates reverify. Bound replacements need separate proof.
 
-`egress.verifiedIdentity` stores scoped identity and material evidence without bearers.
-Admission and release require current material and proof; requests cannot refresh identity.
-Bound replacements need separate proof; unbound updates reverify.
+`packages/occ/src/index.ts:checkEgressUseIn` verifies the workspace grant before
+lookup and send. Identity and discovery bind workspace/backend, ChatGPT requests
+bind account headers, and catalogs retain the admitted model. The bodyless,
+queryless policy GET requires both lists. The client enforces unchanged fragments.
+Two empty lists mean no policy. Responses over 64 KiB, ambiguous JSON/TOML
+or reflected credentials in decoded keys/strings refuse (32 levels, 4,096 nodes).
+Generation permits generic and managed developer instructions, empty MCP attribution
+and bounded reasoning efforts.
 
-`packages/occ/src/index.ts:checkEgressUseIn` checks the workspace grant before material
-lookup and send. Bootstrap separates identity, accounts, policy and models from generation.
-ChatGPT binds account headers. Identity and discovery bind workspace/backend;
-catalogs retain admitted model.
-Installed policy route: bodyless, queryless `GET /backend-api/wham/config/bundle`.
-Require both lists. Reject responses over 64 KiB, ambiguous JSON/TOML or
-credential reflection, including decoded TOML keys/strings (32 levels, 4,096 nodes).
-Native enforces unchanged fragments. Empty lists, not errors, mean no policy.
-Metadata permits `generic.developer_instructions`, empty MCP attribution and bounded reasoning efforts.
-
-`packages/occ/src/index.ts:credentialSourceHarnessAuthSnapshot` records the exact owner:
-`credentialProxyId` with nonsecret Namespace, source ID, provider generation, sender
-and resolver, or `credentialGatewayId`. Save checks the provider grant against the
-model and refuses missing workspace authority; no new input or Secret fallback exists.
+`packages/occ/src/index.ts:credentialSourceHarnessAuthSnapshot` records either
+`credentialProxyId` with Namespace, source, provider generation, sender and resolver,
+or `credentialGatewayId`. Save checks model and workspace authority.
 `packages/occ/src/state/platform-state.ts:validHarnessAuthSnapshot` and SQL
-`harness_auth_is_valid` enforce exclusive owner shapes. The worker re-resolves the
-ready source. Compute checks `packages/contracts/src/harness-auth.ts:proxyHarnessAuthProvider`
-against its paired Proxy before using the nonsecret PAT marker. Changed, absent or
-ambiguous ownership refuses restoration or dispatch.
-
-Integration tests do not qualify real accounts, installed enforcement or packaging.
-Online Git cannot substitute for exact-dispatch admission.
+`harness_auth_is_valid` enforce exclusive ownership. The worker reloads the ready
+source. Compute checks `packages/contracts/src/harness-auth.ts:proxyHarnessAuthProvider`
+against the paired Proxy before using the nonsecret marker. Changed, absent or
+ambiguous ownership blocks restoration and dispatch.
 
 ### 1. Admit source and install the revision plan
 
@@ -160,8 +158,8 @@ maps persisted installation state and classifies one exact provider route. Befor
 capture/policy I/O it reserves UUIDv7 identity with a 30-second creation-based replay horizon. [Slots/IDs are bounded](../reference/drivers/credential-proxy.md#request-time-capacity);
 unsupported/ambiguous operations refuse before reservation.
 
-Supplier enrollment requires the current authenticated supervisor hello, outside-Agent
-private key and pinned downstream reply sink before queueing; this path remains unqualified. `openshell.supervisor-middleware.installation-exchange.v1` is required;
+Supplier enrollment binds the authenticated supervisor, outside-Agent key and
+downstream reply channel before queueing. `openshell.supervisor-middleware.installation-exchange.v1` is required;
 older executable-restricted grants cannot acquire it.
 
 Each check uses a fresh transaction, refuses enclosing IAM snapshots, and verifies Namespace/Agent
@@ -305,6 +303,8 @@ response custody and NetworkPolicy with the selected chart/image. Observe origin
 None.
 
 ## Changelog
+
+- 2026-10-24 19:46: Trace the accompanying bundled workspace registration and per-request custody. (authoring-run/1303a689-0f82-440b-a43f-1b2869851779 - 96dfb6a485b6632a1feeffc2bd53f10c74152cd1)
 
 - 2026-10-24 12:54: Document exact target matching for large registered delivery policies. (authoring-run/ded21924-0d2a-4f83-9299-1926d35ceb01 - 692c5e6e8afeebf831a1c9feb1917f0f2aafc3b9)
 
