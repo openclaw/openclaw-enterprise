@@ -74,8 +74,9 @@ if (conversationRequired) {
   await access(codex, constants.X_OK);
 }
 
-// The worker reconciles a protected Git Driver every second. These cases count reconcile passes
-// (and wait for passes to settle deliveries), so they bind the same loop with a shorter wait.
+// The worker reconciles a protected Git Driver every second. Cases here count reconcile passes
+// and wait for passes to settle deliveries, so every binding in this file uses the same loop with
+// a shorter wait between passes.
 const transportOptions = { reconcileIntervalMs: 100 };
 
 // Production package selection, OCC deployment, worker and custody. The external package,
