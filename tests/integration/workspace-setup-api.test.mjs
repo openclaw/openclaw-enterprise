@@ -123,6 +123,8 @@ test("invalid workspace content and stale defaults reject the complete create wi
   for (const [defaultsId, status] of [
     ["0".repeat(64), 409],
     ["A".repeat(64), 400],
+    ["0".repeat(63), 400],
+    ["0".repeat(65), 400],
     [null, 400],
   ]) {
     await assertRejectedCreate(
