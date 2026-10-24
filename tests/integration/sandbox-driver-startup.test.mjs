@@ -3734,6 +3734,23 @@ test("startup refuses OpenShell filesystem paths before any Sandbox is created",
   );
 });
 
+// A quoted "false" reached the Gateway as user_namespaces=true, and an endpoint without ports
+// started and failed every CreateSandbox (findings 2355, 2354).
+test("startup refuses a non-boolean userNamespaces and an endpoint without ports", async (t) => {
+  for (const userNamespaces of ["false", 0, null]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).kubernetes.userNamespaces = userNamespaces),
+      structuralRefusal("/kubernetes/userNamespaces", "type", "INVALID_TYPE"),
+    );
+  }
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).policy.networkPolicies[0].endpoints[0].ports = []),
+    structuralRefusal("/policy/networkPolicies/0/endpoints/0/ports", "minItems"),
+  );
+});
+
 // The schema leaves these open, so the Driver's own checks are the only refusal. Startup
 // reports each as the same generic detail, so every case must change one valid field of
 // the fixture, and the control below shows the fixture loads otherwise.

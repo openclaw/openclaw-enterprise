@@ -2335,6 +2335,8 @@ export const configurationSchema = Object.freeze({
       type: "object",
       properties: {
         serviceAccount: { type: "object", properties: { mode: { const: "gatewayConfigured" } } },
+        // The protobuf serializer sends a quoted "false" as true.
+        userNamespaces: { type: "boolean" },
         agentResources: {
           type: "object",
           properties: { requests: { type: "object" }, limits: { type: "object" } },
@@ -2387,7 +2389,8 @@ export const configurationSchema = Object.freeze({
                   required: ["host", "ports"],
                   properties: {
                     host: { type: "string" },
-                    ports: { type: "array", items: { type: "integer" } },
+                    // The Gateway refuses an endpoint without ports at CreateSandbox.
+                    ports: { type: "array", minItems: 1, items: { type: "integer" } },
                     protocol: { type: "string" },
                     tls: { type: "string", enum: Object.keys(NETWORK_TLS_MODES) },
                     enforcement: { type: "string", enum: Object.keys(NETWORK_ENFORCEMENT_MODES) },
