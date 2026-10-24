@@ -577,23 +577,6 @@ export class RepositoryGitSenderUnqualifiedError extends ResourceStateConflictEr
 }
 
 /**
- * Finding 2362: the Installation selects no repository credential Driver (it has no
- * `repository` settings), so an Agent cannot bind repositories. Save answered a generic 503
- * for this permanent configuration state; it now names the setting, as
- * CredentialSourceTypeNotOfferedError does for sources. An Installation property, raised only
- * after the caller's Agent grant.
- */
-export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
-  static readonly description =
-    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an administrator to configure repository in the Installation.";
-
-  constructor() {
-    super(RepositoryDriverNotConfiguredError.description);
-    this.name = "RepositoryDriverNotConfiguredError";
-  }
-}
-
-/**
  * Finding 2204: a Credential Proxy delivers repository Git only for one binding with a mapped
  * delivery profile (`git-write` or `github-installation`; `repositoryGitDeliveryProfile`).
  * Protected admission v4-v7 requires that profile, so a `git-read` or `git-full` binding, or
@@ -1243,6 +1226,23 @@ export class CredentialSourceTypeNotOfferedError extends ResourceStateConflictEr
       "The selected Credential Gateway does not offer this credential source type. An administrator must enable it, for example toolBinaries for OpenShell bearer-token; see https://docs-enterprise.openclaw.org/reference/drivers/openshell-credential-gateway/",
     );
     this.name = "CredentialSourceTypeNotOfferedError";
+  }
+}
+
+/**
+ * Finding 2362: the Installation selects no repository credential Driver (it has no
+ * `repository` settings), so an Agent cannot bind repositories. Save answered a generic 503
+ * for this permanent configuration state; it now names the setting, as
+ * CredentialSourceTypeNotOfferedError does for sources. An Installation property, raised only
+ * after the caller's Agent grant.
+ */
+export class RepositoryDriverNotConfiguredError extends ResourceStateConflictError {
+  static readonly description =
+    "This Installation has no repository settings, so no repository credential Driver is selected and an Agent cannot bind repositories. Remove the repository bindings, or ask an administrator to configure repository in the Installation.";
+
+  constructor() {
+    super(RepositoryDriverNotConfiguredError.description);
+    this.name = "RepositoryDriverNotConfiguredError";
   }
 }
 

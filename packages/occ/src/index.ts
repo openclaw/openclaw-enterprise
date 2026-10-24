@@ -286,9 +286,9 @@ import {
   NotImplementedError,
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
-  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryOptionsUnavailableError,
+  RepositoryDriverNotConfiguredError,
   SandboxRepositoryRecipientUnverifiedError,
   ResourceConflictError,
   ResourceStateConflictError,
@@ -445,10 +445,10 @@ export {
   PluginPolicyValidationError,
   ProvisioningSecretDriverError,
   quotedSettingKey,
-  RepositoryDriverNotConfiguredError,
   RepositoryGitProfileUnsupportedError,
   RepositoryGitSenderUnqualifiedError,
   RepositoryOptionsUnavailableError,
+  RepositoryDriverNotConfiguredError,
   ResourceConflictError,
   ResourceStateConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -1305,7 +1305,9 @@ function provisioningFailureMessage(code: string, error: unknown): string {
       // Fixed, id-free text that names the fix (save replacement Secrets, submit a new request).
       error instanceof SecretDriverOwnershipError ||
       // Fixed, id-free text naming the missing ChatGPT Backend.
-      error instanceof ServiceAccountDriverNotConfiguredError
+      error instanceof ServiceAccountDriverNotConfiguredError ||
+      // Fixed, id-free text naming the missing repository settings (finding 2362).
+      error instanceof RepositoryDriverNotConfiguredError
     ) {
       return error.message;
     }
