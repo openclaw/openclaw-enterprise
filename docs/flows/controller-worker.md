@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-17
-last_updated_session: fix-1692
+updated: 2026-10-23
+last_updated_session: authoring-run/b5c3ba79-9c77-48b0-b7c7-9e21b35726ad
 ---
 
 # Controller Worker Flow
@@ -302,10 +302,10 @@ code differ from that work item's latest evidence. `retry` outcomes consume atte
 terminates work. See [outcomes](../reference/controller.md) and
 [timing controls](../reference/settings/operations.md#controller-worker-environment).
 
-Before publishing a permanent refusal (not a held runtime failure, the deadline
-or exhausted retries), `ControllerWorker.stopRefusedCandidate` stops, under the
-claim heartbeat, an inactive candidate that is exclusive or was prepared with no
-selected version, so a rejected deployment never serves. Kubernetes
+Before a permanent refusal (not a held runtime failure, the deadline, or
+exhausted retries), `ControllerWorker.stopRefusedCandidate` stops, under the
+claim heartbeat, an inactive exclusive candidate or one prepared with no
+selected version. Kubernetes
 deletes the Harness before awaiting Gateway Pods; Pod waits yield to due work
 (`withYieldingComputeStop`).
 
@@ -314,8 +314,7 @@ An unfinished stop publishes nothing: the work defers as
 budget, deadline, in-lease shutdowns and, once recorded, lost claims. The
 recheck doubles the readiness cadence per failed (not `stopYielded`) stop in
 evidence, up to 5 minutes, but is at least four times the stop's duration.
-Each deferral records the refusal (`repeatEvidence`) for deployment status and
-`worker.completed`. Later passes retry only that stop, and outages keep waiting,
+Each deferral records the refusal (`repeatEvidence`). Later passes retry only that stop, and outages keep waiting,
 unless superseded or an authorization or backend refusal lifted (past the
 deadline, the stop then publishes `CONVERGENCE_DEADLINE_EXCEEDED`).
 
@@ -340,10 +339,9 @@ live claim; [deployment status](../reference/agents.md#deployment-status) derive
 `error` and `warnings` from that result. Completion needs no acknowledgment or
 post-commit cleanup; maintenance cannot rewrite deployment warnings.
 
-Indexed `workId` scopes progress to work; maintenance and unbound history cannot
-supply it. `getDeploymentStatus` reads
+Indexed `workId` scopes progress to one work item. `getDeploymentStatus` reads
 `findWorkAttempt` with the work row in one State snapshot and projects fixed
-public explanations. Memory State has no attempt.
+public explanations.
 
 Legacy terminal rows derive `reason_code` from matching activation or terminal
 reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `result_data`.
@@ -351,8 +349,9 @@ reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `resul
 If Compute declares maintenance, activation schedules observations for this version.
 Incomplete observations, Compute bindings, and dependency retries or expired claims
 exhausting attempts close the item and schedule another while the version stays
-selected and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+selected and running within its credential deadline; outages never retire it. See
+[AgentRevision reconciliation](../reference/controller/reconciliation.md#agentrevision-lifecycle).
+Each claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
 A Namespace pass that observes the same pending state this worker last audited,
@@ -421,6 +420,8 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-23 21:51: A published deploy denial keeps Compute and requests closure. (authoring-run/b5c3ba79-9c77-48b0-b7c7-9e21b35726ad - b68ea1f795d6e8fcaa6c24921d75c8d1f5334e2b)
 
 - 2026-10-11 11:30: Predecessor stops yield their Gateway drain. (fix-1090)
 

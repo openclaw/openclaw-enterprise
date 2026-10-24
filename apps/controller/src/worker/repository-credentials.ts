@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
+  AuthorizationDecision,
+  AuthorizationRequest,
   RepositoryPolicyDriver,
   NativeRepositorySender,
   RepositoryCredentialMaterialRef,
@@ -34,11 +36,25 @@ type CleanupContext = Attempt["cleanupContext"];
 
 export class RepositoryCredentialAuthorityError extends Error {
   readonly code: string;
+  readonly authorization?: AuthorizationRequest;
+  readonly decision?: AuthorizationDecision;
 
-  constructor(code: string) {
+  constructor(
+    code: string,
+    denial?: {
+      readonly authorization?: AuthorizationRequest;
+      readonly decision?: AuthorizationDecision;
+    },
+  ) {
     super(code);
     this.code = code;
     this.name = "RepositoryCredentialAuthorityError";
+    if (denial?.authorization !== undefined) {
+      this.authorization = denial.authorization;
+    }
+    if (denial?.decision !== undefined) {
+      this.decision = denial.decision;
+    }
   }
 }
 
