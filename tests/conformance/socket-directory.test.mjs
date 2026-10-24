@@ -4,6 +4,7 @@ import { lstat, mkdir, readdir } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { withEnvironment } from "../helpers/environment.mjs";
 import { socketDirectory, socketPathLimit } from "../helpers/socket-directory.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -19,18 +20,8 @@ function ownerFor(t) {
   return { after: (cleanup) => cleanups.push(cleanup), close };
 }
 
-async function withTemporaryRoot(directory, body) {
-  const previous = process.env.TMPDIR;
-  process.env.TMPDIR = directory;
-  try {
-    return await body();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.TMPDIR;
-    } else {
-      process.env.TMPDIR = previous;
-    }
-  }
+function withTemporaryRoot(directory, body) {
+  return withEnvironment({ TMPDIR: directory }, body);
 }
 
 async function assertBinds(path) {

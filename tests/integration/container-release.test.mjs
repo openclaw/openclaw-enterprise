@@ -27,6 +27,7 @@ import {
   stageReleaseChart,
   validateImageReceipt,
 } from "../../scripts/ci/chart-release.mjs";
+import { setEnvironment } from "../helpers/environment.mjs";
 import { writeCommand } from "../helpers/fake-commands.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -209,16 +210,8 @@ test("chart bootstrap package is valid OCI chart content but cannot be installed
 test("chart push accepts a digest on stderr only after a successful exit", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "oce-chart-push-stream-"));
   const helm = join(directory, "helm");
-  const previous = process.env.OCC_HELM_BIN;
-  t.after(async () => {
-    if (previous === undefined) {
-      delete process.env.OCC_HELM_BIN;
-    } else {
-      process.env.OCC_HELM_BIN = previous;
-    }
-    await rm(directory, { recursive: true, force: true });
-  });
-  process.env.OCC_HELM_BIN = helm;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  setEnvironment(t, { OCC_HELM_BIN: helm });
   const reported = `sha256:${"f".repeat(64)}`;
   // Helm writes the successful push digest to stderr, so stdout-only parsing fails.
   await writeCommand(directory, "helm", `printf 'Digest: ${reported}\\n' >&2\n`);
@@ -306,15 +299,7 @@ for (const workflow of [
 test("only explicit bootstrap lookups tolerate missing package metadata", async (t) => {
   // The external API supplies status codes; the real client must distinguish
   // absence from authorization failures before harmless bootstrap is permitted.
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   for (const status of [401, 403, 404, 429, 500]) {
     t.mock.method(globalThis, "fetch", async () => new Response(null, { status }));
     await assert.rejects(
@@ -351,15 +336,7 @@ test("container context rejects malformed repository privacy in preparation and 
 });
 
 test("post-marker metadata retries only 404 and remains bounded", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   // Accelerate only the backoff; the real client still interprets API responses.
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const pkg = { name: "example", package_type: "container", visibility: "public" };
@@ -387,15 +364,7 @@ test("post-marker metadata retries only 404 and remains bounded", async (t) => {
 });
 
 test("GHCR publication accepts omitted repository metadata without approval and rejects unsafe packages", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   const image = "ghcr.io/openclaw/openclaw-enterprise-controller";
   // GHCR can omit repository even for connected packages. The real validator
   // must accept that response without consulting deployment review history.
@@ -750,15 +719,7 @@ test("OCI archive validation binds both platforms to their real manifest and con
 });
 
 test("metadata GET transport retries are bounded, diagnostic and do not retry denials", async (t) => {
-  const token = process.env.GH_TOKEN;
-  process.env.GH_TOKEN = "test-token";
-  t.after(() => {
-    if (token === undefined) {
-      delete process.env.GH_TOKEN;
-    } else {
-      process.env.GH_TOKEN = token;
-    }
-  });
+  setEnvironment(t, { GH_TOKEN: "test-token" });
   t.mock.method(globalThis, "setTimeout", (resolve) => queueMicrotask(resolve));
   const path = "orgs/openclaw/packages/container/example";
   let calls = 0;
