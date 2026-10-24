@@ -7148,7 +7148,7 @@ export const scenarios = {
       "The next Logs visit reads an operate grant. Returning hides the note, AGENTS.md is editable, the Stop row appears, and Configuration offers Run diagnostics.",
       "After the edit, the following Logs visit reads a revocation. Returning keeps the unsaved text and makes AGENTS.md read-only; Stop hides and Run diagnostics is disabled with its reason.",
     ],
-    gap: "The permission changes and runtime refusal are simulated. A failed permission read is not shown; the page keeps the previous answer. The browser test changes the controller's real IAM policy across the same tab visits. The controller still authorizes every write.",
+    gap: "The permission changes and runtime refusal are simulated. The preview checks Stop and Run diagnostics after the grant only; the browser test also checks them after the revocation, changing the controller's real IAM policy across the same tab visits. A failed permission read is not shown; the page keeps the previous answer. The controller still authorizes every write.",
   },
   workspaceMissing: {
     group: "Components/Workspace",

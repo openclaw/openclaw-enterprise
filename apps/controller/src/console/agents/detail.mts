@@ -545,6 +545,8 @@ export async function renderAgentDetail(
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
+  // The newest reread whose operate answer the page's controls show.
+  let appliedOperateReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -3025,6 +3027,11 @@ export async function renderAgentDetail(
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+        }
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer, which the controls would otherwise never see.
+        if (context.isCurrent() && reread > appliedOperateReread) {
+          appliedOperateReread = reread;
           applyOperateAnswer(permissions?.operate);
         }
         return permissions;

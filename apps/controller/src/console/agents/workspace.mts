@@ -459,12 +459,19 @@ export function renderWorkspaceFiles(
       restore();
     }
   }
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
   void operateAllowed?.then((allowed) => {
-    applyOperate(allowed);
+    if (!operateAnswered) {
+      applyOperate(allowed);
+    }
   });
   return {
     section,
-    applyOperate,
+    applyOperate(allowed: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(allowed);
+    },
     refresh: () => {
       for (const refresh of refreshers) {
         void refresh();

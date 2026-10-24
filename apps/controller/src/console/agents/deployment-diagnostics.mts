@@ -271,7 +271,21 @@ export function createVersionDiagnostics(
     render();
   }
 
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
+
   render();
-  void operateAllowed.then(applyOperate);
-  return { section, render, applyOperate };
+  void operateAllowed.then((permitted) => {
+    if (!operateAnswered) {
+      applyOperate(permitted);
+    }
+  });
+  return {
+    section,
+    render,
+    applyOperate(permitted: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(permitted);
+    },
+  };
 }
