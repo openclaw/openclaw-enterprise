@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { STATUS_CODES } from "node:http";
 import { createServer } from "node:https";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -41,6 +42,7 @@ async function stageBuild(t: TestContext) {
 type ResponseOverride = {
   route?: string;
   body?: string;
+  connection?: string;
   headers?: string;
   status?: number;
 };
@@ -70,8 +72,9 @@ async function serveRelease(t: TestContext, release: Release) {
       const headers =
         selected.headers ??
         contentHeaders(asset ? "text/css" : "text/html", Buffer.byteLength(body));
+      const status = selected.status ?? 200;
       response.socket!.end(
-        `HTTP/1.1 ${selected.status ?? 200} Fixture\r\n${headers}\r\nConnection: close\r\n\r\n${body}`,
+        `HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\n${headers}\r\nConnection: ${selected.connection ?? "close"}\r\n\r\n${body}`,
       );
     },
   );
@@ -261,6 +264,11 @@ test("console release verification checks served build artifacts", async (t) => 
       },
     });
   });
+  await t.test("a protocol upgrade returns a sanitized refusal", () =>
+    verify("unavailable", [shellPath], {
+      response: { status: 101, connection: "Upgrade", headers: "Upgrade: websocket", body: "" },
+    }),
+  );
   await t.test("redirects, authentication, and untrusted origins stay private", async () => {
     const location = syntheticCredentialUrl({
       username: "fixture",

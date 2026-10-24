@@ -76,6 +76,10 @@ export async function readAnonymousHttps(
       );
       request.once("timeout", () => request.destroy());
       request.once("error", reject);
+      request.once("upgrade", (upgradeResponse, socket) => {
+        socket.destroy();
+        resolve(upgradeResponse);
+      });
     });
     const length = responseLength(response, options);
     if (typeof length === "string") {
