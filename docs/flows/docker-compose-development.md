@@ -160,8 +160,9 @@ import, authenticated readiness, and cleanup through the recorded engine.
 For the Kubernetes-only profile, `internal/occdev/openshell_k3d.go:upK3d`
 creates the owned cluster, checks node DNS, and writes and selects its kubeconfig.
 With Sandbox Driver `none`, it selects or builds the runtime image and exports its
-archive while k3d creates the cluster. An export failure lets creation finish and
-then rolls the cluster back. It then imports the runtime image and runs
+archive while k3d creates the cluster, checks node DNS and writes the kubeconfig.
+If the export fails, creation still finishes and the owned cluster is then rolled
+back. Otherwise it imports the runtime image and runs
 `prepareDevelopmentCodexSandbox` before installing private routing controllers.
 Meanwhile, `internal/occdev/concurrent.go:concurrently` imports the controller,
 PostgreSQL and, when configured, repository images. The first independent failure

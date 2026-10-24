@@ -197,7 +197,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				controllerPresent = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
 			case "runtime export failure":
 				// Creation is still running when the export fails, and the failure
-				// must let it finish so the rollback deletes a complete cluster.
+				// must let it finish so the rollback deletes a complete cluster. The
+				// loop only widens the window: a launcher that cancelled creation
+				// usually, not always, fails the stage checks below.
 				runtimePresent = ": > " + shellQuote(exported) + "; exit 1"
 				clusterCreated = "while [ ! -e " + shellQuote(exported) + " ]; do :; done; i=0; while [ $i -lt 100000 ]; do i=$((i+1)); done; : > " + shellQuote(filepath.Join(root, "created"))
 			}

@@ -285,7 +285,8 @@ func (r *runner) exportDevelopmentImage(ctx context.Context, s *developmentState
 		if err := r.run(ctx, r.engine, "tag", image, selected); err != nil {
 			return nil, err
 		}
-		// Remove the name the engine recorded once it is known (below).
+		// The closure reads selected when it runs, after it is reassigned to
+		// the engine-recorded name below.
 		exported.removals = append(exported.removals, func() error {
 			if _, err := r.output(context.WithoutCancel(ctx), r.engine, "image", "rm", selected); err != nil {
 				return fmt.Errorf("remove development staging image: %w", err)
@@ -383,7 +384,7 @@ func (r *runner) importExportedImage(ctx context.Context, s *developmentState, e
 	return reference, nil
 }
 
-// developmentImportArchive names the archive importDevelopmentImage saves an
+// developmentImportArchive names the archive exportDevelopmentImage saves an
 // image to before importing it into the node.
 func developmentImportArchive(image string) string {
 	sum := sha256.Sum256([]byte(image))
