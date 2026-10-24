@@ -17,6 +17,25 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: SSH initial workspace files refuse an explicit workspace at save
+
+**What breaks.** On SSH Compute, Agent create and update refuse initial
+workspace files when `agents.defaults.workspace` or the `main` entry's
+`workspace` is set, and deploying an Agent whose setup is still pending is
+refused the same way. Such a deployment already failed after its retries with
+`DEPENDENCY_UNAVAILABLE`: the host accepts only the workspace it derives.
+
+**Who is affected.** SSH Installations with initial workspace files on a
+Configuration that sets either `workspace`, for example one written for
+Kubernetes.
+
+**How to tell.** The request answers `400` with `Configuration setting
+agents.defaults.workspace must be unset for initial workspace files on SSH
+Compute` (or names the `main` entry's `workspace`).
+
+**Steps.** Remove that `workspace` setting, or use a Configuration without it,
+then save or deploy again. _untested_
+
 ## 2026-10-23: existing-namespace deletion lists ConfigMaps and ServiceAccounts
 
 **What breaks.** Deleting a Namespace placed in an existing Kubernetes
