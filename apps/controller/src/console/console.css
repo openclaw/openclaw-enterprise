@@ -2632,7 +2632,7 @@ select:not([multiple])[size="1"] {
   height: 17px;
   border: 2px solid var(--input-border);
   border-radius: 50%;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
   line-height: 1;
 }
