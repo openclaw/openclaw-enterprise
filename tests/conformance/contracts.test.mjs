@@ -703,7 +703,7 @@ test("a failed workspace setup keeps its check and code through record and read"
   assert.deepEqual(validateFailureData("CONVERGENCE_DEADLINE_EXCEEDED", stored), stored);
 });
 
-test("only the model probe's own failure carries a cause, recorded only for a held model-probe failure", () => {
+test("recorded failure data refuses a cause off the model probe's failure, a cause in deadline data, and another code as a held model-probe failure", () => {
   const probe = {
     component: "agent",
     check: "model-probe",
@@ -724,6 +724,7 @@ test("only the model probe's own failure carries a cause, recorded only for a he
       }),
     { message: "Convergence deadline failure data cannot carry a cause." },
   );
+  // A held model-probe failure must be the model probe's own failure, not another one.
   assert.throws(
     () =>
       validateFailureData("RUNTIME_MODEL_PROBE_FAILED", {

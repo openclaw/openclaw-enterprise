@@ -230,7 +230,7 @@ test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
 });
 
 // Finding 1195: a stop owns the revisions admitted no later than its work was created. Both
-// stamps are read at millisecond precision, so a revision admitted in the stop's millisecond
+// stamps are truncated to milliseconds, so a revision admitted in the stop's millisecond
 // belongs to it; otherwise the stop would end STOP_SUPERSEDED and leave that revision running.
 test("a stop owns a revision admitted in the same millisecond as its work", () => {
   const stop = { createdAt: new Date("2026-10-24T12:00:00.123Z") };
