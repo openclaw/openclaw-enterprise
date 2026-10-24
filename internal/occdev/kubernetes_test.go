@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeEngine puts a container engine named after the runner's selection on
@@ -169,6 +170,107 @@ func TestEngineImageReferenceMatchesDefaultTagAndRegistry(t *testing.T) {
 			}
 			if err != nil || got != tc.want {
 				t.Fatalf("got %q, error %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestClusterExistsMatchesOnlyTheExactName(t *testing.T) {
+	// `occ dev up` and `occ dev down` decide to create, reuse or delete a
+	// cluster from this answer, so a neighbouring name must not count.
+	for _, tc := range []struct {
+		inventory string
+		want      bool
+	}{
+		{`[{"name":"occ-dev-owned-2"},{"name":"occ-dev-own"}]`, false},
+		{`[{"name":"occ-dev-owned-2"},{"name":"occ-dev-owned"}]`, true},
+		{`[]`, false},
+	} {
+		fakeEngine(t, "k3d", `"cluster list -o json") echo '`+tc.inventory+`' ;;`+"\n")
+		r := &runner{env: map[string]string{}}
+		got, err := r.clusterExists(context.Background(), "occ-dev-owned")
+		if err != nil || got != tc.want {
+			t.Fatalf("inventory %s: got %v, %v; want %v", tc.inventory, got, err, tc.want)
+		}
+	}
+}
+
+func TestWriteKubeconfigsPointsContainersAtTheServerLoadBalancer(t *testing.T) {
+	state := kubernetesOnlyOpenShellState(t)
+	host := filepath.Join(state.directory, "kubeconfig")
+	kubeconfig := `apiVersion: v1
+kind: Config
+clusters:
+- name: k3d-occ-dev-owned
+  cluster:
+    server: https://127.0.0.1:6443
+    certificate-authority-data: Y2E=
+contexts:
+- name: k3d-occ-dev-owned
+  context:
+    cluster: k3d-occ-dev-owned
+    user: admin@k3d-occ-dev-owned
+`
+	commands := fakeProfileCommands(t, map[string]string{
+		"k3d":     `"kubeconfig get occ-dev-owned") cat <<'YAML'` + "\n" + kubeconfig + "YAML\n;;",
+		"kubectl": `"--kubeconfig ` + host + ` --context k3d-occ-dev-owned get --raw=/version") echo '{}' ;;`,
+	})
+	r := &runner{env: map[string]string{}}
+	if err := r.writeKubeconfigs(context.Background(), state); err != nil {
+		t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+	}
+	if got := commands(); len(got) != 2 || !strings.HasPrefix(got[1], "kubectl --kubeconfig "+host) {
+		t.Fatalf("the host kubeconfig was not checked against the API: %q", got)
+	}
+	data, err := os.ReadFile(filepath.Join(state.directory, "container-kubeconfig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"server: https://k3d-occ-dev-owned-serverlb:6443",
+		"tls-server-name: k3d-occ-dev-owned-serverlb",
+		"certificate-authority-data: Y2E=",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("container kubeconfig lacks %q:\n%s", want, data)
+		}
+	}
+	original, err := os.ReadFile(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(original)) != strings.TrimSpace(kubeconfig) {
+		t.Fatalf("host kubeconfig changed:\n%s", original)
+	}
+}
+
+func TestDevelopmentNamespaceWaitRefusesAmbiguousOrUnownedNamespaces(t *testing.T) {
+	namespace := func(name, label, annotation string) string {
+		return `{"metadata":{"name":"` + name + `","labels":{"openclaw.dev/namespace":"` + label +
+			`"},"annotations":{"openclaw.dev/namespace-id":"` + annotation + `"}}}`
+	}
+	for _, tc := range []struct {
+		name  string
+		items string
+		want  string
+	}{
+		{"two bootstrap Namespaces", namespace("occ-a", "ns-a", "ns-a") + "," + namespace("occ-b", "ns-b", "ns-b"), "exactly one bootstrap Namespace"},
+		{"annotation names another Namespace", namespace("occ-a", "ns-a", "ns-b"), "missing OCC ownership evidence"},
+		{"no annotation", `{"metadata":{"name":"occ-a","labels":{"openclaw.dev/namespace":"ns-a"}}}`, "missing OCC ownership evidence"},
+		{"owned", namespace("occ-a", "ns-a", "ns-a"), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeEngine(t, "kubectl", `"get namespaces --selector openclaw.dev/namespace -o json") echo '{"items":[`+tc.items+`]}' ;;`+"\n")
+			r := &runner{env: map[string]string{}}
+			name, id, err := r.waitForDevelopmentKubernetesNamespace(context.Background(), 5*time.Second)
+			if tc.want == "" {
+				if err != nil || name != "occ-a" || id != "ns-a" {
+					t.Fatalf("got %q, %q, %v", name, id, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %q, %q, %v; want %q", name, id, err, tc.want)
 			}
 		})
 	}
