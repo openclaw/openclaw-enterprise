@@ -289,7 +289,7 @@ async function exportEnvironment(values) {
 // ---------------------------------------------------------------------------
 // images
 
-function cacheArguments(role) {
+function cacheSources(role) {
   // Restore only: main's cache is written by the warm workflow alone.
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
@@ -299,7 +299,11 @@ function cacheArguments(role) {
     return [];
   }
   const scope = `oce-ci-${role}-${process.platform}-${process.arch}-v1`;
-  return ["--cache-from", `type=gha,version=2,scope=${scope},timeout=60s`];
+  return [`type=gha,version=2,scope=${scope},timeout=60s`];
+}
+
+function cacheArguments(role) {
+  return cacheSources(role).flatMap((source) => ["--cache-from", source]);
 }
 
 // The image lanes and the warm job build with a fixed SOURCE_DATE_EPOCH, and
@@ -310,8 +314,19 @@ function cacheArguments(role) {
 // RUN steps do not see it: an `ARG SOURCE_DATE_EPOCH` would change their keys.
 const cacheBuildArguments = ["--build-arg", "SOURCE_DATE_EPOCH=0"];
 
+// Local Setup selects images by registry digest, which the engine records when it
+// pushes or pulls a tag.
 async function pushedDigest(tag) {
   await run("docker", ["push", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function pulledDigest(tag) {
+  await run("docker", ["pull", tag], { timeout: 10 * minute });
+  return recordedDigest(tag);
+}
+
+async function recordedDigest(tag) {
   const { stdout } = await run("docker", [
     "image",
     "inspect",
@@ -358,6 +373,129 @@ async function buildImages({ preparedGit = false } = {}) {
   const controllerTag = `${registry}/oce-smoke/controller:${revision}`;
   const runtimeTag = `${registry}/oce-smoke/runtime-base:${revision}`;
   const smokeRuntimeTag = `${registry}/oce-smoke/runtime:${revision}`;
+  // The only difference from the checkout's runtime image: the stand-in
+  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
+  // Labels, user, entrypoint and every other layer are inherited unchanged.
+  const context = join(workDirectory, "runtime-trust");
+  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
+  const [controller, runtime] =
+    (await builderDriver()) === "docker-container"
+      ? await bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context })
+      : await buildAndPushImages({ revision, controllerTag, runtimeTag, smokeRuntimeTag, context });
+  const repository = {};
+  if (preparedGit) {
+    const tag = `${registry}/oce-smoke/repository:${revision}`;
+    await step("repository service image build", () =>
+      run(
+        "docker",
+        [
+          "buildx",
+          "build",
+          "--load",
+          ...cacheArguments("runtime"),
+          ...cacheBuildArguments,
+          "--file",
+          "deploy/runtime/Dockerfile",
+          "--target",
+          "repository-credentials-service",
+          "--label",
+          `org.opencontainers.image.revision=${revision}`,
+          "--tag",
+          tag,
+          ".",
+        ],
+        { timeout: 30 * minute, label: "repository-build" },
+      ),
+    );
+    repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
+    repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
+  }
+  await exportEnvironment({
+    ...repository,
+    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
+    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
+    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
+  });
+  log(`controller ${controller}`);
+  log(`runtime ${runtime}`);
+}
+
+async function builderDriver() {
+  const { stdout } = await run("docker", ["buildx", "inspect"]);
+  return /^Driver:\s+(\S+)/m.exec(stdout)?.[1] ?? "";
+}
+
+// A builder in its own container (the hosted job's) builds, adds the trust
+// layer and pushes both images in one bake. The push sends the compressed
+// layers the hosted cache already holds, so only layers this checkout changed
+// are compressed, and the base runtime image is never loaded into the engine.
+// The builder reaches the registry over the bridge network; the engine pulls
+// the same tags back from loopback, which records their digests without
+// copying layers it already loaded.
+async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+  const address = (
+    await run("docker", [
+      "inspect",
+      "--format",
+      "{{.NetworkSettings.IPAddress}}",
+      slotNames.registryContainer,
+    ])
+  ).stdout.trim();
+  assert.match(address, /^\d+\.\d+\.\d+\.\d+$/, "registry has no bridge address");
+  const outputs = (tag) => [
+    `type=docker,name=${tag}`,
+    `type=image,name=${address}:5000${tag.slice(registry.length)},push=true,registry.insecure=true`,
+  ];
+  const definition = {
+    target: {
+      "smoke-controller": {
+        context: root,
+        target: "runtime",
+        args: { NODE_BASE_IMAGE: nodeBaseImage, SOURCE_DATE_EPOCH: "0" },
+        labels: { "org.opencontainers.image.revision": revision },
+        "cache-from": cacheSources("controller"),
+        pull: false,
+        output: outputs(controllerTag),
+      },
+      "smoke-runtime-base": {
+        context: root,
+        dockerfile: "deploy/runtime/Dockerfile",
+        args: { OCC_BUILD_REVISION: revision, SOURCE_DATE_EPOCH: "0" },
+        "cache-from": cacheSources("runtime"),
+        pull: false,
+      },
+      "smoke-runtime": {
+        context,
+        contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+        args: { RUNTIME_IMAGE: "smoke-runtime-base" },
+        output: outputs(smokeRuntimeTag),
+      },
+    },
+  };
+  const file = join(workDirectory, "images.bake.json");
+  await writeFile(file, `${JSON.stringify(definition, null, 2)}\n`);
+  // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
+  await step("controller and runtime image builds", () =>
+    run("docker", ["buildx", "bake", "--file", file, "smoke-controller", "smoke-runtime"], {
+      // Plain image manifests, as `docker push` sent before.
+      env: { ...process.env, BUILDX_NO_DEFAULT_ATTESTATIONS: "1" },
+      timeout: 40 * minute,
+      label: "image-bake",
+    }),
+  );
+  return step("registry digests", () =>
+    Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
+  );
+}
+
+// The engine's own builder: build, add the trust layer, then push.
+async function buildAndPushImages({
+  revision,
+  controllerTag,
+  runtimeTag,
+  smokeRuntimeTag,
+  context,
+}) {
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
     Promise.all([
@@ -403,11 +541,6 @@ async function buildImages({ preparedGit = false } = {}) {
       ),
     ]),
   );
-  // The only difference from the checkout's runtime image: the stand-in
-  // provider's private CA in the system store (Codex) and for Node (OpenClaw).
-  // Labels, user, entrypoint and every other layer are inherited unchanged.
-  const context = join(workDirectory, "runtime-trust");
-  await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
   await step("runtime trust layer", () =>
     run("docker", [
       "buildx",
@@ -422,45 +555,9 @@ async function buildImages({ preparedGit = false } = {}) {
       context,
     ]),
   );
-  const [controller, runtime] = await step("registry digests", () =>
+  return step("registry digests", () =>
     Promise.all([pushedDigest(controllerTag), pushedDigest(smokeRuntimeTag)]),
   );
-  const repository = {};
-  if (preparedGit) {
-    const tag = `${registry}/oce-smoke/repository:${revision}`;
-    await step("repository service image build", () =>
-      run(
-        "docker",
-        [
-          "buildx",
-          "build",
-          "--load",
-          ...cacheArguments("runtime"),
-          ...cacheBuildArguments,
-          "--file",
-          "deploy/runtime/Dockerfile",
-          "--target",
-          "repository-credentials-service",
-          "--label",
-          `org.opencontainers.image.revision=${revision}`,
-          "--tag",
-          tag,
-          ".",
-        ],
-        { timeout: 30 * minute, label: "repository-build" },
-      ),
-    );
-    repository.OCC_DEVELOPMENT_REPOSITORY_IMAGE = await pushedDigest(tag);
-    repository.OCC_SKIPPER_IMAGE_REGISTRY_CONTAINER = registryContainer.stdout.trim();
-  }
-  await exportEnvironment({
-    ...repository,
-    OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
-    OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
-    OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
-  });
-  log(`controller ${controller}`);
-  log(`runtime ${runtime}`);
 }
 
 // ---------------------------------------------------------------------------
