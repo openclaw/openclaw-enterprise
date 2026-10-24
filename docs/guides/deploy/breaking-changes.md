@@ -22,20 +22,23 @@ real Installation.
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox Driver
 configuration whose `kubernetes.userNamespaces` is not a YAML boolean (for
-example the quoted string `"false"`), or whose
+example the quoted string `"false"`, or a key left empty, which is null), or whose
 `policy.networkPolicies[].endpoints[].ports` list is empty. Earlier builds
 started: a quoted `"false"` reached the Gateway as user namespaces on, so
 OpenClaw Agents were refused while Codex Sandboxes kept user namespaces, and an
 endpoint without ports failed every Sandbox creation.
 
-**Who is affected.** OpenShell Installations with either setting. Only the
-quoted `userNamespaces` could run Agents before.
+**Who is affected.** OpenShell Installations with either setting. Those with a
+quoted or empty `userNamespaces` could still run Codex Agents; an endpoint
+without ports blocked every Agent.
 
 **How to tell.** Startup fails with `INVALID_TYPE` at
-`/kubernetes/userNamespaces`, or a `minItems` refusal at the endpoint's `ports`.
+`/kubernetes/userNamespaces`, or a `minItems` refusal at a path such as
+`/policy/networkPolicies/0/endpoints/0/ports`.
 
-**Steps.** Write `userNamespaces: false` (or `true`) without quotes, and give
-each endpoint at least one port; then restart the controller. Unquoting `false`
+**Steps.** Write `userNamespaces: false` (or `true`) without quotes, or remove
+an empty key, and give each endpoint at least one port; then restart the
+controller. Unquoting `false`
 turns user namespaces off for Codex Sandboxes too, as the setting says.
 
 ## 2026-10-24: chart NetworkPolicy peers are checked at render
