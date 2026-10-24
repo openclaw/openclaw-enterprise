@@ -378,9 +378,16 @@ async function buildImages({ preparedGit = false } = {}) {
   // Labels, user, entrypoint and every other layer are inherited unchanged.
   const context = join(workDirectory, "runtime-trust");
   await writeModelProviderTrust({ context, caPath: join(modelDirectory, "ca.pem") });
-  const [controller, runtime] =
+  const [controller, runtime, providerImage] =
     (await builderDriver()) === "docker-container"
-      ? await bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context })
+      ? await bakeAndPushImages({
+          revision,
+          controllerTag,
+          smokeRuntimeTag,
+          context,
+          // The prepared-Git acceptance imports archives, so the engine needs both.
+          load: preparedGit,
+        })
       : await buildAndPushImages({ revision, controllerTag, smokeRuntimeTag, context });
   const repository = {};
   if (preparedGit) {
@@ -420,6 +427,7 @@ async function buildImages({ preparedGit = false } = {}) {
     OCC_DEVELOPMENT_CONTROLLER_IMAGE: controller,
     OCC_KUBERNETES_RUNTIME_IMAGE: runtime,
     OCC_FIRST_AGENT_SMOKE_MODEL_DIRECTORY: modelDirectory,
+    ...(providerImage ? { OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE: providerImage } : {}),
   });
   log(`controller ${controller}`);
   log(`runtime ${runtime}`);
@@ -430,15 +438,89 @@ async function builderDriver() {
   return /^Driver:\s+(\S+)/m.exec(stdout)?.[1] ?? "";
 }
 
+// The stand-in model provider runs tests/fixtures/runtime-model-probe-endpoint.mjs,
+// which needs Node and the `ws` package the runtime image ships. This image is
+// the runtime image's Node base with only that package, so the engine loads a
+// small image instead of the whole runtime image.
+export const providerImageDockerfile = [
+  "ARG NODE_RUNTIME_BASE_IMAGE",
+  "FROM ${NODE_RUNTIME_BASE_IMAGE}",
+  "COPY --from=smoke-runtime-base /app/node_modules/ws/ /app/node_modules/ws/",
+  `RUN node -e 'if (typeof require("/app/node_modules/ws").WebSocketServer !== "function") process.exit(1)'`,
+  "USER node",
+  "",
+].join("\n");
+
+// The runtime image's pinned Node base, which the provider image shares.
+export function runtimeNodeBaseImage(dockerfile) {
+  const image = /^ARG NODE_RUNTIME_BASE_IMAGE=(\S+@sha256:[a-f0-9]{64})$/m.exec(dockerfile)?.[1];
+  assert.ok(image, "deploy/runtime/Dockerfile pins no NODE_RUNTIME_BASE_IMAGE");
+  return image;
+}
+
+// The bake definition for the checkout's images. With `load` (the prepared-Git
+// acceptance, which imports archives) the engine also loads the controller and
+// runtime images. Without it they only go to the registry: Local Setup reads
+// their revision labels there and the node pulls them by digest; the engine
+// loads only the stand-in provider's image.
+export function smokeBakeDefinition({
+  revision,
+  controllerTag,
+  smokeRuntimeTag,
+  context,
+  providerContext,
+  nodeRuntimeBaseImage,
+  registryAddress,
+  load,
+  caches = cacheSources,
+}) {
+  const outputs = (tag) => [
+    ...(load ? [`type=docker,name=${tag}`] : []),
+    `type=image,name=${registryAddress}${tag.slice(registry.length)},push=true,registry.insecure=true`,
+  ];
+  const target = {
+    "smoke-controller": {
+      context: root,
+      target: "runtime",
+      args: { NODE_BASE_IMAGE: nodeBaseImage, SOURCE_DATE_EPOCH: cacheEpoch },
+      labels: { "org.opencontainers.image.revision": revision },
+      "cache-from": caches("controller"),
+      pull: false,
+      output: outputs(controllerTag),
+    },
+    "smoke-runtime-base": {
+      context: root,
+      dockerfile: "deploy/runtime/Dockerfile",
+      args: { OCC_BUILD_REVISION: revision, SOURCE_DATE_EPOCH: cacheEpoch },
+      "cache-from": caches("runtime"),
+      pull: false,
+    },
+    "smoke-runtime": {
+      context,
+      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      args: { RUNTIME_IMAGE: "smoke-runtime-base" },
+      output: outputs(smokeRuntimeTag),
+    },
+  };
+  if (!load) {
+    target["smoke-provider"] = {
+      context: providerContext,
+      contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+      args: { NODE_RUNTIME_BASE_IMAGE: nodeRuntimeBaseImage },
+      output: [`type=docker,name=${slotNames.model}-provider:${revision}`],
+    };
+  }
+  return { target };
+}
+
 // A builder in its own container (the hosted job's) builds, adds the trust
 // layer and pushes both images in one bake. The push sends the compressed
 // layers the hosted cache already holds, so only layers this checkout changed
-// are compressed, and the base runtime image is never loaded into the engine.
-// The builder reaches the registry over the default bridge network, so it must
-// run there (setup-buildx's default) or on the host network; the engine pulls
-// the same tags back from loopback, which records their digests without
-// copying layers it already loaded.
-async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context }) {
+// are compressed. The builder reaches the registry over the default bridge
+// network, so it must run there (setup-buildx's default) or on the host
+// network. Unless `load` is set, neither image is loaded into the engine, and
+// the bake's metadata names their registry digests.
+async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, context, load }) {
   const address = (
     await run("docker", [
       "inspect",
@@ -448,52 +530,43 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
     ])
   ).stdout.trim();
   assert.match(address, /^\d+\.\d+\.\d+\.\d+$/, "registry has no bridge address");
-  const outputs = (tag) => [
-    `type=docker,name=${tag}`,
-    `type=image,name=${address}:5000${tag.slice(registry.length)},push=true,registry.insecure=true`,
-  ];
-  const definition = {
-    target: {
-      "smoke-controller": {
-        context: root,
-        target: "runtime",
-        args: { NODE_BASE_IMAGE: nodeBaseImage, SOURCE_DATE_EPOCH: cacheEpoch },
-        labels: { "org.opencontainers.image.revision": revision },
-        "cache-from": cacheSources("controller"),
-        pull: false,
-        output: outputs(controllerTag),
-      },
-      "smoke-runtime-base": {
-        context: root,
-        dockerfile: "deploy/runtime/Dockerfile",
-        args: { OCC_BUILD_REVISION: revision, SOURCE_DATE_EPOCH: cacheEpoch },
-        "cache-from": cacheSources("runtime"),
-        pull: false,
-      },
-      "smoke-runtime": {
-        context,
-        contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
-        args: { RUNTIME_IMAGE: "smoke-runtime-base" },
-        output: outputs(smokeRuntimeTag),
-      },
-    },
-  };
+  const providerContext = join(workDirectory, "provider-image");
+  await mkdir(providerContext, { recursive: true });
+  await writeFile(join(providerContext, "Dockerfile"), providerImageDockerfile);
+  const nodeRuntimeBaseImage = runtimeNodeBaseImage(
+    await readFile(join(root, "deploy/runtime/Dockerfile"), "utf8"),
+  );
+  const definition = smokeBakeDefinition({
+    revision,
+    controllerTag,
+    smokeRuntimeTag,
+    context,
+    providerContext,
+    nodeRuntimeBaseImage,
+    registryAddress: `${address}:5000`,
+    load,
+  });
+  const targets = Object.keys(definition.target).filter((name) => name !== "smoke-runtime-base");
   const file = join(workDirectory, "images.bake.json");
+  const metadataFile = join(workDirectory, "images.metadata.json");
   await writeFile(file, `${JSON.stringify(definition, null, 2)}\n`);
   // Both builds read the hosted caches main's warm job (ci-image-cache.yml) writes.
   await step("controller and runtime image builds", () =>
-    // The trust context lies outside the working directory, so bake needs an
-    // explicit read grant for it (its check sometimes missed it, by target order).
+    // The trust and provider contexts lie outside the working directory, so
+    // bake needs explicit read grants (its check sometimes missed them, by
+    // target order).
     run(
       "docker",
       [
         "buildx",
         "bake",
         `--allow=fs.read=${context}`,
+        `--allow=fs.read=${providerContext}`,
         "--file",
         file,
-        "smoke-controller",
-        "smoke-runtime",
+        "--metadata-file",
+        metadataFile,
+        ...targets,
       ],
       {
         // Single-platform image manifests without attestation indexes, so the
@@ -504,9 +577,34 @@ async function bakeAndPushImages({ revision, controllerTag, smokeRuntimeTag, con
       },
     ),
   );
-  return step("registry digests", () =>
-    Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
-  );
+  if (load) {
+    // The engine pulls the same tags back from loopback, which records their
+    // digests without copying layers it already loaded.
+    return step("registry digests", () =>
+      Promise.all([pulledDigest(controllerTag), pulledDigest(smokeRuntimeTag)]),
+    );
+  }
+  return bakeReferences(JSON.parse(await readFile(metadataFile, "utf8")), {
+    controllerTag,
+    smokeRuntimeTag,
+  });
+}
+
+// Registry references for the pushed images and the loaded provider image's
+// ID, from the bake's metadata file.
+export function bakeReferences(metadata, { controllerTag, smokeRuntimeTag }) {
+  const digest = (name, key) => {
+    const value = metadata[name]?.[key];
+    assert.match(value ?? "", /^sha256:[a-f0-9]{64}$/, `bake metadata has no ${key} for ${name}`);
+    return value;
+  };
+  const pinned = (name, tag) =>
+    `${tag.slice(0, tag.lastIndexOf(":"))}@${digest(name, "containerimage.digest")}`;
+  return [
+    pinned("smoke-controller", controllerTag),
+    pinned("smoke-runtime", smokeRuntimeTag),
+    digest("smoke-provider", "containerimage.config.digest"),
+  ];
 }
 
 // The engine's own builder: build, add the trust layer, then push.
@@ -763,11 +861,12 @@ export function kubectl(stack, args, options = {}) {
 
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
-// its certificate against the CA added to the runtime image.
+// its certificate against the CA added to the runtime image. `providerImage`
+// runs it: the runtime image, or the smoke's provider image (Node and `ws`).
 export async function routeModelProvider(
   stack,
   modelDirectory,
-  runtimeImage,
+  providerImage,
   { journey = "PROBE_PUBLIC_READ_JOURNEY", cleanup = [], credentialDigests } = {},
 ) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
@@ -814,7 +913,7 @@ export async function routeModelProvider(
     ...(credentialDigests === undefined ? [] : ["--env", "PROBE_ENDPOINT_CREDENTIAL_DIGESTS"]),
     "--entrypoint",
     "node",
-    runtimeImage,
+    providerImage,
     "/fixture/endpoint.mjs",
   ];
   const { stdout: containerId } = await run("docker", providerArgs, {
@@ -1907,9 +2006,13 @@ async function smoke() {
       enablePublicReader(stack),
     );
     await step("route api.openai.com to the stand-in provider", () =>
-      routeModelProvider(stack, modelDirectory, process.env.OCC_KUBERNETES_RUNTIME_IMAGE, {
-        credentialDigests,
-      }),
+      routeModelProvider(
+        stack,
+        modelDirectory,
+        process.env.OCC_FIRST_AGENT_SMOKE_PROVIDER_IMAGE ||
+          process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
+        { credentialDigests },
+      ),
     );
     // The two Agents are independent; deploy them together to bound CI time.
     const [embedded, codex, control] = await Promise.all([

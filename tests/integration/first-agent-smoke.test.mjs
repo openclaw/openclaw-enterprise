@@ -10,9 +10,13 @@ import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
   assertChatReply,
+  bakeReferences,
   clusterEventLines,
   createApi,
   observeAgentStop,
+  providerImageDockerfile,
+  runtimeNodeBaseImage,
+  smokeBakeDefinition,
   smokeSlotNames,
   stoppedGatewaySummary,
   waitFor,
@@ -450,4 +454,107 @@ test("cluster events print oldest to newest by observed instant, whatever field 
     "2026-10-23T00:00:11.500000Z occ-agent Normal SeriesLatest Pod/harness-0 x4: SeriesLatest message",
     "2026-10-23T00:00:12.000001Z occ-agent Normal Newest Pod/harness-0: Newest message",
   ]);
+});
+
+const bakeInput = {
+  revision: "0123456789abcdef0123456789abcdef01234567",
+  controllerTag: "127.0.0.1:5000/oce-smoke/controller:0123456789abcdef0123456789abcdef01234567",
+  smokeRuntimeTag: "127.0.0.1:5000/oce-smoke/runtime:0123456789abcdef0123456789abcdef01234567",
+  context: "/work/runtime-trust",
+  providerContext: "/work/provider-image",
+  nodeRuntimeBaseImage: `docker.io/library/node:24-bookworm-slim@sha256:${"a".repeat(64)}`,
+  registryAddress: "172.17.0.3:5000",
+  caches: (role) => [`cache-${role}`],
+};
+const pushOutput = (name) =>
+  `type=image,name=172.17.0.3:5000/oce-smoke/${name}:${bakeInput.revision},push=true,registry.insecure=true`;
+
+test("the smoke bake only pushes the controller and runtime images, and loads the provider image", () => {
+  const { target } = smokeBakeDefinition({ ...bakeInput, load: false });
+  assert.deepEqual(target["smoke-controller"].output, [pushOutput("controller")]);
+  assert.deepEqual(target["smoke-runtime"].output, [pushOutput("runtime")]);
+  assert.deepEqual(target["smoke-controller"].labels, {
+    "org.opencontainers.image.revision": bakeInput.revision,
+  });
+  assert.deepEqual(target["smoke-provider"], {
+    context: "/work/provider-image",
+    contexts: { "smoke-runtime-base": "target:smoke-runtime-base" },
+    args: { NODE_RUNTIME_BASE_IMAGE: bakeInput.nodeRuntimeBaseImage },
+    output: [`type=docker,name=oce-first-agent-smoke-model-provider:${bakeInput.revision}`],
+  });
+  for (const definition of Object.values(target)) {
+    for (const output of definition.output ?? []) {
+      assert.ok(
+        !output.startsWith("type=docker") || definition === target["smoke-provider"],
+        output,
+      );
+    }
+  }
+});
+
+test("the prepared-Git bake still loads both images and builds no provider image", () => {
+  const { target } = smokeBakeDefinition({ ...bakeInput, load: true });
+  assert.deepEqual(target["smoke-controller"].output, [
+    `type=docker,name=${bakeInput.controllerTag}`,
+    pushOutput("controller"),
+  ]);
+  assert.deepEqual(target["smoke-runtime"].output, [
+    `type=docker,name=${bakeInput.smokeRuntimeTag}`,
+    pushOutput("runtime"),
+  ]);
+  assert.equal(target["smoke-provider"], undefined);
+});
+
+test("bake metadata selects both pushed images by registry digest and the provider by image ID", () => {
+  const digest = (character) => `sha256:${character.repeat(64)}`;
+  const metadata = {
+    "smoke-controller": { "containerimage.digest": digest("1") },
+    "smoke-runtime": { "containerimage.digest": digest("2") },
+    "smoke-provider": {
+      "containerimage.config.digest": digest("3"),
+      "containerimage.digest": digest("4"),
+    },
+  };
+  assert.deepEqual(bakeReferences(metadata, bakeInput), [
+    `127.0.0.1:5000/oce-smoke/controller@${digest("1")}`,
+    `127.0.0.1:5000/oce-smoke/runtime@${digest("2")}`,
+    digest("3"),
+  ]);
+  for (const [name, key] of [
+    ["smoke-controller", "containerimage.digest"],
+    ["smoke-runtime", "containerimage.digest"],
+    ["smoke-provider", "containerimage.config.digest"],
+  ]) {
+    const incomplete = structuredClone(metadata);
+    incomplete[name][key] = "sha256:short";
+    assert.throws(() => bakeReferences(incomplete, bakeInput), new RegExp(`no ${key} for ${name}`));
+  }
+});
+
+test("the provider image is the runtime's pinned Node base with only the runtime's ws package", async () => {
+  const dockerfile = await readFile(
+    new URL("../../deploy/runtime/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    runtimeNodeBaseImage(dockerfile),
+    /^docker\.io\/library\/node:24-[^@]+@sha256:[a-f0-9]{64}$/,
+  );
+  assert.throws(
+    () => runtimeNodeBaseImage("ARG NODE_RUNTIME_BASE_IMAGE=node:24-bookworm-slim\n"),
+    /pins no/,
+  );
+  assert.deepEqual(providerImageDockerfile.trim().split("\n"), [
+    "ARG NODE_RUNTIME_BASE_IMAGE",
+    "FROM ${NODE_RUNTIME_BASE_IMAGE}",
+    "COPY --from=smoke-runtime-base /app/node_modules/ws/ /app/node_modules/ws/",
+    `RUN node -e 'if (typeof require("/app/node_modules/ws").WebSocketServer !== "function") process.exit(1)'`,
+    "USER node",
+  ]);
+  // The stand-in loads ws from that path.
+  const endpoint = await readFile(
+    new URL("../fixtures/runtime-model-probe-endpoint.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(endpoint, /createRequire\("\/app\/node_modules\/ws\/package\.json"\)\("ws"\)/);
 });

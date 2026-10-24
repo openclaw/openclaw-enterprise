@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -439,4 +442,283 @@ func TestK3dRegistryAttachmentOrdering(t *testing.T) {
 			t.Fatalf("a registry image was exported: %s", call)
 		}
 	}
+}
+
+// registryTestServer is a loopback HTTP registry serving fixed paths. It
+// records every request path.
+type registryTestServer struct {
+	host   string
+	mu     sync.Mutex
+	routes map[string]registryTestResponse
+	seen   []string
+}
+
+type registryTestResponse struct {
+	status int
+	body   []byte
+	header map[string]string
+}
+
+func newRegistryTestServer(t *testing.T) *registryTestServer {
+	t.Helper()
+	s := &registryTestServer{routes: map[string]registryTestResponse{}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		s.mu.Lock()
+		s.seen = append(s.seen, request.URL.Path)
+		route, ok := s.routes[request.URL.Path]
+		s.mu.Unlock()
+		if !ok {
+			http.NotFound(w, request)
+			return
+		}
+		for key, value := range route.header {
+			w.Header().Set(key, value)
+		}
+		w.WriteHeader(route.status)
+		_, _ = w.Write(route.body)
+	}))
+	t.Cleanup(server.Close)
+	s.host = strings.TrimPrefix(server.URL, "http://")
+	return s
+}
+
+func (s *registryTestServer) requests() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.seen)
+}
+
+func (s *registryTestServer) registry() *developmentImageRegistry {
+	return &developmentImageRegistry{container: registryTestContainer, ports: map[string]string{s.host: "5000"}, pending: 1}
+}
+
+func registryTestSum(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// serveImage publishes a manifest naming config under repository path and
+// returns the digest-pinned reference that selects it.
+func (s *registryTestServer) serveImage(path, mediaType string, config []byte) string {
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"` + mediaType + `","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"` + registryTestSum(config) + `","size":` + fmt.Sprint(len(config)) + `},"layers":[]}`)
+	digest := registryTestSum(manifest)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.routes["/v2/"+path+"/manifests/"+digest] = registryTestResponse{status: http.StatusOK, body: manifest}
+	s.routes["/v2/"+path+"/blobs/"+registryTestSum(config)] = registryTestResponse{status: http.StatusOK, body: config}
+	return s.host + "/" + path + "@" + digest
+}
+
+func registryTestConfig(platform, revision string) []byte {
+	os, architecture, _ := strings.Cut(platform, "/")
+	return []byte(`{"os":"` + os + `","architecture":"` + architecture + `","config":{"Labels":{"org.opencontainers.image.revision":"` + revision + `"}},"rootfs":{"type":"layers","diff_ids":[]}}`)
+}
+
+const registryTestRevision = "0123456789abcdef0123456789abcdef01234567"
+
+func TestDevelopmentRegistryImageRead(t *testing.T) {
+	const ociManifest = "application/vnd.oci.image.manifest.v1+json"
+	for name, tc := range map[string]struct {
+		mediaType string
+		config    []byte
+		// tamper changes what the registry serves for the image.
+		tamper func(s *registryTestServer, reference string)
+		want   string
+	}{
+		"OCI image manifest": {mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision)},
+		"Docker image manifest": {
+			mediaType: "application/vnd.docker.distribution.manifest.v2+json", config: registryTestConfig("linux/arm64", registryTestRevision),
+		},
+		"manifest bytes that do not match the selected digest": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, reference string) {
+				path := "/v2/oce-smoke/runtime/manifests/" + strings.SplitN(reference, "@", 2)[1]
+				route := s.routes[path]
+				route.body = append(slices.Clone(route.body), ' ')
+				s.routes[path] = route
+			},
+			want: "content does not match its digest",
+		},
+		"a config that does not match the manifest": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, _ string) {
+				for path, route := range s.routes {
+					if strings.Contains(path, "/blobs/") {
+						route.body = registryTestConfig("linux/arm64", strings.Repeat("f", 40))
+						s.routes[path] = route
+					}
+				}
+			},
+			want: "content does not match its digest",
+		},
+		"an image index": {mediaType: "application/vnd.oci.image.index.v1+json", config: registryTestConfig("linux/arm64", registryTestRevision), want: "no single image manifest"},
+		"an index without a media type, naming a config": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, _ string) {
+				index := []byte(`{"schemaVersion":2,"config":{"digest":"` + profileTestDigest + `"},"manifests":[]}`)
+				s.routes["/v2/oce-smoke/index/manifests/"+registryTestSum(index)] = registryTestResponse{status: http.StatusOK, body: index}
+			},
+			want: "no single image manifest",
+		},
+		"a config without a platform": {mediaType: ociManifest, config: []byte(`{"config":{"Labels":{}}}`), want: "invalid image config"},
+		"an unknown image": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, _ string) { clear(s.routes) },
+			want:   "HTTP 404",
+		},
+		"a redirect": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, reference string) {
+				s.routes["/v2/oce-smoke/runtime/manifests/"+strings.SplitN(reference, "@", 2)[1]] = registryTestResponse{status: http.StatusFound, header: map[string]string{"Location": "http://example.invalid/"}}
+			},
+			want: "HTTP 302",
+		},
+		"an oversized manifest": {
+			mediaType: ociManifest, config: registryTestConfig("linux/arm64", registryTestRevision),
+			tamper: func(s *registryTestServer, reference string) {
+				s.routes["/v2/oce-smoke/runtime/manifests/"+strings.SplitN(reference, "@", 2)[1]] = registryTestResponse{status: http.StatusOK, body: bytes.Repeat([]byte(" "), developmentRegistryReadLimit+1)}
+			},
+			want: "content larger than",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := newRegistryTestServer(t)
+			reference := server.serveImage("oce-smoke/runtime", tc.mediaType, tc.config)
+			if tc.tamper != nil {
+				tc.tamper(server, reference)
+			}
+			r := newRunner(Options{})
+			r.imageRegistry = server.registry()
+			if name == "an index without a media type, naming a config" {
+				reference = server.host + "/oce-smoke/index@" + registryTestSum([]byte(`{"schemaVersion":2,"config":{"digest":"`+profileTestDigest+`"},"manifests":[]}`))
+			}
+			got, err := r.readRegistryImage(context.Background(), reference)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want %q, got %v", tc.want, err)
+				}
+				return
+			}
+			if err != nil || got.Platform != "linux/arm64" || got.Labels["org.opencontainers.image.revision"] != registryTestRevision {
+				t.Fatalf("got %+v, %v", got, err)
+			}
+		})
+	}
+	t.Run("an image the registry does not serve", func(t *testing.T) {
+		server := newRegistryTestServer(t)
+		r := newRunner(Options{})
+		r.imageRegistry = server.registry()
+		for _, image := range []string{"ghcr.io/openclaw/runtime@" + profileTestDigest, server.host + "/oce-smoke/runtime:latest"} {
+			if _, err := r.readRegistryImage(context.Background(), image); err == nil || !strings.Contains(err.Error(), "not pinned to the development image registry") {
+				t.Fatalf("%s: %v", image, err)
+			}
+		}
+		if len(server.requests()) != 0 {
+			t.Fatalf("contacted the registry: %v", server.requests())
+		}
+	})
+}
+
+func TestDevelopmentImageRevisionsReadImagesTheEngineLacksFromTheRegistry(t *testing.T) {
+	server := newRegistryTestServer(t)
+	controller := server.serveImage("oce-smoke/controller", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/amd64", registryTestRevision))
+	runtime := server.serveImage("oce-smoke/runtime", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/amd64", registryTestRevision))
+	stale := server.serveImage("oce-smoke/stale", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/amd64", strings.Repeat("f", 40)))
+	missing := server.host + "/oce-smoke/missing@" + profileTestDigest
+	for name, tc := range map[string]struct {
+		controller, runtime string
+		local               bool
+		registry            bool
+		want                string
+	}{
+		"both in the registry only":               {controller: controller, runtime: runtime, registry: true},
+		"both local: the registry is not read":    {controller: controller, runtime: runtime, registry: true, local: true},
+		"a registry image from another revision":  {controller: controller, runtime: stale, registry: true, want: "selected image revision does not match checkout"},
+		"an image in neither":                     {controller: controller, runtime: missing, registry: true, want: "must exist locally or in the development image registry"},
+		"no registry selected: local engine only": {controller: controller, runtime: runtime, want: "selected image must exist locally and expose its source revision"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inspect := ""
+			if tc.local {
+				inspect = `"image inspect --format {{ index .Config.Labels \"org.opencontainers.image.revision\" }} "*) echo ` + registryTestRevision + ` ;;`
+			}
+			fakeProfileCommands(t, map[string]string{
+				"git":    `"rev-parse --verify HEAD") echo ` + registryTestRevision + ` ;;`,
+				"docker": inspect,
+			})
+			r := newRunner(Options{})
+			r.engine = "docker"
+			r.env["OCC_DEVELOPMENT_CONTROLLER_IMAGE"] = tc.controller
+			r.env["OCC_KUBERNETES_RUNTIME_IMAGE"] = tc.runtime
+			if tc.registry {
+				r.imageRegistry = server.registry()
+			}
+			before := len(server.requests())
+			err := r.validateDevelopmentImageRevisions(context.Background())
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("want %q, got %v", tc.want, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if read := len(server.requests()) - before; (read != 0) == tc.local {
+				t.Fatalf("registry reads %d with local images %v", read, tc.local)
+			}
+		})
+	}
+}
+
+func TestDevelopmentRegistryImageWithoutALocalCopy(t *testing.T) {
+	server := newRegistryTestServer(t)
+	runtime := server.serveImage("oce-smoke/runtime", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("linux/arm64", registryTestRevision))
+	t.Run("an explicit selection exists in the registry", func(t *testing.T) {
+		fakeProfileCommands(t, map[string]string{"docker": ""})
+		r := newRunner(Options{})
+		r.engine = "docker"
+		r.imageRegistry = server.registry()
+		if err := r.requireSelectedDevelopmentImage(context.Background(), runtime); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.requireSelectedDevelopmentImage(context.Background(), server.host+"/oce-smoke/runtime@"+profileTestDigest); err == nil {
+			t.Fatal("accepted an image neither the engine nor the registry holds")
+		}
+		r.imageRegistry = nil
+		if err := r.requireSelectedDevelopmentImage(context.Background(), runtime); err == nil {
+			t.Fatal("accepted a registry image without a selected registry")
+		}
+	})
+	t.Run("the node pulls it for the registry's platform", func(t *testing.T) {
+		state := kubernetesOnlyOpenShellState(t)
+		_, digest, _ := strings.Cut(runtime, "@")
+		server0 := "k3d-" + state.Cluster + "-server-0"
+		commands := fakeProfileCommands(t, map[string]string{"docker": `"exec ` + server0 + ` ctr -n k8s.io images pull --plain-http --platform linux/arm64 ` + registryTestAddress + `:5000/oce-smoke/runtime@` + digest + `") ;;
+"exec ` + server0 + ` ctr -n k8s.io images tag "*) ;;
+"exec ` + server0 + ` ctr -n k8s.io images list") echo "` + runtime + ` application/vnd.oci.image.manifest.v1+json ` + digest + `" ;;
+"network disconnect "*) ;;
+"container inspect "*) echo ` + registryTestAddress + ` ;;`})
+		r := newRunner(Options{Repository: state.Repository})
+		r.engine = "docker"
+		r.imageRegistry = server.registry()
+		r.imageRegistry.network, r.imageRegistry.address = "k3d-"+state.Cluster, registryTestAddress
+		got, err := r.importDevelopmentImage(context.Background(), state, runtime)
+		if err != nil || got != runtime {
+			t.Fatalf("got %q, %v\n%s", got, err, strings.Join(commands(), "\n"))
+		}
+	})
+	t.Run("a non-Linux registry image is refused before any node command", func(t *testing.T) {
+		state := kubernetesOnlyOpenShellState(t)
+		windows := server.serveImage("oce-smoke/windows", "application/vnd.oci.image.manifest.v1+json", registryTestConfig("windows/amd64", registryTestRevision))
+		commands := fakeProfileCommands(t, map[string]string{"docker": ""})
+		r := newRunner(Options{Repository: state.Repository})
+		r.engine = "docker"
+		r.imageRegistry = server.registry()
+		r.imageRegistry.network, r.imageRegistry.address = "k3d-"+state.Cluster, registryTestAddress
+		_, err := r.importDevelopmentImage(context.Background(), state, windows)
+		if err == nil || !strings.Contains(err.Error(), "must contain a Linux platform") || countCalls(commands(), "docker exec ") != 0 {
+			t.Fatalf("want the platform refusal, got %v %v", err, commands())
+		}
+	})
 }
