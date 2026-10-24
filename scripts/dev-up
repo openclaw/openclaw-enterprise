@@ -55,7 +55,7 @@ esac
 usage() {
   # Docker Compute only; Kubernetes Compute execs occ dev up above, whose --help lists the Sandbox policy file flags.
   echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
-  echo "Sandbox policy files require Kubernetes Compute: see OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes scripts/dev-up --help" >&2
+  echo "Sandbox policy files require Kubernetes Compute and a Sandbox Driver: see OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell scripts/dev-up --help" >&2
 }
 
 quote_command() {
