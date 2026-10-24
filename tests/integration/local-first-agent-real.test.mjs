@@ -604,6 +604,52 @@ test("native terminal failures report only fixed failure codes", async (t) => {
     }
     const gap = { type: "gap", reason: "stream_replaced", stream: probeStream };
     assert.equal(await imageFor(row, [gap, ...records]), "unavailable");
+
+    // A later READY keeps the observed 401, and the image can belong only to that 401.
+    const ready = probeLog({ code: "READY" });
+    const recovered = await observe(
+      handoff,
+      handoff,
+      [deployment, page([...records, ...ready])],
+      [deploymentPath, logPath],
+      async () => row,
+    );
+    assert.deepEqual(recovered.modelProbe, {
+      probes: 2,
+      code: "AUTHENTICATION_FAILED",
+      ...provider,
+    });
+    assert.deepEqual(recovered.probePodImage, { digest, podUid });
+
+    // A success-only, ambiguous, mismatched or mixed-stream page reads no Pod.
+    // The diagnostic catch would swallow a throw here, so count reads instead.
+    let podReads = 0;
+    const noPodRead = async () => {
+      podReads += 1;
+      return row;
+    };
+    const otherStream = { ...probeStream, podUid: randomUUID() };
+    const mixed = [...records, ...ready.map((record) => ({ ...record, stream: otherStream }))];
+    const unattributed = [
+      [deployment, ready],
+      [deployment, [...records, ...records]],
+      [deployment, mixed],
+      [
+        { ...deployment, error: failure("RUNTIME_MODEL_PROBE_FAILED") },
+        probeLog({ code: "AUTHENTICATION_FAILED", ...provider }),
+      ],
+    ];
+    for (const [current, lines] of unattributed) {
+      const { probePodImage } = await observe(
+        handoff,
+        handoff,
+        [current, page(lines)],
+        [deploymentPath, logPath],
+        noPodRead,
+      );
+      assert.equal(probePodImage, "unavailable");
+    }
+    assert.equal(podReads, 0);
   });
 
   await t.test("print other for values outside the fixed vocabularies", async () => {

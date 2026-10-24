@@ -104,8 +104,15 @@ const markerOrAbsent = (value, known) =>
 const failureCategory = (code) => (runtimeFailureCodes.has(code) ? code : "unrecognized");
 const progressCode = (code) => (deploymentProgressCodes.has(code) ? code : "unknown");
 
-// The latest model check in the exact revision's agent log page, as fixed values only.
-async function observeModelProbe(observation, logs, revision, readProbePod, signal) {
+// The deployment failure each held model-check code becomes (worker.ts HELD_RUNTIME_FAILURE_CODES).
+const probeCodeForFailure = new Map([
+  ["RUNTIME_AUTHENTICATION_FAILED", "AUTHENTICATION_FAILED"],
+  ["RUNTIME_MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+]);
+
+// The latest failed model check (else the latest check) in the exact revision's agent log
+// page, as fixed values only.
+async function observeModelProbe(observation, logs, revision, failureCode, readProbePod, signal) {
   if (
     logs?.revisionId !== revision.revisionId ||
     logs.source !== "agent" ||
@@ -119,7 +126,9 @@ async function observeModelProbe(observation, logs, revision, readProbePod, sign
       record.kind === "wrapper" &&
       record.message === "openclaw.model_probe",
   );
-  const probe = probes.at(-1);
+  // A later READY must not hide the failure the deployment is holding.
+  const failed = probes.filter((record) => record.fields?.code !== "READY");
+  const probe = failed.at(-1) ?? probes.at(-1);
   const fields = probe?.fields ?? {};
   observation.modelProbe = {
     probes: probes.length,
@@ -141,9 +150,16 @@ async function observeModelProbe(observation, logs, revision, readProbePod, sign
 
   // The log reader reports stream_replaced if the Pod or container changed during its read.
   // Compare that stream to one later Pod status; never infer the image from the requested tag.
+  // Attach an image only to the page's one failed check, and only when it names the
+  // deployment's failure; a success-only or ambiguous page reads no Pod.
   observation.probePodImage = "unavailable";
   const stream = probe?.stream;
   if (
+    failed.length !== 1 ||
+    probe.fields?.code !== probeCodeForFailure.get(failureCode) ||
+    logs.records.some(
+      (record) => record?.stream !== undefined && !isDeepStrictEqual(record.stream, logs.stream),
+    ) ||
     stream?.source !== "agent" ||
     stream.container !== "agent" ||
     !stream.pod ||
@@ -240,7 +256,7 @@ async function observeDeployment(observation, deployment, revision, request, sig
       undefined,
       signal,
     );
-    await observeModelProbe(observation, logs, revision, readProbePod, signal);
+    await observeModelProbe(observation, logs, revision, code, readProbePod, signal);
   }
 }
 
