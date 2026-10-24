@@ -28,7 +28,12 @@ The migrator also refuses a database from an earlier Credential Proxy preview.
 **Who is affected.** Installations that used the native repository broker
 (Installation `drivers.repo`, Helm `repositoryCredentials.enabled`).
 `drivers.conduit`, `broker-trial` and the preview database refusal affect only
-Credential Proxy preview builds.
+Credential Proxy preview builds. A preview install that gave Agents Git through
+the OpenShell request-phase route has no Git path on this release: the bundled
+OpenShell Driver refuses a `git-write` binding at deploy with
+`409 REPOSITORY_GIT_SENDER_UNQUALIFIED` (see
+[protected repository access with OpenShell](../../reference/repository-credentials/protected-openshell-git.md)),
+and startup refuses `repository.nativeSender` while a Sandbox Driver is selected.
 
 **How to tell.** Helm render fails for `broker-trial` and the broker settings
 above. The upgrade check prints the startup refusals, for example
