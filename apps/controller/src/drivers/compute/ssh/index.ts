@@ -215,7 +215,7 @@ function sshGatewayAuthentication(
   if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
     throw createError(
       "gateway.auth.password",
-      `must be the environment reference {source: "env", provider: "default", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value SSH Compute generates`,
+      `must reference the ${OPENCLAW_GATEWAY_PASSWORD} environment variable through the default provider, whose value SSH Compute generates`,
     );
   }
   return { gateway, auth };

@@ -7957,7 +7957,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
     ],
     ["auth-not-object", { auth: "password" }, setting("gateway.auth", "must be an object")],
     [
-      "literal-password",
+      "other-password-variable",
       {
         auth: {
           mode: "password",
@@ -7966,7 +7966,7 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       },
       setting(
         "gateway.auth.password",
-        'must be the environment reference {source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value SSH Compute generates',
+        "must reference the OPENCLAW_GATEWAY_PASSWORD environment variable through the default provider, whose value SSH Compute generates",
       ),
     ],
     ["password", { auth: { mode: "password" } }],
