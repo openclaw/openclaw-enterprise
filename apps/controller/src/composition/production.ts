@@ -1,3 +1,4 @@
+import { nativeAdminOriginResolver } from "../gateway/native-admin-origin.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
@@ -278,6 +279,9 @@ export async function composeProduction(
       state,
       ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
       recordOperations: true,
+      ...(config.nativeAdmin?.enabled === true
+        ? { nativeAdminOrigin: nativeAdminOriginResolver(config.nativeAdmin, config.authBaseURL)! }
+        : {}),
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
       bundledPresetVersions: config.drivers.bundledPresetVersions ?? [],

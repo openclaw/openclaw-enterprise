@@ -108,7 +108,7 @@ export async function createTestAuthPrincipal({
   return { auth, account, seed, installationId, email, password, name };
 }
 
-export async function signInToControllerApp(app, credentials) {
+export async function signInToControllerApp(app, credentials, origin = "http://127.0.0.1") {
   return signInWithEmailPassword({
     fetch:
       typeof app.fetch === "function"
@@ -142,6 +142,7 @@ export async function signInToControllerApp(app, credentials) {
           },
     email: credentials.email,
     password: credentials.password,
+    origin,
   });
 }
 

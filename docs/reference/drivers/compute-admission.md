@@ -20,6 +20,17 @@ value, in at most 256 characters. Agent provisioning also calls
 `validateAgentProvisioning`; see
 [initial runtime credential provisioning](compute.md#optional-initial-runtime-credential-provisioning).
 
+## Deployment configuration
+
+At deployment, optional `configureAgent(configuration, {nativeAdminOrigin?})`
+transforms the frozen Sandbox-adjusted copy before logging policy, Configuration
+validation and immutable admission. Without the hook, OCC keeps the
+Sandbox-adjusted copy. It does not run during Agent save, when an Agent identity
+may not exist yet. Guided provisioning calls it at revision handoff after Agent
+allocation. Native policy conflicts throw `ComputeGatewaySettingError`; deployment
+answers `409` with the setting, and provisioning records the refusal without
+admitting a revision.
+
 ## Agent save
 
 Agent create and update read the named Configuration and check the Agent as it

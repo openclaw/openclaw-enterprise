@@ -2,6 +2,36 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { composeConfiguration } from "../helpers/compose.mjs";
 
+test("Compose native admin supplies matching admission inputs to the API and Kubernetes worker", () => {
+  // Render the launcher's real overlays: guided creation admits its first revision in
+  // worker-kubernetes, so API-only settings would leave that revision unprepared.
+  const configuration = composeConfiguration(
+    ["compose.yaml", "compose.kubernetes.yaml", "compose.native-admin.yaml"],
+    {
+      OCC_DEVELOPMENT_INSTALLATION_CONFIG: "/private/development/installation.yaml",
+      OCC_DEVELOPMENT_KUBECONFIG: "/private/development/kubeconfig",
+      OCC_DEVELOPMENT_NETWORK_NAME: "native-admin-development",
+      OCC_DEVELOPMENT_BROWSER_ORIGIN: "https://console.example.test:8443",
+      OCC_DEVELOPMENT_AGENT_NATIVE_ADMIN_DOMAIN: "agents.example.test",
+      OCC_DEVELOPMENT_AUTH_COOKIE_DOMAIN: "example.test",
+      OCC_DEVELOPMENT_BROWSER_PORT: "8443",
+      OCC_DEVELOPMENT_BROWSER_TLS_CERT: "/private/development/tls.crt",
+      OCC_DEVELOPMENT_BROWSER_TLS_KEY: "/private/development/tls.key",
+    },
+  );
+  for (const name of ["controller", "worker-kubernetes"]) {
+    const environment = configuration.services[name].environment;
+    assert.equal(environment.OCC_AGENT_NATIVE_ADMIN_ENABLED, "true", name);
+    assert.equal(environment.OCC_AGENT_NATIVE_ADMIN_DOMAIN, "agents.example.test", name);
+    assert.equal(environment.OCC_AUTH_BASE_URL, "https://console.example.test:8443", name);
+  }
+  assert.equal(
+    configuration.services["worker-kubernetes"].environment.OCC_AUTH_COOKIE_DOMAIN,
+    undefined,
+    "only the API owns browser cookies",
+  );
+});
+
 function volumeMounts(service) {
   // podman-compose preserves short syntax; Docker Compose expands it.
   return (service.volumes ?? []).map((mount) => {

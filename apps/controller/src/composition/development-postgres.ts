@@ -1,3 +1,4 @@
+import { nativeAdminOriginResolver } from "../gateway/native-admin-origin.ts";
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
@@ -249,6 +250,9 @@ export async function composePostgresDevelopment(
       state,
       ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
       recordOperations: true,
+      ...(config.nativeAdmin?.enabled === true
+        ? { nativeAdminOrigin: nativeAdminOriginResolver(config.nativeAdmin, config.authBaseURL)! }
+        : {}),
       defaultPresets: drivers?.defaultPresets ?? [],
       bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
       refreshBundledDefaultPresets: drivers?.installation.presets?.includeDefaults === true,

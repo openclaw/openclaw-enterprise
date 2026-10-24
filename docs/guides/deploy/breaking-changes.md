@@ -260,6 +260,19 @@ release, which alone can settle it, then follow the
 [Credential Proxy upgrade](credential-proxy-upgrade.md). Do not replay uncertain
 work.
 
+## 2026-10-16: Native-admin pilot workers need the API's origin settings
+
+**What breaks.** A worker with `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` exits at
+startup if `OCC_AGENT_NATIVE_ADMIN_DOMAIN` or `OCC_AUTH_BASE_URL` is missing, or
+the public URL is not HTTPS. Look for `worker.startup-error`. Workers without the
+pilot are unaffected; Helm passes both values.
+
+**Before upgrading.** In a custom deployment, follow
+[native-admin setup](native-admin.md#install-on-an-existing-cluster): set the
+worker's Agent host suffix and public HTTPS URL to the API's values. Do not copy
+`OCC_AUTH_COOKIE_DOMAIN` to the worker. Check that the worker becomes ready.
+These steps are _untested_.
+
 ## 2026-10-16: stored model provider settings are checked at deploy
 
 **What breaks.** On every Compute, deploying or redeploying an Agent runs the

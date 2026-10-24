@@ -92,6 +92,7 @@
     {
       "path": "tests/integration/development-packaging.test.mjs",
       "expectedTests": [
+        "Compose native admin supplies matching admission inputs to the API and Kubernetes worker",
         "development packaging isolates bootstrap service key output to the bootstrap service"
       ]
     },

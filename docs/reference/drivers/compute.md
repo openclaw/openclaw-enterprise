@@ -19,6 +19,8 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
+Optional [`configureAgent`](compute-admission.md#deployment-configuration) prepares deployment copies.
+
 Optional `getRuntimeImages(revision)` returns
 `{workload, container, image, imageId, commit, openclawCommit}` entries for
 containers owned by that Agent revision. OCC requires exact Agent read

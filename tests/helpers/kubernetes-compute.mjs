@@ -17,6 +17,7 @@ export function createTestKubernetesComputeDriver(
     channelRuntime = false,
     authentication = { mode: "inCluster" },
     gatewayTrustedProxyCidrs = ["127.0.0.1/32"],
+    gatewayRouting,
     sandboxDriver,
     credentialGatewayDriver,
     protectedDriver,
@@ -40,7 +41,9 @@ export function createTestKubernetesComputeDriver(
         dns: { namespace: "kube-system", podLabels: { app: "dns" } },
         gatewayPort: 8080,
         gatewayTrustedProxyCidrs,
-        gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }],
+        ...(gatewayRouting === undefined
+          ? { gatewayClients: [{ namespace: "controller", podLabels: { app: "controller" } }] }
+          : {}),
         ...(repositoryCredentials
           ? {
               repositoryCredentials: {
@@ -52,6 +55,7 @@ export function createTestKubernetesComputeDriver(
           : {}),
       },
       servicePrincipalCredentials: { mode: "disabled" },
+      ...(gatewayRouting === undefined ? {} : { gatewayRouting }),
       ...(repositoryCredentials || channelRuntime
         ? {
             runtime: {
