@@ -10,6 +10,13 @@
 export const postgresSuperuser = "postgres";
 export const postgresSuperuserPassword = "openclaw-local-admin";
 
+// The fixture tests' fake servers (tests/helpers/ci-prepare-fixture-command.mjs) listen on a
+// Unix socket in this directory (".s.PGSQL.<port>") instead: their fake `compose up` cannot
+// claim the TCP port preparation reserved once another process's connection holds it.
+function adminHost() {
+  return process.env.OPENCLAW_CI_POSTGRES_SOCKET_DIR || "127.0.0.1";
+}
+
 // Runs each statement as its own request on one connection to `database`, in order, and
 // stops at the first error, as `psql -v ON_ERROR_STOP=1 -c ... -c ...` did: CREATE DATABASE
 // refuses a transaction block, and a statement string holding several statements runs as
@@ -28,7 +35,7 @@ export async function runPostgresAdmin({ port, database = "postgres", statements
   }
   const { default: pg } = await import("pg");
   const client = new pg.Client({
-    host: "127.0.0.1",
+    host: adminHost(),
     port: Number(port),
     user: postgresSuperuser,
     password: postgresSuperuserPassword,
@@ -37,7 +44,7 @@ export async function runPostgresAdmin({ port, database = "postgres", statements
   });
   // A dropped connection must not crash the process; the pending call reports it.
   client.on("error", () => {});
-  const where = `PostgreSQL 127.0.0.1:${Number(port)}/${database}`;
+  const where = `PostgreSQL ${adminHost()}:${Number(port)}/${database}`;
   let current = "connect";
   let timer;
   const deadline =

@@ -15,12 +15,16 @@ import {
 // and pipes; only the scenario logic below runs in the test process. A command sends
 // the environment variables below. The fixture directory the scenarios write to is the
 // server's, never the client's. `compose up` starts a fake PostgreSQL server
-// (fake-postgres-server.mjs) on the port preparation publishes, where its administrative
+// (fake-postgres-server.mjs) for the port preparation publishes, where its administrative
 // SQL arrives (scripts/ci/postgres-admin.mjs); each query is logged as a "postgres"
-// command whose args are the database and the query. `compose down` stops it.
+// command whose args are the database and the query. `compose down` stops it. The fake
+// listens on that port's Unix socket in OPENCLAW_CI_POSTGRES_SOCKET_DIR: the TCP port
+// preparation reserved and released can meanwhile be held by any process's connection
+// (its TIME_WAIT blocks a listener), which made 6 of 20 parallel runs fail.
 export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
   "OCC_POSTGRES_PORT",
+  "OPENCLAW_CI_POSTGRES_SOCKET_DIR",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
   "OCC_MIGRATION_DATABASE_URL",
@@ -239,10 +243,12 @@ async function fakeCommand({
       if (equals(args.slice(5), ["up", "-d", "--wait"])) {
         const port = Number(env.OCC_POSTGRES_PORT);
         assert.ok(Number.isSafeInteger(port) && port > 0 && port !== 55432);
+        assert.ok(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, "the fixture sets the socket directory");
         postgresServers.set(
           args[4],
           await startFakePostgres({
             port,
+            socketPath: join(env.OPENCLAW_CI_POSTGRES_SOCKET_DIR, `.s.PGSQL.${port}`),
             onQuery: (query, { database }) => {
               appendFileSync(
                 join(root, "commands.jsonl"),

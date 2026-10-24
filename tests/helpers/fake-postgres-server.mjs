@@ -12,7 +12,9 @@ import { createServer } from "node:net";
 // answer until the client goes away), or a promise of one of these (a slow statement).
 // The server must be running on the event loop: drive the code under test with an
 // asynchronous child process, never spawnSync.
-export async function startFakePostgres({ port = 0, onQuery = () => undefined } = {}) {
+//
+// With `socketPath`, it listens on that Unix socket instead and reports `port` as given.
+export async function startFakePostgres({ port = 0, socketPath, onQuery = () => undefined } = {}) {
   const sessions = [];
   const sockets = new Set();
   const server = createServer((socket) => {
@@ -23,10 +25,14 @@ export async function startFakePostgres({ port = 0, onQuery = () => undefined } 
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", resolve);
+    if (socketPath) {
+      server.listen(socketPath, resolve);
+    } else {
+      server.listen(port, "127.0.0.1", resolve);
+    }
   });
   return {
-    port: server.address().port,
+    port: socketPath ? port : server.address().port,
     sessions,
     // Every query, as "<database>\t<query>", in arrival order.
     queries: () =>
