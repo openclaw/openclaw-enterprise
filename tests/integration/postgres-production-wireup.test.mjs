@@ -19,6 +19,7 @@ import { createTestConfigurationDriver } from "../helpers/configuration-driver.m
 import { createReadyComputeDriver } from "../helpers/development.mjs";
 import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-session.mjs";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
 import {
@@ -78,16 +79,7 @@ function memoryLog() {
     lines,
     logger: createOccLogger({
       component: "occ-api-production-wireup",
-      destination: {
-        write(chunk) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              lines.push(JSON.parse(line));
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(lines),
     }),
   };
 }

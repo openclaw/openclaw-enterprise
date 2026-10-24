@@ -20,3 +20,18 @@ export function jsonLines(text, { lenient = false } = {}) {
   }
   return records;
 }
+
+// A `createOccLogger` destination that parses every line the logger writes into `records`.
+// Each non-empty line must parse: the logger writes nothing but JSON lines.
+export function jsonLineDestination(records) {
+  return {
+    write(chunk) {
+      for (const line of String(chunk).split("\n")) {
+        if (line.length > 0) {
+          records.push(JSON.parse(line));
+        }
+      }
+      return true;
+    },
+  };
+}

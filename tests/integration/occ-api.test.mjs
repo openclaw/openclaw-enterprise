@@ -36,6 +36,7 @@ import {
 } from "../helpers/auth-session.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createReadyComputeDriver } from "../helpers/development.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createOccLogger } from "../../apps/controller/src/logging.ts";
@@ -5833,17 +5834,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     logger: createOccLogger({
       component: "occ-api",
       level: "info",
-      destination: {
-        write(chunk) {
-          logLines.push(
-            ...String(chunk)
-              .split("\n")
-              .filter(Boolean)
-              .map((line) => JSON.parse(line)),
-          );
-          return true;
-        },
-      },
+      destination: jsonLineDestination(logLines),
     }),
   });
   const installation = await injectedRequest(fixture.app, "POST", "/installation/bootstrap", {
