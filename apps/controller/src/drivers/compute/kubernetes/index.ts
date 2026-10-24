@@ -4382,9 +4382,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       secretBindings,
       credentialSourceType,
     );
-    // Preparation renders these settings into the document it checks below, and refused a
-    // conflicting value only after a dedicated deployment stopped its predecessors. They follow
-    // the Installation's runtime and routing, so Agent save leaves them to deployment.
+    // Preparation renders these settings and checks the rendered document
+    // (validateAdmittedHarnessAuth), so a conflicting caller value is refused here, before a
+    // dedicated deployment stops its predecessors. They follow the Installation's runtime and
+    // routing, so Agent save leaves them to deployment.
     if (secretBindings !== null) {
       this.requireComputeRenderedSettings(harness, configuration);
     }
@@ -12901,6 +12902,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (!this.rendersNativeHookRelay(revision.harness)) {
       return configuration;
     }
+    // Defined whenever gatewayRouting is; the check narrows the type.
     const endpoint = this.getGatewayEndpoint(revision);
     if (endpoint === undefined) {
       return configuration;

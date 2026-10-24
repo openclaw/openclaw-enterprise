@@ -5181,10 +5181,14 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
   const hookRelay = "plugins.entries.codex.config.appServer.nativeHookRelay";
   const route = "match the Compute-owned sandbox route";
 
-  // Compute's own values, and a document that leaves them unset, pass both.
+  // Compute's own values, and a document that leaves them unset (or null on the relay's path),
+  // pass both.
   for (const document of [
     configuration,
     { ...configuration, mcp: { apps: { enabled: true, sandboxOrigin, sandboxPort } } },
+    changed((document) => {
+      document.plugins.entries.codex.config.appServer = null;
+    }),
   ]) {
     admit(document);
     prepare(document);
@@ -5199,6 +5203,13 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
     ],
     [
       changed((document) => {
+        appServer(document).nativeHookRelay = null;
+      }),
+      hookRelay,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    ],
+    [
+      changed((document) => {
         document.plugins.entries.codex.config.appServer = "on";
       }),
       "plugins.entries.codex.config.appServer",
@@ -5206,11 +5217,18 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
     ],
     [{ ...configuration, mcp: "on" }, "mcp", "must be an object"],
     [{ ...configuration, mcp: { apps: [] } }, "mcp.apps", "must be an object"],
-    [
-      { ...configuration, mcp: { apps: { sandboxOrigin: "https://trusted-admin.example.test" } } },
+    // The administrative origin, and the route's origin without its port, under another
+    // domain, or with a path.
+    ...[
+      "https://trusted-admin.example.test",
+      sandboxOrigin.replace(":9443", ""),
+      sandboxOrigin.replace("previews.example.test", "previews.example.test.evil.test"),
+      `${sandboxOrigin}/x`,
+    ].map((origin) => [
+      { ...configuration, mcp: { apps: { sandboxOrigin: origin } } },
       "mcp.apps.sandboxOrigin",
       `must be unset or ${route}`,
-    ],
+    ]),
     [
       { ...configuration, mcp: { apps: { sandboxPort: sandboxPort + 1 } } },
       "mcp.apps.sandboxPort",
@@ -5246,6 +5264,11 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
   const relayed = changed((document) => {
     appServer(document).nativeHookRelay = { url: "https://hooks.example.test" };
   });
+  // Without gatewayRouting.sandbox the caller's own preview settings stay too.
+  const previews = {
+    ...relayed,
+    mcp: { apps: { sandboxOrigin: "https://preview.example.test", sandboxPort: 1234 } },
+  };
   for (const unrendered of [
     createKubernetesComputeDriver(routedOptions()),
     createKubernetesComputeDriver(
@@ -5254,8 +5277,14 @@ test("deployment admission refuses the Compute-rendered settings preparation ref
       }),
     ),
   ]) {
-    unrendered.validateHarnessAuth(codex, apiKeyAuth, relayed, {});
+    unrendered.validateHarnessAuth(codex, apiKeyAuth, previews, {});
   }
+  // Compute relays native hooks only for Codex: a dedicated OpenClaw document keeps the key.
+  const openclaw = {
+    ...revision,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+  };
+  assert.equal(driver.gatewayNativeHookRelayConfiguration(openclaw, relayed), relayed);
 });
 
 test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
