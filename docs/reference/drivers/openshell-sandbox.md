@@ -130,19 +130,19 @@ spelling. `gatewayConfigured` is the only ServiceAccount mode; the
 gateway's configured sandbox ServiceAccount applies to every Sandbox and does
 not satisfy the per-Agent production requirement below.
 
-Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
-positive `timeoutMs`. Development retains the 30-second `startupDelayMs`.
+Optional readiness observes a Service and Pods in the OCC namespace (a paired
+Gateway normally uses a Backend `endpoint`). It needs a positive `timeoutMs`;
+`pollIntervalMs` (default 1000) is at most `2147483647`. Development retains
+the 30-second `startupDelayMs`.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator`, a
 namespace selector matching `operatorNamespaceLabels`, and `allowed_pod_labels`
 listing `openclaw.dev/*`, `app.kubernetes.io/name`, and
-`app.kubernetes.io/managed-by`; it rejects other labels. The
-OpenShell Workspace name must equal its pre-provisioned Kubernetes namespace, so
-OCC uses a stable `oce-` name with a 15-character digest within the 19-character
-Workspace limit.
+`app.kubernetes.io/managed-by`; it rejects other labels. An OpenShell Workspace
+name must equal its pre-provisioned Kubernetes namespace: `oce-` plus a
+15-character digest, within the 19-character limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 installs one Gateway with workspace resources disabled: in `oce-system` for the

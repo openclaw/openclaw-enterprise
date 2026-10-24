@@ -9,6 +9,7 @@ import test from "node:test";
 import { restoreLaneImages } from "../../scripts/ci/lane-images.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
 import { commandCalls, writeCommand } from "../helpers/fake-commands.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { waitFor, waitUntil } from "../helpers/wait-for.mjs";
 
@@ -475,7 +476,7 @@ await cleanupResourceIds(process.argv[1], ["database-1"]);`,
       stdio: ["ignore", "ignore", "pipe"],
     },
   );
-  t.after(() => child.kill());
+  t.after(() => stopProcess(child));
   let stderr = "";
   child.stderr.on("data", (chunk) => (stderr += chunk));
   const exited = new Promise((resolve) => child.on("close", resolve));

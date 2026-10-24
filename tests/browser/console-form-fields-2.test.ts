@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test, { type TestContext } from "node:test";
 import type { BrowserContextOptions, Locator, Page } from "playwright";
 
@@ -15,7 +16,14 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
+  selectSecret,
 } from "./console-agents-browser-helpers.mjs";
+import {
+  openAdvancedSettings,
+  openCreateSecretDialog,
+  routeInstallationWithoutProvisioning,
+  waitForCreateFormReads,
+} from "./console-agents-test-support.mjs";
 
 // The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
 // authentication source form and the workspace file editor. Each now checks its fields itself
@@ -25,6 +33,10 @@ import {
 // picker passes, so no supported state reaches its check.
 
 const browser = fileBrowser();
+
+const defaultCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
 
 // The control's error as a reader meets it: under the control, inside its field, in the danger
 // colour, linked to the control, which has focus.
@@ -163,7 +175,8 @@ test("the workspace file editor shows an oversized file's error under the file",
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   await editor.fill("a".repeat(16_385));
   const save = page.getByRole("button", { name: "Save AGENTS.md", exact: true });
-  const error = "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.";
+  const error =
+    "Use valid Unicode without NUL characters in AGENTS.md, within 16 KiB of UTF-8 content.";
   // A second Save without an edit is checked the same way, not by the browser.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await save.click();
@@ -238,7 +251,7 @@ test("the workspace file editor drops an oversized file's error when Reload find
   await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
   await assertShownError(
     editor,
-    "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
+    "Use valid Unicode without NUL characters in AGENTS.md, within 16 KiB of UTF-8 content.",
   );
   // Removed elsewhere since it loaded.
   missing = true;
@@ -391,4 +404,114 @@ test("Plugin selections JSON", async (t) => {
       );
     }
   }
+});
+
+// Create Agent and its inline Create Secret dialog check what the API would refuse before any
+// write, naming the field and the rule (findings 2339-2341). The API stays the authority.
+test("Create Agent refuses what the API would refuse before any write", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+  await fixture.bootstrap();
+  const NAME_RULE = "Remove tabs, line breaks and other control characters from the name.";
+  // The form lists the Namespace's Secrets when it opens, so a Secret to choose exists first.
+  const createForm = async (t: TestContext, label: string, secretName?: string) => {
+    const namespace = await fixture.createNamespace(label, { ready: true });
+    const secret = secretName
+      ? await fixture.createSecret(namespace.id, secretName, `${label} value`)
+      : null;
+    const { page } = await newPage(t, fixture, { browser });
+    const invalidEvents = await countInvalidEvents(page);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await waitForCreateFormReads(page);
+    if (secret) {
+      // A complete form apart from the field under test, so that field is the first to fix.
+      await selectSecret(page, "API key Secret", secret);
+      const model = page.getByLabel("Model ID", { exact: true });
+      if (!(await model.isVisible())) {
+        await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+      }
+      await model.fill("gpt-4.1");
+    }
+    return { page, invalidEvents, requests };
+  };
+
+  // Finding 2340: a control character in the Agent name was sent, and in the existing-Secret
+  // flow the Configuration was saved before the API refused the name.
+  await t.test("the Agent name follows the API's Name rule", async (t) => {
+    const { page, invalidEvents, requests } = await createForm(t, "Agent name rule", "Name key");
+    const name = page.getByLabel("Agent name", { exact: true });
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    for (const value of ["Support\tbot", "Support\u0085bot", "Support\u2028bot"]) {
+      await name.fill(value);
+      await create.click();
+      assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+      await assertShownError(name, NAME_RULE);
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");
+  });
+
+  // Finding 2341: an oversized or NUL workspace file was refused by the API with a message that
+  // named no file, inside the collapsed Advanced settings.
+  await t.test("initial workspace files follow the Workspace tab's rule", async (t) => {
+    const { page, invalidEvents, requests } = await createForm(t, "Workspace rule", "Files key");
+    await page.getByLabel("Agent name", { exact: true }).fill("Workspace rule");
+    await openAdvancedSettings(page);
+    const agents = page.getByLabel("AGENTS.md", { exact: true });
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    const advanced = page.locator(".launch-advanced");
+    for (const content of ["a".repeat(16_385), "\u00e9".repeat(8_193), "x\0y"]) {
+      await agents.fill(content);
+      // Advanced settings closes, so the check must open it to show the file.
+      await advanced.locator("> summary").click();
+      await create.click();
+      assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+      assert.equal(await advanced.evaluate((node) => (node as HTMLDetailsElement).open), true);
+      await assertShownError(
+        agents,
+        "Use valid Unicode without NUL characters in AGENTS.md, within 16 KiB of UTF-8 content.",
+      );
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "nothing is saved");
+  });
+
+  // Finding 2339: the dialog checked only that its fields were filled, and its password input
+  // dropped a pasted value's line breaks.
+  await t.test("the inline Create Secret dialog follows the API's Secret rules", async (t) => {
+    const { page, invalidEvents, requests } = await createForm(t, "Secret dialog rules");
+    await openCreateSecretDialog(page, "API key Secret");
+    const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+    const name = dialog.getByLabel("Name", { exact: true });
+    const value = dialog.getByLabel("Value", { exact: true });
+    const submit = dialog.getByRole("button", { name: "Create Secret", exact: true });
+    await name.fill("model\tkey");
+    await value.fill("token");
+    await submit.click();
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    await assertShownError(name, NAME_RULE);
+    await name.fill("Model key");
+    for (const [content, rule] of [
+      ["to\0ken", "Use valid UTF-8 without NUL characters."],
+      ["\u00e9".repeat(32_769), "Use at most 65,536 UTF-8 bytes."],
+    ] as const) {
+      await value.fill(content);
+      await submit.click();
+      assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+      await assertShownError(value, rule);
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), [], "no Secret is created");
+    // A multiline credential is sent exactly as entered.
+    const multiline = "-----BEGIN KEY-----\nline two\n  indented\n-----END KEY-----";
+    await value.fill(multiline);
+    await submit.click();
+    await dialog.waitFor({ state: "hidden" });
+    const created = nonAuthWriteRequests(requests).filter((request) =>
+      request.path.endsWith("/secrets"),
+    );
+    assert.deepEqual(
+      created.map((request) => request.body),
+      [{ name: "Model key", value: multiline }],
+    );
+  });
 });

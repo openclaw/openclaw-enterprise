@@ -41,7 +41,11 @@ func Down(ctx context.Context, opts Options) error {
 			// The socket is on the engine host, so use it only for the worker mount.
 			// Host-side Compose commands must retain Podman's selected connection.
 			r.env["OCC_CONTAINER_ENGINE_SOCKET"] = socket
-			args = append([]string{"compose"}, podmanComposeArgs(opts.ComposeArgs, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])...)
+			composeArgs, err := podmanComposeArgs(opts.ComposeArgs, r.env["COMPOSE_FILE"], r.env["COMPOSE_PATH_SEPARATOR"])
+			if err != nil {
+				return err
+			}
+			args = append([]string{"compose"}, composeArgs...)
 		}
 		args = append(args, "down")
 		if opts.Volumes {
@@ -137,23 +141,33 @@ func (r *runner) cleanup(ctx context.Context, s *developmentState, clusterAttemp
 	return errors.Join(failures...)
 }
 
-func podmanComposeArgs(args []string, files, separator string) []string {
+func podmanComposeArgs(args []string, files, separator string) ([]string, error) {
 	result := append([]string{}, args...)
 	explicit, override := false, false
 	for i, arg := range args {
 		value := ""
-		if (arg == "-f" || arg == "--file") && i+1 < len(args) {
-			value = args[i+1]
+		named := false
+		if arg == "-f" || arg == "--file" {
+			named = true
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
 		} else if strings.HasPrefix(arg, "--file=") {
+			named = true
 			value = strings.TrimPrefix(arg, "--file=")
-		} else if strings.HasPrefix(arg, "-f") && len(arg) > 2 {
+		} else if strings.HasPrefix(arg, "-f") && !strings.HasPrefix(arg, "--") && len(arg) > 2 {
+			named = true
 			value = arg[2:]
 		}
-		if value != "" {
-			explicit = true
-			if filepath.Base(value) == "compose.podman.yaml" {
-				override = true
-			}
+		if !named {
+			continue
+		}
+		if value == "" {
+			return nil, fmt.Errorf("--file requires a Compose file path")
+		}
+		explicit = true
+		if filepath.Base(value) == "compose.podman.yaml" {
+			override = true
 		}
 	}
 	if !explicit {
@@ -174,5 +188,5 @@ func podmanComposeArgs(args []string, files, separator string) []string {
 	if !override {
 		result = append(result, "-f", "compose.podman.yaml")
 	}
-	return result
+	return result, nil
 }

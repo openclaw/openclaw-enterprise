@@ -29,7 +29,13 @@ import type {
   SandboxPolicyRecommendations,
   SandboxPolicyRecommendation,
 } from "@openclaw-enterprise/contracts";
-import { asRecord, immutableCopy, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
+import {
+  asRecord,
+  immutableCopy,
+  isNonEmptyString,
+  MAX_TIMER_DELAY_MS,
+  sha256Hex,
+} from "@openclaw-enterprise/utils";
 import {
   KubernetesObjectApi,
   type KubernetesObject,
@@ -1244,10 +1250,12 @@ async function waitForGatewayReadiness(
       }
       unavailable = "OpenShell gateway Pod is not ready.";
     }
-    if (Date.now() >= deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
       throw new OpenShellSandboxConfigurationFailure(unavailable);
     }
-    await delay(pollIntervalMs, undefined, { signal: context.signal });
+    // Check once more at the deadline rather than a whole poll interval past it.
+    await delay(Math.min(pollIntervalMs, remaining), undefined, { signal: context.signal });
   }
 }
 
@@ -1828,14 +1836,89 @@ function sandboxDataMount(
   };
 }
 
+const FILESYSTEM_PATH_RULE =
+  "Use an absolute path that is not the filesystem root and has no .. segment.";
+
+/**
+ * The gateway's filesystem path rule (`validate_filesystem_paths`), narrowed to exact
+ * non-root paths: startup and Sandbox provisioning both apply it.
+ */
+function isFilesystemPolicyPath(path: unknown): path is string {
+  return (
+    typeof path === "string" &&
+    path.startsWith("/") &&
+    !/^\/+$/u.test(path) &&
+    !path.includes("\0") &&
+    !path.split("/").includes("..")
+  );
+}
+
 function validateFilesystemPolicyPath(path: string, description: string): string {
-  const value = nonempty(path, description);
-  if (value === "/" || !value.startsWith("/") || value.includes("\0")) {
+  if (!isFilesystemPolicyPath(path)) {
     throw new OpenShellSandboxConfigurationFailure(
       `${description} must be an exact non-root absolute path.`,
     );
   }
-  return value;
+  return path;
+}
+
+// OpenShell's `is_valid_sandbox_identity`: its own user name, or a numeric ID that is not
+// root and not the u32 sentinel.
+const MAX_SANDBOX_IDENTITY = 4_294_967_294;
+
+function isSandboxIdentity(value: unknown): boolean {
+  if (value === "sandbox") {
+    return true;
+  }
+  if (typeof value !== "string" || !/^\+?[0-9]+$/u.test(value)) {
+    return false;
+  }
+  const id = Number(value);
+  return id >= 1 && id <= MAX_SANDBOX_IDENTITY;
+}
+
+/**
+ * Settings the gateway refuses only in CreateSandbox, which a dedicated deploy reaches after
+ * its predecessors have stopped, so startup refuses them first (findings 2331, 2332).
+ */
+function validatePolicySettings(options: OpenShellSandboxDriverOptions): void {
+  const details: ErrorDetail[] = [];
+  for (const field of ["runAsUser", "runAsGroup"] as const) {
+    if (!isSandboxIdentity(options.policy.process[field])) {
+      details.push({
+        path: `/policy/process/${field}`,
+        code: "INVALID_VALUE",
+        message: `Use sandbox or a numeric ID from 1 to ${MAX_SANDBOX_IDENTITY}; OpenShell refuses other identities.`,
+      });
+    }
+  }
+  const filesystem = options.policy.filesystem;
+  for (const field of ["readOnly", "readWrite"] as const) {
+    filesystem?.[field]?.forEach((path, index) => {
+      if (!isFilesystemPolicyPath(path)) {
+        details.push({
+          path: `/policy/filesystem/${field}/${index}`,
+          code: "INVALID_VALUE",
+          message: FILESYSTEM_PATH_RULE,
+        });
+      }
+    });
+  }
+  const dataMount = options.kubernetes.sandboxDataMount;
+  const writable = dataMount.readOnly
+    ? (filesystem?.readWrite?.indexOf(dataMount.mountPath) ?? -1)
+    : -1;
+  if (writable !== -1) {
+    details.push({
+      path: `/policy/filesystem/readWrite/${writable}`,
+      code: "INVALID_VALUE",
+      message: "The Sandbox data mount is read-only; remove it from readWrite.",
+    });
+  }
+  const [first, ...rest] = details;
+  if (first !== undefined) {
+    throw new ConfigurationValidationError([first, ...rest]);
+  }
 }
 
 function filesystemPolicy(
@@ -2136,10 +2219,12 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
     const pollIntervalMs = options.gateway.readiness.pollIntervalMs;
     if (
       pollIntervalMs !== undefined &&
-      (!Number.isSafeInteger(pollIntervalMs) || pollIntervalMs < 1)
+      (!Number.isSafeInteger(pollIntervalMs) ||
+        pollIntervalMs < 1 ||
+        pollIntervalMs > MAX_TIMER_DELAY_MS)
     ) {
       throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell gateway readiness poll interval must be a positive safe integer.",
+        `OpenShell gateway readiness poll interval must be a positive safe integer no greater than ${MAX_TIMER_DELAY_MS}.`,
       );
     }
   }
@@ -2165,8 +2250,7 @@ function validateOptions(options: OpenShellSandboxDriverOptions): void {
       "OpenShell policy.landlockCompatibility must be hard_requirement or omitted; best_effort is not supported.",
     );
   }
-  nonempty(options.policy.process.runAsUser, "OpenShell process runAsUser");
-  nonempty(options.policy.process.runAsGroup, "OpenShell process runAsGroup");
+  validatePolicySettings(options);
   if (
     !Array.isArray(options.policy.networkPolicies) ||
     options.policy.networkPolicies.length === 0
@@ -2241,7 +2325,8 @@ export const configurationSchema = Object.freeze({
             serviceName: { type: "string" },
             podSelector: { type: "object" },
             timeoutMs: { type: "integer", minimum: 1 },
-            pollIntervalMs: { type: "integer", minimum: 1 },
+            // A Node.js timer fires a longer delay after 1 ms.
+            pollIntervalMs: { type: "integer", minimum: 1, maximum: MAX_TIMER_DELAY_MS },
           },
         },
       },
@@ -2250,12 +2335,31 @@ export const configurationSchema = Object.freeze({
       type: "object",
       properties: {
         serviceAccount: { type: "object", properties: { mode: { const: "gatewayConfigured" } } },
+        agentResources: {
+          type: "object",
+          properties: { requests: { type: "object" }, limits: { type: "object" } },
+        },
       },
     },
     policy: {
       type: "object",
+      required: ["process", "networkPolicies"],
       properties: {
+        filesystem: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            includeWorkdir: { type: "boolean" },
+            readOnly: { type: "array", items: { type: "string" } },
+            readWrite: { type: "array", items: { type: "string" } },
+          },
+        },
         landlockCompatibility: { const: "hard_requirement" },
+        process: {
+          type: "object",
+          required: ["runAsUser", "runAsGroup"],
+          properties: { runAsUser: { type: "string" }, runAsGroup: { type: "string" } },
+        },
         networkPolicies: {
           type: "array",
           minItems: 1,
@@ -2563,25 +2667,41 @@ function runtimeProviderSetupUpdate(
   });
 }
 
-// bb7df09b7 changed four immutable Codex commands without changing their admission.
-// Pin each public-main payload to its one earlier payload. The OpenShell prefix
-// includes workspace links and setup. It must still match the current request exactly.
-const priorCodexPayload = new Map([
+// These unversioned Codex admissions have four known command generations. Match
+// each current payload only to its own pre-timeout, timeout-fixed and timer-bounded
+// predecessors. The OpenShell command prefix and all owner checks still match exactly.
+const priorCodexPayloads = new Map([
   [
-    "6fce3240ec51f51102477d6379836ebcb784ba2bbc4a62109ac846bc84a4b2a8",
-    "82afa5ad13028f284c9c2e3a2f7c6362d5fa6c41f70e1c40f3dff7538f85877b",
+    "2afe3f2e70638a7a68bb9ad89b83d5c262a61e59bdb7c0cb41faa4309b96abc1",
+    new Set([
+      "82afa5ad13028f284c9c2e3a2f7c6362d5fa6c41f70e1c40f3dff7538f85877b",
+      "6fce3240ec51f51102477d6379836ebcb784ba2bbc4a62109ac846bc84a4b2a8",
+      "d60c6c59bbe7676d884ce262c42e0dbdbb49faf1d2bf1087c9efd35851c7b206",
+    ]),
   ],
   [
-    "128a31e16844bc38c97c308b7a18f970e572d19d098e4a0068b40b131258b3bc",
-    "647a06eec296df95ba8be08cf24de0167f797d56dc4aa475add40547977b0c53",
+    "c41761e00e377fc09732dbf9cecd0ff82f7a6d627f45dba904fc55a833a46f94",
+    new Set([
+      "647a06eec296df95ba8be08cf24de0167f797d56dc4aa475add40547977b0c53",
+      "128a31e16844bc38c97c308b7a18f970e572d19d098e4a0068b40b131258b3bc",
+      "23dfb30c097c8f01b5b96f3011640427adc4e13a3e812e1da4d98dcc2cf10485",
+    ]),
   ],
   [
-    "protected:29297382ca2ad87806c73fd5663da35e0e00ae303d6a3c3838fbd1aa698fb9e9",
-    "17dfa3dd15bec0d0c6801e6f2214539bbad5862668d73c8f3d6fff722ad4c9c6",
+    "protected:5c9f005aa0ea4f2bf30463fb4441c552714d36d8be01b9cd56cbcee9edc4d8db",
+    new Set([
+      "17dfa3dd15bec0d0c6801e6f2214539bbad5862668d73c8f3d6fff722ad4c9c6",
+      "29297382ca2ad87806c73fd5663da35e0e00ae303d6a3c3838fbd1aa698fb9e9",
+      "c1321f71f566b31da2ab608f57a105ef3aab68b338106ed01a8b2bc435c7efbd",
+    ]),
   ],
   [
-    "protected:cf33567a3f0f5b524f51b3bba43e07917d6e5e88fd0f3dbbf36494f7c3c212c4",
-    "321192786091b6aab8408aaf9ccbbac49f12b70a8b7adc71df6d528c4d4711b3",
+    "protected:1ebc4e92f9790a8487a779e51fe4acb4a5bb415e83075dbc02cc700a9e1120c7",
+    new Set([
+      "321192786091b6aab8408aaf9ccbbac49f12b70a8b7adc71df6d528c4d4711b3",
+      "cf33567a3f0f5b524f51b3bba43e07917d6e5e88fd0f3dbbf36494f7c3c212c4",
+      "e3243cdb010a3ba0dee43bfba5073522c2673c83c4adf39ac4531d501322ab2b",
+    ]),
   ],
 ]);
 
@@ -2607,9 +2727,11 @@ function existingSandboxSpec(
     isDeepStrictEqual(observed.slice(0, payload), expected.slice(0, payload)) &&
     !isDeepStrictEqual(observed.slice(payload), expected.slice(payload)) &&
     observed.slice(payload).every((part) => typeof part === "string" && part.length <= 32768) &&
-    priorCodexPayload.get(
-      (protectedRetry ? "protected:" : "") + sha256Hex(JSON.stringify(expected.slice(payload))),
-    ) === sha256Hex(JSON.stringify(observed.slice(payload)))
+    priorCodexPayloads
+      .get(
+        (protectedRetry ? "protected:" : "") + sha256Hex(JSON.stringify(expected.slice(payload))),
+      )
+      ?.has(sha256Hex(JSON.stringify(observed.slice(payload))))
   ) {
     return canonicalSandboxSpec({ ...existing.spec, command: expected });
   }
@@ -2746,6 +2868,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (harness.id !== "openclaw" && harness.id !== "codex") {
       throw new OpenShellSandboxConfigurationFailure(
         "OpenShell SandboxDriver does not support the selected Harness runtime.",
+      );
+    }
+    // prepareNativeWorkspace refuses this only after a deploy has stopped its predecessors.
+    if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
+      throw new ConfigurationHarnessError(
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
       );
     }
     const agents = optionalAgentConfiguration(

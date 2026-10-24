@@ -717,7 +717,12 @@ export function createVersionDeploymentEvidence(
   if (!shared) {
     void load();
   }
-  return { panels: [section, diagnostics.section], show, release };
+  return {
+    panels: [section, diagnostics.section],
+    show,
+    release,
+    applyOperate: diagnostics.applyOperate,
+  };
 }
 
 function readDeployment(context: DeploymentContext, path: string, revisionId: string) {

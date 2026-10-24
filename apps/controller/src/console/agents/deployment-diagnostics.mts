@@ -260,12 +260,32 @@ export function createVersionDiagnostics(
     ]);
   }
 
+  // The page passes each newer Agent operate answer it reads (finding 2328); a missing answer
+  // leaves the button enabled, and the API still decides.
+  function applyOperate(permitted: boolean | undefined) {
+    const denied = permitted === false;
+    if (denied === operateDenied || !context.isCurrent()) {
+      return;
+    }
+    operateDenied = denied;
+    render();
+  }
+
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
+
   render();
   void operateAllowed.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      operateDenied = true;
-      render();
+    if (!operateAnswered) {
+      applyOperate(permitted);
     }
   });
-  return { section, render };
+  return {
+    section,
+    render,
+    applyOperate(permitted: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(permitted);
+    },
+  };
 }

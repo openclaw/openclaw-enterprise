@@ -292,6 +292,16 @@ export function nonAuthWriteRequests(requests) {
   );
 }
 
+// Whether a Secret value control hides what is typed: a password input, or the masked
+// multiline box every Create Secret form uses where the browser supports masking (finding 2339).
+export async function isMaskedSecretValue(control) {
+  return control.evaluate(
+    (node) =>
+      node.getAttribute("type") === "password" ||
+      globalThis.getComputedStyle(node).getPropertyValue("-webkit-text-security") === "disc",
+  );
+}
+
 export function secretOptionLabel(secret) {
   return secret.name;
 }

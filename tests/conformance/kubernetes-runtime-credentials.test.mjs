@@ -25,6 +25,7 @@ import {
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
 } from "../../packages/occ/src/index.ts";
+import { readJsonLinesSync } from "../helpers/json-lines.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
 const { AGENT_RUNTIME_ENTRYPOINT } = runtimeEntrypoints;
@@ -1015,10 +1016,7 @@ test("Codex startup logs in, probes and starts the app server in each login mode
     );
     assert.equal(child.status, 0, `${mode}: ${child.stderr}`);
     assert.match(child.stderr, /"event":"codex\.model_probe".*"code":"READY"/, mode);
-    const calls = readFileSync(join(directory, "calls"), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
+    const calls = readJsonLinesSync(join(directory, "calls"));
     assert.deepEqual(
       calls.map(({ args }) =>
         ["login", "exec", "app-server"].find((command) => args.includes(command)),

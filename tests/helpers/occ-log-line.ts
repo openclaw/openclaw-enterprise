@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { createOccLogger, emitOccLogEvent } from "../../apps/controller/src/logging.ts";
+import { jsonChunkDestination } from "./json-lines.mjs";
 
 // The worker, the API and the maintenance scripts log events through the production logger,
 // which keeps only bounded fields it allows. A test that asserts an event before the logger can
@@ -8,11 +9,7 @@ const lines: Record<string, unknown>[] = [];
 const logger = createOccLogger({
   component: "occ-worker",
   level: "debug",
-  destination: {
-    write(chunk: string) {
-      lines.push(JSON.parse(chunk) as Record<string, unknown>);
-    },
-  },
+  destination: jsonChunkDestination(lines),
 });
 
 /** The line the production logger writes for this event. */

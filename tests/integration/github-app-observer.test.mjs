@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { generateKeyPairSync } from "node:crypto";
 import { createServer } from "node:http";
 import { chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { captureChild } from "../helpers/child-processes.mjs";
 import { setEnvironment } from "../helpers/environment.mjs";
 import {
   createGitHubAppRepositoryObserver,
@@ -261,25 +262,11 @@ async function runCredentialHelper(f, operation, request, env = {}) {
   const helper = fileURLToPath(
     new URL("../../scripts/ci/github-app-observer-credential-helper.mjs", import.meta.url),
   );
-  const child = spawn(process.execPath, [helper, f.directory, repository, operation], {
-    env: childEnv(env),
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  child.stdin.end(request);
-  const status = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  });
+  const { status, stdout, stderr } = await captureChild(
+    process.execPath,
+    [helper, f.directory, repository, operation],
+    { env: childEnv(env), input: request },
+  );
   return { status, stdout, stderr };
 }
 

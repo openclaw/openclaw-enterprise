@@ -55,6 +55,9 @@ export const CreateSecretRequiredFields = {
   name: "Create Secret required fields",
 };
 export const CreateSecretRefused = story("createSecretRefused");
+export const CreateSecretFieldsRefused = story("createSecretFieldsRefused");
+export const CreateAgentNameRefused = story("createAgentNameRefused");
+export const CreateWorkspaceFileRefused = story("createWorkspaceFileRefused");
 export const CreateModelSecretRequired = story("createModelSecretRequired");
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
@@ -305,4 +308,9 @@ export const DefaultPresetDenied = story("createDefaultPresetDenied");
 export const ExistingFallbackPrimary = {
   ...story("createModelFallbackSelection"),
   name: "Choose an existing fallback as primary",
+};
+
+export const RosterModelPrimary = {
+  ...story("createRosterModelSelection"),
+  name: "Change a roster's shared primary model",
 };

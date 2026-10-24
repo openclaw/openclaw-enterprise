@@ -2947,14 +2947,55 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
   }
 }
 
+const NATIVE_HOOK_RELAY_PATH = ["plugins", "entries", "codex", "config", "appServer"] as const;
+
+// Compute renders plugins.entries.codex.config.appServer.nativeHookRelay for Dedicated Codex
+// (gatewayNativeHookRelayConfiguration), so each step of that path must be an object and the
+// relay unset. Admission and preparation apply this one rule; preparation alone refused it
+// after a dedicated deployment stopped its predecessors (finding 2315).
+function requireComputeNativeHookRelay(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  createError: (setting: string, requirement: string) => Error,
+): void {
+  let step: Record<string, unknown> = configuration;
+  for (const [index, key] of NATIVE_HOOK_RELAY_PATH.entries()) {
+    const value = step[key];
+    if (value === undefined || value === null) {
+      return;
+    }
+    const record = asRecord(value);
+    if (record === undefined) {
+      throw createError(
+        NATIVE_HOOK_RELAY_PATH.slice(0, index + 1).join("."),
+        "must be an object on Dedicated Codex",
+      );
+    }
+    step = record;
+  }
+  if (step.nativeHookRelay !== undefined) {
+    throw createError(
+      `${NATIVE_HOOK_RELAY_PATH.join(".")}.nativeHookRelay`,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    );
+  }
+}
+
 // The dedicated OpenClaw model catalog: every selected model is openai/<id> with exactly one
 // entry under models.providers.openai.models that carries the transport, token and cost
-// metadata the native worker needs. The caller owns these settings, so each refusal names
-// the setting (`createError`); a model reference is not echoed.
+// metadata the native worker needs. The Compute Driver owns the runtime transport. The caller
+// owns these settings, so each refusal names the setting (`createError`); a model reference is
+// not echoed.
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
 ): object {
+  const defaults = asRecord(asRecord(configuration.agents)?.defaults);
+  if (asRecord(defaults?.embeddedAgent)?.runtimeServer !== undefined) {
+    throw createError(
+      "agents.defaults.embeddedAgent.runtimeServer",
+      "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
+    );
+  }
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
@@ -3094,13 +3135,6 @@ function nativeRuntimeConfiguration(
 function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot | undefined {
   if (revision.harness.id !== "openclaw" || revision.harness.mode !== "dedicated") {
     return undefined;
-  }
-  const defaults = asRecord(asRecord(revision.configuration.agents)?.defaults);
-  const embeddedAgent = asRecord(defaults?.embeddedAgent);
-  if (embeddedAgent?.runtimeServer !== undefined) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw runtime transport is owned by the selected Compute Driver.",
-    );
   }
   return {
     configuration: JSON.stringify(
@@ -4348,6 +4382,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   validateHarnessAuth(
+    harness: RevisionHarnessDescriptor,
+    auth: HarnessAuthSnapshot,
+    configuration: OpenClawConfigurationDocument,
+    secretBindings?: SecretBindings | null,
+    credentialSourceType?: CredentialSourceType,
+  ): void {
+    this.validateAdmittedHarnessAuth(
+      harness,
+      auth,
+      configuration,
+      secretBindings,
+      credentialSourceType,
+    );
+    // Preparation renders these settings and checks the rendered document
+    // (validateAdmittedHarnessAuth), so a conflicting caller value is refused here, before a
+    // dedicated deployment stops its predecessors. They follow the Installation's runtime and
+    // routing, so Agent save leaves them to deployment.
+    if (secretBindings !== null) {
+      this.requireComputeRenderedSettings(harness, configuration);
+    }
+  }
+
+  // validateHarnessAuth's rules for a document that may carry Compute's rendered settings:
+  // preparation passes the admitted revision's.
+  private validateAdmittedHarnessAuth(
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
@@ -6108,7 +6167,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
     await this.prepareRevisionStage("harness_auth", async () =>
-      this.validateHarnessAuth(
+      this.validateAdmittedHarnessAuth(
         revision.harness,
         revision.harnessAuth,
         admittedRevision.configuration,
@@ -7372,7 +7431,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.verifyGatewayRoutingConfiguration(admittedRevision);
     const workspaceSetup = this.workspaceSetupForRevision(admittedRevision, context);
-    this.validateHarnessAuth(
+    this.validateAdmittedHarnessAuth(
       revision.harness,
       revision.harnessAuth,
       admittedRevision.configuration,
@@ -12800,42 +12859,109 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private gatewaySandboxOrigin(revision: AgentRevision): string | undefined {
-    const sandbox = this.options.gatewayRouting?.sandbox;
-    if (sandbox === undefined || revision.harness.mode !== "dedicated") {
+    if (
+      this.options.gatewayRouting?.sandbox === undefined ||
+      revision.harness.mode !== "dedicated"
+    ) {
       return undefined;
     }
-    const host = `agent-${sha256Hex(`${revision.namespaceId}/${revision.agentId}`, 32)}.${sandbox.domain}`;
+    return this.sandboxRouteOrigin(sha256Hex(`${revision.namespaceId}/${revision.agentId}`, 32));
+  }
+
+  // The origin of an Agent's sandbox route (agent-<hash>.<domain>) under gatewayRouting.sandbox.
+  private sandboxRouteOrigin(agentHash: string): string | undefined {
+    const sandbox = this.options.gatewayRouting?.sandbox;
+    if (sandbox === undefined) {
+      return undefined;
+    }
     const port = sandbox.publicPort ?? 443;
-    return `https://${host}${port === 443 ? "" : `:${port}`}`;
+    return `https://agent-${agentHash}.${sandbox.domain}${port === 443 ? "" : `:${port}`}`;
+  }
+
+  // Compute renders mcp.apps.sandboxOrigin and sandboxPort for a dedicated Agent's sandbox route
+  // (gatewaySandboxConfiguration); the caller may leave them unset or repeat them. Preparation
+  // accepts only the Agent's origin. Admission has no Agent identity, so it accepts any origin
+  // of the route's form and preparation still checks the Agent's (finding 2317).
+  private requireComputeSandboxRoute(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    acceptsOrigin: (origin: unknown) => boolean,
+    createError: (setting: string, requirement: string) => Error,
+  ): void {
+    const mcp = asRecord(configuration.mcp);
+    if (configuration.mcp !== undefined && mcp === undefined) {
+      throw createError("mcp", "must be an object");
+    }
+    const apps = asRecord(mcp?.apps);
+    if (mcp?.apps !== undefined && apps === undefined) {
+      throw createError("mcp.apps", "must be an object");
+    }
+    if (apps?.sandboxOrigin !== undefined && !acceptsOrigin(apps.sandboxOrigin)) {
+      throw createError(
+        "mcp.apps.sandboxOrigin",
+        "must be unset or match the Compute-owned sandbox route",
+      );
+    }
+    const port = this.options.network.gatewayPort + 1;
+    if (apps?.sandboxPort !== undefined && apps.sandboxPort !== port) {
+      throw createError(
+        "mcp.apps.sandboxPort",
+        `must be unset or ${port} to match the Compute-owned sandbox route`,
+      );
+    }
+  }
+
+  // Deployment admission of the settings preparation renders for a dedicated Agent, with the
+  // same rules and the caller's messages.
+  private requireComputeRenderedSettings(
+    harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    if (this.rendersNativeHookRelay(harness)) {
+      requireComputeNativeHookRelay(configuration, callerSettingError);
+    }
+    if (harness.mode === "dedicated" && this.options.gatewayRouting?.sandbox !== undefined) {
+      this.requireComputeSandboxRoute(
+        configuration,
+        (origin) => {
+          const agentHash =
+            typeof origin === "string"
+              ? /^https:\/\/agent-([0-9a-f]{32})\./.exec(origin)?.[1]
+              : undefined;
+          return agentHash !== undefined && origin === this.sandboxRouteOrigin(agentHash);
+        },
+        callerSettingError,
+      );
+    }
+  }
+
+  // Compute relays native hooks for Dedicated Codex when it runs the Gateway behind routing.
+  private rendersNativeHookRelay(harness: RevisionHarnessDescriptor): boolean {
+    return (
+      harness.mode === "dedicated" &&
+      harness.id === "codex" &&
+      this.options.runtime !== undefined &&
+      this.options.gatewayRouting !== undefined
+    );
   }
 
   private gatewayNativeHookRelayConfiguration(
     revision: AgentRevision,
     configuration: OpenClawConfigurationDocument,
   ): OpenClawConfigurationDocument {
-    if (revision.harness.mode !== "dedicated" || revision.harness.id !== "codex") {
+    if (!this.rendersNativeHookRelay(revision.harness)) {
       return configuration;
     }
+    // Defined whenever gatewayRouting is; the check narrows the type.
     const endpoint = this.getGatewayEndpoint(revision);
-    if (this.options.runtime === undefined || endpoint === undefined) {
+    if (endpoint === undefined) {
       return configuration;
     }
+    requireComputeNativeHookRelay(configuration, preparationSettingError);
     const document = structuredClone(configuration) as Record<string, OpenClawConfigurationValue>;
     let appServer = document;
-    for (const key of ["plugins", "entries", "codex", "config", "appServer"]) {
-      const value = appServer[key] ?? {};
-      if (asRecord(value) === undefined) {
-        throw new ConfigurationFailure(
-          "Dedicated Codex plugin configuration must contain objects.",
-        );
-      }
-      appServer[key] = value;
-      appServer = value as Record<string, OpenClawConfigurationValue>;
-    }
-    if (appServer.nativeHookRelay !== undefined) {
-      throw new ConfigurationFailure(
-        "Dedicated Codex native hook relay is owned by the Compute Driver.",
-      );
+    for (const key of NATIVE_HOOK_RELAY_PATH) {
+      appServer[key] ??= {};
+      appServer = appServer[key] as Record<string, OpenClawConfigurationValue>;
     }
     // The Gateway writes each credential into the Harness filesystem through Codex, and
     // the Harness entrypoint creates this directory under its own HOME.
@@ -12859,23 +12985,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (origin === undefined) {
       return configuration;
     }
+    this.requireComputeSandboxRoute(
+      configuration,
+      (candidate) => candidate === origin,
+      preparationSettingError,
+    );
     const mcp = asRecord(configuration.mcp);
     const apps = asRecord(mcp?.apps);
-    if (
-      (configuration.mcp !== undefined && mcp === undefined) ||
-      (mcp?.apps !== undefined && apps === undefined)
-    ) {
-      throw new ConfigurationFailure("Native MCP Apps configuration must be an object.");
-    }
     const port = this.options.network.gatewayPort + 1;
-    if (
-      (apps?.sandboxOrigin !== undefined && apps.sandboxOrigin !== origin) ||
-      (apps?.sandboxPort !== undefined && apps.sandboxPort !== port)
-    ) {
-      throw new ConfigurationFailure(
-        "Native sandbox origin and port must match the Compute-owned sandbox route.",
-      );
-    }
     return {
       ...configuration,
       mcp: {

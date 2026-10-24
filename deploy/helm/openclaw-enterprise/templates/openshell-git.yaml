@@ -12,10 +12,11 @@
 {{- if or (not (kindIs "slice" $git.clients)) (not $git.clients) }}
 {{- fail "openshellGit.clients must select trusted supervisor callers" }}
 {{- end }}
-{{- range $git.clients }}
-{{- if or .ipBlock (not .namespaceSelector) (not .namespaceSelector.matchLabels) (not .podSelector) (not .podSelector.matchLabels) }}
+{{- range $index, $client := $git.clients }}
+{{- if or $client.ipBlock (not $client.namespaceSelector) (not $client.namespaceSelector.matchLabels) (not $client.podSelector) (not $client.podSelector.matchLabels) }}
 {{- fail "openshellGit.clients require namespaceSelector.matchLabels and podSelector.matchLabels, without ipBlock" }}
 {{- end }}
+{{- include "openclaw.networkPolicy.peer" (dict "name" (printf "openshellGit.clients[%d]" $index) "value" $client) }}
 {{- end }}
 apiVersion: v1
 kind: Service

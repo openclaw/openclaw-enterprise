@@ -22,6 +22,8 @@ export function createAgentStop(
     "aria-labelledby": "agent-stop-title",
   });
   const permissionNotice = "Your access does not include stopping this Agent.";
+  const STOP_REFUSED =
+    "You do not have permission to stop this Agent. Ask an administrator for Agent operate access.";
   let restrictConfirmation: (() => void) | undefined;
   const feedback = element("div", { className: "danger-zone-feedback" });
   const actions = element("div", { className: "danger-zone-actions" });
@@ -298,8 +300,7 @@ export function createAgentStop(
       dialog.close();
       let text;
       if (error.status === 403) {
-        text =
-          "You do not have permission to stop this Agent. Ask an administrator for Agent operate access.";
+        text = STOP_REFUSED;
       } else if (error.status === 404) {
         state.needsRefresh = true;
         text =
@@ -404,16 +405,38 @@ export function createAgentStop(
     cancel.focus();
   }
 
+  // The page passes each newer Agent operate answer it reads, so a grant or revocation seen by
+  // Logs applies without a reload (finding 2328). Only a denial hides the row; a missing answer
+  // keeps it, and the API still decides.
+  function applyOperate(permitted: boolean | undefined) {
+    const forbidden = permitted === false;
+    if (forbidden === state.forbidden || !context.isCurrent()) {
+      return;
+    }
+    state.forbidden = forbidden;
+    if (forbidden) {
+      restrictConfirmation?.();
+    } else if (state.error?.text === STOP_REFUSED) {
+      // An earlier refusal no longer describes this viewer's access.
+      state.error = null;
+    }
+    render();
+  }
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
+
   render();
   void allowed?.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      state.forbidden = true;
-      restrictConfirmation?.();
-      render();
+    if (!operateAnswered) {
+      applyOperate(permitted);
     }
   });
   return {
     section,
+    applyOperate(permitted: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(permitted);
+    },
     // The detail page reports whether its version list loaded empty (true), loaded with
     // versions (false), or failed (null).
     setNoReadableVersions(value: boolean | null) {

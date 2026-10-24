@@ -215,6 +215,12 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
 }
 `;
 
+// pluginTimerMs reads a Harness timer setting as whole milliseconds from 1 to 2147483647, the
+// longest delay a Node.js timer honours (MAX_TIMER_DELAY_MS in @openclaw-enterprise/utils, which
+// this script cannot import). The request timeout feeds AbortSignal.timeout, where Number() read
+// "12abc" as NaN, "" as 0 and 3e9 as a timer that fires after 1 ms (finding 2312); the install
+// deadline shares the bound. Whole-line comments here cost nothing at runtime: nodeProgramArguments
+// drops them before the dedicated Harness command is measured against the exec string budget.
 function pluginRuntimeHelpers(currentLaunch: boolean): string {
   return String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
@@ -240,8 +246,15 @@ const { spawnSync: pluginSpawnSync } = require("node:child_process");
 const { createServer: pluginCreateServer, get: pluginHttpGet } = require("node:http");
 const { isDeepStrictEqual: pluginDeepEqual } = require("node:util");
 
-const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS ?? "10000");
-const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
+function pluginTimerMs(name, fallback) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!/^\d+$/.test(process.env[name] ?? fallback) || value < 1 || value > 2147483647) {
+    throw new Error(name + " must be 1 to 2147483647 ms.");
+  }
+  return value;
+}
+const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS", "10000");
+const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = pluginTimerMs("OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS", "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
 ${RUNTIME_STATUS_CONSTANTS_HELPER}

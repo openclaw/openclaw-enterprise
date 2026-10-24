@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
 import test from "node:test";
 import { PLUGIN_RUNTIME_HELPERS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { captureChild } from "../helpers/child-processes.mjs";
 
 const controllerRequire = createRequire(
   new URL("../../apps/controller/package.json", import.meta.url),
@@ -214,7 +214,12 @@ for (const retry of [false, true]) {
     const script = `${PLUGIN_RUNTIME_HELPERS}\ninstallCodexPlugins(${JSON.stringify({ manifest: { kind: "codex", selections } })})
       .then((value) => console.log(JSON.stringify(value)))
       .catch((error) => { console.error(error.message); process.exitCode = 1; });`;
-    const child = spawn(process.execPath, ["-e", script], {
+    // t.signal aborts when the test ends, so a cancelled test still SIGKILLs the child.
+    const {
+      status: code,
+      stdout: output,
+      stderr: errors,
+    } = await captureChild(process.execPath, ["-e", script], {
       env: {
         PATH: process.env.PATH,
         NODE_PATH: dirname(dirname(socketRequire.resolve("ws"))),
@@ -223,18 +228,9 @@ for (const retry of [false, true]) {
         OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS: "1500",
         OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS: "5000",
       },
-      stdio: ["ignore", "pipe", "pipe"],
+      signal: t.signal,
+      killSignal: "SIGKILL",
     });
-    t.after(() => child.kill("SIGKILL"));
-    let output = "";
-    let errors = "";
-    child.stdout.on("data", (data) => {
-      output += data;
-    });
-    child.stderr.on("data", (data) => {
-      errors += data;
-    });
-    const [code] = await once(child, "exit");
     assert.equal(code, 0, errors);
     assert.deepEqual(JSON.parse(output), {
       successfulPluginIds: Object.keys(selections),

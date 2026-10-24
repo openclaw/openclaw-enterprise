@@ -167,6 +167,7 @@ interface MountedTab {
   resumeDrafts?(): void;
   showBlock?(): void;
   refresh?(): void;
+  applyOperate?(allowed: boolean | undefined): void;
   nodes?: ChildNode[];
 }
 
@@ -544,6 +545,8 @@ export async function renderAgentDetail(
   let agentUpdateAllowed = callerPermissionsRead.then((permissions) => permissions?.update);
   // Only the latest reread's answer replaces the summary.
   let permissionsRereads = 0;
+  // The newest reread whose operate answer the page's controls show.
+  let appliedOperateReread = 0;
   // The newest permission read. Logs compares a remembered status denial with it, so an
   // operate grant read since the page was built applies (finding 1579).
   let latestPermissionsRead = callerPermissionsRead;
@@ -2366,7 +2369,7 @@ export async function renderAgentDetail(
     if ("revision" in found) {
       versionRecord = createVersionDeploymentEvidence(context, path, selected, {
         shared: activityRevisionId === selected && !latestDeploymentUnavailable,
-        operateAllowed: callerPermissionsRead.then((permissions) => permissions?.operate),
+        operateAllowed: latestPermissionsRead.then((permissions) => permissions?.operate),
       });
       versionEvidence.append(...versionRecord.panels);
       if (latestDeploymentRecord?.deploymentId === selected) {
@@ -3002,6 +3005,17 @@ export async function renderAgentDetail(
     }
   }
 
+  // Every operate-gated control follows the newest answer read, without a reload: the Stop row,
+  // the shown version's Run diagnostics, and Workspace editors, shown or parked (finding 2328).
+  function applyOperateAnswer(allowed: boolean | undefined) {
+    stopPanel.applyOperate(allowed);
+    versionRecord?.applyOperate(allowed);
+    mountedTab?.applyOperate?.(allowed);
+    for (const tab of retainedTabs.values()) {
+      tab.applyOperate?.(allowed);
+    }
+  }
+
   // Reads the caller's permission answer again; a failed read keeps the last answer.
   function rereadPermissions() {
     const previous = latestPermissionsRead;
@@ -3013,6 +3027,12 @@ export async function renderAgentDetail(
           if (latestDeploymentStatus === "failed" && !deleting) {
             renderLatestDeployment();
           }
+        }
+        // An older reread still applies when no newer one has answered: a newer read that
+        // fails resolves to this answer, which the controls would otherwise never see.
+        if (context.isCurrent() && reread > appliedOperateReread) {
+          appliedOperateReread = reread;
+          applyOperateAnswer(permissions?.operate);
         }
         return permissions;
       },
@@ -3199,6 +3219,9 @@ export async function renderAgentDetail(
         latestPermissionsRead.then((permissions) => permissions?.operate),
       );
       state.refresh = workspace.refresh;
+      if (workspace.applyOperate) {
+        state.applyOperate = workspace.applyOperate;
+      }
       content.append(workspace.section);
       state.loading = false;
       content.style.minHeight = "";
@@ -3731,6 +3754,57 @@ export async function renderAgentDetail(
             !savedAuthentication &&
             bindingFields(auth.capture()) !== bindingFields(originalFields),
         );
+        applySavedGrantWarning();
+      };
+      // The IAM answer is about the saved Secret. A later selection is what Save would grant,
+      // so the warning follows that selection: another Secret clears it, and returning to the
+      // saved Secret restores it. A submit since the read began still owns the status line.
+      let submitted = false;
+      form.addEventListener("submit", () => {
+        submitted = true;
+      });
+      let savedGrantMissing = false;
+      const missingGrantWarning = () =>
+        grantWarning(
+          "missing",
+          harnessGrantSubject(
+            agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
+          ),
+        );
+      const selectionMatchesSavedGrant = () => {
+        const saved = baseline.harnessAuth;
+        const credential = harnessCredential(saved, context.namespaceId);
+        if (!credential) {
+          return false;
+        }
+        const fields = auth.capture();
+        if (credential.kind === "secret") {
+          return (
+            saved?.method === fields.method &&
+            fields.secretSource?.kind === "secret" &&
+            fields.secretSource.id === credential.id &&
+            fields.secretSource.namespaceId === credential.namespaceId
+          );
+        }
+        return (
+          fields.method === "credential_source" &&
+          (fields.credentialSource === null || fields.credentialSource.id === credential.id)
+        );
+      };
+      const applySavedGrantWarning = () => {
+        if (submitted || savedAuthentication || outcomeUnknown) {
+          return;
+        }
+        const warning = missingGrantWarning();
+        if (savedGrantMissing && selectionMatchesSavedGrant()) {
+          setStatusTone(feedback, "warning");
+          feedback.textContent = warning;
+          return;
+        }
+        if (feedback.textContent === warning) {
+          setStatusTone(feedback, null);
+          feedback.textContent = "";
+        }
       };
       form.addEventListener("input", () => syncUnsavedAuthentication());
       form.addEventListener("change", () => syncUnsavedAuthentication());
@@ -3768,28 +3842,11 @@ export async function renderAgentDetail(
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
       // This administrator's console read the saved source's grant as missing: saving the source
-      // again grants it, which the shared wording names (finding 2260).
-      // A submit since the read began owns the status line, even when it failed before saving.
-      let submitted = false;
-      form.addEventListener("submit", () => {
-        submitted = true;
-      });
+      // again grants it, which the shared wording names (finding 2260). The form is retained
+      // while another tab is shown, so the answer is applied even when this tab is parked.
       void data.harnessGrantMissing().then((missing) => {
-        if (
-          missing &&
-          !submitted &&
-          !savedAuthentication &&
-          !outcomeUnknown &&
-          context.isCurrent()
-        ) {
-          setStatusTone(feedback, "warning");
-          feedback.textContent = grantWarning(
-            "missing",
-            harnessGrantSubject(
-              agent.harnessAuth?.method === "credential_source" ? "credential_source" : "secret",
-            ),
-          );
-        }
+        savedGrantMissing = missing;
+        applySavedGrantWarning();
       });
       form.addEventListener("submit", async (event) => {
         event.preventDefault();

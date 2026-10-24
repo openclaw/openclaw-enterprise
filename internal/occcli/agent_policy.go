@@ -10,6 +10,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	var facet string
 	command.PersistentFlags().StringVar(&facet, "facet", "networking", "Sandbox policy facet (currently networking only)")
 	get := &cobra.Command{Use: "get AGENT_ID", Args: idArgs(agentIDArg), Short: "Read desired policy, application evidence, and delegation ceiling", RunE: func(_ *cobra.Command, args []string) error {
+		if err := policyFacet(facet); err != nil {
+			return err
+		}
 		namespace, client, err := app.namespaceClient()
 		if err != nil {
 			return err
@@ -22,6 +25,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	}}
 	var file string
 	update := &cobra.Command{Use: "update AGENT_ID --file PATH", Args: idArgs(agentIDArg), Short: "Save additions from JSON containing expectedVersion and additions", RunE: func(_ *cobra.Command, args []string) error {
+		if err := policyFacet(facet); err != nil {
+			return err
+		}
 		body, err := readJSON(file)
 		if err != nil {
 			return err
@@ -41,6 +47,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	var revision string
 	var version int
 	apply := &cobra.Command{Use: "apply AGENT_ID --revision REVISION_ID --expected-version VERSION", Args: idArgs(agentIDArg), Short: "Request live application to one exact running revision", RunE: func(_ *cobra.Command, args []string) error {
+		if err := policyFacet(facet); err != nil {
+			return err
+		}
 		if version < 1 {
 			return fmt.Errorf("--expected-version must be positive")
 		}
@@ -63,6 +72,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	_ = apply.MarkFlagRequired("expected-version")
 	var enabled bool
 	editing := &cobra.Command{Use: "editing AGENT_ID --enabled=true|false", Args: idArgs(agentIDArg), Short: "Administratively enable or disable future user policy edits", RunE: func(_ *cobra.Command, args []string) error {
+		if err := policyFacet(facet); err != nil {
+			return err
+		}
 		namespace, client, err := app.namespaceClient()
 		if err != nil {
 			return err
@@ -77,6 +89,9 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	_ = editing.MarkFlagRequired("enabled")
 	var recommendationRevision string
 	recommendations := &cobra.Command{Use: "recommendations AGENT_ID --revision REVISION_ID", Args: idArgs(agentIDArg), Short: "Read untrusted provider policy suggestions for one exact revision", RunE: func(_ *cobra.Command, args []string) error {
+		if err := policyFacet(facet); err != nil {
+			return err
+		}
 		namespace, client, err := app.namespaceClient()
 		if err != nil {
 			return err
@@ -98,4 +113,13 @@ func (app *application) agentPolicyCommand() *cobra.Command {
 	}
 	command.AddCommand(get, update, apply, editing, recommendations)
 	return command
+}
+
+// policyFacet refuses anything but networking before a request. The flag says
+// that is the only facet, and OCC answers the others with a conflict.
+func policyFacet(facet string) error {
+	if facet != "networking" {
+		return fmt.Errorf("--facet must be networking")
+	}
+	return nil
 }

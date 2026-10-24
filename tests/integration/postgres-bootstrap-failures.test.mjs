@@ -15,7 +15,7 @@ import { createInstallationDriverConfiguration } from "../helpers/installation-d
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { injectJson } from "../helpers/inject-json.mjs";
-import { jsonLines } from "../helpers/json-lines.mjs";
+import { jsonEvent, jsonLines } from "../helpers/json-lines.mjs";
 import { withPool } from "../helpers/postgres-database.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import { admittedLoggingLevel } from "../../packages/contracts/src/index.ts";
@@ -250,10 +250,7 @@ async function bootstrapWithLostCommitAcknowledgement(environment) {
     OCC_TEST_POSTGRES_COMMIT_ACK_FAULT: "installation-bootstrap",
   });
   assert.equal(result.ok, false);
-  const failure = jsonLines(result.stderr).find(
-    (line) => line.event === "installation.bootstrap-failed",
-  );
-  assert.ok(failure, result.stderr);
+  const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
   assert.equal(failure.code, "COMMIT_OUTCOME_UNKNOWN");
   assert.equal(failure.attempt.serviceKeyFile, environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE);
   assert.equal(existsSync(environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE), true);
@@ -716,10 +713,7 @@ test(
     });
     const result = await runBootstrapScript(environment);
     assert.equal(result.ok, false);
-    const failure = jsonLines(result.stderr).find(
-      (line) => line.event === "installation.bootstrap-failed",
-    );
-    assert.ok(failure, result.stderr);
+    const failure = jsonEvent(result.stderr, "installation.bootstrap-failed");
     assert.equal(failure.code, "BOOTSTRAP_FAILED");
     assert.equal("cleanupFailures" in failure, false);
     assert.doesNotMatch(result.stderr, /^occ_/m);
@@ -958,10 +952,7 @@ test(
       "fresh-path",
       runBootstrapScript,
     );
-    const result = jsonLines(fresh.stdout).find(
-      (line) => line.event === "installation.bootstrapped",
-    );
-    assert.ok(result, fresh.stdout);
+    const result = jsonEvent(fresh.stdout, "installation.bootstrapped");
     // The log line names the new Installation too (finding 2245).
     const logged = jsonLines(fresh.stderr).find(
       (line) => line.event === "installation.bootstrapped",

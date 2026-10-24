@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
 updated: 2026-10-24
-last_updated_session: authoring-run/64430236-3432-4c29-84b6-f4a45d409064
+last_updated_session: authoring-run/83180569-5492-4f4e-8217-a4c86ce5b6f1
 ---
 
 # Harness Execution Topology Flow
@@ -177,9 +177,9 @@ Account login and other Harnesses retain their endpoints. Model credentials stay
 `KubernetesComputeDriver.admitRevision` records the [stored binding](../reference/drivers/compute-admission.md#stored-launch-bindings)
 `codex-launch:v2:` without changing grants or the execution schema.
 `pluginRuntimeSnapshot` selects marker ordering and workspace login.
-Login and probe timeouts kill native Codex directly.
-`OpenShellSandboxDriver.provisionHarness` verifies ownership and content before adoption.
-Unprefixed revisions also accept the exact earlier payload inside the expected wrapper.
+Login and probe timeouts kill native Codex.
+`OpenShellSandboxDriver.provisionHarness` checks ownership and content.
+Unprefixed Codex revisions keep known payloads matching their wrapper, retry policy and workspace-node setting.
 
 For custom endpoints, `gatewayConfigurationDocument` calls
 `apps/controller/src/drivers/compute/codex-model-configuration.ts:codexGatewayModelConfiguration`.
@@ -294,6 +294,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-24 20:23: Trace historical Sandbox command adoption. (authoring-run/83180569-5492-4f4e-8217-a4c86ce5b6f1 - 4c5d92fcf7804fa906e3b6658010cf57f8acd2c4)
 
 - 2026-10-24 13:59: Record native timeouts and exact unversioned Sandbox adoption. (authoring-run/64430236-3432-4c29-84b6-f4a45d409064 - 108782a40ca54702400bf7fb2c09168e15bce566)
 

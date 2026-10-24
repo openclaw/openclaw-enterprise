@@ -17,13 +17,13 @@ import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { staticEgressFixture, wireTime } from "../helpers/static-egress.mjs";
 import {
+  listenOnNewOrigin,
   startGitHubFixture,
   fixtureAppId,
   fixtureInstallationId,
   fixtureRepositoryId,
   fixtureRepository,
 } from "../fixtures/repository-credentials/github.mjs";
-import { listen } from "../fixtures/repository-credentials/process.mjs";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { preparedAttemptSettled } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-postgres.ts";
@@ -514,8 +514,7 @@ test(
     // B is reachable with the same trusted CA and would falsely acknowledge A's revocation.
     // Record only whether a credential arrived. A client must not rely on B rejecting A's token.
     let credentialRequestsAtB = 0;
-    const originB = await listen(
-      t,
+    const originB = await listenOnNewOrigin(t, () =>
       createServer(gh.tls, (req, res) => {
         if (req.headers.authorization) {
           credentialRequestsAtB++;

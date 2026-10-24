@@ -13,6 +13,7 @@ import { prepareCodexSeccompProfile } from "../../scripts/ci/codex-seccomp.mjs";
 import { metricsMonitoringImages } from "../../scripts/ci/metrics-monitoring-images.mjs";
 import { defaultK3sImage } from "../../scripts/ci/prepare.mjs";
 import { withStateLock } from "../../scripts/ci/state-lock.mjs";
+import { readJsonLines } from "../helpers/json-lines.mjs";
 import { createKubernetesInstallationConfiguration } from "../helpers/kubernetes-real.mjs";
 import { listen } from "../helpers/listen.mjs";
 import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
@@ -847,6 +848,18 @@ describe("CI preparation", { concurrency }, () => {
         { ACTIONS_RUNTIME_TOKEN: "" },
         [],
         /Image caching requires the hosted image lane/,
+      ],
+      [
+        "malformed run ID",
+        { GITHUB_RUN_ID: "0" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
+      ],
+      [
+        "malformed run attempt",
+        { GITHUB_RUN_ATTEMPT: "01" },
+        [],
+        /Image CI state requires a valid run ID and attempt/,
       ],
     ]) {
       const commands = await fixtureImageCommands(t, "success", "images-packaging", {
@@ -1956,6 +1969,50 @@ for (let index = 0; index < Number(times); index += 1) {
     assert.equal((await stat(statePath)).mode & 0o777, 0o600);
   });
 
+  test("prepareFile refuses a state file it does not own before using it", async (t) => {
+    const root = await fixture(t);
+    const statePath = join(root, "state.json");
+    const owned = {
+      version: 1,
+      repositoryRoot,
+      lane: "postgres-application",
+      prefix: "openclaw-ci-local-foreign-state",
+      statePath,
+      resources: [composePostgres("foreign_state")],
+    };
+    for (const [label, change, error] of [
+      ["another version", { version: 2 }, /Unsupported CI state version: 2/],
+      [
+        "another checkout",
+        { repositoryRoot: join(root, "other-checkout") },
+        /CI state belongs to another repository root/,
+      ],
+      [
+        "another prefix",
+        { prefix: "someone-else" },
+        /CI state prefix is not an OpenClaw Enterprise CI prefix/,
+      ],
+      ["no resource list", { resources: {} }, /CI state resources must be an array/],
+    ]) {
+      const state = { ...owned, ...change };
+      await writeState(statePath, state);
+      const result = await runPrepare(
+        [
+          "--lane",
+          "postgres-application",
+          "--file",
+          "tests/integration/postgres-worker-agent-revision.test.mjs",
+          "--state",
+          statePath,
+        ],
+        { OCC_DOCKER_BIN: join(root, "must-not-run") },
+      );
+      assert.equal(result.status, 1, label);
+      assertStderrMatch(result.stderr, error, label);
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state, label);
+    }
+  });
+
   test("prepareLane pre-pulls logging and metrics images with retry and preserves its Node override", async (t) => {
     for (const failure of ["transient", "missing-manifest"]) {
       await t.test(failure, async (t) => {
@@ -2020,10 +2077,7 @@ process.exit(2);
           },
         );
 
-        const pulls = (await readFile(join(root, "docker.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line))
+        const pulls = (await readJsonLines(join(root, "docker.jsonl")))
           .filter((args) => args[0] === "pull")
           .map((args) => args[1]);
         if (failure === "missing-manifest") {
@@ -2157,6 +2211,21 @@ process.exit(2);
     );
     assert.equal(invalid.status, 1);
     assert.match(invalid.stderr, /NODE_BASE_IMAGE must be an immutable/);
+
+    const otherNode = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: customNodeBaseImage.replace("node:24-", "node:22-") },
+    );
+    assert.equal(otherNode.status, 1);
+    assertStderrMatch(otherNode.stderr, /NODE_BASE_IMAGE must select an approved Node 24 image/);
+
+    // A blank override is a missing input, not a reason to fall back to the default.
+    const blank = await runPrepare(
+      ["--lane", "images-packaging", "--file", file, "--state", statePath],
+      { NODE_BASE_IMAGE: "   " },
+    );
+    assert.equal(blank.status, 1);
+    assertStderrMatch(blank.stderr, /Missing required CI input\(s\): NODE_BASE_IMAGE/);
   });
 
   // This command fixture tests preparation ordering only. The real launcher case
@@ -2201,12 +2270,7 @@ if (args[0] === "pull") {
         // The launcher engine selection must win over the general CI engine override.
         OCC_DOCKER_BIN: join(root, "must-not-run"),
       },
-      commands: async () =>
-        (await readFile(join(root, "commands.jsonl"), "utf8"))
-          .trim()
-          .split("\n")
-          .filter(Boolean)
-          .map(JSON.parse),
+      commands: () => readJsonLines(join(root, "commands.jsonl"), { skipBlank: true }),
     };
   }
 
@@ -2291,34 +2355,42 @@ if (args[0] === "pull") {
     }
   });
 
-  test("provider-account preparation accepts absent image inputs before prepared state exists", async (t) => {
+  test("provider-account preparation checks image inputs and admin key mode before prepared state exists", async (t) => {
     const root = await fixture(t);
     const adminKeyPath = join(root, "chatgpt-admin.key");
     const statePath = join(root, "missing-state.json");
     await writeFile(adminKeyPath, "admin key\n", { mode: 0o600 });
     await chmod(adminKeyPath, 0o600);
+    const prepareProviderAccount = () =>
+      runPrepare(
+        [
+          "--lane",
+          "provider-account",
+          "--file",
+          "tests/integration/service-account-driver-real.test.mjs",
+          "--state",
+          statePath,
+        ],
+        {
+          OCC_TEST_OPENAI_MODEL: "gpt-test",
+          OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
+          OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
+          OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
+          OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
+        },
+      );
 
-    const result = await runPrepare(
-      [
-        "--lane",
-        "provider-account",
-        "--file",
-        "tests/integration/service-account-driver-real.test.mjs",
-        "--state",
-        statePath,
-      ],
-      {
-        OCC_TEST_OPENAI_MODEL: "gpt-test",
-        OCC_TEST_CHATGPT_WORKSPACE_ID: "workspace-test",
-        OCC_TEST_CHATGPT_ADMIN_KEY_PATH: adminKeyPath,
-        OCC_TEST_KUBERNETES_GATEWAY_IMAGE: "",
-        OCC_TEST_KUBERNETES_AGENT_IMAGE: "",
-      },
-    );
-
+    const result = await prepareProviderAccount();
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /requires a prior prepareLane/);
+    assertStderrMatch(result.stderr, /requires a prior prepareLane/);
     assert.doesNotMatch(result.stderr, /OCC_TEST_KUBERNETES_.*IMAGE/);
+    await assert.rejects(() => stat(statePath), { code: "ENOENT" });
+
+    // The admin key must stay private to the runner's user.
+    await chmod(adminKeyPath, 0o644);
+    const readable = await prepareProviderAccount();
+    assert.equal(readable.status, 1);
+    assertStderrMatch(readable.stderr, /ChatGPT admin key must have mode 0600/);
     await assert.rejects(() => stat(statePath), { code: "ENOENT" });
   });
 
@@ -2532,7 +2604,7 @@ await assert.rejects(() => prepareFile({ lane: "postgres-application",
         10_000,
       );
       assert.equal(result.status, 0, result.stderr);
-      const commands = (await readFile(commandsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      const commands = await readJsonLines(commandsPath);
       const expected = ["database-create", "database-schema", "database-migrate"];
       assert.deepEqual(
         commands,

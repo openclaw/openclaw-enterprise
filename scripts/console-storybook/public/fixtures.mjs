@@ -653,6 +653,21 @@ export function installFixture(scenario, evidence) {
       },
     };
   }
+  if (scenario.modelRosterSelection) {
+    const values = preset.template.configuration.values;
+    const primary = values.agents.defaults.model.primary;
+    const policy = values.agents.defaults.models;
+    values.agents.ownership = "explicit";
+    values.agents.entries = {
+      main: { model: primary, models: { [primary]: { ...policy[primary], alias: "Main policy" } } },
+      assistant: {
+        model: structuredClone(values.agents.defaults.model),
+        models: structuredClone(policy),
+      },
+      inherited: {},
+    };
+    preset.name = "Roster with a shared primary";
+  }
   if (scenario.presetAgent) {
     Object.assign(preset.template.agent, structuredClone(scenario.presetAgent));
   }

@@ -15,6 +15,7 @@ import {
   createKubernetesComputeDriver,
   PLUGIN_RUNTIME_STATUS_PORT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 
@@ -24,6 +25,7 @@ import {
   productionValues as values,
   productionCollectorValues,
   goToolEnvironment,
+  renderExecutionChart,
 } from "../helpers/production-chart.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 
@@ -269,26 +271,133 @@ test(
   },
 );
 
+const stringNameMessage =
+  "must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string";
+const stringNameDatabaseCa = {
+  "database.caSecretName": "occ-database-ca-test",
+  "database.caKey": "ca.pem",
+  "database.caMountPath": "/etc/openclaw/database-ca",
+};
+const stringNameCaValues = {
+  database: stringNameDatabaseCa,
+  oidc: {
+    ...stringNameDatabaseCa,
+    "auth.oidc.enabled": "true",
+    "auth.recoveryUserId": "recovery-admin_1",
+    "auth.oidc.issuer": "https://tenant.idp.example.test/",
+    "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+    "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+    "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+    "auth.oidc.secretName": "oidc-client",
+    "auth.oidc.clientIdKey": "client-id",
+    "auth.oidc.clientSecretKey": "client-secret",
+    "auth.oidc.caSecretName": "oidc-ca",
+    "auth.oidc.caSecretKey": "ca.crt",
+  },
+  execution: {
+    "executionCluster.enabled": "true",
+    "executionCluster.apiKubeconfigSecretName": "execution-api",
+    "executionCluster.workerKubeconfigSecretName": "execution-worker",
+    "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+  },
+};
+
+test(
+  "operator-named Secrets, keys and namespaces reject YAML booleans and numbers",
+  tooling,
+  async () => {
+    // --set reads true or 1 as a boolean or number, as YAML does for yes/on/1. Rendered as "true"
+    // or "1", the name would pass the name pattern and the Pod would wait for a Secret, key or
+    // Namespace that does not exist.
+    for (const [field, value, enabled = {}] of [
+      ["installation.secretName", "true"],
+      ["installation.key", "true"],
+      ["database.secretName", "123"],
+      ["database.caSecretName", "true"],
+      ["auth.secretKey", "true"],
+      ["dns.namespace", "true"],
+      ["api.clients[0].namespace", "1"],
+      ["database.appUrlKey", "2"],
+      ["bootstrap.password.claimName", "true"],
+      ["gatewayRouting.envoyNamespace", "true", gatewayRoutingValues],
+      ["gatewayRouting.gatewayName", "2024", gatewayRoutingValues],
+      ["gatewayRouting.tlsSecretName", "true", gatewayRoutingValues],
+      ["api.consoleTheme.configMapName", "true"],
+      ["api.consoleTheme.checksum", "1"],
+      ["controlPlane.installationChecksum", "1"],
+      // Finding 2321: these fields meet an eq comparison first, which cannot compare a string
+      // with a number or boolean and used to fail with a Go template type error instead.
+      ["database.caKey", "1", stringNameCaValues.database],
+      ["auth.oidc.secretName", "2024", stringNameCaValues.oidc],
+      ["auth.oidc.secretName", "false", stringNameCaValues.oidc],
+      ["bootstrap.password.fileName", "2024"],
+      ["bootstrap.serviceKey.fileName", "true"],
+      ["database.caSecretName", "2024", stringNameCaValues.oidc],
+      ["auth.oidc.caSecretName", "2024", stringNameCaValues.oidc],
+      ["executionCluster.apiKubeconfigSecretName", "2024", stringNameCaValues.execution],
+      ["executionCluster.workerKubeconfigSecretName", "true", stringNameCaValues.execution],
+    ]) {
+      await assert.rejects(
+        render({ ...enabled, [field]: value }),
+        (error) => error.message.includes(`${field} ${stringNameMessage}`),
+        field,
+      );
+    }
+    // An optional name that reads as false or 0 is still unset, as the notice says.
+    for (const [value, mounted] of [
+      ["occ-database-ca-test", true],
+      ["false", false],
+      ["0", false],
+    ]) {
+      const { stdout } = await render({
+        ...stringNameCaValues.database,
+        "database.caSecretName": value,
+      });
+      assert.equal(stdout.includes("/etc/openclaw/database-ca"), mounted, value);
+    }
+  },
+);
+
+test("execution chart names reject YAML booleans and numbers", tooling, async () => {
+  // Finding 2322: the execution chart rendered TLS Secret "2024", a DNS peer in Namespace
+  // "true" and an EnvoyProxy in Namespace "true", so Harness Pods silently lost DNS.
+  for (const [field, value] of [
+    ["routing.hostname", "123"],
+    ["routing.gatewayClassName", "1"],
+    ["routing.gatewayName", "true"],
+    ["routing.envoyNamespace", "true"],
+    ["routing.tlsSecretName", "2024"],
+    ["dns.namespace", "true"],
+    ["dns.namespace", "false"],
+  ]) {
+    await assert.rejects(
+      renderExecutionChart("--set", `${field}=${value}`),
+      ({ stderr }) => stderr.includes(`${field} ${stringNameMessage}`),
+      `${field}=${value}`,
+    );
+  }
+  const objects = await resources(
+    (
+      await renderExecutionChart(
+        "--set-string",
+        "routing.tlsSecretName=2024",
+        "--set-string",
+        "dns.namespace=true",
+      )
+    ).stdout,
+  );
+  const gateway = objects.find((item) => item.kind === "Gateway");
+  assert.equal(gateway.spec.listeners[0].tls.certificateRefs[0].name, "2024");
+  const policy = objects.find((item) => item.kind === "NetworkPolicy");
+  assert.equal(
+    policy.spec.egress[0].to[0].namespaceSelector.matchLabels["kubernetes.io/metadata.name"],
+    "true",
+  );
+});
+
 test("execution peer label maps reject non-string values before rendering", tooling, async () => {
   const renderExecution = (field, value, option = "--set-json") =>
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-execution",
-        "--set",
-        "routing.hostname=agents.example.invalid",
-        "--set",
-        "routing.gatewayClassName=private-envoy-gateway",
-        "--set",
-        "routing.tlsSecretName=agents-tls",
-        "--set",
-        "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-        ...(field === undefined ? [] : [option, `${field}=${value}`]),
-      ],
-      { cwd: repository, maxBuffer: 2_000_000 },
-    );
+    renderExecutionChart(...(field === undefined ? [] : [option, `${field}=${value}`]));
   const defaults = await resources((await renderExecution()).stdout);
   const defaultPolicy = defaults.find(({ kind }) => kind === "NetworkPolicy");
   for (const [field, peer] of [
@@ -368,28 +477,7 @@ test(
         ],
       },
       {
-        objects: await resources(
-          (
-            await execute(
-              helm,
-              [
-                "template",
-                "oce",
-                "deploy/helm/openclaw-execution",
-                "--set",
-                "routing.hostname=agents.example.invalid",
-                "--set",
-                "routing.gatewayClassName=private-envoy-gateway",
-                "--set",
-                "routing.tlsSecretName=agents-tls",
-                "--set",
-                "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-                ...dnsArguments,
-              ],
-              { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-            )
-          ).stdout,
-        ),
+        objects: await resources((await renderExecutionChart(...dnsArguments)).stdout),
         policies: ["oce-harness-proxy"],
       },
       {
@@ -496,6 +584,27 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "10443" }),
     /distinct from private Envoy HTTPS/,
   );
+  // The public listener binds in the unprivileged Envoy container.
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1023" }),
+    /gatewayRouting\.sandbox\.listenerPort must be an integer unprivileged port/,
+  );
+  const lowestListener = await resources(
+    (await render({ ...sandboxValues, "gatewayRouting.sandbox.listenerPort": "1024" })).stdout,
+  );
+  assert.equal(
+    lowestListener
+      .find((item) => item.kind === "Gateway")
+      .spec.listeners.find((item) => item.name === "sandbox").port,
+    1024,
+  );
+  // The sandbox route takes the port after the tenant Gateway port.
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65535" }),
+    /gatewayRouting\.tenantGatewayPort must leave room for the adjacent sandbox port/,
+  );
+  // 65534 leaves 65535 for the sandbox route, so it renders.
+  await render({ ...sandboxValues, "gatewayRouting.tenantGatewayPort": "65534" });
   // Dedicated Agent hostnames are agent-<32 hex>.<domain>, so the domain stops at 253 - 39.
   const longestLabel = "a".repeat(63);
   const longestDomain = [longestLabel, longestLabel, "a".repeat(22), longestLabel].join(".");
@@ -540,6 +649,20 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     }),
     /sandbox requires gatewayRouting.enabled/,
   );
+});
+
+test("database and Kubernetes API egress refuse an empty host list", tooling, async (t) => {
+  // An empty list would render NetworkPolicies with no route to the database or API server.
+  const directory = await temporaryDirectory(t, "oce-empty-cidrs-");
+  for (const name of ["database", "cluster"]) {
+    const valuesFile = join(directory, `${name}.yaml`);
+    await writeFile(valuesFile, `${name}:\n  cidrs: []\n`);
+    await assert.rejects(
+      render({}, { valuesFiles: [valuesFile], omit: [`${name}.cidrs[0]`, `${name}.cidrs[1]`] }),
+      new RegExp(`${name}\\.cidrs must contain at least one explicit IPv4 /32 host`),
+      name,
+    );
+  }
 });
 
 test(
@@ -1428,25 +1551,7 @@ test(
   tooling,
   async () => {
     const template = (field, value) =>
-      execute(
-        helm,
-        [
-          "template",
-          "oce",
-          "deploy/helm/openclaw-execution",
-          "--set",
-          "routing.hostname=agents.example.invalid",
-          "--set",
-          "routing.gatewayClassName=private-envoy-gateway",
-          "--set",
-          "routing.tlsSecretName=agents-tls",
-          "--set",
-          "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-          "--set-string",
-          `routing.${field}=${value}`,
-        ],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
+      renderExecutionChart("--set-string", `routing.${field}=${value}`);
     // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
     for (const gatewayName of ["Bad_Name", "-gateways", "gateways-", "a..b", "a".repeat(64)]) {
       await assert.rejects(
@@ -1714,10 +1819,13 @@ test("Installation checksum rolls both control-plane Deployments", tooling, asyn
       checksum,
     );
   }
-  await assert.rejects(
-    render({ "controlPlane.installationChecksum": "not-a-checksum" }),
-    /must be an empty string or a lowercase SHA-256 digest/,
-  );
+  for (const invalid of ["not-a-checksum", "c".repeat(63), "c".repeat(65), "C".repeat(64)]) {
+    await assert.rejects(
+      render({ "controlPlane.installationChecksum": invalid }),
+      /must be an empty string or a lowercase SHA-256 digest/,
+      invalid,
+    );
+  }
 });
 
 test(
@@ -1820,28 +1928,7 @@ test(
 
     // The execution chart grants its tenant API role the observer's Pod and proxy reads
     // (runtime diagnostics) and the same log reads.
-    const executionArgs = [
-      "template",
-      "oce",
-      "deploy/helm/openclaw-execution",
-      "--set",
-      "routing.hostname=agents.example.invalid",
-      "--set",
-      "routing.gatewayClassName=private-envoy-gateway",
-      "--set",
-      "routing.tlsSecretName=agents-tls",
-      "--set",
-      "routing.controlPlaneCidrs[0]=198.51.100.0/24",
-    ];
-    const execution = await resources(
-      (
-        await execute(helm, executionArgs, {
-          cwd: repository,
-          env: goToolEnvironment(),
-          maxBuffer: 2_000_000,
-        })
-      ).stdout,
-    );
+    const execution = await resources((await renderExecutionChart()).stdout);
     const executionPodReads = [
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
       { apiGroups: [""], resources: ["pods"], verbs: ["get", "list"] },
@@ -1872,13 +1959,7 @@ test(
       );
     }
     const executionDisabled = await resources(
-      (
-        await execute(helm, [...executionArgs, "--set", "agentRuntimeLogs.enabled=false"], {
-          cwd: repository,
-          env: goToolEnvironment(),
-          maxBuffer: 2_000_000,
-        })
-      ).stdout,
+      (await renderExecutionChart("--set", "agentRuntimeLogs.enabled=false")).stdout,
     );
     assert.deepEqual(role(executionDisabled, "-execution-tenant-api").rules, executionPodReads);
   },
@@ -3455,6 +3536,215 @@ test(
     }
   },
 );
+
+// Kubernetes validates NetworkPolicy peers only when Helm applies them, after earlier objects
+// of the upgrade have changed, so the chart refuses a peer the API server would (finding 2336).
+test("NetworkPolicy peers from values are refused before install", tooling, async (t) => {
+  const sandbox = {
+    ...gatewayRoutingValues,
+    "gatewayRouting.sandbox.enabled": "true",
+    "gatewayRouting.sandbox.domain": "sandbox.example.test",
+    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+  };
+  const peer = "gatewayRouting.sandbox.ingressPeers[0]";
+  const selectorPeer = {
+    [`${peer}.namespaceSelector.matchLabels.team`]: "public",
+    [`${peer}.podSelector.matchLabels.app`]: "edge",
+  };
+  const expression = (selector, fields) =>
+    Object.fromEntries(
+      Object.entries(fields).map(([field, value]) => [
+        `${peer}.${selector}.matchExpressions[0].${field}`,
+        value,
+      ]),
+    );
+  // Match Helm's own message on stderr: the error message also holds the --set command line.
+  const refuses = async (values, message, options = {}) =>
+    assert.rejects(
+      render({ ...sandbox, ...values }, options),
+      ({ stderr }) => stderr.includes(message),
+      message,
+    );
+  const at = "gatewayRouting.sandbox.ingressPeers[0]";
+  for (const [values, message] of [
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/33" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "not-a-cidr" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "256.0.0.0/8" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    [{ [`${peer}.ipBlock.cidr`]: "::/129" }, `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/08" },
+      `${at}.ipBlock.cidr requires an IPv4 or IPv6 CIDR`,
+    ],
+    // Eight groups without ::, or fewer with exactly one ::.
+    ...["1:2:3:4/64", "1:2:3:4::5:6:7:8/64", "1::2::3/64"].map((cidr) => [
+      { [`${peer}.ipBlock.cidr`]: cidr },
+      `${at}.ipBlock.cidr contains an invalid IPv6 address`,
+    ]),
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except`]: "10.1.0.0/16" },
+      `${at}.ipBlock.except must be a list of CIDRs`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except[0]`]: "10.1.0.0" },
+      `${at}.ipBlock.except[0] requires an IPv4 or IPv6 CIDR`,
+    ],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.excepts[0]`]: "10.1.0.0/16" },
+      `${at}.ipBlock has unknown field excepts`,
+    ],
+    [
+      { ...selectorPeer, [`${peer}.ipBlock.cidr`]: "10.0.0.0/8" },
+      `${at} must set either ipBlock or selectors, not both`,
+    ],
+    [{ [`${peer}.podSelectors.matchLabels.app`]: "edge" }, `${at} has unknown field podSelectors`],
+    [
+      { [`${peer}.podSelector.matchExpression[0].key`]: "app" },
+      `${at}.podSelector has unknown field matchExpression`,
+    ],
+    [
+      expression("namespaceSelector", { key: "team", operator: "Equals", "values[0]": "public" }),
+      `${at}.namespaceSelector.matchExpressions[0].operator must be In, NotIn, Exists or DoesNotExist`,
+    ],
+    [
+      expression("podSelector", { key: "bad key!", operator: "Exists" }),
+      `${at}.podSelector.matchExpressions[0] contains an invalid Kubernetes label key`,
+    ],
+    [
+      expression("podSelector", { key: "a".repeat(64), operator: "Exists" }),
+      `${at}.podSelector.matchExpressions[0] contains an invalid Kubernetes label key`,
+    ],
+    [
+      { [`${peer}.podSelector.matchExpressions.key`]: "app" },
+      `${at}.podSelector.matchExpressions must be a list`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "Exists", value: "edge" }),
+      `${at}.podSelector.matchExpressions[0] has unknown field value`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In" }),
+      `${at}.podSelector.matchExpressions[0].values must list label values for In and NotIn`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "a".repeat(64) }),
+      `${at}.podSelector.matchExpressions[0].values contains an invalid Kubernetes label value`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "bad value" }),
+      `${at}.podSelector.matchExpressions[0].values contains an invalid Kubernetes label value`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "In", "values[0]": "1" }),
+      `${at}.podSelector.matchExpressions[0].values must be strings`,
+    ],
+    [
+      expression("podSelector", { key: "app", operator: "Exists", "values[0]": "edge" }),
+      `${at}.podSelector.matchExpressions[0].values must be empty for Exists and DoesNotExist`,
+    ],
+  ]) {
+    await refuses(values, message);
+  }
+
+  // Shapes --set cannot write: an empty peer, and null fields the API server reads as unset.
+  const directory = await temporaryDirectory(t, "occ-peer-shapes-");
+  const peersFile = async (name, ingressPeers) => {
+    const path = join(directory, `${name}.json`);
+    await writeFile(path, JSON.stringify({ gatewayRouting: { sandbox: { ingressPeers } } }));
+    return path;
+  };
+  await refuses({}, `${at} must set either ipBlock or selectors`, {
+    valuesFiles: [await peersFile("empty", [{ ipBlock: null }])],
+  });
+  const policyPeers = async (values, options = {}) => {
+    const objects = await resources((await render({ ...sandbox, ...values }, options)).stdout);
+    const policy = objects.find(
+      ({ kind, metadata }) =>
+        kind === "NetworkPolicy" && metadata.name.endsWith("-envoy-dataplane"),
+    );
+    return policy.spec.ingress[0].from;
+  };
+  const nullSibling = [
+    { ipBlock: null, namespaceSelector: null, podSelector: { matchLabels: { app: "edge" } } },
+  ];
+  assert.deepEqual(
+    await policyPeers({}, { valuesFiles: [await peersFile("null-sibling", nullSibling)] }),
+    nullSibling,
+  );
+
+  // Control: each valid peer shape still renders as written.
+  for (const [values, expected] of [
+    [
+      { [`${peer}.ipBlock.cidr`]: "0.0.0.0/0", [`${peer}.ipBlock.except[0]`]: "10.0.0.0/8" },
+      [{ ipBlock: { cidr: "0.0.0.0/0", except: ["10.0.0.0/8"] } }],
+    ],
+    [{ [`${peer}.ipBlock.cidr`]: "::/0" }, [{ ipBlock: { cidr: "::/0" } }]],
+    [
+      { [`${peer}.ipBlock.cidr`]: "2001:db8:1:2:3:4:5:6/128" },
+      [{ ipBlock: { cidr: "2001:db8:1:2:3:4:5:6/128" } }],
+    ],
+    [
+      {
+        ...expression("namespaceSelector", {
+          key: "kubernetes.io/metadata.name",
+          operator: "NotIn",
+          "values[0]": "kube-system",
+        }),
+        ...expression("podSelector", { key: "app", operator: "Exists" }),
+      },
+      [
+        {
+          namespaceSelector: {
+            matchExpressions: [
+              { key: "kubernetes.io/metadata.name", operator: "NotIn", values: ["kube-system"] },
+            ],
+          },
+          podSelector: { matchExpressions: [{ key: "app", operator: "Exists" }] },
+        },
+      ],
+    ],
+  ]) {
+    assert.deepEqual(await policyPeers(values), expected);
+  }
+
+  const git = {
+    ...protectedRepositoryValues,
+    "openshellGit.enabled": "true",
+    "openshellGit.tlsSecretName": "openshell-git-tls",
+    "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+    "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+  };
+  for (const [values, message] of [
+    [
+      { "openshellGit.clients[0].podSelector.matchLabels.app": "-bad-" },
+      "openshellGit.clients[0].podSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+    [
+      {
+        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+          "openshell system",
+      },
+      "openshellGit.clients[0].namespaceSelector.matchLabels contains an invalid Kubernetes label value",
+    ],
+  ]) {
+    await assert.rejects(
+      render({ ...git, ...values }),
+      ({ stderr }) => stderr.includes(message),
+      message,
+    );
+  }
+  await render(git);
+});
 
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
   const authorityValues = {
@@ -5411,6 +5701,38 @@ test("Helm rejects worker timings the worker process rejects", tooling, async ()
   assert.match(rendered.stdout, /name: OCC_WORKER_POLL_INTERVAL_MS\n\s+value: "010"/);
 });
 
+test("Helm refuses worker timer settings a Node.js timer cannot wait for", tooling, async (t) => {
+  // Node fires a longer timer after 1 ms; the chart shares the worker's bound (finding 2303).
+  const over = String(MAX_TIMER_DELAY_MS + 1);
+  for (const key of ["worker.pollIntervalMs", "worker.leaseDurationMs"]) {
+    await assert.rejects(
+      render({ [key]: over }),
+      new RegExp(`${key.replace(".", "\\.")} must be at most ${MAX_TIMER_DELAY_MS} milliseconds`),
+    );
+  }
+  const rendered = await render({
+    "worker.pollIntervalMs": String(MAX_TIMER_DELAY_MS),
+    "worker.leaseDurationMs": String(MAX_TIMER_DELAY_MS),
+    // Only compared with work age, never a timer delay: the safe-integer bound still applies.
+    "worker.convergenceTimeoutMs": over,
+  });
+  for (const name of ["OCC_WORKER_POLL_INTERVAL_MS", "OCC_WORKER_LEASE_DURATION_MS"]) {
+    assert.match(rendered.stdout, new RegExp(`name: ${name}\\n\\s+value: "${MAX_TIMER_DELAY_MS}"`));
+  }
+  assert.match(
+    rendered.stdout,
+    new RegExp(`name: OCC_WORKER_CONVERGENCE_TIMEOUT_MS\\n\\s+value: "${over}"`),
+  );
+  // A values file delivers a float64, which takes the helper's other parsing path.
+  const directory = await temporaryDirectory(t, "occ-worker-timer-");
+  const valuesFile = join(directory, "worker.yaml");
+  await writeFile(valuesFile, `worker:\n  leaseDurationMs: ${over}\n`, { mode: 0o600 });
+  await assert.rejects(
+    render({}, { valuesFiles: [valuesFile] }),
+    /worker\.leaseDurationMs must be at most 2147483647 milliseconds/,
+  );
+});
+
 test("Helm renders a values-file worker timeout of 1800000 as digits", tooling, async (t) => {
   const directory = await temporaryDirectory(t, "occ-worker-timing-");
   const valuesFile = join(directory, "worker.yaml");
@@ -5856,23 +6178,8 @@ test(
 );
 
 test("execution chart refuses a harness hostname Compute refuses", tooling, async () => {
-  const template = (...values) =>
-    execute(
-      helm,
-      [
-        "template",
-        "oce",
-        "deploy/helm/openclaw-execution",
-        "--set",
-        "routing.gatewayClassName=private-envoy-gateway",
-        "--set",
-        "routing.tlsSecretName=agents-tls",
-        "--set-json",
-        'routing.controlPlaneCidrs=["198.51.100.0/24"]',
-        ...values,
-      ],
-      { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-    );
+  // A later --set or --set-string replaces the helper's routing.hostname.
+  const template = renderExecutionChart;
   await assert.rejects(
     template("--set", "routing.hostname=Bad_Host"),
     /routing\.hostname must be a DNS hostname without a port or path/,
@@ -5881,7 +6188,7 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
   for (const hostname of ["123", "true"]) {
     await assert.rejects(
       template("--set", `routing.hostname=${hostname}`),
-      /routing\.hostname must be a string: quote a hostname YAML reads as a number or boolean, or pass it with --set-string/,
+      /routing\.hostname must be a string: quote a value YAML reads as a number or boolean, or pass it with --set-string/,
       hostname,
     );
   }
@@ -5913,25 +6220,7 @@ test(
   "execution chart refuses an Envoy HTTPS port or DNS namespace the cluster refuses",
   tooling,
   async () => {
-    const template = (...values) =>
-      execute(
-        helm,
-        [
-          "template",
-          "oce",
-          "deploy/helm/openclaw-execution",
-          "--set",
-          "routing.hostname=agents.example.invalid",
-          "--set",
-          "routing.gatewayClassName=private-envoy-gateway",
-          "--set",
-          "routing.tlsSecretName=agents-tls",
-          "--set-json",
-          'routing.controlPlaneCidrs=["198.51.100.0/24"]',
-          ...values,
-        ],
-        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
-      );
+    const template = renderExecutionChart;
     const proxyPolicy = async (stdout) =>
       (await resources(stdout)).find(
         (object) => object.kind === "NetworkPolicy" && object.metadata.name === "oce-harness-proxy",

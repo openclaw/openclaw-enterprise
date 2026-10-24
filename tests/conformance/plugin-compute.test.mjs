@@ -35,6 +35,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { MAX_TIMER_DELAY_MS } from "../../packages/utils/src/index.ts";
 
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { runOpenClawRuntimeHelper } from "../helpers/plugin-runtime.mjs";
@@ -1612,6 +1613,34 @@ test("Codex runtime helper keeps malformed matching install responses generic", 
       assert.equal(result.error.diagnostic, undefined);
       assert.ok(result.requests.some((request) => request.method === "plugin/install"));
     });
+  }
+});
+
+// Number() read "12abc" as NaN, "" as 0 and 3e9 as a request timeout that fires after 1 ms
+// (finding 2312). The install deadline shares the bound.
+test("Codex runtime refuses request timeouts and install deadlines outside 1 to 2147483647 ms", () => {
+  const timers = (env) =>
+    JSON.parse(
+      vm.runInNewContext(
+        `${PLUGIN_RUNTIME_HELPERS}
+JSON.stringify([CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS, CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS]);`,
+        { Buffer, process: { env }, require: nodeRequire },
+      ),
+    );
+  assert.deepEqual(timers({}), [10_000, 60_000]);
+  for (const name of [
+    "OPENCLAW_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS",
+    "OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS",
+  ]) {
+    const accepted = timers({ [name]: String(MAX_TIMER_DELAY_MS) });
+    assert.ok(accepted.includes(MAX_TIMER_DELAY_MS), name);
+    for (const value of ["12abc", "", "0", "-5", "1.5", "3e9", String(MAX_TIMER_DELAY_MS + 1)]) {
+      assert.throws(
+        () => timers({ [name]: value }),
+        { message: `${name} must be 1 to 2147483647 ms.` },
+        `${name}=${JSON.stringify(value)}`,
+      );
+    }
   }
 });
 

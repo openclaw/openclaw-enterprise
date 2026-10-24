@@ -29,6 +29,7 @@ import {
 } from "../../scripts/ci/first-agent-smoke.mjs";
 import { withEnvironment } from "../helpers/environment.mjs";
 import { commandPath } from "../helpers/fake-commands.mjs";
+import { listen } from "../helpers/listen.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
 const chatNonce = "OCE_SMOKE_00000000-0000-4000-8000-000000000001";
@@ -76,18 +77,36 @@ test("chat proof still requires HTTP success and the current nonce as text", () 
 
 test("smoke API sends its key only to the selected controller origin", async (t) => {
   const requests = [];
-  const server = createServer((request, response) => {
-    requests.push([request.url, request.headers["x-api-key"]]);
-    response.end('{"data":"ok"}');
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const host = "127.0.0.1:" + server.address().port;
+  const port = await listen(
+    t,
+    createServer((request, response) => {
+      requests.push([request.url, request.headers["x-api-key"]]);
+      response.end('{"data":"ok"}');
+    }),
+  );
+  const host = "127.0.0.1:" + port;
   const key = "synthetic-smoke-key";
   assert.equal(await createApi("http://" + host, key)("GET", "/namespaces"), "ok");
   const other = createApi("http://127.0.0.1:1", key);
   await assert.rejects(other("GET", "//" + host + "/unexpected"), /outside the controller origin/);
   assert.deepEqual(requests, [["/namespaces", key]]);
+});
+
+test("smoke API refuses a redirect instead of resending its key", async (t) => {
+  const requests = [];
+  const serve = async (handler) => "http://127.0.0.1:" + (await listen(t, createServer(handler)));
+  const elsewhere = await serve((request, response) => {
+    requests.push([request.url, request.headers["x-api-key"]]);
+    response.end('{"data":"ok"}');
+  });
+  const controller = await serve((request, response) => {
+    response.writeHead(307, { location: elsewhere + "/collected" }).end();
+  });
+  await assert.rejects(
+    createApi(controller, "synthetic-smoke-key")("GET", "/namespaces"),
+    /^Error: GET \/namespaces: fetch failed: .*unexpected redirect$/,
+  );
+  assert.deepEqual(requests, []);
 });
 
 function virtualClock() {
@@ -552,11 +571,14 @@ test("bake metadata selects both pushed images by registry digest", () => {
   ]);
   for (const name of ["smoke-controller", "smoke-runtime"]) {
     const incomplete = structuredClone(metadata);
-    incomplete[name]["containerimage.digest"] = "sha256:short";
-    assert.throws(
-      () => bakeReferences(incomplete, bakeInput),
-      new RegExp(`no containerimage.digest for ${name}`),
-    );
+    // A non-hex value, and hex digests one character short and one too long.
+    for (const value of ["sha256:short", `sha256:${"1".repeat(63)}`, `sha256:${"1".repeat(65)}`]) {
+      incomplete[name]["containerimage.digest"] = value;
+      assert.throws(
+        () => bakeReferences(incomplete, bakeInput),
+        new RegExp(`no containerimage.digest for ${name}`),
+      );
+    }
   }
   // The provider runs by its per-slot, per-revision name, in either engine image store.
   assert.equal(

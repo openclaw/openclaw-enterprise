@@ -88,6 +88,10 @@ export const AuthSecretGrantMissing = {
   ...story("authSecretGrantMissing"),
   name: "Authentication Secret without an Agent grant",
 };
+export const AuthSecretGrantParked = {
+  ...story("authSecretGrantParked"),
+  name: "Parked authentication grant",
+};
 export const AuthSecretGrantMemberUnverified = {
   ...story("authSecretGrantMemberUnverified"),
   name: "Member authentication saved, access not verified",

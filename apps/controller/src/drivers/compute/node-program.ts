@@ -14,12 +14,25 @@ const NODE_PROGRAM_LOADER =
   'Buffer.from(process.argv.splice(1).join(""), "base64")).toString("utf8"), { filename: "[eval]" });';
 
 /**
+ * The program without its whole-line `//` comments, which are about a fifth of a
+ * rendered runtime program's compressed size (finding 2326). Without template literals,
+ * line continuations, a `/*`, or a line terminator other than `\n` (a string may hold a raw
+ * U+2028 or U+2029) anywhere, such a line cannot sit inside a string or a block comment,
+ * so only comments go; any other program is returned unchanged.
+ */
+export function withoutLineComments(program: string): string {
+  return /[`\r\u2028\u2029]|\/\*|\\\n/.test(program)
+    ? program
+    : program.replace(/^[ \t]*\/\/.*\n/gm, "");
+}
+
+/**
  * Arguments that follow `node -e` to run a controller-rendered program. The
  * program travels compressed in bounded pieces after a fixed loader, so no exec
  * argument outgrows a piece and a Sandbox command carries only the compressed size.
  */
 export function nodeProgramArguments(program: string): string[] {
-  const encoded = deflateRawSync(program).toString("base64");
+  const encoded = deflateRawSync(withoutLineComments(program)).toString("base64");
   const pieces: string[] = [];
   for (let offset = 0; offset < encoded.length; offset += NODE_PROGRAM_PIECE_BYTES) {
     pieces.push(encoded.slice(offset, offset + NODE_PROGRAM_PIECE_BYTES));

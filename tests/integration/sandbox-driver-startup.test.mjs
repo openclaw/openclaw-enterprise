@@ -47,6 +47,7 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  ConfigurationHarnessError,
   CredentialSourceConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
@@ -819,6 +820,37 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     () => driver.configureAgent(configuration, harness("openclaw", "embedded")),
     /supports only dedicated Harness revisions/,
   );
+});
+
+// Native OpenClaw's private workspace preparation needs userNamespaces: false, and it runs
+// only after a dedicated deploy has stopped its predecessors. Agent save and deploy
+// admission call configureAgent, so they refuse the pair first (finding 2334).
+test("OpenShell refuses dedicated OpenClaw unless user namespaces are off", () => {
+  const configuration = { agents: { defaults: { model: "openai/gpt-5" } } };
+  const harness = (id) => ({ id, version: "1.0.0", mode: "dedicated" });
+  for (const userNamespaces of [undefined, true]) {
+    const options = sandboxInstallation().drivers.sandbox.configuration;
+    if (userNamespaces === undefined) {
+      delete options.kubernetes.userNamespaces;
+    } else {
+      options.kubernetes.userNamespaces = userNamespaces;
+    }
+    const driver = openShellDriver(workspaceGatewayClient(), options);
+    assert.throws(
+      () => driver.configureAgent(configuration, harness("openclaw")),
+      (error) => {
+        // workspace-setup-api.test.mjs proves the API's 400 with this message.
+        assert.ok(error instanceof ConfigurationHarnessError);
+        assert.equal(
+          error.message,
+          "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+        );
+        return true;
+      },
+    );
+    // Codex never runs the preparation, so it is still admitted.
+    assert.ok(driver.configureAgent(configuration, harness("codex")).plugins.entries.codex);
+  }
 });
 
 test("OpenShell pins the Codex sandbox and approval reviewer while preserving other app-server settings", () => {
@@ -3356,6 +3388,38 @@ test("OpenShell managed mode fails before mutating Kubernetes or the Gateway", a
   assert.deepEqual(gatewayClient.calls, []);
 });
 
+// The wait slept a whole poll interval past its deadline: timeoutMs 30000 with pollIntervalMs
+// 600000 checked again only after ten minutes (finding 2324).
+test("OpenShell gateway readiness checks once more at its deadline, not a poll interval later", async () => {
+  const configuration = sandboxInstallation().drivers.sandbox.configuration;
+  configuration.gateway.readiness = {
+    serviceName: "openshell-gateway",
+    podSelector: { "app.kubernetes.io/name": "openshell" },
+    // The first check must finish before the deadline, or the wait throws after one check. With 50 ms
+    // a CPU-starved runner sometimes finished it too late; 1 s leaves room and stays inside the 10 s abort.
+    timeoutMs: 1_000,
+    pollIntervalMs: 600_000,
+  };
+  const gatewayClient = workspaceGatewayClient();
+  const driver = openShellDriver(gatewayClient, configuration);
+  const context = namespaceContext();
+  const kubernetes = kubernetesObjectClient([]);
+  kubernetes.read = async (resource) => resource;
+  let podLists = 0;
+  kubernetes.list = async () => {
+    podLists += 1;
+    return { items: [{ status: { conditions: [{ type: "Ready", status: "False" }] } }] };
+  };
+  context.kubernetes = kubernetes;
+  // A wait that sleeps the whole poll interval is aborted here instead of after ten minutes.
+  context.signal = AbortSignal.timeout(10_000);
+
+  await assert.rejects(driver.ensureNamespace(context), /OpenShell gateway Pod is not ready\./);
+  // A timer can wake a millisecond before Date.now() reaches the deadline, adding a check.
+  assert.ok(podLists >= 2, "one check at the start and another at the deadline");
+  assert.deepEqual(gatewayClient.calls, []);
+});
+
 test("OpenShell Namespace cleanup refuses a same-name foreign Workspace", async () => {
   const context = namespaceContext();
   const gatewayClient = workspaceGatewayClient([
@@ -3554,6 +3618,156 @@ test("startup refuses OpenShell filesystem modes that can weaken containment", a
   }
 });
 
+// The gateway refuses these in CreateSandbox, which runs only after a dedicated deploy has
+// stopped its predecessors, so startup applies the same rules (findings 2331-2333).
+const invalidValue = (path, message) => [{ path, code: "INVALID_VALUE", message }];
+const IDENTITY =
+  "Use sandbox or a numeric ID from 1 to 4294967294; OpenShell refuses other identities.";
+const FILESYSTEM_PATH =
+  "Use an absolute path that is not the filesystem root and has no .. segment.";
+
+test("startup refuses OpenShell process identities the gateway refuses", async (t) => {
+  for (const [field, value] of [
+    ["runAsUser", "root"],
+    ["runAsUser", "0"],
+    ["runAsGroup", "users"],
+    ["runAsGroup", "4294967295"],
+    ["runAsUser", "-1"],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).policy.process[field] = value),
+      invalidValue(`/policy/process/${field}`, IDENTITY),
+    );
+  }
+  const required = (path) => [
+    { path, code: "REQUIRED", message: "This configuration field is required." },
+  ];
+  await rejectsAtStartup(
+    t,
+    (c) => delete sandboxOf(c).policy.process.runAsGroup,
+    required("/policy/process/runAsGroup"),
+  );
+  await rejectsAtStartup(t, (c) => delete sandboxOf(c).policy.process, required("/policy/process"));
+  // Control: the gateway's own name, the top of its numeric range, and the spellings its
+  // u32 parser also accepts load.
+  for (const value of ["sandbox", "4294967294", "+5", "007"]) {
+    const configuration = sandboxInstallation();
+    sandboxOf(configuration).policy.process = { runAsUser: value, runAsGroup: value };
+    await loadInstallationFile(t, configuration);
+  }
+});
+
+test("startup refuses OpenShell filesystem paths before any Sandbox is created", async (t) => {
+  for (const [filesystem, field] of [
+    [{ readOnly: ["usr"] }, "readOnly/0"],
+    [{ readWrite: ["/tmp", "/"] }, "readWrite/1"],
+    [{ readWrite: ["//"] }, "readWrite/0"],
+    [{ readOnly: ["/usr/../etc"] }, "readOnly/0"],
+    [{ readOnly: ["/usr/.."] }, "readOnly/0"],
+    [{ readOnly: ["/usr\0/etc"] }, "readOnly/0"],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).policy.filesystem = filesystem),
+      invalidValue(`/policy/filesystem/${field}`, FILESYSTEM_PATH),
+    );
+  }
+  // A read-only data mount cannot be granted read-write.
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).kubernetes.sandboxDataMount.readOnly = true;
+      sandboxOf(c).policy.filesystem = { readWrite: ["/tmp", "/sandbox/enterprise"] };
+    },
+    invalidValue(
+      "/policy/filesystem/readWrite/1",
+      "The Sandbox data mount is read-only; remove it from readWrite.",
+    ),
+  );
+  // Every refused setting is named at once, not only the first.
+  await rejectsAtStartup(
+    t,
+    (c) => {
+      sandboxOf(c).policy.process.runAsUser = "root";
+      sandboxOf(c).policy.filesystem = { readOnly: ["usr"] };
+    },
+    [
+      ...invalidValue("/policy/process/runAsUser", IDENTITY),
+      ...invalidValue("/policy/filesystem/readOnly/0", FILESYSTEM_PATH),
+    ],
+  );
+  // Control: a writable data mount may be listed in readWrite.
+  const writable = sandboxInstallation();
+  sandboxOf(writable).policy.filesystem = { readWrite: ["/sandbox/enterprise"] };
+  await loadInstallationFile(t, writable);
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).policy.filesystem = { includeWorkdir: "no" }),
+    structuralRefusal("/policy/filesystem/includeWorkdir", "type", "INVALID_TYPE"),
+  );
+  await rejectsAtStartup(
+    t,
+    (c) => (sandboxOf(c).policy.filesystem = { readwrite: ["/data"] }),
+    structuralRefusal("/policy/filesystem", "additionalProperties", "UNKNOWN_FIELD"),
+  );
+});
+
+// The schema leaves these open, so the Driver's own checks are the only refusal. Startup
+// reports each as the same generic detail, so every case must change one valid field of
+// the fixture, and the control below shows the fixture loads otherwise.
+test("startup refuses OpenShell settings its schema leaves open", async (t) => {
+  const refused = invalidValue("", "Configuration violates the Driver's constraints.");
+  const dataMount = (c) => sandboxOf(c).kubernetes.sandboxDataMount;
+  for (const change of [
+    (c) => delete sandboxOf(c).gateway.workspaceMode,
+    // labels() refuses an empty map before the explicit empty check does.
+    (c) => (sandboxOf(c).gateway.operatorNamespaceLabels = {}),
+    (c) =>
+      (sandboxOf(c).gateway.operatorWorkspaceResources = [
+        { apiVersion: "v2", kind: "ServiceAccount", metadata: { name: "sandbox" } },
+      ]),
+    (c) => (sandboxOf(c).gateway.readiness = { ...readinessWait, serviceName: "", timeoutMs: 1 }),
+    (c) => (dataMount(c).subPath = "."),
+    (c) => (dataMount(c).mountPath = "/data"),
+    (c) => delete dataMount(c).readOnly,
+    // Sandbox names need 17 characters after the prefix (a dash and a 16-character hash),
+    // and OpenShell allows 19.
+    (c) => (sandboxOf(c).sandboxNamePrefix = "abc"),
+  ]) {
+    await rejectsAtStartup(t, change, refused);
+  }
+  // Control: the same fields load with accepted values.
+  const accepted = sandboxInstallation();
+  Object.assign(sandboxOf(accepted).gateway, {
+    operatorNamespaceLabels: { team: "agents" },
+    operatorWorkspaceResources: [
+      { apiVersion: "v1", kind: "ServiceAccount", metadata: { name: "sandbox" } },
+    ],
+    readiness: { ...readinessWait, timeoutMs: 1 },
+  });
+  Object.assign(dataMount(accepted), {
+    subPath: "a/b",
+    mountPath: "/sandbox/data",
+    readOnly: true,
+  });
+  sandboxOf(accepted).sandboxNamePrefix = "ab";
+  await loadInstallationFile(t, accepted);
+});
+
+test("startup refuses OpenShell Agent resources that are not objects", async (t) => {
+  for (const [field, value] of [
+    ["requests", "1"],
+    ["limits", ["x"]],
+  ]) {
+    await rejectsAtStartup(
+      t,
+      (c) => (sandboxOf(c).kubernetes.agentResources = { [field]: value }),
+      structuralRefusal(`/kubernetes/agentResources/${field}`, "type", "INVALID_TYPE"),
+    );
+  }
+});
+
 test("startup rejects OpenShell network policies without binary identities", (t) =>
   rejectsAtStartup(
     t,
@@ -3617,6 +3831,11 @@ test("startup rejects an invalid OpenShell gateway readiness wait", async (t) =>
     [
       { ...readinessWait, timeoutMs: 0 },
       structuralRefusal("/gateway/readiness/timeoutMs", "minimum"),
+    ],
+    // A Node.js timer fires a longer delay after 1 ms, so the wait would poll back to back.
+    [
+      { ...readinessWait, timeoutMs: 1_000, pollIntervalMs: 2_147_483_648 },
+      structuralRefusal("/gateway/readiness/pollIntervalMs", "maximum"),
     ],
     [
       { ...readinessWait },

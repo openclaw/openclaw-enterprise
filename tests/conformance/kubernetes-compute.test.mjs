@@ -15,13 +15,20 @@ import { inspect } from "node:util";
 import { inflateRawSync } from "node:zlib";
 import test from "node:test";
 import {
+  AGENT_READINESS_ENTRYPOINT,
   AGENT_RUNTIME_ENTRYPOINT,
   AGENT_WITH_NODE_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT,
+  NATIVE_WORKER_ENTRYPOINT,
+  PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+  PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
   SETUP_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import {
   admitLoggingConfiguration,
   presetTemplateDefaultsWithPlaceholders,
@@ -2534,6 +2541,50 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   const command = [...harness.command, ...harness.args];
   assert.equal(command[0], "/usr/bin/tini");
   assert.ok(Buffer.byteLength(JSON.stringify(command)) <= EXEC_STRING_BUDGET);
+  const program = inflateRawSync(
+    Buffer.from(command.slice(command.indexOf("-e", 4) + 2).join(""), "base64"),
+  );
+  assert.doesNotMatch(program.toString("utf8"), /^[ \t]*\/\//m);
+});
+
+// Whole-line comments were about a fifth of the dedicated Harness command, which had
+// ~170 bytes left under the budget (finding 2326). Rendered programs drop them, and the
+// TypeScript printer, which drops comments too, proves nothing else changed.
+test("rendered runtime programs reach node without whole-line comments", () => {
+  const ts = createRequire(import.meta.url)("typescript");
+  const printer = ts.createPrinter({ removeComments: true });
+  const code = (text) =>
+    printer.printFile(ts.createSourceFile("program.js", text, ts.ScriptTarget.Latest));
+  for (const [name, program] of Object.entries({
+    AGENT_READINESS_ENTRYPOINT,
+    AGENT_RUNTIME_ENTRYPOINT,
+    AGENT_WITH_NODE_ENTRYPOINT,
+    NATIVE_WORKER_ENTRYPOINT,
+    PROTECTED_CODEX_RUNTIME_ENTRYPOINT,
+    PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
+  })) {
+    const sent = withoutLineComments(program);
+    assert.match(program, /^[ \t]*\/\//m, name);
+    assert.doesNotMatch(sent, /^[ \t]*\/\//m, name);
+    assert.equal(code(sent), code(program), name);
+    const [, ...pieces] = nodeProgramArguments(program);
+    assert.equal(inflateRawSync(Buffer.from(pieces.join(""), "base64")).toString("utf8"), sent);
+  }
+  // A `//` line can sit inside a template literal, a continued string, a string with a raw
+  // U+2028 or U+2029, or a block comment; a program with any of those (the Gateway
+  // entrypoint has a "/*" glob) or a carriage return is left whole.
+  for (const program of [
+    GATEWAY_RUNTIME_ENTRYPOINT,
+    "const text = `\n// kept\n`;\n",
+    'const text = "a\\\n// kept";\n',
+    'const text = "a\\\r// kept";\n',
+    'const text = "a\u2028// kept";\n',
+    'const text = "a\u2029// kept";\n',
+    "/*\n// kept */\nrun();\n",
+  ]) {
+    assert.equal(withoutLineComments(program), program);
+  }
+  assert.equal(withoutLineComments("// gone\n  // gone\nrun(); // kept\n"), "run(); // kept\n");
 });
 
 // Every Agent enrolled before file delivery has a recorded deviceId and an
@@ -5145,6 +5196,146 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
     disabled.gatewayRoute(revision, ownership, namespace, service, "sandbox"),
     undefined,
   );
+});
+
+// Preparation renders the native hook relay and the sandbox route into a dedicated Agent's
+// document, and refused a caller's conflicting value only after a dedicated deployment had
+// stopped its predecessors (findings 2315, 2317). Deployment admission now names the setting.
+test("deployment admission refuses the Compute-rendered settings preparation refuses", () => {
+  const driver = createKubernetesComputeDriver(
+    routedOptions({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      gatewayRouting: {
+        ...gatewayRouting,
+        sandbox: { domain: "previews.example.test", publicPort: 9443 },
+      },
+    }),
+  );
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const configuration = createHarnessConfiguration("codex", "gpt-5");
+  const revision = routedRevision(driver, { configuration });
+  const { sandboxOrigin, sandboxPort } = driver.gatewaySandboxConfiguration(revision, configuration)
+    .mcp.apps;
+  const prepare = (document) =>
+    driver.gatewayNativeHookRelayConfiguration(
+      revision,
+      driver.gatewaySandboxConfiguration(revision, document),
+    );
+  const admit = (document, harness = codex, secretBindings = {}) =>
+    driver.validateHarnessAuth(harness, apiKeyAuth, document, secretBindings);
+  const changed = (change) => {
+    const document = structuredClone(configuration);
+    change(document);
+    return document;
+  };
+  const appServer = (document) => document.plugins.entries.codex.config.appServer;
+  const hookRelay = "plugins.entries.codex.config.appServer.nativeHookRelay";
+  const route = "match the Compute-owned sandbox route";
+
+  // Compute's own values, and a document that leaves them unset (or null on the relay's path),
+  // pass both.
+  for (const document of [
+    configuration,
+    { ...configuration, mcp: { apps: { enabled: true, sandboxOrigin, sandboxPort } } },
+    changed((document) => {
+      document.plugins.entries.codex.config.appServer = null;
+    }),
+  ]) {
+    admit(document);
+    prepare(document);
+  }
+  for (const [document, setting, requirement] of [
+    [
+      changed((document) => {
+        appServer(document).nativeHookRelay = { url: "https://other-agent.example.test/hooks" };
+      }),
+      hookRelay,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    ],
+    [
+      changed((document) => {
+        appServer(document).nativeHookRelay = null;
+      }),
+      hookRelay,
+      "must be unset on Dedicated Codex: the native hook relay is owned by the Compute Driver",
+    ],
+    [
+      changed((document) => {
+        document.plugins.entries.codex.config.appServer = "on";
+      }),
+      "plugins.entries.codex.config.appServer",
+      "must be an object on Dedicated Codex",
+    ],
+    [{ ...configuration, mcp: "on" }, "mcp", "must be an object"],
+    [{ ...configuration, mcp: { apps: [] } }, "mcp.apps", "must be an object"],
+    // The administrative origin, and the route's origin without its port, under another
+    // domain, or with a path.
+    ...[
+      "https://trusted-admin.example.test",
+      sandboxOrigin.replace(":9443", ""),
+      sandboxOrigin.replace("previews.example.test", "previews.example.test.evil.test"),
+      `${sandboxOrigin}/x`,
+    ].map((origin) => [
+      { ...configuration, mcp: { apps: { sandboxOrigin: origin } } },
+      "mcp.apps.sandboxOrigin",
+      `must be unset or ${route}`,
+    ]),
+    [
+      { ...configuration, mcp: { apps: { sandboxPort: sandboxPort + 1 } } },
+      "mcp.apps.sandboxPort",
+      `must be unset or ${sandboxPort} to ${route}`,
+    ],
+  ]) {
+    const message = `Configuration setting ${setting} ${requirement}.`;
+    assert.throws(() => admit(document), { name: "ConfigurationHarnessError", message }, setting);
+    assert.throws(() => prepare(document), { message }, setting);
+    // They follow the Installation's runtime and routing, so Agent save leaves them to deployment.
+    admit(document, codex, null);
+  }
+  // Admission has no Agent identity: another Agent's origin passes it, and preparation refuses it.
+  const otherAgent = {
+    ...configuration,
+    mcp: {
+      apps: {
+        sandboxOrigin: sandboxOrigin.replace(/agent-[0-9a-f]{32}/, `agent-${"0".repeat(32)}`),
+      },
+    },
+  };
+  admit(otherAgent);
+  assert.throws(() => prepare(otherAgent), {
+    message: `Configuration setting mcp.apps.sandboxOrigin must be unset or ${route}.`,
+  });
+  // Without Compute's rendering the caller's values stay: an Embedded Agent keeps its native
+  // preview settings, and a Compute with no runtime or routing renders no hook relay.
+  const embedded = createHarnessConfiguration("openclaw", "gpt-5");
+  admit(
+    { ...embedded, mcp: { apps: { sandboxOrigin: "https://embedded-preview.example.test" } } },
+    { id: "openclaw", version: "1.0.0", mode: "embedded" },
+  );
+  const relayed = changed((document) => {
+    appServer(document).nativeHookRelay = { url: "https://hooks.example.test" };
+  });
+  // Without gatewayRouting.sandbox the caller's own preview settings stay too.
+  const previews = {
+    ...relayed,
+    mcp: { apps: { sandboxOrigin: "https://preview.example.test", sandboxPort: 1234 } },
+  };
+  for (const unrendered of [
+    createKubernetesComputeDriver(routedOptions()),
+    createKubernetesComputeDriver(
+      options({
+        runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      }),
+    ),
+  ]) {
+    unrendered.validateHarnessAuth(codex, apiKeyAuth, previews, {});
+  }
+  // Compute relays native hooks only for Codex: a dedicated OpenClaw document keeps the key.
+  const openclaw = {
+    ...revision,
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+  };
+  assert.equal(driver.gatewayNativeHookRelayConfiguration(openclaw, relayed), relayed);
 });
 
 test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
@@ -11868,6 +12059,15 @@ test("model provider credential headers and request auth are refused on every pr
       error.message ===
         `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
   );
+  // A 40-character name, a credential by its -token suffix, is shown whole.
+  const fullName = `x-${"a".repeat(32)}-token`;
+  assert.throws(
+    () => driver.validateConfiguration(provider("p", { headers: { [fullName]: "${K}" } })),
+    {
+      name: "ConfigurationHarnessError",
+      message: `Configuration setting models.providers.p.headers ${credentialHeader(fullName)}.`,
+    },
+  );
   // Providers reached only through other selection keys are refused too.
   for (const agents of [
     { defaults: { model: "openai/gpt-5", imageModel: "anthropic/claude-x" } },
@@ -13760,6 +13960,21 @@ test("revision lifecycle rejects another driver or missing identity before clust
       withEntry({ thinkingLevelMap: { high: 3 } }),
       "models.providers.openai.models.0.thinkingLevelMap",
       "must map thinking levels to strings or null",
+    ],
+    // Preparation refused this only after a dedicated deployment stopped its predecessors.
+    [
+      {
+        ...dedicatedNativeConfiguration,
+        agents: {
+          ...dedicatedNativeConfiguration.agents,
+          defaults: {
+            ...dedicatedNativeConfiguration.agents.defaults,
+            embeddedAgent: { runtimeServer: { url: "ws://127.0.0.1:1" } },
+          },
+        },
+      },
+      "agents.defaults.embeddedAgent.runtimeServer",
+      "must be unset on Dedicated OpenClaw: the selected Compute Driver owns the runtime transport",
     ],
   ]) {
     assert.throws(
@@ -17825,7 +18040,7 @@ test("rendered exec arguments and environment values stay within the per-string 
       const program = containerProgram(spec.template.spec.containers[0]);
       assert.ok(
         [GATEWAY_RUNTIME_ENTRYPOINT, AGENT_RUNTIME_ENTRYPOINT, AGENT_WITH_NODE_ENTRYPOINT].some(
-          (entrypoint) => program.endsWith(entrypoint),
+          (entrypoint) => program.endsWith(withoutLineComments(entrypoint)),
         ),
       );
     }
@@ -17845,7 +18060,8 @@ test(
   },
   () => {
     // Incompressible padding keeps several pieces after compression.
-    const padding = `// ${randomBytes(150 * 1024).toString("base64")}\n`;
+    // A string statement, since whole-line comments never reach the loader.
+    const padding = `"${randomBytes(150 * 1024).toString("base64")}";\n`;
     const program = `${padding}const observed = { argv: process.argv.slice(1), file: __filename,
     required: typeof require("node:fs").readFileSync };
 process.stdout.write(JSON.stringify(observed));

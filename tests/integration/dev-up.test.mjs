@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { composeConfiguration } from "../helpers/compose.mjs";
 import { runDevUpModelProviderCase } from "../helpers/dev-up-model-provider.mjs";
+import { stopProcess } from "../helpers/stop-process.mjs";
 import { waitUntil } from "../helpers/wait-for.mjs";
 import {
   createFixture,
@@ -66,12 +67,7 @@ server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address()
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
-  t.after(async () => {
-    if (child.exitCode === null && !child.killed) {
-      child.kill();
-      await once(child, "exit");
-    }
-  });
+  t.after(() => stopProcess(child));
   const [port] = await once(child.stdout, "data");
   fixture.env.OPENCLAW_DEV_PORT = String(port).trim();
   return requestLog;

@@ -214,8 +214,37 @@ export function limitNativeAdminReturn(
   }
 }
 
-function acceptsHtml(accept: string | undefined): boolean {
-  return (accept ?? "").split(",").some((entry) => {
+function escapeHtml(value: string): string {
+  return value.replaceAll(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+function browserDocumentNavigation(request: FastifyRequest, pathname: string): boolean {
+  return (
+    request.method === "GET" &&
+    /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(pathname) &&
+    request.headers["sec-fetch-mode"] === "navigate" &&
+    request.headers["sec-fetch-dest"] === "document" &&
+    request.headers["sec-fetch-user"] === "?1" &&
+    acceptsHtml(request.headers.accept)
+  );
+}
+
+function acceptsHtml(accept: string | string[] | undefined): boolean {
+  const header = Array.isArray(accept) ? accept.join(",") : accept;
+  return (header ?? "").split(",").some((entry) => {
     const [mediaType, ...parameters] = entry.trim().toLowerCase().split(";");
     if (mediaType?.trim() !== "text/html") {
       return false;
@@ -1025,18 +1054,17 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
         return true;
       }
       const agentKey = /^agent-([0-9a-f]{32})\./.exec(hostname)?.[1];
+      const documentNavigation = browserDocumentNavigation(
+        request,
+        nativeAdminPathname(request.url),
+      );
       if (
         agentKey !== undefined &&
         hostname === `agent-${agentKey}.${nativeAdminDomain}` &&
         admission?.reason === "session_invalid" &&
         options.nativeAdmin?.enabled === true &&
         publicOrigin !== undefined &&
-        request.method === "GET" &&
-        /^\/(?:chat\/main(?:\/[0-9a-f]{32})?)?$/.test(nativeAdminPathname(request.url)) &&
-        request.headers["sec-fetch-mode"] === "navigate" &&
-        request.headers["sec-fetch-dest"] === "document" &&
-        request.headers["sec-fetch-user"] === "?1" &&
-        acceptsHtml(request.headers.accept)
+        documentNavigation
       ) {
         const consoleUrl = new URL("/console/", publicOrigin);
         consoleUrl.hash = `native-agent=${agentKey}`;
@@ -1045,6 +1073,28 @@ export function createNativeAdminAccess(options: NativeAdminOptions) {
           .header("referrer-policy", "no-referrer")
           .header("x-request-id", request.id)
           .redirect(consoleUrl.href, 302);
+        return true;
+      }
+      // A signed-in person who cannot open this Agent (for example after Back switches
+      // accounts) stays on 403. The page names no Agent and links to their Agents list.
+      // API reads keep the JSON refusal.
+      if (
+        admission?.reason === "authorization_denied" &&
+        publicOrigin !== undefined &&
+        documentNavigation
+      ) {
+        const agentsUrl = escapeHtml(new URL("/console/agents", publicOrigin).href);
+        reply
+          .header("cache-control", "no-store")
+          .header("content-type", "text/html; charset=utf-8")
+          .header("x-content-type-options", "nosniff")
+          .header("referrer-policy", "no-referrer")
+          .header("x-request-id", request.id)
+          .code(403)
+          .type("text/html; charset=utf-8")
+          .send(
+            `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Access denied</title></head><body><p>You do not have access to this gateway.</p><p><a href="${agentsUrl}">Go to your Agents</a></p></body></html>`,
+          );
         return true;
       }
       canonicalFailure(

@@ -22,9 +22,7 @@ The protected payload also disables unbounded native connection retries in the
 probe and app-server.
 
 OpenShell reads an existing Sandbox before any create and compares exact ownership
-and specification. For unprefixed Codex revisions, OpenShell also accepts the exact
-earlier npm-launcher payload for the same plain or workspace-node program and
-retry policy. The wrapper and all other fields must match. Adoption keeps the
+and specification. For unprefixed Codex revisions, OpenShell recognizes three earlier command payloads by digest: the npm launcher, the native binary before timer bounds, and the timer-bounded program before comment stripping. Each digest applies only to its own plain or workspace-node program and retry policy. The wrapper and all other fields must match. Adoption keeps the
 running command. Creation always uses the command selected by Compute. See the
 [execution flow](../../flows/harness-execution-topology.md#3-publish-safely-and-complete-activation-once).
 

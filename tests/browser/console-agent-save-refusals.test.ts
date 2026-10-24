@@ -475,6 +475,131 @@ test("a member without Agent operate sees workspace Saves unavailable with the r
   assert.deepEqual(writes, []);
 });
 
+const DIAGNOSTICS_DENIED = "Your access does not include running diagnostics for this Agent.";
+
+// The page's other operate-gated controls follow the same observed answer as Workspace: the Stop
+// row hides and each version's Run diagnostics disables while operate is denied (finding 2328).
+async function expectOperateControls(page: Page, allowed: boolean) {
+  const stopRow = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRow.waitFor({ state: allowed ? "visible" : "hidden" });
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  const run = page.getByRole("button", { name: "Run diagnostics for this version", exact: true });
+  await run.waitFor();
+  const denial = page.getByText(DIAGNOSTICS_DENIED, { exact: true });
+  await denial.waitFor({ state: allowed ? "hidden" : "visible" });
+  assert.equal(await run.isDisabled(), !allowed);
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+}
+
+// The Workspace editor is kept while the reader visits Logs. Logs can observe a newer Agent
+// operate answer. Coming back must apply that answer and keep any unsaved text; Stop and Run
+// diagnostics follow it too, without a reload.
+test("restoring Workspace applies the operate answer the page already observed", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace operate restore", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Workspace Operate Restore",
+    nativeValues("ws-restore"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const member = await createReader(fixture, namespace);
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${active.revision.id}/runtime`,
+    (route) =>
+      route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden." } }),
+      }),
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    (route) => {
+      const name = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)!);
+      if (route.request().method() !== "GET") {
+        return route.fulfill({ status: 403, contentType: "application/json", body: "{}" });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { name, content: `# ${name}\n` } }),
+      });
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace").href,
+    member.credentials,
+  );
+  const reason =
+    "Your access does not include operating this Agent. Ask an administrator for Agent operate access to save workspace files.";
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  await page.getByText(reason, { exact: true }).waitFor();
+  for (const name of ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"]) {
+    await page.getByText(`${name} loaded.`, { exact: true }).waitFor();
+  }
+  assert.equal(await editor.isEditable(), false);
+  await expectOperateControls(page, false);
+
+  // The first Logs visit records the status denial without a fresh permission read.
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await page.getByText(/Runtime status requires Agent operate/).waitFor();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  await page.getByText(reason, { exact: true }).waitFor();
+  fixture.policy.roles.push({
+    id: "role-workspace-operate-restore",
+    namespaceId: namespace.id,
+    permissions: [{ action: "operate", resourceKind: "agent" }],
+  });
+  fixture.policy.bindings.push({
+    id: "binding-workspace-operate-restore",
+    namespaceId: namespace.id,
+    subjectKind: "identity",
+    subjectId: member.principal.id,
+    roleId: "role-workspace-operate-restore",
+  });
+  const granted = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}/permissions`) &&
+      response.request().method() === "GET" &&
+      response.status() === 200,
+  );
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await granted;
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(await page.getByText(reason, { exact: true }).count(), 0);
+  assert.equal(await editor.isEditable(), true);
+  await expectOperateControls(page, true);
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await editor.fill("kept across the revocation");
+
+  fixture.policy.bindings.splice(
+    fixture.policy.bindings.findIndex(
+      (binding) => binding.id === "binding-workspace-operate-restore",
+    ),
+    1,
+  );
+  const revoked = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/agents/${agent.id}/permissions`) &&
+      response.request().method() === "GET" &&
+      response.status() === 200,
+  );
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
+  await revoked;
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
+  await page.getByText(reason, { exact: true }).waitFor();
+  assert.equal(await editor.isEditable(), false);
+  assert.equal(await editor.inputValue(), "kept across the revocation");
+  await expectOperateControls(page, false);
+  assert.equal(await editor.inputValue(), "kept across the revocation");
+});
+
 for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
   test(`Agent policy does not apply after ${reply}`, async (t) => {
     const grant = {

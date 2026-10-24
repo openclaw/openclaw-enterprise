@@ -32,7 +32,17 @@ each story at 1440 and at 390.
    label.
 8. Open **Pages / Create Agent / Create Secret refused**. The "not ready"
    refusal shows in the dialog and has focus.
-9. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error and has
-   focus. Save again: the same error, no bubble. Reload AGENTS.md clears it.
-10. With a screen reader, focus each field with an error: it reads the label,
+9. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error, naming
+   AGENTS.md, and has focus. Save again: the same error, no bubble. Reload
+   AGENTS.md clears it.
+10. Open **Pages / Create Agent / Create Secret fields the API would refuse**.
+    Name shows "Remove tabs, line breaks and other control characters from the
+    name." and has focus; Value shows "Use valid UTF-8 without NUL characters."
+    Value is a masked multiline box: type two lines, then Show value, and
+    both lines are there.
+11. Open **Agent name the API would refuse**. Agent name shows the same Name
+    rule and has focus. Open **Initial workspace file the API would refuse**:
+    Advanced settings is open and AGENTS.md shows its 16 KiB error, naming the
+    file, with focus.
+12. With a screen reader, focus each field with an error: it reads the label,
     then the error and the help.

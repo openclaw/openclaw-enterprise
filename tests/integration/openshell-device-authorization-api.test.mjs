@@ -7,6 +7,7 @@ import { OpenShellCredentialRefreshDriver } from "../../apps/controller/src/driv
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 
@@ -20,17 +21,7 @@ test("Console device login completes through the paired OpenShell Refresh Driver
   const logger = createOccLogger({
     component: "occ-api",
     level: "info",
-    destination: {
-      write(chunk) {
-        logs.push(
-          ...String(chunk)
-            .split("\n")
-            .filter(Boolean)
-            .map((line) => JSON.parse(line)),
-        );
-        return true;
-      },
-    },
+    destination: jsonLineDestination(logs),
   });
   const providers = new Map();
   const operations = [];

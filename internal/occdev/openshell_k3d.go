@@ -88,8 +88,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	if apiPort == kubernetesPort {
-		return fmt.Errorf("development API and Kubernetes API ports must differ")
+	if err := checkAPIKubernetesPorts(apiPort, kubernetesPort); err != nil {
+		return err
 	}
 	signIn, err := developmentSignIn(r.env)
 	if err != nil {

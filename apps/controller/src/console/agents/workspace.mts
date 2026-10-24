@@ -23,6 +23,24 @@ interface WorkspaceDraft {
 
 type FileFailure = ReturnType<typeof requestFailure>;
 
+// The API's workspace file rule (normalizeInitialWorkspaceFiles in
+// packages/contracts/src/workspace-setup.ts and the workspace file write route): valid Unicode,
+// no NUL, at most 16 KiB of UTF-8.
+const WORKSPACE_FILE_MAX_BYTES = 16384;
+
+/**
+ * Why the API would refuse `content` for the workspace file `name`, naming the file, or "" when
+ * it would accept it. The Workspace tab and Create Agent's initial workspace files share it
+ * (finding 2341).
+ */
+export function workspaceFileProblem(name: string, content: string) {
+  return content.includes("\0") ||
+    !content.isWellFormed() ||
+    new TextEncoder().encode(content).length > WORKSPACE_FILE_MAX_BYTES
+    ? `Use valid Unicode without NUL characters in ${name}, within 16 KiB of UTF-8 content.`
+    : "";
+}
+
 function fileError(error: FileFailure, writing: boolean) {
   let text = "Workspace access is unavailable. Check the Agent gateway and try reloading.";
   if (error.status === 403) {
@@ -71,6 +89,7 @@ export function renderWorkspaceFiles(
 ) {
   const refreshers: Array<() => Promise<void>> = [];
   const denials: Array<() => void> = [];
+  const restorations: Array<() => void> = [];
   let operateDenied = false;
   const section = element(
     "section",
@@ -182,11 +201,21 @@ export function renderWorkspaceFiles(
       if (operateDenied) {
         save.setAttribute("aria-disabled", "true");
         save.setAttribute("aria-describedby", operateNote.id);
+      } else {
+        save.removeAttribute("aria-disabled");
+        save.removeAttribute("aria-describedby");
       }
     };
+    const missingDenied = `${name} is missing.`;
     denials.push(() => {
       if (status.textContent === missingCreate) {
-        status.textContent = `${name} is missing.`;
+        status.textContent = missingDenied;
+      }
+      updateControls();
+    });
+    restorations.push(() => {
+      if (status.textContent === missingDenied) {
+        status.textContent = missingCreate;
       }
       updateControls();
     });
@@ -277,14 +306,9 @@ export function renderWorkspaceFiles(
         return;
       }
       const content = editor.value;
-      if (
-        content.includes("\0") ||
-        !content.isWellFormed() ||
-        new TextEncoder().encode(content).length > 16384
-      ) {
-        editor.setCustomValidity(
-          "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
-        );
+      const problem = workspaceFileProblem(name, content);
+      if (problem) {
+        editor.setCustomValidity(problem);
         // The error goes under the file, without the browser's bubble (UX plan C3).
         validateFields([editor]);
         return;
@@ -428,18 +452,39 @@ export function renderWorkspaceFiles(
   // An answer already settled applies before this section is first painted. It also applies while
   // the tab is parked (another tab is shown), since the page restores these nodes on return; it
   // changes only this section's own nodes.
-  void operateAllowed?.then((allowed) => {
-    if (allowed === false) {
-      operateDenied = true;
+  function applyOperate(allowed: boolean | undefined) {
+    const denied = allowed === false;
+    if (denied === operateDenied) {
+      return;
+    }
+    operateDenied = denied;
+    if (denied) {
       operateNote.textContent = OPERATE_DENIED;
       operateNote.hidden = false;
       for (const deny of denials) {
         deny();
       }
+      return;
+    }
+    operateNote.hidden = true;
+    operateNote.textContent = "";
+    for (const restore of restorations) {
+      restore();
+    }
+  }
+  // Once the page has passed a newer answer, a late first answer must not replace it.
+  let operateAnswered = false;
+  void operateAllowed?.then((allowed) => {
+    if (!operateAnswered) {
+      applyOperate(allowed);
     }
   });
   return {
     section,
+    applyOperate(allowed: boolean | undefined) {
+      operateAnswered = true;
+      applyOperate(allowed);
+    },
     refresh: () => {
       for (const refresh of refreshers) {
         void refresh();

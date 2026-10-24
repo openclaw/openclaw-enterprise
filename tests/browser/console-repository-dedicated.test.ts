@@ -17,6 +17,7 @@ import {
   repositoryCheckbox,
   setSlackSelection,
   waitForEnabled,
+  isMaskedSecretValue,
 } from "./console-agents-browser-helpers.mjs";
 import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { expectDeploymentOutcome } from "./console-deployment-activity-helpers.mjs";
@@ -156,8 +157,8 @@ for (const issuesEnabled of [true, false]) {
       await openCreateSecretDialog(channelDialog, label);
       const secretDialog = page.getByRole("dialog", { name: `Create ${label} Secret` });
       assert.equal(
-        await secretDialog.getByLabel("Value", { exact: true }).getAttribute("type"),
-        "password",
+        await isMaskedSecretValue(secretDialog.getByLabel("Value", { exact: true })),
+        true,
       );
       await secretDialog.getByLabel("Value", { exact: true }).fill(value);
       await secretDialog.getByRole("button", { name: "Create Secret", exact: true }).click();

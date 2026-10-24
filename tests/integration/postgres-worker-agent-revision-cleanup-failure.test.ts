@@ -12,6 +12,7 @@ import {
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { withFailedCleanup } from "../helpers/compute-cleanup-failure.mjs";
+import { jsonLineDestination } from "../helpers/json-lines.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { completedPasses, completion } from "../helpers/postgres-worker-revision-support.mjs";
 
@@ -50,16 +51,7 @@ function capturedLogs() {
     createOccLogger({
       component: "occ-worker",
       level: "debug",
-      destination: {
-        write(chunk: string) {
-          for (const line of String(chunk).split("\n")) {
-            if (line.length > 0) {
-              lines.push(JSON.parse(line) as WorkerEvent);
-            }
-          }
-          return true;
-        },
-      },
+      destination: jsonLineDestination(lines),
     }),
   );
   return {

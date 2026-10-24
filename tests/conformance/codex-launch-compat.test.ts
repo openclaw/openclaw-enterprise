@@ -28,10 +28,10 @@ const program = (args: readonly string[]) =>
   inflateRawSync(Buffer.from(args.slice(1).join(""), "base64")).toString();
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
-// Independently captured from the unversioned commands at 108782a40, after the native timeout fix.
+// Independently captured from the unversioned commands at 45d315f4, including its bounded timers and compressed commands.
 const mainCommands = {
-  plain: "4f7c80a40d965b6a53c67a486484a74a03fcdea6731440e0f7fa20c4bbf1175a",
-  node: "bffcc3ffde3308c2b966fffe175133bb77c02de602c4ccead5929668e5ad5135",
+  plain: "904a04016d4be5faf075af3b0bc306d929019d0db4dd16e97d261690722ab8e5",
+  node: "7886c9198b5d580e6b9b3057e882506723efef7fd4dca53dc130816a8832c5c8",
 };
 for (const sample of fixture.cases) {
   test(`stored Codex ${sample.node ? "workspace-node" : "plain"} admission retains pre-change bytes and adopts without replay`, async () => {
@@ -194,11 +194,11 @@ test("stored protected and public-reader bindings retain their semantics across 
   assert.ok(old);
   assert.equal(
     hash(old.entrypoint),
-    "ad842f41da06dee8c9e48afe2a3c45fc3d22faf75cb33d7cfc2af319b1ddb4ef",
+    "ca506372014e836cd47368a1d875c8f337f237469a3402895e1419ba0808b5f7",
   );
   assert.equal(
     hash(old.workspaceEntrypoint),
-    "9f10d1438112b82ef3f8047f2c1a6830d4ecdfa19e2c7dd0e1446f0183b6d5b2",
+    "a6b916b21126b21cd2da130c8bd791efc5cd0a0e517762c35c3e5809aa38708d",
   );
   for (const node of [false, true]) {
     const args = node ? fixture.protectedPrograms.nodeArgs : fixture.protectedPrograms.plainArgs;

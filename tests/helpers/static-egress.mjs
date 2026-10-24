@@ -443,6 +443,7 @@ export async function staticEgressFixture(
       gateway: { workspaceMode: "operator" },
       kubernetes: {
         runtimeClassName: "openshell-sandbox",
+        userNamespaces: false,
         serviceAccount: { mode: "gatewayConfigured" },
         sandboxDataMount: {
           subPath: "workspace",

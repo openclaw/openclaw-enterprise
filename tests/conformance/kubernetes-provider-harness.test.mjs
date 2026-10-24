@@ -26,7 +26,10 @@ import {
   PROTECTED_CODEX_WITH_NODE_ENTRYPOINT,
   RUNTIME_WRAPPER_COMMAND,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
-import { nodeProgramArguments } from "../../apps/controller/src/drivers/compute/node-program.ts";
+import {
+  nodeProgramArguments,
+  withoutLineComments,
+} from "../../apps/controller/src/drivers/compute/node-program.ts";
 import test from "node:test";
 import {
   admitLoggingConfiguration,
@@ -1475,7 +1478,7 @@ test("provider Harness protected execution is released only on current signed in
             const child = /\n\s+name: "Codex",\n\s+args: (.+),\n/.exec(outer);
             assert.equal(child !== null, node);
             const codex = node ? program(JSON.parse(child[1]).slice(1)) : outer;
-            assert.equal(codex, entrypoint);
+            assert.equal(codex, withoutLineComments(entrypoint));
             // Only the two model-calling invocations: the authentication probe and app-server.
             assert.equal(
               codex.match(/unbounded_connection_retries/g)?.length ?? 0,

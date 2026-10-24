@@ -645,7 +645,9 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     });
     assert.equal(unauthorized.statusCode, 403);
     assert.equal(unauthorized.headers.location, undefined);
-    assert.match(unauthorized.headers["content-type"], /^application\/json/);
+    assert.match(unauthorized.headers["content-type"], /^text\/html/);
+    assert.match(unauthorized.body, /Go to your Agents/);
+    assert.equal(unauthorized.body.includes(context.agent.id), false);
   }
   const endpoint = `/native-admin/return/${key}`;
   const found = await injectJson(context.fixture, "GET", endpoint, {
@@ -1288,3 +1290,36 @@ for (const changedField of [undefined, "id", "implementation"]) {
     assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
   });
 }
+
+test("a browser Back to a denied Agent gateway stays 403 and links to the console", async (t) => {
+  const context = await createNativeAdminFixture(t);
+  const status = await nativeStatus(context);
+  const host = nativeAuthority(status.data);
+  const limited = await createReadOperateSession(context);
+  const navigation = {
+    host,
+    accept: "text/html,application/xhtml+xml",
+    cookie: limited.cookie,
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  const page = await injectJson(context.fixture, "GET", "/", { headers: navigation });
+  assert.equal(page.statusCode, 403);
+  assert.equal(page.headers.location, undefined);
+  assert.match(page.headers["content-type"], /^text\/html/);
+  assert.equal(page.headers["cache-control"], "no-store");
+  assert.equal(page.headers["referrer-policy"], "no-referrer");
+  assert.equal(page.headers["set-cookie"], undefined);
+  assert.match(page.body, /Go to your Agents/);
+  assert.match(page.body, new RegExp(`href="${publicOrigin}/console/agents"`));
+  assert.equal(page.body.includes(context.agent.id), false);
+  assert.equal(page.body.includes(status.data.host), false);
+
+  const api = await injectJson(context.fixture, "GET", "/", {
+    headers: { host, accept: "application/json", cookie: limited.cookie },
+  });
+  assert.equal(api.statusCode, 403);
+  assert.match(api.headers["content-type"], /^application\/json/);
+  assert.equal(api.json().error.code, "FORBIDDEN");
+});

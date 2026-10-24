@@ -1083,6 +1083,71 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 	}
 }
 
+func TestCredentialSourceDetailTableShowsTheRefreshStateWhenReported(t *testing.T) {
+	source := `{"id":"cs_1","name":"openai","type":"oauth2-refresh-token","state":"ready","status":{"state":"ready","refresh":{"state":"failed","failureCode":"token_rejected"}}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/namespaces/ns_1/credential-sources":
+			_, _ = io.WriteString(w, `{"data":[{"id":"cs_1","name":"openai","type":"oauth2-refresh-token","state":"ready"}],"meta":{"requestId":"req_1"}}`)
+		case "/namespaces/ns_1/credential-sources/cs_1":
+			_, _ = io.WriteString(w, `{"data":`+source+`,"meta":{"requestId":"req_2"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(server.Close)
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	args := []string{"credential-source", "get", "cs_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+
+	var table strings.Builder
+	command := New(&table, io.Discard)
+	command.SetArgs(args)
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var got [][]string
+	for _, line := range strings.Split(strings.TrimSpace(table.String()), "\n") {
+		got = append(got, strings.Fields(line))
+	}
+	want := [][]string{
+		{"ID", "NAME", "TYPE", "STATE", "GATEWAY", "STATUS", "REFRESH"},
+		{"cs_1", "openai", "oauth2-refresh-token", "ready", "ready", "failed"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("table = %#v, want %#v", got, want)
+	}
+
+	var structured strings.Builder
+	command = New(&structured, io.Discard)
+	command.SetArgs(append([]string{"-o", "json"}, args...))
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(structured.String()), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["refreshStatus"]; ok {
+		t.Fatalf("json gained a table-only key: %s", structured.String())
+	}
+	status, _ := decoded["status"].(map[string]any)
+	refresh, _ := status["refresh"].(map[string]any)
+	if refresh["state"] != "failed" || refresh["failureCode"] != "token_rejected" {
+		t.Fatalf("json status = %#v", decoded["status"])
+	}
+
+	var list strings.Builder
+	command = New(&list, io.Discard)
+	command.SetArgs([]string{"credential-source", "list", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(list.String(), "REFRESH") || strings.Contains(list.String(), "failed") {
+		t.Fatalf("list table = %q", list.String())
+	}
+}
+
 func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 	var followed bool
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1095,6 +1160,8 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 		location string
 		want     string
 		hostCase bool
+		// schemeChange redirects to https on the origin's own host: another origin.
+		schemeChange bool
 	}{
 		{
 			name:     "other origin",
@@ -1102,6 +1169,8 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			want:     "redirected to https://" + strings.TrimPrefix(target.URL, "http://") + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + strings.TrimPrefix(target.URL, "http://") + " ",
 		},
 		{name: "same origin", location: "/elsewhere/installation", want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
+		// want is built in the subtest: it names the origin server's own host.
+		{name: "same host over https", schemeChange: true},
 		{name: "same origin host case", hostCase: true, want: "/elsewhere/installation; occ does not follow redirects, and OCC_URL must be the origin that serves the OCC API directly"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -1111,6 +1180,9 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				location := testCase.location
 				if testCase.hostCase {
 					location = "http://" + strings.ToLower(r.Host) + "/elsewhere/installation"
+				}
+				if testCase.schemeChange {
+					location = "https://" + r.Host + "/installation"
 				}
 				w.Header().Set("location", location)
 				w.WriteHeader(http.StatusPermanentRedirect)
@@ -1127,6 +1199,10 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected the redirect to fail the command")
 			}
+			if testCase.schemeChange {
+				host := strings.TrimPrefix(origin.URL, "http://")
+				testCase.want = "redirected to https://" + host + "/installation; occ does not follow redirects, so set OCC_URL (or --url) to https://" + host + " "
+			}
 			if !strings.Contains(err.Error(), "HTTP 308") || !strings.Contains(err.Error(), testCase.want) {
 				t.Fatalf("error = %q, want it to contain HTTP 308 and %q", err, testCase.want)
 			}
@@ -1140,6 +1216,31 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				t.Fatalf("origin key = %q, redirect followed = %v", sawKey, followed)
 			}
 		})
+	}
+}
+
+// OCC_URL must be a bare origin: occ adds every path itself and never sends a
+// query, fragment, or userinfo with the service key.
+func TestOCCURLMustBeABareOrigin(t *testing.T) {
+	const origin = "OCC URL must be an origin without credentials, a path, a query, or a fragment"
+	for _, testCase := range []struct{ url, want string }{
+		{"ftp://occ.example.test", "OCC URL must use http or https"},
+		{"https://occ.example.test/api", origin},
+		{"https://occ.example.test?", origin},
+		{"https://occ.example.test?region=1", origin},
+		{"https://occ.example.test#top", origin},
+		{"https://user@occ.example.test", origin},
+		{"https:///", origin},
+	} {
+		if _, _, err := runHelp(t, "installation", "get", "--url", testCase.url, "--service-key-file", "unused"); err == nil || err.Error() != testCase.want {
+			t.Fatalf("--url %q error = %v, want %q", testCase.url, err, testCase.want)
+		}
+	}
+	// Control: an origin with or without a trailing slash passes, and the key file is read next.
+	for _, value := range []string{"https://occ.example.test", "http://occ.example.test:8080/"} {
+		if _, _, err := runHelp(t, "installation", "get", "--url", value, "--service-key-file", "unused"); err == nil || !strings.HasPrefix(err.Error(), "failed to read service-key file unused") {
+			t.Fatalf("--url %q error = %v, want the key file read failure", value, err)
+		}
 	}
 }
 
@@ -1261,6 +1362,51 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 	command.SetArgs(append(slices.Clone(connection), "agent", "runtime", "agt_1", "--revision", "rev_1", "--ca-bundle="))
 	if err := command.Execute(); err == nil || requests != 1 {
 		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
+	}
+}
+
+func TestAgentPolicyFacetMustBeNetworkingBeforeAnyRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		writer.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	file := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(file, []byte(`{"expectedVersion":1,"additions":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	connection := []string{"--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"}
+	for _, args := range [][]string{
+		{"agent", "policy", "get", "agt_1", "--facet="},
+		{"agent", "policy", "get", "agt_1", "--facet", "filesystem"},
+		{"agent", "policy", "get", "agt_1", "--facet", "process"},
+		{"agent", "policy", "update", "agt_1", "--facet", "filesystem", "--file", file},
+		{"agent", "policy", "apply", "agt_1", "--facet=", "--revision", "rev_1", "--expected-version", "1"},
+		{"agent", "policy", "editing", "agt_1", "--facet", "filesystem", "--enabled=false"},
+		{"agent", "policy", "recommendations", "agt_1", "--facet", "process", "--revision", "rev_1"},
+	} {
+		requests = 0
+		command := New(io.Discard, io.Discard)
+		command.SetArgs(append(slices.Clone(connection), args...))
+		err := command.Execute()
+		want := "--facet must be networking"
+		if slices.Contains(args, "--facet=") {
+			want = "--facet must name a sandbox policy facet such as networking"
+		}
+		if err == nil || err.Error() != want {
+			t.Errorf("%v: error = %v, want %q", args, err, want)
+		}
+		if requests != 0 {
+			t.Errorf("%v: sent %d requests", args, requests)
+		}
+	}
+	requests = 0
+	command := New(io.Discard, io.Discard)
+	command.SetArgs(append(slices.Clone(connection), "agent", "policy", "get", "agt_1", "--facet", "networking"))
+	if err := command.Execute(); err == nil || requests != 1 {
+		t.Fatalf("--facet=networking: error = %v after %d requests, want the server error after 1", err, requests)
 	}
 }
 
