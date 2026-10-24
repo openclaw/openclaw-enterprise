@@ -1193,6 +1193,17 @@ test("a submitted Secret binding destination names its rule and key, never the S
   }
 });
 
+// A Fastify body-validation error carrying `validation`, Ajv's (verbose) entries.
+function contractFailure(validation) {
+  return requestFailure(
+    Object.assign(new Error("body is invalid"), {
+      statusCode: 400,
+      validationContext: "body",
+      validation,
+    }),
+  );
+}
+
 // Ajv reports a referenced schema's failures under the reference ("Scalar/anyOf/0/type"), not
 // under the union branch that refers to it, and an inner union there can have a shorter schema
 // path than the outer union (finding 808). Entries as Ajv (verbose) reports a boolean sent for
@@ -1232,13 +1243,7 @@ test("a nullable union of a referenced schema attributes the reference's problem
       schema: [{ $ref: "Scalar" }, { type: "null" }],
     },
   ];
-  const failure = requestFailure(
-    Object.assign(new Error("body/a is invalid"), {
-      statusCode: 400,
-      validationContext: "body",
-      validation,
-    }),
-  );
+  const failure = contractFailure(validation);
   assert.equal(failure.status, 400);
   assert.equal(
     failure.message,
@@ -1267,13 +1272,7 @@ test("a reference that two union branches make is attributed to neither", () => 
       schema: [{ $ref: "List" }, { type: "object", properties: { x: { $ref: "List" } } }],
     },
   ];
-  const failure = requestFailure(
-    Object.assign(new Error("body/a is invalid"), {
-      statusCode: 400,
-      validationContext: "body",
-      validation,
-    }),
-  );
+  const failure = contractFailure(validation);
   assert.equal(
     failure.message,
     "The request does not match the operation contract: body /a has the wrong type (expected array); body /a/x has an unsupported value (expected no duplicate items); body /a has an unsupported value.",
@@ -1349,16 +1348,6 @@ test("a multi-megabyte first segment is capped in bounded time and heap", () => 
   assert.ok(elapsedMs < 1000, `took ${Math.round(elapsedMs)} ms`);
 });
 
-function contractFailure(validation) {
-  return requestFailure(
-    Object.assign(new Error("body is invalid"), {
-      statusCode: 400,
-      validationContext: "body",
-      validation,
-    }),
-  );
-}
-
 test("a contract refusal lists at most the 32 details the error contract allows", () => {
   const failure = contractFailure(
     Array.from({ length: 40 }, (_, index) => ({
@@ -1377,7 +1366,7 @@ test("a contract refusal lists at most the 32 details the error contract allows"
 });
 
 test("a contract message shows fewer problems rather than cut a path below 32 characters", () => {
-  // Three of these would leave each path about 25 characters, so the message names two.
+  // Three would cut each path to 26 characters, below the 32 minimum, so the message names two.
   const failure = contractFailure(
     ["0", "1", "2", "3"].map((digit) => ({
       keyword: "type",
