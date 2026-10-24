@@ -335,26 +335,9 @@ deploy a new version; old versions cannot be restarted. See
 
 ## Deletion
 
-A bodyless `DELETE /namespaces/:namespaceId/agents/:agentId` requires exact-Agent
-`delete`, sets `status: deleting` and desired state `stopped`, queues teardown,
-and returns `202`. Reads remain available; updates, deployment, credential
-provisioning, and workspace writes return `409`. Repeated DELETE leaves queued
-or running work unchanged.
-
-The worker reauthorizes the caller, binds the saved identity to
-Compute, retires every version, and removes runtime credentials. It
-atomically deletes the Agent, its Agent revisions, service principal, API keys, and
-exact IAM bindings and restrictions. Kubernetes retirement waits for owned Pods
-and removes owned artifacts, including workspace data. Namespace Configurations
-and Secrets survive. Deletion releases its name;
-[repository cleanup](repository-credentials.md#repo-driver-contract) continues independently.
-
-Permanent failure or exhausted attempts leave the Agent `deleting`.
-After a fix, the initiating caller can repeat DELETE to
-reset attempts; OCC and the worker recheck permission. Another
-permitted actor gets `403`, audited with the `initiatingActorId`, until the
-initiator loses permission, then takes over. Prior failure audits remain and
-each retry is audited, as in [Namespace recovery](namespaces.md#failure-semantics-and-limitations).
+[Delete an Agent and follow its progress](agents/deletion.md). The controller returns a
+receipt with `202 Accepted`. Use it to confirm when deletion finishes, including after
+the Agent and its access grants are removed. A failed status read cannot confirm deletion.
 
 ## Editable configuration
 

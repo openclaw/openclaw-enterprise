@@ -1319,7 +1319,7 @@ async function assertCompletedHistory(db, previous = []) {
     await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
-  assert.equal(receipts.length, 63);
+  assert.equal(receipts.length, 64);
   await assertCredentialSchemaPrivileges(db.app);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
   const providerEntries = manifest.compatibleLineages.providerCompleted.entries;
@@ -1990,6 +1990,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preAgentDeletionCompletion"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2404,6 +2405,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preAgentDeletionCompletion"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2601,6 +2603,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
+      [63, "preAgentDeletionCompletion"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2620,8 +2623,9 @@ test(
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so later prefixes reach custody.
         // Fail the common reduction grant after admission backfill and repository authority.
-        // All three pending receipts, schema changes and main-row annotations roll back.
+        // Prefix 63 has only 0064's completion index left to apply; it issues no GRANT.
         const rollbackTag = [
+          [63, "CREATE INDEX"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2694,7 +2698,7 @@ test(
     const manifest = JSON.parse(
       await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
-    assert.equal(manifest.entries.length, 63);
+    assert.equal(manifest.entries.length, 64);
     assert.deepEqual(
       manifest.entries.slice(58).map(({ tag }) => tag),
       [
@@ -2703,6 +2707,7 @@ test(
         "0061_repository_credential_authority",
         "0062_credential_delivery_custody",
         "0063_prepared_attempt_settlement",
+        "0064_agent_deletion_completion",
       ],
     );
     await seedCanonicalData(db, { preset: true, computeAdmission: true });
@@ -2780,7 +2785,7 @@ test(
     // A valid first and last receipt cannot vouch for the interior 0061 receipt.
     // Start each fault from accepted history so rejection cannot pass merely because
     // a retired preview hash was already unsupported.
-    const middle = completed.receipts.at(-3);
+    const middle = completed.receipts[60];
     for (const [label, sql] of [
       ["changed interior hash", "UPDATE drizzle.__drizzle_migrations SET hash=$2 WHERE id=$1"],
       [
@@ -2811,7 +2816,7 @@ test(
       });
     }
 
-    // Discarding all four new receipts leaves main's exact ledger but the completed
+    // Discarding all five new receipts leaves main's exact ledger but the completed
     // catalog. The runner must refuse before replaying any credential migration.
     assert.equal(
       (
@@ -2819,7 +2824,7 @@ test(
           before.receipts.at(-1).id,
         ])
       ).rowCount,
-      4,
+      5,
     );
     assert.deepEqual(await historyReceipts(db.migrator), before.receipts);
     await assertHistoryRefused(

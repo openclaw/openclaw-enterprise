@@ -2597,6 +2597,82 @@ select:not([multiple])[size="1"] {
   background: var(--danger-subtle);
   color: var(--danger);
 }
+/* Deletion remains readable after the Agent and its detail page are gone. */
+.deletion-status {
+  max-width: 720px;
+}
+.deletion-status h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.deletion-status p {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.deletion-progress {
+  list-style: none;
+  margin: var(--space-5) 0;
+  padding: 0;
+}
+.deletion-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 44px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--text-sm);
+}
+.deletion-step-mark {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border: 2px solid var(--input-border);
+  border-radius: 50%;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+.deletion-step[data-tone="success"] .deletion-step-mark {
+  border: none;
+  color: var(--color-success);
+  background: var(--color-success-subtle);
+}
+.deletion-step:is([data-tone="info"], [data-tone="warning"], [data-tone="danger"]) {
+  --step-color: var(--color-info);
+}
+.deletion-step[data-tone="warning"] {
+  --step-color: var(--warning);
+}
+.deletion-step[data-tone="danger"] {
+  --step-color: var(--danger);
+}
+.deletion-step-mark:empty {
+  border-color: var(--step-color, var(--input-border));
+}
+.deletion-step-state {
+  margin-left: var(--space-1);
+  color: var(--step-color, var(--muted));
+}
+.deletion-status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.deletion-status > p {
+  margin: var(--space-5) 0 0;
+  font-size: var(--text-sm);
+}
+.agent-deletion-link {
+  display: block;
+  width: fit-content;
+  font-size: var(--text-sm);
+}
+
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
    row reports full width below. The confirmations carry the detail. */

@@ -12,6 +12,7 @@
     "tests/browser/console-shell.test.ts",
     "tests/browser/console-json-error-feedback.test.ts",
     "tests/browser/console-agent-detail-2.test.mjs",
+    "tests/browser/console-agent-deletion-status.test.ts",
     "tests/browser/console-agent-detail.test.mjs",
     "tests/browser/console-agent-deploy-again.test.mjs",
     "tests/browser/console-agent-logs.test.ts",
@@ -41,6 +42,9 @@
     },
     {
       "path": "tests/browser/console-agent-detail-2.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-deletion-status.test.ts"
     },
     {
       "path": "tests/browser/console-agent-logs.test.ts"

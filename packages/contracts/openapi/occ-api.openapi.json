@@ -16676,12 +16676,16 @@
                     "meta": {
                       "additionalProperties": false,
                       "properties": {
+                        "deletionReceiptId": {
+                          "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         }
                       },
-                      "required": ["requestId"],
+                      "required": ["requestId", "deletionReceiptId"],
                       "type": "object"
                     }
                   },
@@ -18198,6 +18202,169 @@
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/deletion-status": {
+      "get": {
+        "description": "Without receiptId, requires read permission on the requested Agent and reports only deletion still recorded on that Agent. With receiptId, requires current read permission on the requested Namespace and the caller's own accepted DELETE receipt for that exact Agent. The receipt remains readable after Agent grants are removed and grants no access to the Agent or audit events.",
+        "operationId": "getAgentDeletionStatus",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "receiptId",
+            "required": false,
+            "schema": {
+              "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "agentId": {
+                          "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "nextAttemptAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "receiptId": {
+                          "pattern": "^aud_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "status": {
+                          "anyOf": [
+                            { "const": "queued", "type": "string" },
+                            {
+                              "const": "running",
+                              "description": "A worker holds an unexpired deletion claim.",
+                              "type": "string"
+                            },
+                            {
+                              "const": "waiting",
+                              "description": "Waiting for another attempt or claim recovery.",
+                              "type": "string"
+                            },
+                            {
+                              "const": "failed",
+                              "description": "Automatic attempts stopped. The Agent remains.",
+                              "type": "string"
+                            },
+                            {
+                              "const": "deleted",
+                              "description": "The controller committed deletion of the Agent.",
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "required": ["namespaceId", "agentId", "status"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Follow an Agent deletion, including its confirmed completion with your receipt",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          {
+            "action": "read",
+            "condition": "without_deletion_receipt",
+            "resourceKind": "agent",
+            "scope": "requested"
+          },
+          {
+            "action": "read",
+            "condition": "deletion_receipt",
+            "resourceKind": "namespace",
+            "scope": "requested"
+          }
         ]
       }
     },

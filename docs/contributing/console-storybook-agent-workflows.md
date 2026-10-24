@@ -205,19 +205,19 @@ fixture records the requested stopped state; **Refresh stop status** rereads it
 without proving live shutdown.
 
 In **Components/Stop Agent → Deletion discovered**, refresh stop status to see
-the deletion recovery controls and focus move to **Refresh deletion status**.
+the deletion status page without sending a deletion request.
 
 Resume by deploying a new version; disabling Slack does not stop an Agent. See
 [Stop and resume](../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete
 
-Open **Delete Agent**; inspect, cancel, or confirm permanent deletion. The UI
-enters cleanup state without editing/deployment controls.
-**Refresh deletion status** completes the fixture and returns to the Agent list.
-The console has no detailed cleanup-progress view. Namespace-owned Configurations
-and Secrets remain; manage them separately. See
-[Agent deletion](../reference/agents.md#deletion).
+Open **Delete Agent** to inspect, cancel or confirm permanent deletion. In
+**Components/Deletion → Cleanup in progress**, follow the simulated request from
+queued to running to **Agent deleted**. Choose **Back to Agents** when ready.
+Compare waiting, failed cleanup and status access ending. Neither a missing Agent
+nor lost access confirms completion. Namespace Configurations and Secrets remain.
+See [Agent deletion](../reference/agents.md#deletion).
 
 Serving health, routing cutover, real shutdown, channel delivery, and model
 responses require runtime verification outside Storybook. The console shows

@@ -118,6 +118,7 @@ import {
 } from "./device-authorization.ts";
 import type {
   Agent,
+  AgentDeletionStatusResponse,
   AgentCredentialSourceBinding,
   AgentRead,
   AgentRevisionSummary,
@@ -10277,6 +10278,34 @@ export class OpenClawController {
       });
       return deleting;
     });
+  }
+
+  async getAgentDeletionStatus(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    receiptId?: string,
+  ): Promise<AgentDeletionStatusResponse["data"]> {
+    // A receipt follows the caller's accepted DELETE, including an idempotent repeat or
+    // authorized takeover. The finalizer removes Agent grants, but never Namespace access.
+    const resource: ResourceRef =
+      receiptId === undefined
+        ? { kind: "agent", id: agentId, namespaceId }
+        : { kind: "namespace", id: namespaceId, namespaceId };
+    await this.authorize(principalId, "read", resource);
+    const status = await this.read((state) =>
+      state.operations.findAgentDeletionStatus({
+        installationId: this.installation.id,
+        namespaceId,
+        agentId,
+        ...(receiptId === undefined ? {} : { receipt: { id: receiptId, actorId: principalId } }),
+      }),
+    );
+    if (status === undefined) {
+      // A missing, wrong-subject or wrong-target receipt must not fall back to the live read.
+      throw new ScopeViolationError("The requested Agent deletion status is unavailable.");
+    }
+    return { namespaceId, agentId, ...(receiptId === undefined ? {} : { receiptId }), ...status };
   }
 
   /**

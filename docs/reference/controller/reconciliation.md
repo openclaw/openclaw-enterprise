@@ -156,6 +156,8 @@ stateDiagram-v2
   activation audit and queue completion together. These terminal records remain
   available for idempotency. Successful Agent deletion instead removes its work
   rows after recording lifecycle evidence because the owner no longer exists.
+  The [deletion status read](../agents/deletion.md#follow-deletion) reports `deleted` only from
+  the success recorded in that transaction, never from a missing Agent or work row.
 - **`failed_permanent`:** Processing stopped because authorization failed, an
   unrecoverable error occurred, or the retry limit was exhausted. The failure
   is audited, and the terminal operation is never retried automatically.

@@ -559,42 +559,6 @@ test("Diagnostics explain a missing Slack channel and keep the recorded failure 
   assert.equal(await observations.getByText(/UNAVAILABLE means the runtime/).count(), 0);
 });
 
-test("Agent detail returns to the Agents list once background deletion finishes", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Delete finish", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Finish Candidate", nativeValues("go"));
-  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const { page } = await newPage(t, fixture);
-  let gone = false;
-  await page.route(`${fixture.origin}${agentPath}`, async (route, request) => {
-    if (gone && request.method() === "GET") {
-      await route.fulfill({
-        status: 404,
-        contentType: "application/json",
-        body: JSON.stringify({
-          error: { code: "RESOURCE_NOT_FOUND", message: "Agent not found." },
-          meta: { requestId: "req_00000000-0000-4000-8000-000000000404" },
-        }),
-      });
-      return;
-    }
-    await route.continue();
-  });
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
-  await login(page, fixture, url);
-  await page.getByRole("heading", { name: "Finish Candidate" }).waitFor();
-
-  await page.getByRole("button", { name: "Delete Agent" }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete Finish Candidate?" });
-  await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
-  await page.getByRole("status").getByText("Deletion was requested").waitFor();
-  // The background cleanup finishes; no reader action follows.
-  gone = true;
-  await page.waitForURL((current) => current.pathname === "/console/agents", { timeout: 10_000 });
-  await page.getByRole("heading", { name: "Agents" }).waitFor();
-});
-
 test("Agent detail hides sharing instead of showing an error to non-administrators", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1393,7 +1357,7 @@ for (const width of [1440, 390]) {
 }
 
 test("Agents list row actions stop and delete an Agent through the real API", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  const fixture = await createConsoleAppFixture(t, { recordOperations: true });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Row actions", { ready: true });
   const running = await fixture.createAgent(namespace.id, "Running Agent", nativeValues("run"));
@@ -1486,8 +1450,12 @@ test("Agents list row actions stop and delete an Agent through the real API", as
   );
   await dialog.getByRole("button", { name: "Permanently delete Agent" }).click();
   assert.equal((await deleteResponse).status(), 202);
-  await page.getByRole("status").getByText("Deletion requested for Running Agent.").waitFor();
-  await runningRow.getByText("Deleting", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Deletion queued" }).waitFor();
+  const receiptUrl = page.url();
+  await page.getByRole("link", { name: "Back to Agents" }).click();
+  const progress = runningRow.getByRole("link", { name: "View deletion progress" });
+  await progress.waitFor();
+  assert.equal(new URL(await progress.getAttribute("href"), fixture.origin).href, receiptUrl);
   assert.equal(await remove.isDisabled(), true);
   assert.equal(await stop.isDisabled(), true);
   assert.equal(agentDeleteRequests(requests, namespace.id, running.id).length, 1);
@@ -1548,7 +1516,7 @@ for (const action of ["Stop", "Delete"]) {
       .click();
     await dialog.waitFor({ state: "hidden" });
 
-    const badge = stopping ? "Stop requested" : "Deleting";
+    const badge = stopping ? "Stop requested" : "View deletion progress";
     const otherRow = page.getByRole("row").filter({ hasText: other.name });
     assert.equal(
       await otherRow.getByText(badge, { exact: true }).count(),

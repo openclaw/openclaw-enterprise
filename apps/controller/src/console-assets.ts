@@ -73,6 +73,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/deployment-diagnostics.mts",
       "agents/deployment-recovery.mts",
       "agents/deletion.mts",
+      "agents/deletion-status.mts",
       "agents/stop.mts",
       "agents/native-admin.mts",
       "agents/harness-auth.mts",
@@ -220,7 +221,7 @@ export async function readConsoleAsset(
     contentType: "text/html; charset=utf-8",
     statusCode:
       CONSOLE_SHELL_ROUTES.has(pathname) ||
-      /^\/console\/agents\/(new|agt_[a-f0-9-]+)$/.test(pathname)
+      /^\/console\/agents\/(new|agt_[a-f0-9-]+(?:\/deletion)?)$/.test(pathname)
         ? 200
         : 404,
   };
