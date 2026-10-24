@@ -7966,10 +7966,14 @@ test("SSH Compute refuses at deploy gateway authentication and Secret bindings i
       },
       setting(
         "gateway.auth.password",
-        "must reference the OPENCLAW_GATEWAY_PASSWORD environment variable through the default provider, whose value SSH Compute generates",
+        'must be "${OPENCLAW_GATEWAY_PASSWORD}" or the default-provider environment SecretRef with id OPENCLAW_GATEWAY_PASSWORD, whose value SSH Compute generates',
       ),
     ],
     ["password", { auth: { mode: "password" } }],
+    [
+      "password-expression",
+      { auth: { mode: "password", password: "${OPENCLAW_GATEWAY_PASSWORD}" } },
+    ],
     ["omitted", undefined],
   ]) {
     const configuration = await createConfiguration(controller, namespace.id, {

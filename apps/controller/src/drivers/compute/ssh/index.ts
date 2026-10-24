@@ -25,6 +25,7 @@ import {
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
   configurationSettingMessage,
+  keyedSettingPath,
 } from "@openclaw-enterprise/occ";
 import {
   asRecord,
@@ -202,7 +203,7 @@ function sshGatewayAuthentication(
   const unsupported = unsupportedNativeGatewayAuthFields(auth);
   if (unsupported.length > 0) {
     throw createError(
-      `gateway.auth.${unsupported[0]}`,
+      keyedSettingPath("gateway.auth", unsupported[0]!),
       "is not a supported native gateway authentication field",
     );
   }
@@ -215,7 +216,7 @@ function sshGatewayAuthentication(
   if (auth.password !== undefined && !usesGatewayPasswordReference(auth.password)) {
     throw createError(
       "gateway.auth.password",
-      `must reference the ${OPENCLAW_GATEWAY_PASSWORD} environment variable through the default provider, whose value SSH Compute generates`,
+      `must be "${GATEWAY_PASSWORD_EXPRESSION}" or the default-provider environment SecretRef with id ${OPENCLAW_GATEWAY_PASSWORD}, whose value SSH Compute generates`,
     );
   }
   return { gateway, auth };
