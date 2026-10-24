@@ -1105,7 +1105,9 @@ func (r *runner) copyAndVerifyKubernetesKey(ctx context.Context, state *developm
 	reader := map[string]any{
 		"apiVersion": "v1", "kind": "Pod", "metadata": kubernetesMetadata("bootstrap-key-reader", state.PlatformNamespace, labels),
 		"spec": map[string]any{
-			"restartPolicy": "Never", "automountServiceAccountToken": false,
+			// Node runs as PID 1 and ignores SIGTERM, so the deferred delete below
+			// would otherwise wait out the default 30-second grace period.
+			"restartPolicy": "Never", "automountServiceAccountToken": false, "terminationGracePeriodSeconds": 1,
 			"securityContext": map[string]any{"runAsNonRoot": true, "runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000, "seccompProfile": map[string]string{"type": "RuntimeDefault"}},
 			"containers": []any{map[string]any{
 				"name": "reader", "image": controllerImage, "imagePullPolicy": "Never", "command": []string{"node", "-e", "setInterval(()=>{},1<<30)"},
