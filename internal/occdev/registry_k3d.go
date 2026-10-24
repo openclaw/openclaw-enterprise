@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // developmentImageRegistry is a local registry container, named by
@@ -25,14 +26,26 @@ type developmentImageRegistry struct {
 	ports map[string]string
 
 	mu sync.Mutex
-	// network and address are set while the container is attached to the
-	// cluster network; address is the registry's IPv4 address there.
+	// network is set from the attach attempt until the container is detached
+	// from the cluster network; address is the registry's IPv4 address there.
 	network, address string
+	// pending counts the selected images still to pull. The last pull
+	// detaches the registry, so it is reachable from the cluster only while
+	// images are pulled.
+	pending int
 }
 
 var registryContainerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
 
 const developmentImageRegistrySetting = "OCC_DEVELOPMENT_IMAGE_REGISTRY_CONTAINER"
+
+// developmentImageRegistryDetachTimeout bounds the disconnect, which also runs
+// on rollback after the caller's context ended.
+const developmentImageRegistryDetachTimeout = time.Minute
+
+// developmentRegistryImageSettings are the selections importDevelopmentImage
+// may pull from the registry.
+var developmentRegistryImageSettings = []string{"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_POSTGRES_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"}
 
 // selectDevelopmentImageRegistry reads the optional registry container and
 // checks it before the cluster exists: it must publish its ports on IPv4
@@ -73,14 +86,13 @@ func (r *runner) selectDevelopmentImageRegistry(ctx context.Context) error {
 		return fmt.Errorf("the development image registry container %s publishes no TCP port on 127.0.0.1", container)
 	}
 	registry := &developmentImageRegistry{container: container, ports: ports}
-	served := false
-	for _, key := range []string{"OCC_DEVELOPMENT_CONTROLLER_IMAGE", "OCC_KUBERNETES_RUNTIME_IMAGE", "OCC_DEVELOPMENT_REPOSITORY_IMAGE"} {
+	for _, key := range developmentRegistryImageSettings {
 		if _, _, ok := registry.source(r.env[key]); ok {
-			served = true
+			registry.pending++
 		}
 	}
-	if !served {
-		return fmt.Errorf("%s is set, but no selected controller, runtime or repository image is pinned by digest to its published address", developmentImageRegistrySetting)
+	if registry.pending == 0 {
+		return fmt.Errorf("%s is set, but no selected controller, runtime, PostgreSQL or repository image is pinned by digest to its published address", developmentImageRegistrySetting)
 	}
 	r.imageRegistry = registry
 	return nil
@@ -110,9 +122,20 @@ func (g *developmentImageRegistry) source(image string) (port, path string, ok b
 	return port, path, true
 }
 
+// registryNetworkAddress reports the registry container's address on a
+// network, or "" when it is not connected to it.
+func (r *runner) registryNetworkAddress(ctx context.Context, g *developmentImageRegistry, network string) (string, error) {
+	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, g.container)
+	if err != nil {
+		return "", fmt.Errorf("read the development image registry address on %s: %w", network, err)
+	}
+	return string(data), nil
+}
+
 // attach connects the registry container to the cluster network, so the node
 // can reach it. Nothing else changes: the registry stays published on loopback
-// only, and detach removes it from the cluster network again.
+// only, and detach removes it from the cluster network again. A connection
+// left by an interrupted earlier start of the same cluster is reused.
 func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *developmentState) error {
 	g := r.imageRegistry
 	if g == nil {
@@ -124,16 +147,23 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 	if g.network != "" {
 		return nil
 	}
-	fmt.Fprintf(r.opts.Out, "Attaching the loopback image registry %s to the cluster network...\n", g.container)
-	if err := r.run(ctx, r.engine, "network", "connect", network, g.container); err != nil {
-		return fmt.Errorf("attach the development image registry to %s: %w", network, err)
-	}
+	// Recorded before connecting: a connect cut short by cancellation may
+	// still have attached the container, and detach checks before it acts.
 	g.network = network
-	data, err := r.output(ctx, r.engine, "container", "inspect", "--format", `{{with index .NetworkSettings.Networks "`+network+`"}}{{.IPAddress}}{{end}}`, g.container)
+	fmt.Fprintf(r.opts.Out, "Attaching the loopback image registry %s to the cluster network...\n", g.container)
+	value, err := r.registryNetworkAddress(ctx, g, network)
 	if err != nil {
-		return fmt.Errorf("read the development image registry address on %s: %w", network, err)
+		return err
 	}
-	address, err := netip.ParseAddr(string(data))
+	if value == "" {
+		if err := r.run(ctx, r.engine, "network", "connect", network, g.container); err != nil {
+			return fmt.Errorf("attach the development image registry to %s: %w", network, err)
+		}
+		if value, err = r.registryNetworkAddress(ctx, g, network); err != nil {
+			return err
+		}
+	}
+	address, err := netip.ParseAddr(value)
 	if err != nil || !address.Is4() {
 		return fmt.Errorf("the development image registry has no IPv4 address on %s", network)
 	}
@@ -142,7 +172,8 @@ func (r *runner) attachDevelopmentImageRegistry(ctx context.Context, state *deve
 }
 
 // detachDevelopmentImageRegistry disconnects the registry from the cluster
-// network. It is safe to call more than once and after a failed attach.
+// network. It is safe to call more than once, after a failed attach, and after
+// the caller's context ended (it then has its own deadline).
 func (r *runner) detachDevelopmentImageRegistry(ctx context.Context) error {
 	g := r.imageRegistry
 	if g == nil {
@@ -150,11 +181,23 @@ func (r *runner) detachDevelopmentImageRegistry(ctx context.Context) error {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	return r.detachDevelopmentImageRegistryLocked(ctx, g)
+}
+
+func (r *runner) detachDevelopmentImageRegistryLocked(ctx context.Context, g *developmentImageRegistry) error {
 	if g.network == "" {
 		return nil
 	}
-	if err := r.run(context.WithoutCancel(ctx), r.engine, "network", "disconnect", g.network, g.container); err != nil {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), developmentImageRegistryDetachTimeout)
+	defer cancel()
+	value, err := r.registryNetworkAddress(ctx, g, g.network)
+	if err != nil {
 		return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
+	}
+	if value != "" {
+		if err := r.run(ctx, r.engine, "network", "disconnect", g.network, g.container); err != nil {
+			return fmt.Errorf("detach the development image registry from %s: %w", g.network, err)
+		}
 	}
 	g.network, g.address = "", ""
 	return nil
@@ -209,6 +252,13 @@ func (r *runner) pullDevelopmentImage(ctx context.Context, s *developmentState, 
 	}
 	if len(found) != 1 || found[0] != digest {
 		return "", errors.New("the pulled image does not match the selected digest: " + image)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.pending--; g.pending <= 0 {
+		if err := r.detachDevelopmentImageRegistryLocked(ctx, g); err != nil {
+			return "", err
+		}
 	}
 	return image, nil
 }

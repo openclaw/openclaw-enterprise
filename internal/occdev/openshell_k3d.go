@@ -274,8 +274,9 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	r.env["KUBECONFIG"] = filepath.Join(directory, "kubeconfig")
 	timeout := time.Duration(timeoutSeconds) * time.Second
 	// The node pulls registry-pinned images while the registry is attached to
-	// the cluster network; it is detached once every image is in the node, and
-	// before the rollback deletes the network on failure.
+	// the cluster network. The last pull detaches it; the checks below and the
+	// deferred detach (which runs before the rollback deletes the network)
+	// cover images that were never pulled.
 	if err := r.attachDevelopmentImageRegistry(ctx, state); err != nil {
 		return errors.Join(err, r.detachDevelopmentImageRegistry(ctx))
 	}
