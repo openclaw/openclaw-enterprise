@@ -361,7 +361,23 @@ test("Agent save refuses initial workspace files in a Sandbox with a 409 that na
   );
 });
 
-test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+/** A real OpenShell Sandbox Driver whose Kubernetes settings `kubernetes` overrides; an
+ * undefined value removes the setting. */
+function openShellSandbox(t, overrides = {}) {
+  const kubernetes = {
+    runtimeClassName: "openshell-sandbox",
+    // Native OpenClaw workspace preparation requires it.
+    userNamespaces: false,
+    serviceAccount: { mode: "gatewayConfigured" },
+    sandboxDataMount: { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete kubernetes[key];
+    } else {
+      kubernetes[key] = value;
+    }
+  }
   const definition = {
     id: "workspace-openshell",
     type: "openshell",
@@ -376,17 +392,7 @@ test("Agent create admits private workspace files through the OpenShell initiali
   const sandboxDriver = new OpenShellSandboxDriver(
     {
       gateway: { workspaceMode: "operator" },
-      kubernetes: {
-        runtimeClassName: "openshell-sandbox",
-        // Native OpenClaw workspace preparation requires it.
-        userNamespaces: false,
-        serviceAccount: { mode: "gatewayConfigured" },
-        sandboxDataMount: {
-          subPath: "workspace",
-          mountPath: "/sandbox/enterprise",
-          readOnly: false,
-        },
-      },
+      kubernetes,
       policy: {
         process: { runAsUser: "1000", runAsGroup: "1000" },
         networkPolicies: [
@@ -400,7 +406,7 @@ test("Agent create admits private workspace files through the OpenShell initiali
     },
     { id: "workspace-openshell-sandbox", backend },
   );
-  const f = await setup(t, {
+  return {
     sandboxDriver,
     driverConfigurations: [
       {
@@ -410,20 +416,30 @@ test("Agent create admits private workspace files through the OpenShell initiali
         definition: OpenShellSandboxDriver,
       },
     ],
+  };
+}
+
+/** Saves an Agent Configuration that selects `model` on the `runtime` Harness. */
+async function storeConfiguration(f, runtime, model) {
+  const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: {
+      kind: "agent",
+      values: {
+        agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
+      },
+    },
   });
+  assert.equal(stored.status, 201, JSON.stringify(stored.body));
+  return stored;
+}
+
+test("Agent create admits private workspace files through the OpenShell initializer contract", async (t) => {
+  const f = await setup(t, openShellSandbox(t));
   for (const [runtime, model] of [
     ["openclaw", "openai/gpt-4.1"],
     ["codex", "codex/gpt-5.1"],
   ]) {
-    const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
-      body: {
-        kind: "agent",
-        values: {
-          agents: { defaults: { model, models: { [model]: { agentRuntime: { id: runtime } } } } },
-        },
-      },
-    });
-    assert.equal(stored.status, 201, JSON.stringify(stored.body));
+    const stored = await storeConfiguration(f, runtime, model);
     const files = { "USER.md": `private-${runtime}-workspace-content` };
     // Real API admission composes Compute with OpenShell's workspace projection and validator.
     // No Sandbox is provisioned: the private payload remains staged for deployment.
@@ -436,5 +452,35 @@ test("Agent create admits private workspace files through the OpenShell initiali
     assert.equal(created.data.desiredRuntimeState, "stopped");
     assert.deepEqual((await f.staged(created.data.id)).files, files);
     assert.equal(JSON.stringify(created.body).includes(files["USER.md"]), false);
+  }
+});
+
+// Native OpenClaw's workspace preparation needs userNamespaces: false and runs only after a
+// deploy has stopped its predecessors, so Agent save refuses the pair first (finding 2334).
+test("Agent create refuses dedicated OpenClaw on OpenShell unless user namespaces are off", async (t) => {
+  for (const kubernetes of [{ userNamespaces: undefined }, { userNamespaces: true }]) {
+    const f = await setup(t, openShellSandbox(t, kubernetes));
+    const openclaw = await storeConfiguration(f, "openclaw", "openai/gpt-4.1");
+    const refused = await f.create("OpenShell openclaw", {
+      configurationId: openclaw.data.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.equal(refused.body.error.code, "INVALID_REQUEST");
+    assert.equal(
+      refused.body.error.message,
+      "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
+    );
+    assert.equal(
+      (await f.request("GET", f.path)).data.some(({ name }) => name === "OpenShell openclaw"),
+      false,
+    );
+    // Control: Codex never runs that preparation and still saves.
+    const codex = await storeConfiguration(f, "codex", "codex/gpt-5.1");
+    const created = await f.create("OpenShell codex", {
+      configurationId: codex.data.id,
+      executionMode: "dedicated",
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
   }
 });

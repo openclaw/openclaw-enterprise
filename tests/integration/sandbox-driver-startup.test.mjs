@@ -47,6 +47,7 @@ import {
 } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
+  ConfigurationHarnessError,
   CredentialSourceConfigError,
   CredentialSourceRevisionError,
   DependencyUnavailableError,
@@ -843,11 +844,11 @@ test("OpenShell refuses dedicated OpenClaw unless user namespaces are off", () =
     assert.throws(
       () => driver.configureAgent(configuration, harness("openclaw")),
       (error) => {
-        // ConfigurationHarnessError is the API's 400 with this message.
-        assert.equal(error.name, "ConfigurationHarnessError");
+        // workspace-setup-api.test.mjs proves the API's 400 with this message.
+        assert.ok(error instanceof ConfigurationHarnessError);
         assert.equal(
           error.message,
-          "Dedicated OpenClaw needs the OpenShell Sandbox Driver setting kubernetes.userNamespaces: false, which this Installation does not set. Select Codex, or ask an operator to set it.",
+          "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
         );
         return true;
       },

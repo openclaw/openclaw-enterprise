@@ -30,7 +30,8 @@ stopped.
 those Agents could deploy. Codex Agents are unaffected.
 
 **How to tell.** The refusal says that dedicated OpenClaw needs
-`kubernetes.userNamespaces: false`.
+`kubernetes.userNamespaces: false` in the OpenShell Sandbox Driver
+configuration. Provisioning status reads still report earlier requests.
 
 **Steps.** Set `kubernetes.userNamespaces: false` in the OpenShell Sandbox
 Driver configuration and restart the controller, or switch the Agent to Codex.

@@ -2705,7 +2705,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     // prepareNativeWorkspace refuses this only after a deploy has stopped its predecessors.
     if (harness.id === "openclaw" && this.options.kubernetes.userNamespaces !== false) {
       throw new ConfigurationHarnessError(
-        "Dedicated OpenClaw needs the OpenShell Sandbox Driver setting kubernetes.userNamespaces: false, which this Installation does not set. Select Codex, or ask an operator to set it.",
+        "Dedicated OpenClaw needs kubernetes.userNamespaces: false in the OpenShell Sandbox Driver configuration. Select Codex, or ask an operator to set it.",
       );
     }
     const agents = optionalAgentConfiguration(

@@ -11209,8 +11209,12 @@ export class OpenClawController {
       runtimeImage: !statusRead,
       stored: !admission,
     });
-    const configuration =
-      sandbox?.configureAgent?.(plan.configuration.values, harness) ?? plan.configuration.values;
+    // The Sandbox view is admission for writes too: its refusals can depend on Driver settings
+    // (OpenShell's userNamespaces), and a status read still reports the stored work.
+    const configuration = statusRead
+      ? plan.configuration.values
+      : (sandbox?.configureAgent?.(plan.configuration.values, harness) ??
+        plan.configuration.values);
     if (resolveConfiguredHarnessId(configuration) !== harness.id) {
       throw new ScopeViolationError("A Sandbox Driver cannot change the selected Harness runtime.");
     }
