@@ -9,6 +9,8 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
+  firstAgentAssistantNonce,
+  firstAgentModelProbeSource,
   firstAgentPriorPatPolicy,
   firstAgentPriorPatPolicyWarning,
   firstAgentRevisionValuesMatch,
@@ -432,4 +434,37 @@ test("first-Agent refuses a record from an older helper as such", async (t) => {
     await run({ ...current, harness: "codex" }),
     /recorded Namespace, model, Harness, Sandbox Driver, or Control UI selection differs/,
   );
+});
+
+test("the first-agent nonce probe accepts only an assistant message that is the nonce", () => {
+  const nonce = "FIRST_AGENT_example";
+  const echoed = `Reply with exactly this nonce and no other text: ${nonce}`;
+  assert.equal(
+    firstAgentAssistantNonce({ role: "assistant", content: `  ${nonce}\n` }, nonce),
+    true,
+  );
+  assert.equal(
+    firstAgentAssistantNonce(
+      { role: "assistant", content: [{ text: nonce }, { text: { value: "" } }] },
+      nonce,
+    ),
+    true,
+  );
+  assert.equal(firstAgentAssistantNonce({ role: "assistant", content: echoed }, nonce), false);
+  assert.equal(firstAgentAssistantNonce({ role: "user", content: nonce }, nonce), false);
+  assert.equal(firstAgentAssistantNonce({ role: "tool", content: nonce }, nonce), false);
+  assert.equal(firstAgentAssistantNonce({ content: nonce }, nonce), false);
+  assert.equal(firstAgentAssistantNonce({ role: "assistant", content: "hello" }, nonce), false);
+
+  const source = firstAgentModelProbeSource({
+    nonce,
+    prompt: undefined,
+    expectProviderKey: true,
+  });
+  assert.match(source, /function firstAgentAssistantNonce/);
+  assert.match(
+    source,
+    /firstAgentAssistantNonce\(\{ role: proof\.role, content: proof\.text \}, nonce\)/,
+  );
+  assert.doesNotMatch(source, /proof\.text\.includes\(nonce\)/);
 });
