@@ -19,6 +19,34 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-24: Kubernetes Compute checks dedicated placement and selector labels
+
+**What breaks.** Deployment admission refuses a dedicated Agent (Codex or
+OpenClaw) when the Kubernetes Compute configuration sets `runtime` without
+`runtime.gatewayNodeSelector`, or without gateway routing and node enrollment.
+Controller startup refuses `runtime.nodeSelector` or
+`runtime.gatewayNodeSelector` label keys or values that Kubernetes refuses, and
+`resources.namespace.quota` entries whose name is not a Kubernetes resource
+name or whose value is not a quantity. Earlier builds accepted all of these;
+each dedicated deployment then stopped the running revision and failed in
+preparation, or the API server refused the Deployment or ResourceQuota.
+
+**Who is affected.** Installations with such a setting. Embedded and
+channel-runtime Installations without dedicated Agents are not affected by the
+placement check.
+
+**How to tell.** The deploy request fails with `Dedicated Agents need
+runtime.gatewayNodeSelector` (or `gateway routing and node enrollment`) `in
+this Installation's Kubernetes Compute configuration`. Or startup fails at
+`/runtime/nodeSelector`, `/runtime/gatewayNodeSelector` or
+`/resources/namespace/quota`.
+
+**Steps.** Set `runtime.gatewayNodeSelector` to the trusted node pool's labels
+and configure gateway routing and node enrollment, as the
+[Kubernetes Compute reference](../../reference/drivers/kubernetes-compute.md)
+describes; fix the selector labels or quota entries; then restart the
+controller.
+
 ## 2026-10-24: OpenShell refuses a quoted userNamespaces and endpoints without ports
 
 **What breaks.** Controller startup refuses an OpenShell Sandbox Driver
