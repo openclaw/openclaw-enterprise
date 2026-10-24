@@ -3537,6 +3537,110 @@ test(
   },
 );
 
+// Kubernetes validates NetworkPolicy peers only when Helm applies them, after earlier objects
+// of the upgrade have changed, so the chart refuses a peer the API server would (finding 2336).
+test("NetworkPolicy peers from values are refused before install", tooling, async () => {
+  const sandbox = {
+    ...gatewayRoutingValues,
+    "gatewayRouting.sandbox.enabled": "true",
+    "gatewayRouting.sandbox.domain": "sandbox.example.test",
+    "gatewayRouting.sandbox.tlsSecretName": "sandbox-tls",
+  };
+  const peer = "gatewayRouting.sandbox.ingressPeers[0]";
+  const selectorPeer = {
+    [`${peer}.namespaceSelector.matchLabels.team`]: "public",
+    [`${peer}.podSelector.matchLabels.app`]: "edge",
+  };
+  for (const [override, diagnostic] of [
+    [{ [`${peer}.ipBlock.cidr`]: "10.0.0.0/33" }, /ingressPeers\[0\]\.ipBlock\.cidr/],
+    [{ [`${peer}.ipBlock.cidr`]: "not-a-cidr" }, /ingressPeers\[0\]\.ipBlock\.cidr/],
+    [
+      { [`${peer}.ipBlock.cidr`]: "10.0.0.0/8", [`${peer}.ipBlock.except[0]`]: "10.1.0.0" },
+      /ingressPeers\[0\]\.ipBlock\.except\[0\]/,
+    ],
+    [
+      { ...selectorPeer, [`${peer}.ipBlock.cidr`]: "10.0.0.0/8" },
+      /ingressPeers\[0\] must set either ipBlock or selectors/,
+    ],
+    [
+      { [`${peer}.podSelectors.matchLabels.app`]: "edge" },
+      /ingressPeers\[0\] has unknown field podSelectors/,
+    ],
+    [
+      {
+        [`${peer}.namespaceSelector.matchExpressions[0].key`]: "team",
+        [`${peer}.namespaceSelector.matchExpressions[0].operator`]: "Equals",
+        [`${peer}.namespaceSelector.matchExpressions[0].values[0]`]: "public",
+      },
+      /namespaceSelector\.matchExpressions\[0\]\.operator/,
+    ],
+    [
+      {
+        [`${peer}.podSelector.matchExpressions[0].key`]: "bad key!",
+        [`${peer}.podSelector.matchExpressions[0].operator`]: "Exists",
+      },
+      /podSelector\.matchExpressions\[0\] contains an invalid Kubernetes label key/,
+    ],
+    [
+      {
+        [`${peer}.podSelector.matchExpressions[0].key`]: "app",
+        [`${peer}.podSelector.matchExpressions[0].operator`]: "In",
+      },
+      /podSelector\.matchExpressions\[0\]\.values must list label values for In and NotIn/,
+    ],
+    [
+      {
+        [`${peer}.podSelector.matchExpressions[0].key`]: "app",
+        [`${peer}.podSelector.matchExpressions[0].operator`]: "Exists",
+        [`${peer}.podSelector.matchExpressions[0].values[0]`]: "edge",
+      },
+      /podSelector\.matchExpressions\[0\]\.values must be empty for Exists and DoesNotExist/,
+    ],
+  ]) {
+    await assert.rejects(render({ ...sandbox, ...override }), diagnostic);
+  }
+  // Control: each valid peer shape still renders as written.
+  for (const override of [
+    { [`${peer}.ipBlock.cidr`]: "0.0.0.0/0", [`${peer}.ipBlock.except[0]`]: "10.0.0.0/8" },
+    { [`${peer}.ipBlock.cidr`]: "::/0" },
+    {
+      [`${peer}.namespaceSelector.matchExpressions[0].key`]: "kubernetes.io/metadata.name",
+      [`${peer}.namespaceSelector.matchExpressions[0].operator`]: "NotIn",
+      [`${peer}.namespaceSelector.matchExpressions[0].values[0]`]: "kube-system",
+      [`${peer}.podSelector.matchExpressions[0].key`]: "app",
+      [`${peer}.podSelector.matchExpressions[0].operator`]: "Exists",
+    },
+  ]) {
+    await render({ ...sandbox, ...override });
+  }
+
+  const git = {
+    ...protectedRepositoryValues,
+    "openshellGit.enabled": "true",
+    "openshellGit.tlsSecretName": "openshell-git-tls",
+    "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
+    "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+      "openshell-system",
+    "openshellGit.clients[0].podSelector.matchLabels.app": "openshell-supervisor",
+  };
+  for (const [override, diagnostic] of [
+    [
+      { "openshellGit.clients[0].podSelector.matchLabels.app": "-bad-" },
+      /openshellGit\.clients\[0\]\.podSelector\.matchLabels contains an invalid Kubernetes label value/,
+    ],
+    [
+      {
+        "openshellGit.clients[0].namespaceSelector.matchLabels.kubernetes\\.io/metadata\\.name":
+          "openshell system",
+      },
+      /openshellGit\.clients\[0\]\.namespaceSelector\.matchLabels contains an invalid Kubernetes label value/,
+    ],
+  ]) {
+    await assert.rejects(render({ ...git, ...override }), diagnostic);
+  }
+  await render(git);
+});
+
 test("database CA mounts stay distinct from active production volume mounts", tooling, async () => {
   const authorityValues = {
     "egressAuthority.enabled": "true",

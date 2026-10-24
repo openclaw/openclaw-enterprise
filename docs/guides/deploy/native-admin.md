@@ -231,6 +231,9 @@ gatewayRouting:
             app.kubernetes.io/name: ingress-nginx
 ```
 
+Each peer is an `ipBlock` or namespace and Pod selectors; Helm refuses a peer
+the Kubernetes API would refuse.
+
 Route the preview wildcard through your ingress to the Envoy Service's sandbox
 port, preserving the requested hostname and TLS server name. Keep the private
 administrative listener restricted. `listenerPort` is also the Envoy Pod port;
