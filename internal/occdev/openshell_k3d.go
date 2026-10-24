@@ -272,45 +272,61 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	timeout := time.Duration(timeoutSeconds) * time.Second
 
 	var runtimeImage string
-	var codexSeccompProfile string
 	if sandboxDriver == "none" {
 		runtimeImage, err = r.importRuntime(ctx, state)
 		if err != nil {
 			return err
 		}
-		codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
-		if err != nil {
-			return err
-		}
 	}
 
-	// Dedicated Harnesses, including OpenShell-owned Codex, require private
-	// Agent Gateway routing for workspace-node enrollment.
-	fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
-	routingPodCIDR, err := r.installDevelopmentRoutingControllers(ctx, state, timeout)
-	if err != nil {
-		return err
-	}
-	if sandboxDriver == "openshell" {
-		runtimeImage, err = r.importRuntime(ctx, state)
-		if err != nil {
-			return err
+	// Nothing below needs the controller, PostgreSQL or repository images until
+	// the network check, so import them while the Codex sandbox check and the
+	// routing controller rollouts wait on the cluster.
+	var codexSeccompProfile, routingPodCIDR string
+	var controllerImage, postgresImage, repositoryImage string
+	err = r.concurrently(ctx, func(ctx context.Context, r *runner) error {
+		var err error
+		if sandboxDriver == "none" {
+			codexSeccompProfile, err = r.prepareDevelopmentCodexSandbox(ctx, state, runtimeImage, timeoutSeconds)
+			if err != nil {
+				return err
+			}
 		}
-	}
-	controllerImage, err := r.importDevelopmentController(ctx, state)
-	if err != nil {
-		return err
-	}
-	postgresImage, err := r.importDevelopmentPostgres(ctx, state)
-	if err != nil {
-		return err
-	}
-	var repositoryImage string
-	if repositoryInputs != nil {
-		repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+		// Dedicated Harnesses, including OpenShell-owned Codex, require private
+		// Agent Gateway routing for workspace-node enrollment.
+		fmt.Fprintln(r.opts.Out, "Installing pinned private routing controllers...")
+		routingPodCIDR, err = r.installDevelopmentRoutingControllers(ctx, state, timeout)
 		if err != nil {
-			return err
+			return fmt.Errorf("install the private routing controllers: %w", err)
 		}
+		if sandboxDriver == "openshell" {
+			runtimeImage, err = r.importRuntime(ctx, state)
+			if err != nil {
+				return fmt.Errorf("import the development runtime image: %w", err)
+			}
+		}
+		return nil
+	}, func(ctx context.Context, r *runner) error {
+		var err error
+		fmt.Fprintln(r.opts.Out, "Importing the controller and PostgreSQL images alongside the cluster checks...")
+		controllerImage, err = r.importDevelopmentController(ctx, state)
+		if err != nil {
+			return fmt.Errorf("import the development controller image: %w", err)
+		}
+		postgresImage, err = r.importDevelopmentPostgres(ctx, state)
+		if err != nil {
+			return fmt.Errorf("import the development PostgreSQL image: %w", err)
+		}
+		if repositoryInputs != nil {
+			repositoryImage, err = r.importDevelopmentRepositoryService(ctx, state)
+			if err != nil {
+				return fmt.Errorf("import the development repository service image: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	if routingPodCIDR != "" {
 		fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")

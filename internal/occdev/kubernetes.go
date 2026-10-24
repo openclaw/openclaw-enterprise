@@ -266,7 +266,8 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 	if !strings.HasPrefix(platform, "linux/") {
 		return "", fmt.Errorf("development image must contain a Linux platform: %s", image)
 	}
-	archive := filepath.Join(s.directory, "development-import.tar")
+	// Images are imported concurrently, so each needs its own archive.
+	archive := filepath.Join(s.directory, developmentImportArchive(selected))
 	defer func() {
 		if err := os.Remove(archive); err != nil && !os.IsNotExist(err) {
 			resultErr = errors.Join(resultErr, fmt.Errorf("remove development image archive: %w", err))
@@ -322,6 +323,13 @@ func (r *runner) importDevelopmentImage(ctx context.Context, s *developmentState
 		}
 	}
 	return reference, nil
+}
+
+// developmentImportArchive names the archive importDevelopmentImage saves an
+// image to before importing it into the node.
+func developmentImportArchive(image string) string {
+	sum := sha256.Sum256([]byte(image))
+	return fmt.Sprintf("development-import-%x.tar", sum[:6])
 }
 
 // The local profile trusts only Pod loopback; first-agent verifies model access

@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -112,7 +114,7 @@ func (transport *k3dOrderingTransport) RoundTrip(*http.Request) (*http.Response,
 }
 
 func TestK3dCodexPreflightOrdering(t *testing.T) {
-	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing"} {
+	for _, scenario := range []string{"refused", "invalid result", "cleanup failure", "cancelled", "accepted", "API failure", "OpenShell routing", "controller import failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, "state")
@@ -121,6 +123,24 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			digest := sha256.Sum256([]byte(runtimeImage))
 			staging := fmt.Sprintf("openclaw-development/import-%x:occ-dev-order", digest[:6])
 			imported := "docker.io/" + strings.Split(staging, ":")[0] + "@" + profileTestDigest
+			// The controller and PostgreSQL images import alongside the Codex check
+			// and the routing install, so each image has its own import fixture.
+			imageCases, imageList := "", ""
+			for _, image := range []string{runtimeImage, controllerImage, developmentPostgres} {
+				sum := sha256.Sum256([]byte(image))
+				staging := fmt.Sprintf("openclaw-development/import-%x:occ-dev-order", sum[:6])
+				imported := "docker.io/" + strings.Split(staging, ":")[0] + "@" + profileTestDigest
+				imageCases += `"image inspect ` + staging + `") exit 1 ;;
+"tag ` + image + ` ` + staging + `") ;;
+"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
+"image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
+"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ` + staging + ` ` + imported + `") ;;
+"image rm ` + staging + `") ;;
+`
+				imageList += staging + " application/vnd.oci.image.manifest.v1+json " + profileTestDigest + "\n"
+			}
+			probePID := filepath.Join(root, "probe.pid")
+			controllerPresent := ":"
 			// Clear optional lifecycle inputs without reading or recording credentials.
 			for _, key := range []string{"DOCKER_CONTEXT", "OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY", "OCC_DEVELOPMENT_REPOSITORY_IMAGE", "OCC_DEVELOPMENT_OPENSHELL_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART", "OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST"} {
 				t.Setenv(key, "")
@@ -158,6 +178,12 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				probe = `echo '{"mode":"Unconfined","profileName":""}'`
 			case "cancelled":
 				probe = ": > " + shellQuote(filepath.Join(root, "probing")) + "; while :; do :; done"
+			case "controller import failure":
+				// The controller image is missing, and the import reports it only
+				// once the Codex check is running, so its failure must stop the check.
+				// PATH holds only fixtures, so both wait with shell builtins.
+				probe = "echo $$ > " + shellQuote(probePID) + "; while :; do :; done"
+				controllerPresent = "while [ ! -s " + shellQuote(probePID) + " ]; do :; done; exit 1"
 			}
 			deleteResult := ":"
 			if scenario == "cleanup failure" {
@@ -177,14 +203,10 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 "image inspect --format {{ index .Config.Labels "*) echo 0123456789abcdef0123456789abcdef01234567 ;;
 "exec k3d-occ-dev-order-server-0 nslookup registry-1.docker.io") ;;
 "image inspect ` + runtimeImage + `") ;;
-"image inspect ` + staging + `") exit 1 ;;
-"tag ` + runtimeImage + ` ` + staging + `") ;;
-"image inspect --format {{json .RepoTags}} ` + staging + `") echo '["` + staging + `"]' ;;
-"image inspect --format {{.Os}}/{{.Architecture}} ` + staging + `") echo linux/amd64 ;;
-"image save --platform linux/amd64 --output "*) ;;
-"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") echo '` + staging + ` application/vnd.oci.image.manifest.v1+json ` + profileTestDigest + `' ;;
-"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ` + staging + ` ` + imported + `") ;;
-"image rm ` + staging + `") ;;`,
+"image inspect ` + controllerImage + `") ` + controllerPresent + ` ;;
+"image inspect ` + developmentPostgres + `") ;;
+` + imageCases + `"image save --platform linux/amd64 --output "*) ;;
+"exec k3d-occ-dev-order-server-0 ctr -n k8s.io images list") printf '` + imageList + `' ;;`,
 				"k3d": `"cluster list -o json") if [ -f ` + shellQuote(filepath.Join(root, "created")) + ` ]; then echo '[{"name":"occ-dev-order"}]'; else echo '[]'; fi ;;
 "cluster create occ-dev-order "*) : > ` + shellQuote(filepath.Join(root, "created")) + ` ;;
 "kubeconfig get occ-dev-order") printf '%s\n' 'contexts:' '- name: k3d-occ-dev-order' '  context:' '    cluster: owned' 'clusters:' '- name: owned' '  cluster:' '    server: https://127.0.0.1:6443' ;;
@@ -233,6 +255,8 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 				wantError = "exit status 44"
 			case "OpenShell routing":
 				wantError = "fixture routing download refused"
+			case "controller import failure":
+				wantError = "import the development controller image: explicitly selected controller image must already exist locally"
 			}
 			if err == nil || !strings.Contains(err.Error(), wantError) {
 				t.Fatalf("want %q, got %v; commands: %v", wantError, err, calls)
@@ -245,6 +269,24 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			if scenario == "cancelled" && ctx.Err() != context.Canceled {
 				t.Fatalf("expected cancellation, got %v", ctx.Err())
+			}
+			if scenario == "controller import failure" {
+				// The import failure, not the test deadline, stopped the check, and
+				// the check's process exited before setup returned.
+				if ctx.Err() != nil {
+					t.Fatalf("the Codex check outlived the failed import: %v", ctx.Err())
+				}
+				data, err := os.ReadFile(probePID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+					t.Fatalf("the canceled Codex check left process %d behind: %v", pid, err)
+				}
 			}
 			index := func(prefix string) int {
 				result := -1
@@ -260,10 +302,11 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			}
 			previous := -1
 			stages := []string{"k3d cluster create ", "docker exec k3d-occ-dev-order-server-0 nslookup ", "k3d kubeconfig get ", "kubectl --kubeconfig "}
+			runtimeImport := "k3d image import --mode direct " + filepath.Join(state, developmentImportArchive(staging)) + " "
 			if driver == "none" && scenario != "API failure" {
-				stages = append(stages, "docker tag "+runtimeImage, "k3d image import ", "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag ", "node scripts/prepare-development-codex-seccomp.mjs ")
+				stages = append(stages, "docker tag "+runtimeImage, runtimeImport, "docker exec k3d-occ-dev-order-server-0 ctr -n k8s.io images tag "+staging+" ", "node scripts/prepare-development-codex-seccomp.mjs ")
 			} else {
-				if index("k3d image import ") >= 0 || index("node ") >= 0 {
+				if index(runtimeImport) >= 0 || index("node ") >= 0 {
 					t.Fatal("runtime work preceded its prerequisite")
 				}
 			}
@@ -282,9 +325,14 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			if transport.requests != wantRequests {
 				t.Fatalf("routing downloads: got %d, want %d", transport.requests, wantRequests)
 			}
-			for _, forbidden := range []string{"kubectl apply ", "docker tag " + controllerImage, "docker tag " + developmentPostgres, "kubectl create secret ", "helm upgrade "} {
-				if index(forbidden) >= 0 {
-					t.Fatalf("unexpected downstream work: %s", forbidden)
+			forbidden := []string{"kubectl apply ", "kubectl create secret ", "helm upgrade "}
+			if scenario == "API failure" {
+				// The platform images import only once the cluster API answers.
+				forbidden = append(forbidden, "docker tag "+controllerImage, "docker tag "+developmentPostgres)
+			}
+			for _, command := range forbidden {
+				if index(command) >= 0 {
+					t.Fatalf("unexpected downstream work: %s", command)
 				}
 			}
 			if scenario == "cleanup failure" {
