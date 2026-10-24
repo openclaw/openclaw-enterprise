@@ -180,6 +180,39 @@ describe("CI preparation", { concurrency }, () => {
       }
 
       const preparation = await commands.commands();
+      if (scenario === "success") {
+        // The lane's disposable PostgreSQL server gives up durability right after it
+        // starts, before any database is created or migrated.
+        const compose = preparation
+          .filter(({ command, args }) => command === "docker" && args[0] === "compose")
+          .map(({ args }) => args.slice(5));
+        const started = compose.findIndex((args) => args.join(" ") === "up -d --wait");
+        assert.notEqual(started, -1, "preparation starts its PostgreSQL server");
+        assert.deepEqual(compose[started + 1], [
+          "exec",
+          "-T",
+          "postgres",
+          "psql",
+          "-v",
+          "ON_ERROR_STOP=1",
+          "-U",
+          "postgres",
+          "-d",
+          "postgres",
+          "-c",
+          "ALTER SYSTEM SET fsync = off",
+          "-c",
+          "ALTER SYSTEM SET synchronous_commit = off",
+          "-c",
+          "ALTER SYSTEM SET full_page_writes = off",
+          "-c",
+          "SELECT pg_catalog.pg_reload_conf()",
+        ]);
+        assert.ok(
+          compose.slice(0, started + 1).every((args) => !args.includes("psql")),
+          "no database command runs before the settings",
+        );
+      }
       const criLookups = (suffix) =>
         preparation.filter(
           ({ args }) => args[1] === `k3d-${cluster.name}-${suffix}` && args[2] === "crictl",

@@ -594,9 +594,33 @@ async function ensurePostgresServer(statePath, state) {
     dockerArgsForPostgres(resource, "up", "-d", "--wait"),
     { env: { OCC_POSTGRES_PORT: String(port) } },
   );
+  await postgresExec(resource, ["psql", ...ciPostgresSettingsArgs], "postgres-settings");
   await markResourceReady(statePath, state, resource);
   return resource;
 }
+
+// The lane's server is disposable (cleanup removes it with its volume), so it gives up
+// durability, which only a host crash would test: commits stop waiting for WAL flushes,
+// and the checkpoint each test database's DROP DATABASE waits for skips its fsyncs.
+// PostgreSQL containers wrote most of a loaded runner's IO. Recovery from a killed
+// server is unchanged. The reload lands before any test database exists. Developers'
+// compose.postgres.yaml server keeps PostgreSQL's defaults.
+const ciPostgresSettingsArgs = Object.freeze([
+  "-v",
+  "ON_ERROR_STOP=1",
+  "-U",
+  "postgres",
+  "-d",
+  "postgres",
+  "-c",
+  "ALTER SYSTEM SET fsync = off",
+  "-c",
+  "ALTER SYSTEM SET synchronous_commit = off",
+  "-c",
+  "ALTER SYSTEM SET full_page_writes = off",
+  "-c",
+  "SELECT pg_catalog.pg_reload_conf()",
+]);
 
 async function postgresExec(resource, args, stage) {
   await execFile(
