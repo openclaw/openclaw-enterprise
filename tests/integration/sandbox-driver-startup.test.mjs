@@ -825,6 +825,10 @@ test("OpenShell configures only the selected dedicated Harness runtime", () => {
     () => driver.configureAgent(configuration, harness("openclaw", "embedded")),
     /supports only dedicated Harness revisions/,
   );
+  assert.throws(
+    () => driver.configureAgent(configuration, harness("other")),
+    /does not support the selected Harness runtime/,
+  );
 });
 
 // Native OpenClaw's private workspace preparation needs userNamespaces: false, and it runs
@@ -884,6 +888,9 @@ test("OpenShell pins the Codex sandbox and approval reviewer while preserving ot
     });
     assert.equal(configuration.plugins.entries.codex.config.appServer, appServer);
     assert.equal(appServer.sandbox, "read-only");
+    // A disabled Codex plugin entry is enabled: the dedicated Codex Harness runs through it.
+    configuration.plugins.entries.codex.enabled = false;
+    assert.equal(driver.configureAgent(configuration, harness).plugins.entries.codex.enabled, true);
     // Status reads rerun the hook on stored work, so the pin must be idempotent.
     assert.deepEqual(driver.configureAgent(configured, harness), configured);
   }
@@ -1021,9 +1028,18 @@ test("OpenShell admits initial files only for its projected main workspace", () 
         ),
       /agents.entries.*must hold only main/,
     );
+    // A snapshot the hook never projected names the managed workspace, which is not the mount.
+    assert.throws(
+      () => driver.validateWorkspaceSetup(harness, {}),
+      /agents.defaults.workspace.*must be \/sandbox\/custom-workspace/,
+    );
     assert.throws(
       () => driver.validateWorkspaceSetup({ ...harness, mode: "embedded" }, configured),
       /require a dedicated/,
+    );
+    assert.throws(
+      () => driver.validateWorkspaceSetup({ ...harness, id: "other" }, configured),
+      /require a dedicated Codex or OpenClaw Harness/,
     );
   }
 });

@@ -1066,35 +1066,56 @@ test("Sandbox Drivers without an Agent configuration hook preserve the admitted 
   assert.equal(revision.configuration.plugins.entries.codex.config.appServer.sandbox, "read-only");
 });
 
-test("Sandbox admission rejects malformed provider configuration before creating a revision", async () => {
-  const { controller } = createController();
-  const sandbox = createSandboxDriver({
-    implementation: "malformed-containment",
-    configureAgent() {
-      return null;
-    },
+for (const { title, configureAgent, message } of [
+  {
+    title: "malformed provider configuration",
+    configureAgent: () => null,
+    message: "Configuration values must be a JSON object.",
+  },
+  {
+    // Deployment admits the Harness the stored Configuration selects; a Driver view that
+    // moves the model to another Harness runtime is refused.
+    title: "a provider configuration that changes the Harness runtime",
+    configureAgent: (configuration) => ({
+      ...configuration,
+      agents: {
+        defaults: {
+          model: "openai/gpt-5",
+          models: { "openai/gpt-5": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    }),
+    message: "A Sandbox Driver cannot change the selected Harness runtime.",
+  },
+]) {
+  test(`Sandbox admission rejects ${title} before creating a revision`, async () => {
+    const { controller } = createController();
+    const sandbox = createSandboxDriver({
+      implementation: "malformed-containment",
+      configureAgent,
+    });
+    controller.registerDriver(sandbox);
+    controller.selectDriver("sandbox", sandbox.id);
+
+    const target = await createDedicatedAgentForSandboxAdmission(
+      controller,
+      "Malformed Sandbox configuration",
+      "Rejected dedicated Agent",
+      codexSandboxConfiguration(),
+    );
+
+    await assert.rejects(
+      controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
+      { name: "ScopeViolationError", message },
+    );
+    assert.deepEqual(
+      await controller.transact((state) =>
+        state.revisions.listRevisions(target.namespaceId, target.agentId),
+      ),
+      [],
+    );
   });
-  controller.registerDriver(sandbox);
-  controller.selectDriver("sandbox", sandbox.id);
-
-  const target = await createDedicatedAgentForSandboxAdmission(
-    controller,
-    "Malformed Sandbox configuration",
-    "Rejected dedicated Agent",
-    codexSandboxConfiguration(),
-  );
-
-  await assert.rejects(
-    controller.deployAgent("principal-admin", target, resolveApprovedDevelopmentHarness),
-    { name: "ScopeViolationError", message: "Configuration values must be a JSON object." },
-  );
-  assert.deepEqual(
-    await controller.transact((state) =>
-      state.revisions.listRevisions(target.namespaceId, target.agentId),
-    ),
-    [],
-  );
-});
+}
 
 for (const facets of [["networking"], ["filesystem"], ["process"], ["networking", "filesystem"]]) {
   test(`Sandbox admission accepts a dedicated Agent with facets ${facets.join(", ")}`, async () => {
