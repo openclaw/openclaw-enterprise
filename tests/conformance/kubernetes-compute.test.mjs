@@ -11868,7 +11868,7 @@ test("model provider credential headers and request auth are refused on every pr
       error.message ===
         `Configuration setting models.providers.p.headers ${credentialHeader(`x-${"a".repeat(37)}…`)}.`,
   );
-  // A name that exactly fills its 40 characters is shown whole.
+  // A 40-character name, a credential by its -token suffix, is shown whole.
   const fullName = `x-${"a".repeat(32)}-token`;
   assert.throws(
     () => driver.validateConfiguration(provider("p", { headers: { [fullName]: "${K}" } })),
