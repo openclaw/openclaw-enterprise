@@ -282,6 +282,9 @@ func TestK3dCodexPreflightOrdering(t *testing.T) {
 			if scenario == "cancelled" && ctx.Err() != context.Canceled {
 				t.Fatalf("expected cancellation, got %v", ctx.Err())
 			}
+			if scenario == "network check failure" && !strings.Contains(output.String(), "Verifying Kubernetes network isolation before configuring gateway trust...") {
+				t.Fatalf("the network check did not start: %s", &output)
+			}
 			if scenario == "controller import failure" || scenario == "network check failure" {
 				// The import or network check failure, not the test deadline,
 				// stopped the Codex check, and its process exited before setup returned.

@@ -312,7 +312,8 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		}
 		// The probe Pods run the controller image. The check creates its own
 		// Namespaces and policy and no routing resources, and its probes wait on
-		// timeouts, so it runs while the remaining images import.
+		// timeouts, so it runs while the remaining images import. When a sibling
+		// fails, the check still removes its probe resources before the rollback.
 		return r.concurrently(ctx, func(ctx context.Context, r *runner) error {
 			fmt.Fprintln(r.opts.Out, "Verifying Kubernetes network isolation before configuring gateway trust...")
 			return r.verifyDevelopmentNetworkPolicy(ctx, state, controllerImage, "", "", false, timeout)
