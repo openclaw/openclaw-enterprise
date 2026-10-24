@@ -311,8 +311,7 @@ and this scoping. See the
 
 ## Qualification contract
 
-OpenShell remains experimental. Local contracts are implemented; protected
-cluster proof remains.
+Local contracts are implemented; protected cluster proof remains.
 
 ### Workload identity
 
@@ -338,14 +337,14 @@ runtime storage; Agent deletion removes it.
 
 The supervisor probes the image's `/tmp`; native OpenClaw uses its runtime-home
 `tmp` child without changing supervisor directory permissions. Codex's container has
-a `1Gi` ephemeral-storage limit. Native provisioning preserves
-retained entries while privatizing writable PVC subpaths in a restricted
-Deployment for that Agent revision. Ownership/mode verification, foreground deletion,
-and writer termination precede Sandbox creation. Temporary preparation
-requires `kubernetes.userNamespaces: false` and the pinned Gateway's default
-identity selection, without UID/GID overrides.
-Ordinary Kubernetes Compute may use `/home/node` and `/tmp` `emptyDir`
-volumes limited to `1Gi` and `64Mi`, respectively.
+a `1Gi` ephemeral-storage limit. Native provisioning privatizes writable PVC
+subpaths, keeping retained entries, in a restricted per-revision Deployment;
+ownership/mode checks, foreground deletion and writer termination
+precede Sandbox creation. It needs `kubernetes.userNamespaces: false`,
+at most one `gateway.operatorWorkspaceResources` ServiceAccount and the pinned
+Gateway's default identity, without UID/GID overrides; Agent save refuses
+dedicated OpenClaw otherwise. Ordinary Kubernetes Compute may use `/home/node`
+and `/tmp` `emptyDir` volumes limited to `1Gi` and `64Mi`.
 
 ### Remaining qualification work
 

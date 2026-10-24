@@ -2016,6 +2016,20 @@ test("The Installation lists exactly the OpenClaw execution modes Agent save and
       modes: [],
     })),
     { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
+    // Admission's Sandbox view can refuse OpenClaw on Driver settings alone (finding 2347).
+    {
+      name: "full but its Agent view refuses OpenClaw",
+      sandbox: {
+        ...conformanceSandbox("refuses-openclaw", facets),
+        configureAgent(values, harness) {
+          if (harness.id === "openclaw") {
+            throw new ConfigurationHarnessError("This Sandbox Driver refuses OpenClaw.");
+          }
+          return values;
+        },
+      },
+      modes: [],
+    },
     {
       name: "full but unavailable",
       sandbox: conformanceSandbox("unavailable", facets),

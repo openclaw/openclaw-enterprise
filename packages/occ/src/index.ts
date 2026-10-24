@@ -1518,11 +1518,11 @@ function admitsOpenClawExecutionMode(
 ): boolean {
   try {
     requireSandboxExecutionMode(sandbox, executionMode);
-    requireDedicatedNativeSupport(
-      { id: "openclaw", version: "capability", mode: executionMode },
-      sandbox,
-      nativeWorkers,
-    );
+    const harness = Object.freeze({ id: "openclaw", version: "capability", mode: executionMode });
+    requireDedicatedNativeSupport(harness, sandbox, nativeWorkers);
+    // Admission's Sandbox view can refuse on Driver settings alone (OpenShell's userNamespaces
+    // or ServiceAccounts).
+    sandbox?.configureAgent?.(Object.freeze({}), harness);
     return true;
   } catch (error) {
     if (
