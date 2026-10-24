@@ -638,8 +638,9 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
   await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
-// A retained view keeps the reader's place: Back to a list scrolled down to the Agent it opened
-// lands where it was, not at the top.
+// A retained view keeps the reader's place: from a list scrolled down, Back from the Agent it
+// opened lands where it was, not at the top. The last Agent is in view at full scroll, so opening
+// it scrolls nothing and the retained position is exactly the one measured.
 test("Back to a scrolled Agents list restores its scroll position", async (t) => {
   const { agents, page } = await openTeamList(t, "Team scroll return");
   await page.setViewportSize({ width: 1280, height: 480 });

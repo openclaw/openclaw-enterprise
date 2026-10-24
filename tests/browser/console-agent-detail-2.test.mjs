@@ -2362,8 +2362,11 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
   await login(page, fixture, detail, viewer.credentials);
   await unavailable.waitFor();
   await waitForSettledFetches(page, configurationPath, 1);
+  await waitForSettledFetches(page, nativeAdminPath, 1);
   assert.equal(reads(configurationPath), 3);
+  assert.equal(reads(nativeAdminPath), 2);
   assert.equal(denials("openclaw.configurations.read"), 3);
+  assert.equal(denials("openclaw.agents.native_admin.read"), 2);
 });
 
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
